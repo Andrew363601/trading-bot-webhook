@@ -5,6 +5,10 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+export async function GET() {
+  return new Response("👋 Webhook endpoint is alive!", { status: 200 });
+}
+
 export async function POST(request) {
   try {
     const body = await request.json();
