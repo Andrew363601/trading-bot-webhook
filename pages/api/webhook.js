@@ -1,3 +1,10 @@
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
 export default async function handler(req, res) {
   if (req.method === 'POST') {
     try {
@@ -10,8 +17,8 @@ export default async function handler(req, res) {
           price,
           strategy,
           version,
-          raw: req.body,
-        },
+          raw: req.body
+        }
       ]);
 
       if (error) {
@@ -20,9 +27,10 @@ export default async function handler(req, res) {
       }
 
       return res.status(200).json({ message: "✅ Stored in Supabase" });
+
     } catch (err) {
       console.error("❌ Handler Crash:", err.message);
-      return res.status(500).json({ error: "Something broke" });
+      return res.status(500).json({ error: "Internal Server Error" });
     }
   }
 
