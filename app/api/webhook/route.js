@@ -1,18 +1,11 @@
-import { createClient } from "@supabase/supabase-js";
-
-// 🔐 Environment Variables
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
-
 export async function GET() {
-  return new Response("👋 Webhook endpoint is alive!", { status: 200 });
+  return new Response("👋 Webhook is working!", { status: 200 });
 }
 
 export async function POST(request) {
   try {
     const body = await request.json();
-    console.log("📩 TradingView Webhook Received:", body);
+    console.log("📩 Webhook Received:", body);
 
     const { symbol, side, price } = body;
 
@@ -26,18 +19,21 @@ export async function POST(request) {
     ]);
 
     if (error) {
-      console.error("❌ Supabase Insert Error:", error);
-      return new Response(JSON.stringify({ status: "error", error }), { status: 500 });
+      console.error("❌ Supabase Error:", error.message);
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
-    return new Response(JSON.stringify({ status: "Stored in Supabase ✅" }), {
+    return new Response(JSON.stringify({ message: "✅ Stored in Supabase" }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
 
   } catch (err) {
-    console.error("❌ Webhook Handler Error:", err);
-    return new Response(JSON.stringify({ error: "Internal Server Error" }), {
+    console.error("❌ Handler Crash:", err.message);
+    return new Response(JSON.stringify({ error: "Something broke" }), {
       status: 500,
       headers: { "Content-Type": "application/json" },
     });
