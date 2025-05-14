@@ -38,8 +38,8 @@ export default async function handler(req, res) {
         symbol: alert.symbol,
         side: alert.side,
         entry_price: entryPrice,
-        strategy: alert.strategy,
-        version: alert.version,
+        strategy: alert.raw?.strategy,
+        version: alert.raw?.version,
         status,
         notes: "Simulated paper trade based on strategy metadata"
       }
