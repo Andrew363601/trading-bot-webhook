@@ -7,18 +7,18 @@ const supabase = createClient(
 );
 
 // Define strategy ranges
-const config = {
+const configRanges = {
   atr_mult: { min: 0.5, max: 1.5, step: 0.1 },
   tp_mult: { min: 0.8, max: 2.0, step: 0.2 },
   qqe_rsi_len: { min: 10, max: 20, step: 2 },
   qqe_smooth: { min: 2, max: 10, step: 2 }
 };
 
-function* generateCombinations(config) {
-  for (let atr = config.atr_mult.min; atr <= config.atr_mult.max; atr += config.atr_mult.step) {
-    for (let tp = config.tp_mult.min; tp <= config.tp_mult.max; tp += config.tp_mult.step) {
-      for (let rsi = config.qqe_rsi_len.min; rsi <= config.qqe_rsi_len.max; rsi += config.qqe_rsi_len.step) {
-        for (let smooth = config.qqe_smooth.min; smooth <= config.qqe_smooth.max; smooth += config.qqe_smooth.step) {
+function* generateCombinations(ranges) {
+  for (let atr = ranges.atr_mult.min; atr <= ranges.atr_mult.max; atr += ranges.atr_mult.step) {
+    for (let tp = ranges.tp_mult.min; tp <= ranges.tp_mult.max; tp += ranges.tp_mult.step) {
+      for (let rsi = ranges.qqe_rsi_len.min; rsi <= ranges.qqe_rsi_len.max; rsi += ranges.qqe_rsi_len.step) {
+        for (let smooth = ranges.qqe_smooth.min; smooth <= ranges.qqe_smooth.max; smooth += ranges.qqe_smooth.step) {
           yield {
             atr_mult: parseFloat(atr.toFixed(2)),
             tp_mult: parseFloat(tp.toFixed(2)),
@@ -68,7 +68,7 @@ export default async function handler(req, res) {
     }
 
     const results = [];
-    for (const config of generateCombinations(config)) {
+    for (const config of generateCombinations(configRanges)) {
       const result = simulateTrades(alerts, config);
       results.push(result);
     }
