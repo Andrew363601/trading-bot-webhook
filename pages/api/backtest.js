@@ -73,6 +73,8 @@ export default async function handler(req, res) {
     const { error } = await supabase.from("backtest_results").insert([
       {
         config: result.config,
+        strategy: "QQE-ATR",
+        version: "v1.0",
         win_rate: result.win_rate,
         pnl: result.pnl,
         trades: result.trades
