@@ -10,6 +10,25 @@ export default async function handler(req, res) {
     try {
       const { symbol, side, price, strategy, version } = req.body;
 
+        // ✅ Step 3: Get currently active strategy
+        const { data: active, error: activeError } = await supabase
+        .from("active_strategy")
+        .select("*")
+        .eq("active", true)
+        .single();
+
+      if (activeError || !active) {
+        return res.status(500).json({ error: "No active strategy found" });
+      }
+
+      // ✅ Compare against alert
+      if (
+        body.strategy !== active.strategy ||
+        body.version !== active.version
+      ) {
+        return res.status(400).json({ error: "Alert does not match active strategy" });
+      }
+      // Continue logging the valid alert...
       const { error } = await supabase.from("alerts").insert([
         {
           symbol,
