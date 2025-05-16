@@ -8,9 +8,10 @@ const supabase = createClient(
 export default async function handler(req, res) {
   if (req.method === 'POST') {
     try {
-      const { symbol, side, price, strategy, version } = req.body;
+      const body = req.body;
+      const { symbol, side, price, strategy, version } = body;
 
-        // ✅ Step 3: Get currently active strategy
+        // Fetch currently active strategy
         const { data: active, error: activeError } = await supabase
         .from("active_strategy")
         .select("*")
