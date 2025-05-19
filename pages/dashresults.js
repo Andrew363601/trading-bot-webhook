@@ -1,28 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react';
 
 export default function DashResults() {
-  const [results, setResults] = useState([])
-  const [alerts, setAlerts] = useState([])
-  const [executions, setExecutions] = useState([])
-  const [activeStrategy, setActiveStrategy] = useState(null)
+  const [results, setResults] = useState([]);
+  const [alerts, setAlerts] = useState([]);
+  const [executions, setExecutions] = useState([]);
+  const [activeStrategy, setActiveStrategy] = useState(null);
 
   useEffect(() => {
-    fetch('/api/get-results')
-      .then(res => res.json())
-      .then(setResults)
-
-    fetch('/api/get-alerts')
-      .then(res => res.json())
-      .then(setAlerts)
-
-    fetch('/api/get-executions')
-      .then(res => res.json())
-      .then(setExecutions)
-
-    fetch('/api/get-active-strategy')
-      .then(res => res.json())
-      .then(setActiveStrategy)
-  }, [])
+    fetch('/api/get-results').then(res => res.json()).then(setResults);
+    fetch('/api/get-alerts').then(res => res.json()).then(setAlerts);
+    fetch('/api/get-executions').then(res => res.json()).then(setExecutions);
+    fetch('/api/get-active-strategy').then(res => res.json()).then(setActiveStrategy);
+  }, []);
 
   const deployToPaper = async (config) => {
     try {
@@ -37,7 +26,12 @@ export default function DashResults() {
     } catch (err) {
       console.error('Deploy error:', err);
     }
-  }
+  };
+
+  const copyConfig = (config) => {
+    const text = `// Paste into Pine Script settings:\natr_mult = ${config.atr_mult}\ntp_mult = ${config.tp_mult}\nqqe_rsi_len = ${config.qqe_rsi_len}\nqqe_smooth = ${config.qqe_smooth}`;
+    navigator.clipboard.writeText(text).then(() => alert("📋 Config copied to clipboard!"));
+  };
 
   return (
     <div style={{ padding: 20 }}>
@@ -59,7 +53,7 @@ export default function DashResults() {
             <th>TP</th>
             <th>RSI Len</th>
             <th>Smoothing</th>
-            <th>Action</th>
+            <th colSpan={2}>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -79,6 +73,13 @@ export default function DashResults() {
                   onClick={() => deployToPaper(row.config)}
                   style={{ padding: '4px 8px', backgroundColor: '#28a745', color: '#fff', border: 'none', cursor: 'pointer' }}>
                   Promote
+                </button>
+              </td>
+              <td>
+                <button
+                  onClick={() => copyConfig(row.config)}
+                  style={{ padding: '4px 8px', backgroundColor: '#007bff', color: '#fff', border: 'none', cursor: 'pointer' }}>
+                  Copy Config
                 </button>
               </td>
             </tr>
@@ -104,5 +105,5 @@ export default function DashResults() {
         ))}
       </ul>
     </div>
-  )
+  );
 }
