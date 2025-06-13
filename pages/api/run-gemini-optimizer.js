@@ -4,18 +4,15 @@
 import { createClient } from '@supabase/supabase-js';
 
 // Initialize Supabase client
-// FIX: Correctly initialize supabaseUrl and supabaseKey from environment variables
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL; // Using NEXT_PUBLIC for client-side usage, or just SUPABASE_URL for server-side
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY; // Using SERVICE_ROLE_KEY for serverless functions due to write access
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default async function handler(request, response) {
     // Secure the endpoint with a secret key from environment variables
-    // FIX: Correctly access CRON_SECRET from process.env
-    const CRON_SECRET = process.env.CRON_SECRET; // This should be a distinct ENV variable like 'CRON_JOB_SECRET'
+    const CRON_SECRET = process.env.CRON_SECRET;
     const authHeader = request.headers['authorization'];
     
-    // FIX: Compare against the actual CRON_SECRET value, not the string representation of the variable name
     if (!authHeader || authHeader !== `Bearer ${CRON_SECRET}`) {
         return response.status(401).json({ error: 'Unauthorized' });
     }
@@ -41,23 +38,21 @@ export default async function handler(request, response) {
         console.log(`Fetched ${trades.length} trades for analysis.`);
 
         // 2. Fetch the current strategy configuration
-        // FIX: Ensure 'id' exists and is correctly populated in your 'strategy_config' table
         const { data: currentConfigData, error: configError } = await supabase
             .from('strategy_config') 
             .select('*')
-            .eq('is_active', true) // Assuming 'is_active' column exists and is set to true for the current config
+            .eq('is_active', true) 
             .single();
 
         if (configError) {
-            // Handle case where no active config is found, possibly insert a default one
-            if (configError.code === 'PGRST116') { // Error code for no rows found for .single()
+            if (configError.code === 'PGRST116') { 
                 console.warn('No active strategy config found. Please ensure one is inserted and marked as active.');
                 return response.status(404).json({ error: 'No active strategy configuration found. Please set one up in Supabase.' });
             }
             throw new Error(`Supabase error fetching config: ${configError.message}`);
         }
 
-        const currentParams = currentConfigData.parameters; // e.g., { coherence_threshold: 0.7, adx_len: 14 }
+        const currentParams = currentConfigData.parameters; 
         
         console.log('Current parameters:', currentParams);
 
@@ -73,7 +68,6 @@ export default async function handler(request, response) {
                 wins++;
             } else {
                 losses++;
-                // Collect data about what might have caused the loss
                 losingTradeCharacteristics.push({
                     mci_at_entry: trade.mci_at_entry,
                     adx_score_at_entry: trade.adx_score_at_entry,
@@ -108,9 +102,11 @@ export default async function handler(request, response) {
         console.log('Sending prompt to Gemini...');
 
         // 5. Call the Gemini API
-        // FIX: Correctly access GEMINI_API_KEY from process.env
         const geminiApiKey = process.env.GEMINI_API_KEY; 
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`;
+        // FIX: Updated model ID to a common preview model. If this doesn't work,
+        // you may need to check Google's ListModels API for the exact ID allowed for your key.
+        const modelId = "gemini-1.5-pro-preview-0514"; 
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${geminiApiKey}`;
 
         const geminiResponse = await fetch(apiUrl, {
             method: 'POST',
@@ -124,11 +120,10 @@ export default async function handler(request, response) {
         }
 
         const geminiResult = await geminiResponse.json();
-        // Check if candidates and parts exist before accessing
         const suggestedChangeText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text;
 
         if (!suggestedChangeText) {
-            throw new Error('Gemini API response did not contain expected content.');
+            throw new Error('Gemini API response did not contain expected content (candidates[0].content.parts[0].text).');
         }
 
         const suggestedChange = JSON.parse(suggestedChangeText.replace(/```json|```/g, '').trim());
@@ -141,7 +136,7 @@ export default async function handler(request, response) {
         const { error: updateError } = await supabase
             .from('strategy_config')
             .update({ parameters: newParams, last_updated: new Date().toISOString() })
-            .eq('id', currentConfigData.id); // Update the active configuration by its ID
+            .eq('id', currentConfigData.id); 
 
         if (updateError) {
             throw new Error(`Supabase error updating config: ${updateError.message}`);
