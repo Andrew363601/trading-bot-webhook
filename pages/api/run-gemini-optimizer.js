@@ -103,9 +103,8 @@ export default async function handler(request, response) {
 
         // 5. Call the Gemini API
         const geminiApiKey = process.env.GEMINI_API_KEY; 
-        // FIX: Updated model ID to a common preview model. If this doesn't work,
-        // you may need to check Google's ListModels API for the exact ID allowed for your key.
-        const modelId = "gemini-1.5-pro-preview-0514"; 
+        // FIX: Changed model ID to 'gemini-pro' for broader availability
+        const modelId = "gemini-pro"; 
         const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${geminiApiKey}`;
 
         const geminiResponse = await fetch(apiUrl, {
