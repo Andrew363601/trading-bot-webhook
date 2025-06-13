@@ -4,15 +4,19 @@
 import { createClient } from '@supabase/supabase-js';
 
 // Initialize Supabase client
-NEXT_PUBLIC_SUPABASE_URL=https://icfnfpqtziaazfxxwmnz.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImljZm5mcHF0emlhYXpmeHh3bW56Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDcwNzM4NDYsImV4cCI6MjA2MjY0OTg0Nn0.XJi8qrSqK39jRQiyDiZHeTYGCIaVFyY2ggKCX0zY7ss
+// FIX: Correctly initialize supabaseUrl and supabaseKey from environment variables
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL; // Using NEXT_PUBLIC for client-side usage, or just SUPABASE_URL for server-side
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY; // Using SERVICE_ROLE_KEY for serverless functions due to write access
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default async function handler(request, response) {
     // Secure the endpoint with a secret key from environment variables
-    const CRON_SECRET = process.env.XJi8qrSqK39jRQiyDiZHeTYGCIaVFyY2ggKCX0zY7ss;
+    // FIX: Correctly access CRON_SECRET from process.env
+    const CRON_SECRET = process.env.CRON_SECRET; // This should be a distinct ENV variable like 'CRON_JOB_SECRET'
     const authHeader = request.headers['authorization'];
-    if (authHeader !== `Bearer ${XJi8qrSqK39jRQiyDiZHeTYGCIaVFyY2ggKCX0zY7ss}`) {
+    
+    // FIX: Compare against the actual CRON_SECRET value, not the string representation of the variable name
+    if (!authHeader || authHeader !== `Bearer ${CRON_SECRET}`) {
         return response.status(401).json({ error: 'Unauthorized' });
     }
 
@@ -21,7 +25,7 @@ export default async function handler(request, response) {
 
         // 1. Fetch the last 50 trade logs from Supabase
         const { data: trades, error: tradesError } = await supabase
-            .from('trade_logs') // Assuming you have a table named 'trade_logs'
+            .from('trade_logs') 
             .select('*')
             .order('exit_time', { ascending: false })
             .limit(50);
@@ -37,13 +41,19 @@ export default async function handler(request, response) {
         console.log(`Fetched ${trades.length} trades for analysis.`);
 
         // 2. Fetch the current strategy configuration
+        // FIX: Ensure 'id' exists and is correctly populated in your 'strategy_config' table
         const { data: currentConfigData, error: configError } = await supabase
-            .from('strategy_config') // Assuming a table for the current config
+            .from('strategy_config') 
             .select('*')
-            .eq('is_active', true)
+            .eq('is_active', true) // Assuming 'is_active' column exists and is set to true for the current config
             .single();
 
         if (configError) {
+            // Handle case where no active config is found, possibly insert a default one
+            if (configError.code === 'PGRST116') { // Error code for no rows found for .single()
+                console.warn('No active strategy config found. Please ensure one is inserted and marked as active.');
+                return response.status(404).json({ error: 'No active strategy configuration found. Please set one up in Supabase.' });
+            }
             throw new Error(`Supabase error fetching config: ${configError.message}`);
         }
 
@@ -98,10 +108,9 @@ export default async function handler(request, response) {
         console.log('Sending prompt to Gemini...');
 
         // 5. Call the Gemini API
-        // NOTE: In a real environment, the API key should be an environment variable.
-        // The endpoint URL may vary based on the model you're using.
-        const apiKey = process.env.AIzaSyAm7obYUNtIZ7l0QZaDjWq3iNc7bcwsUMA; 
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`;
+        // FIX: Correctly access GEMINI_API_KEY from process.env
+        const geminiApiKey = process.env.GEMINI_API_KEY; 
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${geminiApiKey}`;
 
         const geminiResponse = await fetch(apiUrl, {
             method: 'POST',
@@ -110,11 +119,18 @@ export default async function handler(request, response) {
         });
 
         if (!geminiResponse.ok) {
-            throw new Error(`Gemini API error: ${geminiResponse.statusText}`);
+            const errorBody = await geminiResponse.json();
+            throw new Error(`Gemini API error: ${geminiResponse.status} - ${errorBody.error.message || geminiResponse.statusText}`);
         }
 
         const geminiResult = await geminiResponse.json();
-        const suggestedChangeText = geminiResult.candidates[0].content.parts[0].text;
+        // Check if candidates and parts exist before accessing
+        const suggestedChangeText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        if (!suggestedChangeText) {
+            throw new Error('Gemini API response did not contain expected content.');
+        }
+
         const suggestedChange = JSON.parse(suggestedChangeText.replace(/```json|```/g, '').trim());
 
         console.log('Received suggestion from Gemini:', suggestedChange);
@@ -125,7 +141,7 @@ export default async function handler(request, response) {
         const { error: updateError } = await supabase
             .from('strategy_config')
             .update({ parameters: newParams, last_updated: new Date().toISOString() })
-            .eq('id', currentConfigData.id);
+            .eq('id', currentConfigData.id); // Update the active configuration by its ID
 
         if (updateError) {
             throw new Error(`Supabase error updating config: ${updateError.message}`);
