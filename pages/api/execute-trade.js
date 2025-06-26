@@ -67,9 +67,9 @@ export default async function handler(req, res) {
         let executedQty = null;
 
         try {
-            // FIX: Explicitly load markets before setting leverage or placing orders
-            await exchange.loadMarkets(); 
-            console.log(`Markets loaded for ${exchange.id}.`);
+            // FIX: Explicitly load 'swap' (perpetual) markets as well
+            await exchange.loadMarkets({'type': 'swap'}); // Load perpetual swap markets explicitly
+            console.log(`Markets loaded for ${exchange.id}. Default type: ${exchange.options.defaultType}`);
 
             // --- DEBUGGING: Log the symbol type and value here ---
             console.log(`DEBUG: Symbol being passed to setLeverage: type=${typeof symbol}, value=${symbol}`);
