@@ -44,7 +44,7 @@ export default async function handler(req, res) {
             apiKey: BYBIT_API_KEY,
             secret: BYBIT_SECRET,
             'options': {
-                'defaultType': 'future', // Crucial for futures trading
+                'defaultType': 'future', // Crucial for futures trading (covers perpetual swaps too)
                 'adjustForTimeDifference': true, // Recommended
             },
             'enableRateLimit': true, // Recommended for production to avoid hitting rate limits
@@ -80,16 +80,15 @@ export default async function handler(req, res) {
             console.log(`DEBUG: Market type: ${market ? market.type : 'N/A'}, spot: ${market ? market.spot : 'N/A'}, future: ${market ? market.future : 'N/A'}, swap: ${market ? market.swap : 'N/A'}`);
 
 
-            // --- 3. Set Leverage and Margin Mode (for futures) ---
+            // --- 3. Set Leverage and Margin Mode (for futures/perpetual swaps) ---
             const marginMode = 'isolated'; 
-            // Ensure symbol is string, and exchange.market() is returning a valid market object before calling setLeverage
-            // The TypeError implies market lookup failed or returned non-object.
-            if (market && market.future) { // Only set leverage if it's explicitly recognized as a future
+            // FIX: Check for 'market.swap' (for perpetuals) or 'market.future' (for traditional futures)
+            if (market && (market.future || market.swap)) { // Only set leverage if it's explicitly recognized as a future or swap
                  await exchange.setLeverage(symbol, leverage, { 'marginMode': marginMode });
                  console.log(`Leverage set to ${leverage} for ${symbol} with ${marginMode} margin.`);
             } else {
                 executionStatus = 'failed';
-                executionNotes = `Symbol ${symbol} not recognized as a future market by Bybit.`;
+                executionNotes = `Symbol ${symbol} not recognized as a future or swap market by Bybit.`;
                 console.error(executionNotes);
                 return res.status(400).json({ error: executionNotes });
             }
