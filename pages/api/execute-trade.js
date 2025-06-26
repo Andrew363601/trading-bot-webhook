@@ -74,17 +74,20 @@ export default async function handler(req, res) {
             console.log(`DEBUG: Symbol being passed to setLeverage: type=${typeof symbol}, value=${symbol}`);
 
             // FIX: Add a log to check if the market for the symbol is loaded and its type
-            const market = exchange.market(symbol);
+            const market = exchange.market(symbol); // Use original 'symbol' input to lookup
             console.log(`DEBUG: Found market for ${symbol}: ${JSON.stringify(market)}`);
             console.log(`DEBUG: Market type: ${market ? market.type : 'N/A'}, spot: ${market ? market.spot : 'N/A'}, future: ${market ? market.future : 'N/A'}, swap: ${market ? market.swap : 'N/A'}`);
 
 
             // --- 3. Set Leverage and Margin Mode (for futures/perpetual swaps) ---
             const marginMode = 'isolated'; 
-            // FIX: Check for 'market.swap' (for perpetuals) or 'market.future' (for traditional futures)
+            // FIX: Use market.symbol (e.g., "DOGE/USDT:USDT") for setLeverage and createOrder
+            // This is CCXT's normalized symbol string which is generally preferred for operations
+            const ccxtMarketSymbol = market.symbol; 
+
             if (market && (market.future || market.swap)) { // Only set leverage if it's explicitly recognized as a future or swap
-                 await exchange.setLeverage(symbol, leverage, { 'marginMode': marginMode });
-                 console.log(`Leverage set to ${leverage} for ${symbol} with ${marginMode} margin.`);
+                 await exchange.setLeverage(ccxtMarketSymbol, leverage, { 'marginMode': marginMode });
+                 console.log(`Leverage set to ${leverage} for ${ccxtMarketSymbol} with ${marginMode} margin.`);
             } else {
                 executionStatus = 'failed';
                 executionNotes = `Symbol ${symbol} not recognized as a future or swap market by Bybit.`;
@@ -96,7 +99,7 @@ export default async function handler(req, res) {
             const ccxtSide = side === 'long' ? 'buy' : 'sell'; 
 
             orderResult = await exchange.createOrder(
-                symbol,       
+                ccxtMarketSymbol, // FIX: Use market.symbol here too
                 order_type,   
                 ccxtSide,     
                 qty           
@@ -117,7 +120,7 @@ export default async function handler(req, res) {
         // --- 5. Log Execution to Supabase ---
         const { error: logError } = await supabase.from('executions').insert([
             {
-                symbol: symbol,
+                symbol: symbol, // Keep original symbol for logging if preferred
                 side: side,
                 entry_price: alert_price, 
                 executed_price: executedPrice, 
