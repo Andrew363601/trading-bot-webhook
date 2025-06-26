@@ -44,14 +44,13 @@ export default async function handler(req, res) {
             apiKey: BYBIT_API_KEY,
             secret: BYBIT_SECRET,
             'options': {
-                'defaultType': 'future', // Crucial for futures trading (covers perpetual swaps too)
+                'defaultType': 'swap', // FIX: Changed defaultType from 'future' to 'swap' to target perpetuals
                 'adjustForTimeDifference': true, // Recommended
             },
             'enableRateLimit': true, // Recommended for production to avoid hitting rate limits
-            // Ensure the correct URL for Testnet if not defaulting
             // For Bybit V5 testnet, default endpoint is usually fine but can be set explicitly if needed
             // 'urls': {
-            //     'api': 'https://api-testnet.bybit.com' // Example for bybit unified V5 testnet
+            //     'api': 'https://api-testnet.bybit.com' 
             // }
         });
 
