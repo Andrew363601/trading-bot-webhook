@@ -44,14 +44,10 @@ export default async function handler(req, res) {
             apiKey: BYBIT_API_KEY,
             secret: BYBIT_SECRET,
             'options': {
-                'defaultType': 'swap', // FIX: Changed defaultType from 'future' to 'swap' to target perpetuals
+                'defaultType': 'future', // Crucial for futures trading
                 'adjustForTimeDifference': true, // Recommended
             },
             'enableRateLimit': true, // Recommended for production to avoid hitting rate limits
-            // For Bybit V5 testnet, default endpoint is usually fine but can be set explicitly if needed
-            // 'urls': {
-            //     'api': 'https://api-testnet.bybit.com' 
-            // }
         });
 
         // Set testnet mode for Bybit if enabled
@@ -66,47 +62,26 @@ export default async function handler(req, res) {
         let executedQty = null;
 
         try {
-            // FIX: Explicitly load 'swap' (perpetual) markets as well
-            await exchange.loadMarkets({'type': 'swap'}); // Load perpetual swap markets explicitly
-            console.log(`Markets loaded for ${exchange.id}. Default type: ${exchange.options.defaultType}`);
-
-            // --- DEBUGGING: Log the symbol type and value here ---
-            console.log(`DEBUG: Symbol being passed to setLeverage: type=${typeof symbol}, value=${symbol}`);
-
-            // FIX: Add a log to check if the market for the symbol is loaded and its type
-            const market = exchange.market(symbol); // Use original 'symbol' input to lookup
-            console.log(`DEBUG: Found market for ${symbol}: ${JSON.stringify(market)}`);
-            console.log(`DEBUG: Market type: ${market ? market.type : 'N/A'}, spot: ${market ? market.spot : 'N/A'}, future: ${market ? market.future : 'N/A'}, swap: ${market ? market.swap : 'N/A'}`);
-
-
-            // --- 3. Set Leverage and Margin Mode (for futures/perpetual swaps) ---
+            // --- 3. Set Leverage and Margin Mode (for futures) ---
+            // 'isolated' is commonly used. 'cross' is another option.
             const marginMode = 'isolated'; 
-            // FIX: Use market.symbol (e.g., "DOGE/USDT:USDT") for setLeverage and createOrder
-            // This is CCXT's normalized symbol string which is generally preferred for operations
-            const ccxtMarketSymbol = market.symbol; 
-
-            if (market && (market.future || market.swap)) { // Only set leverage if it's explicitly recognized as a future or swap
-                 await exchange.setLeverage(ccxtMarketSymbol, leverage, { 'marginMode': marginMode });
-                 console.log(`Leverage set to ${leverage} for ${ccxtMarketSymbol} with ${marginMode} margin.`);
-            } else {
-                executionStatus = 'failed';
-                executionNotes = `Symbol ${symbol} not recognized as a future or swap market by Bybit.`;
-                console.error(executionNotes);
-                return res.status(400).json({ error: executionNotes });
-            }
+            await exchange.setLeverage(symbol, leverage, { 'marginMode': marginMode });
+            console.log(`Leverage set to ${leverage} for ${symbol} with ${marginMode} margin.`);
 
             // --- 4. Place Order on Exchange ---
-            const ccxtSide = side === 'long' ? 'buy' : 'sell'; 
+            // For simplicity, we'll assume 'market' orders from Pine Script
+            const ccxtSide = side === 'long' ? 'buy' : 'sell'; // ccxt uses 'buy'/'sell'
 
             orderResult = await exchange.createOrder(
-                ccxtMarketSymbol, // FIX: Use market.symbol here too
-                order_type,   
-                ccxtSide,     
-                qty           
+                symbol,       // e.g., 'DOGE/USDT'
+                order_type,   // 'market'
+                ccxtSide,     // 'buy' or 'sell'
+                qty           // quantity in base asset (e.g., DOGE coins)
+                // price,     // Only needed for 'limit' orders
             );
             
             executionStatus = orderResult.status === 'closed' || orderResult.status === 'filled' ? 'executed' : orderResult.status;
-            executedPrice = orderResult.price || orderResult.average; 
+            executedPrice = orderResult.price || orderResult.average; // average is often filled price
             executedQty = orderResult.filled;
             executionNotes = `Order ID: ${orderResult.id}, Status: ${orderResult.status}, Cost: ${orderResult.cost}`;
             console.log('Order placed:', orderResult);
@@ -120,20 +95,22 @@ export default async function handler(req, res) {
         // --- 5. Log Execution to Supabase ---
         const { error: logError } = await supabase.from('executions').insert([
             {
-                symbol: symbol, // Keep original symbol for logging if preferred
+                symbol: symbol,
                 side: side,
-                entry_price: alert_price, 
-                executed_price: executedPrice, 
+                entry_price: alert_price, // Price at which alert fired from Pine Script
+                executed_price: executedPrice, // The actual price the order filled at
                 executed_qty: executedQty,
                 strategy: strategy,
                 version: version,
                 status: executionStatus,
                 notes: executionNotes,
+                // Add more fields from orderResult if useful for debugging/analysis
             }
         ]);
 
         if (logError) {
             console.error('Supabase error logging execution:', logError.message);
+            // This error is critical, but we might still want to return success if exchange trade succeeded.
         }
 
         return res.status(200).json({ 
