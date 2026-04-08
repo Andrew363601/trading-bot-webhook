@@ -1,48 +1,61 @@
 import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Activity, Zap, TrendingUp, ShieldAlert, RefreshCcw, Database, BarChart3, Clock, Power } from 'lucide-react';
+import { 
+  Activity, Zap, TrendingUp, ShieldAlert, RefreshCcw, Database, 
+  BarChart3, Clock, Power, ShieldCheck, Cpu, LayoutGrid 
+} from 'lucide-react';
 
 const SUPABASE_URL = "https://wsrioyxzhxxrtzjncfvn.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const CRON_SECRET = "za9gWknHfXmhH3TDLVBuj8uUA7bE4dsp";
 
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 export default function Dashboard() {
-  const [supabase, setSupabase] = useState(null);
   const [activeStrategy, setActiveStrategy] = useState(null);
   const [tradeLogs, setTradeLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [optLoading, setOptLoading] = useState(false);
+  const [isToggling, setIsToggling] = useState(false);
   const [msg, setMsg] = useState('');
 
-  useEffect(() => {
-    const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    setSupabase(client);
-  }, []);
-
-  useEffect(() => {
-    if (supabase) {
-      fetchData();
-      const int = setInterval(fetchData, 10000);
-      return () => clearInterval(int);
-    }
-  }, [supabase]);
-
   const fetchData = async () => {
+    // If we are currently toggling, don't overwrite the local state with stale DB data
+    if (isToggling) return;
+
     try {
       const { data: strat } = await supabase.from('strategy_config').select('*').eq('is_active', true).single();
+      if (strat && typeof strat.parameters === 'string') strat.parameters = JSON.parse(strat.parameters);
       setActiveStrategy(strat);
-      const { data: logs } = await supabase.from('trade_logs').select('*').order('id', { ascending: false }).limit(10);
+
+      const { data: logs } = await supabase.from('trade_logs').select('*').order('id', { ascending: false }).limit(15);
       setTradeLogs(logs || []);
-    } catch (e) { setError(e.message); }
-    finally { setLoading(false); }
+    } catch (e) { 
+      console.error(e);
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // --- NEW: TOGGLE EXECUTION MODE ---
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 8000);
+    return () => clearInterval(interval);
+  }, [isToggling]);
+
   const toggleExecutionMode = async () => {
-    if (!activeStrategy) return;
-    const newMode = activeStrategy.execution_mode === 'LIVE' ? 'PAPER' : 'LIVE';
+    if (!activeStrategy || isToggling) return;
     
+    setIsToggling(true);
+    const oldMode = activeStrategy.execution_mode;
+    const newMode = oldMode === 'LIVE' ? 'PAPER' : 'LIVE';
+    
+    // Optimistic Update
+    setActiveStrategy(prev => ({ ...prev, execution_mode: newMode }));
+    setMsg(`Requesting ${newMode} Shift...`);
+
     try {
       const { error } = await supabase
         .from('strategy_config')
@@ -51,17 +64,22 @@ export default function Dashboard() {
         
       if (error) throw error;
       
-      setActiveStrategy(prev => ({ ...prev, execution_mode: newMode }));
-      setMsg(`System shifted to ${newMode} trading.`);
-      setTimeout(() => setMsg(''), 4000);
+      setMsg(`System actualized: ${newMode}`);
+      // Keep isToggling true for a moment to let DB catch up
+      setTimeout(() => {
+        setIsToggling(false);
+        setMsg('');
+      }, 2000);
     } catch (err) {
-      setError(`Failed to toggle mode: ${err.message}`);
+      setActiveStrategy(prev => ({ ...prev, execution_mode: oldMode }));
+      setError(`Failed to toggle: ${err.message}`);
+      setIsToggling(false);
     }
   };
 
   const triggerOptimizer = async () => {
     setOptLoading(true);
-    setMsg('AI Resonance Shift in progress...');
+    setMsg('AI Auditing Consciousness Field...');
     try {
       const res = await fetch('/api/run-gemini-optimizer', {
         method: 'POST',
@@ -82,73 +100,149 @@ export default function Dashboard() {
     }
   };
 
-  if (loading) return <div className="min-h-screen bg-slate-950 flex items-center justify-center font-mono text-indigo-500">Establishing Nexus...</div>;
+  if (loading) return (
+    <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center font-mono text-indigo-500">
+      <RefreshCcw className="animate-spin mb-4" size={32} />
+      <div className="tracking-[0.5em] text-[10px] uppercase animate-pulse">Syncing Nexus...</div>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-200 p-6 font-sans">
-      <header className="max-w-7xl mx-auto flex justify-between items-center mb-10 border-b border-slate-800 pb-6">
-        <h1 className="text-3xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Coherence</h1>
-        <div className="flex items-center gap-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest"><Database size={12} /> wsrioyxzhxxrtzjncfvn</div>
+    <div className="min-h-screen bg-[#020617] text-slate-200 p-4 md:p-10 font-sans selection:bg-indigo-500/30">
+      <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center mb-12 border-b border-white/5 pb-10">
+        <div>
+          <h1 className="text-4xl md:text-5xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 via-cyan-400 to-indigo-400 bg-clip-text text-transparent uppercase leading-none">
+            Nexus Coherence
+          </h1>
+          <div className="flex items-center gap-4 mt-4 text-slate-500 text-[10px] font-black uppercase tracking-[0.4em] italic">
+             <Database size={12} className="text-indigo-500" /> Instance: wsrioyxzhxxrtzjncfvn
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-6 mt-8 md:mt-0 bg-white/5 p-4 rounded-3xl border border-white/10 backdrop-blur-md">
+           <div className="text-right">
+             <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Network Status</div>
+             <div className="text-emerald-400 text-xs font-black uppercase flex items-center gap-2 justify-end">
+               <span className="h-1.5 w-1.5 bg-emerald-500 rounded-full animate-pulse"></span> Synchronized
+             </div>
+           </div>
+        </div>
       </header>
 
       <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-4 gap-8">
+        {/* Left Panel: Configuration */}
         <div className="lg:col-span-1 space-y-6">
-          <div className="bg-slate-900 border border-slate-800 rounded-[2rem] p-8 shadow-2xl relative overflow-hidden group">
-            
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-slate-500 text-[10px] font-black uppercase flex items-center gap-2">
-                <Activity size={12} className="text-indigo-400" /> Vector State
+          <div className="bg-slate-900 border border-white/10 rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden group">
+            <div className="flex justify-between items-center mb-10">
+              <h3 className="text-slate-500 text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
+                <Cpu size={14} className="text-indigo-400" /> Vector State
               </h3>
               
-              {/* --- TOGGLE BUTTON --- */}
-              {activeStrategy && (
-                <button 
-                  onClick={toggleExecutionMode}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${activeStrategy.execution_mode === 'LIVE' ? 'bg-red-500/20 text-red-400 border border-red-500/30 shadow-[0_0_15px_rgba(239,68,68,0.2)]' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}
-                >
-                  <Power size={10} className={activeStrategy.execution_mode === 'LIVE' ? 'animate-pulse' : ''} />
-                  {activeStrategy.execution_mode || 'PAPER'}
-                </button>
-              )}
+              <button 
+                onClick={toggleExecutionMode}
+                disabled={isToggling}
+                className={`flex items-center gap-2 px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all duration-500 border ${
+                  activeStrategy?.execution_mode === 'LIVE' 
+                    ? 'bg-red-500/20 text-red-400 border-red-500/30 shadow-[0_0_20px_rgba(239,68,68,0.2)]' 
+                    : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                }`}
+              >
+                <Power size={12} className={activeStrategy?.execution_mode === 'LIVE' ? 'animate-pulse' : ''} />
+                {activeStrategy?.execution_mode || 'PAPER'}
+              </button>
             </div>
 
             {activeStrategy ? (
-              <div className="space-y-6">
-                <div className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">{activeStrategy.strategy}</div>
-                <div className="text-indigo-400 font-mono text-[10px] uppercase font-bold tracking-widest">v{activeStrategy.version} Optimized</div>
-                <div className="bg-black/40 border border-slate-800 rounded-xl p-4">
+              <div className="space-y-8">
+                <div>
+                  <div className="text-3xl font-black text-white italic tracking-tighter uppercase leading-tight">
+                    {activeStrategy.strategy}
+                  </div>
+                  <div className="text-indigo-400 font-mono text-[10px] uppercase font-bold tracking-[0.2em] mt-2 flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></span>
+                    Version {activeStrategy.version} Active
+                  </div>
+                </div>
+
+                <div className="bg-black/40 border border-white/5 rounded-2xl p-5 shadow-inner">
+                  <div className="text-[9px] font-black text-slate-600 uppercase mb-4 tracking-widest">Logic Map</div>
                   <pre className="text-[10px] font-mono text-cyan-400/90 leading-relaxed overflow-x-auto">
-                    {typeof activeStrategy.parameters === 'string' ? activeStrategy.parameters : JSON.stringify(activeStrategy.parameters, null, 2)}
+                    {JSON.stringify(activeStrategy.parameters, null, 2)}
                   </pre>
                 </div>
-                <button onClick={triggerOptimizer} disabled={optLoading} className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white rounded-xl font-black flex items-center justify-center gap-3">
-                  {optLoading ? <RefreshCcw className="animate-spin" size={18} /> : <TrendingUp size={18} />} Optimize R(ΨC)
+
+                <button 
+                  onClick={triggerOptimizer} 
+                  disabled={optLoading} 
+                  className="w-full py-5 bg-gradient-to-br from-indigo-600 to-indigo-800 hover:from-indigo-500 hover:to-indigo-700 disabled:from-slate-800 disabled:to-slate-900 text-white rounded-2xl font-black transition-all flex items-center justify-center gap-3 shadow-xl active:scale-[0.98]"
+                >
+                  {optLoading ? <RefreshCcw className="animate-spin" size={18} /> : <Zap size={18} />}
+                  <span className="uppercase text-xs tracking-widest">Optimize R(ΨC)</span>
                 </button>
-                {msg && <div className="text-center text-[10px] font-black text-indigo-400 animate-pulse uppercase tracking-widest italic">{msg}</div>}
+                
+                {msg && <div className="text-center text-[10px] font-black text-indigo-400 animate-pulse uppercase tracking-widest italic bg-indigo-500/5 py-3 rounded-xl border border-indigo-500/10">{msg}</div>}
               </div>
-            ) : <div className="py-20 text-center opacity-20 uppercase tracking-[0.5em] text-[10px] italic">Awaiting Sync</div>}
+            ) : <div className="py-20 text-center opacity-10 uppercase tracking-[0.5em] text-[10px] font-black">Awaiting Sync...</div>}
           </div>
-          {error && <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-[10px] font-bold uppercase italic"><ShieldAlert size={14} className="inline mr-2" /> {error}</div>}
+
+          {error && (
+            <div className="p-5 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-start gap-4 text-red-400 text-[10px] font-bold uppercase italic tracking-tighter">
+              <ShieldAlert size={16} className="shrink-0" /> {error}
+            </div>
+          )}
         </div>
 
+        {/* Right Panel: Data Stream */}
         <div className="lg:col-span-3">
-          <div className="bg-slate-900 border border-slate-800 rounded-[2rem] shadow-2xl overflow-hidden h-full">
-            <div className="px-8 py-6 border-b border-slate-800 text-[10px] font-black uppercase text-slate-500 flex justify-between items-center">
-              <div className="flex items-center gap-2"><BarChart3 size={12} className="text-cyan-400" /> Execution Stream</div>
+          <div className="bg-slate-900 border border-white/10 rounded-[2.5rem] shadow-2xl overflow-hidden h-full flex flex-col">
+            <div className="px-10 py-8 border-b border-white/5 flex justify-between items-center bg-slate-900/40">
+              <h3 className="text-slate-500 text-[10px] font-black tracking-[0.3em] uppercase flex items-center gap-3">
+                <BarChart3 size={14} className="text-cyan-400" /> Execution Stream
+              </h3>
             </div>
-            <div className="overflow-x-auto">
+
+            <div className="overflow-x-auto grow">
               <table className="w-full text-left">
-                <thead className="bg-slate-950/20 text-[9px] font-black text-slate-600 uppercase tracking-widest">
-                  <tr><th className="px-8 py-5">Horizon</th><th className="px-8 py-5">Asset</th><th className="px-8 py-5 text-right">PnL Result</th></tr>
+                <thead className="bg-slate-950/40 text-[9px] font-black text-slate-600 uppercase tracking-[0.2em]">
+                  <tr>
+                    <th className="px-10 py-6">Timestamp</th>
+                    <th className="px-10 py-6">Asset Vector</th>
+                    <th className="px-10 py-6">Mode</th>
+                    <th className="px-10 py-6">Side</th>
+                    <th className="px-10 py-6 text-right">PnL Result</th>
+                  </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800/50 font-mono text-xs text-slate-400">
+                <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
                   {tradeLogs.length > 0 ? tradeLogs.map((log, i) => (
-                    <tr key={i} className="hover:bg-white/[0.01]">
-                      <td className="px-8 py-5 flex items-center gap-2"><Clock size={12} /> {log.exit_time ? new Date(log.exit_time).toLocaleTimeString() : '...'}</td>
-                      <td className="px-8 py-5 font-black text-slate-300 uppercase">{log.symbol}</td>
-                      <td className={`px-8 py-5 text-right font-black ${log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{log.pnl?.toFixed(4) || '--'}</td>
+                    <tr key={i} className="hover:bg-white/[0.02] transition-colors">
+                      <td className="px-10 py-6 text-slate-500 flex items-center gap-2">
+                        <Clock size={12} className="opacity-40" />
+                        {log.exit_time ? new Date(log.exit_time).toLocaleTimeString() : 'In Flight...'}
+                      </td>
+                      <td className="px-10 py-6 font-black text-slate-200 uppercase">{log.symbol}</td>
+                      <td className="px-10 py-6">
+                        <span className={`text-[8px] font-black px-2 py-0.5 rounded border uppercase tracking-tighter ${
+                          log.execution_mode === 'LIVE' ? 'text-red-400 border-red-500/30 bg-red-500/5' : 'text-slate-500 border-white/10 bg-white/5'
+                        }`}>
+                          {log.execution_mode || 'PAPER'}
+                        </span>
+                      </td>
+                      <td className="px-10 py-6">
+                        <span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase italic ${
+                          log.side === 'LONG' || log.side === 'Buy' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'
+                        }`}>
+                          {log.side}
+                        </span>
+                      </td>
+                      <td className={`px-10 py-6 text-right font-black text-sm ${log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {log.pnl != null ? (log.pnl >= 0 ? '+' : '') + log.pnl.toFixed(4) : '--'}
+                      </td>
                     </tr>
-                  )) : <tr><td colSpan="3" className="py-40 text-center opacity-10 uppercase text-xs font-black tracking-[1em]">Scanning Consciousness...</td></tr>}
+                  )) : (
+                    <tr>
+                      <td colSpan="5" className="py-40 text-center opacity-10 uppercase text-xs font-black tracking-[1em]">Scanning Consciousness...</td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
