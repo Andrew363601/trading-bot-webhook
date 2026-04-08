@@ -1,11 +1,16 @@
 import { createClient } from '@supabase/supabase-js';
 import dns from 'node:dns';
 
-// Force IPv4 for stable networking in cloud environments
+// Force IPv4 for stable networking in Next.js backend
 if (dns.setDefaultResultOrder) {
   dns.setDefaultResultOrder('ipv4first');
 }
 
+/**
+ * R(ΨC) ULTRA-RESILIENT OPTIMIZER
+ * ---------------------------------------------------------
+ * Target: gemini-1.5-flash (Highest stability for REST)
+ */
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: "Method not allowed" });
 
@@ -20,7 +25,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Unauthorized access" });
   }
 
-  if (!geminiKey) return res.status(500).json({ error: "GEMINI_API_KEY not found in .env" });
+  if (!geminiKey) return res.status(500).json({ error: "GEMINI_API_KEY missing from server variables." });
 
   const supabase = createClient(supabaseUrl, supabaseKey);
 
@@ -31,11 +36,11 @@ export default async function handler(req, res) {
     if (currentErr) throw new Error("Active strategy config not found.");
 
     // AI Logic Loop
-    const systemPrompt = "Act as an elite quantitative researcher. Optimize 'coherence_threshold' (0.5 to 0.85). Respond ONLY with valid JSON.";
+    const systemPrompt = "Act as an elite quantitative researcher. Optimize 'coherence_threshold' (0.5 to 0.85). Respond ONLY with valid JSON. No markdown backticks.";
     const userQuery = `Strategy: ${JSON.stringify(current.parameters)}. History: ${logs.length === 0 ? 'COLD START' : JSON.stringify(logs)}`;
     
-    // UPDATED MODEL AND ENDPOINT
-    const model = "gemini-2.5-flash-preview-09-2025"; 
+    // UPDATED: Using the standard production gemini-1.5-flash model
+    const model = "gemini-1.5-flash"; 
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
 
     const aiResponse = await fetch(apiUrl, {
@@ -50,7 +55,7 @@ export default async function handler(req, res) {
 
     if (!aiResponse.ok) {
       const errBody = await aiResponse.json().catch(() => ({}));
-      throw new Error(`Gemini API Rejection: ${errBody.error?.message || aiResponse.statusText}`);
+      throw new Error(`AI Rejection: ${errBody.error?.message || "Invalid Model/Identity"}`);
     }
 
     const aiResult = await aiResponse.json();
@@ -65,7 +70,7 @@ export default async function handler(req, res) {
       .eq('id', current.id);
 
     return res.status(200).json({ 
-        message: `Nexus Actualized to v${nextVer}.`,
+        message: `Nexus Shift Successful. Strategy moved to v${nextVer}.`,
         parameters: optimizedParams 
     });
 

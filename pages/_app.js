@@ -1,10 +1,15 @@
 import '../styles/globals.css';
 
 /**
- * MASTER WRAPPER
+ * MASTER WRAPPER: pages/_app.js
  * ----------------------------
- * Cleaned up to avoid multiple export errors during Vercel builds.
+ * This file is essential. If it doesn't import globals.css,
+ * the dashboard will look like a plain white page.
  */
 export default function MyApp({ Component, pageProps }) {
-  return <Component {...pageProps} />;
+  return (
+    <div className="bg-[#020617] min-h-screen">
+      <Component {...pageProps} />
+    </div>
+  );
 }
