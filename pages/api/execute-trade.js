@@ -23,6 +23,14 @@ export default async function handler(req, res) {
             throw new Error(`Bybit API keys missing for ${mode} mode. Check Vercel variables.`);
         }
 
+        // DIAGNOSTIC LOG: Proving the keys and network are correct
+        console.log("--- DIAGNOSTIC CHECK ---");
+        console.log("Mode:", mode);
+        console.log("Testnet Flag:", isTestnet);
+        console.log("API Key (First 4):", BYBIT_API_KEY ? BYBIT_API_KEY.substring(0, 4) : "UNDEFINED");
+        console.log("Secret Length:", BYBIT_SECRET ? BYBIT_SECRET.length : "UNDEFINED");
+        console.log("------------------------");
+
         // 2. Clean and Format the Symbol for CCXT Futures ("DOGE/USDT:USDT")
         let rawSymbol = data.symbol || 'DOGEUSDT';
         rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '');
