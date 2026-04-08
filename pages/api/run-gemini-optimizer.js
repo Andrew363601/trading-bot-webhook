@@ -30,11 +30,12 @@ export default async function handler(req, res) {
 
     if (currentErr) throw new Error("Active strategy config not found.");
 
-    // AI Logic Loop
-    const systemPrompt = "Act as an elite quantitative researcher. Optimize 'coherence_threshold' (0.5 to 0.85). Respond ONLY with valid JSON. No markdown backticks.";
-    const userQuery = `Strategy: ${JSON.stringify(current.parameters)}. History: ${logs.length === 0 ? 'COLD START' : JSON.stringify(logs)}`;
+    // COMBINED PROMPT: No fancy systemInstruction fields, just raw text.
+    const fullPrompt = `Act as an elite quantitative researcher. Optimize 'coherence_threshold' (0.5 to 0.85). Respond ONLY with valid JSON. No markdown backticks or json tags.
     
-    // UPDATED: Using stable V1 endpoint and Gemini 1.5 Flash
+    Current Strategy Parameters: ${JSON.stringify(current.parameters)}
+    Recent Trade History: ${logs.length === 0 ? 'COLD START' : JSON.stringify(logs)}`;
+    
     const model = "gemini-1.5-flash"; 
     const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${geminiKey}`;
 
@@ -42,20 +43,20 @@ export default async function handler(req, res) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: userQuery }] }],
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        generationConfig: { responseMimeType: "application/json", temperature: 0.1 }
+        contents: [{ parts: [{ text: fullPrompt }] }],
+        generationConfig: { temperature: 0.1 } // Removed responseMimeType
       })
     });
 
     if (!aiResponse.ok) {
       const errBody = await aiResponse.json().catch(() => ({}));
-      throw new Error(`AI Rejection: ${errBody.error?.message || "Invalid Model/Identity Configuration"}`);
+      throw new Error(`AI Rejection: ${errBody.error?.message || "Invalid Model/Identity"}`);
     }
 
     const aiResult = await aiResponse.json();
     let aiText = aiResult.candidates?.[0]?.content?.parts?.[0]?.text;
     
+    // Scrub the output
     const optimizedParams = JSON.parse(aiText.replace(/```json/g, '').replace(/```/g, '').trim());
     const nextVer = (parseFloat(current.version || "1.0") + 0.1).toFixed(1);
 
@@ -72,5 +73,5 @@ export default async function handler(req, res) {
   } catch (err) {
     console.error("[OPTIMIZER FAULT]:", err.message);
     return res.status(500).json({ error: err.message });
+    
   }
-}
