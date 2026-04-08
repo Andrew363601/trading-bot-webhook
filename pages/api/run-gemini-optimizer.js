@@ -36,7 +36,7 @@ export default async function handler(req, res) {
     Current Strategy Parameters: ${JSON.stringify(current.parameters)}
     Recent Trade History: ${logs.length === 0 ? 'COLD START' : JSON.stringify(logs)}`;
 
-   / Strict v1beta endpoint with standard flash model
+   // Strict v1beta endpoint with standard flash model
     const model = "gemini-1.5-flash"; 
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
 
