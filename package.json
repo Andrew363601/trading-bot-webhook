@@ -11,7 +11,7 @@
     "engine": "node --dns-result-order=ipv4first trading_engine.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.39.7",
+    "@supabase/supabase-js": "^2.101.1",
     "axios": "^1.6.7",
     "bybit-api": "^4.6.0",
     "dotenv": "^16.4.5",
