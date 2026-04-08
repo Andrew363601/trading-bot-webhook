@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js'; // <-- Standard import
-import { Activity, Zap, TrendingUp, RefreshCcw, Database, BarChart3, Clock } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
+import { Activity, Zap, TrendingUp, ShieldAlert, RefreshCcw, Database, BarChart3, Clock, Power } from 'lucide-react';
 
 const SUPABASE_URL = "https://wsrioyxzhxxrtzjncfvn.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
@@ -16,7 +16,6 @@ export default function Dashboard() {
   const [msg, setMsg] = useState('');
 
   useEffect(() => {
-    // Directly use the createClient imported at the top of the file
     const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     setSupabase(client);
   }, []);
@@ -37,6 +36,27 @@ export default function Dashboard() {
       setTradeLogs(logs || []);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
+  };
+
+  // --- NEW: TOGGLE EXECUTION MODE ---
+  const toggleExecutionMode = async () => {
+    if (!activeStrategy) return;
+    const newMode = activeStrategy.execution_mode === 'LIVE' ? 'PAPER' : 'LIVE';
+    
+    try {
+      const { error } = await supabase
+        .from('strategy_config')
+        .update({ execution_mode: newMode })
+        .eq('id', activeStrategy.id);
+        
+      if (error) throw error;
+      
+      setActiveStrategy(prev => ({ ...prev, execution_mode: newMode }));
+      setMsg(`System shifted to ${newMode} trading.`);
+      setTimeout(() => setMsg(''), 4000);
+    } catch (err) {
+      setError(`Failed to toggle mode: ${err.message}`);
+    }
   };
 
   const triggerOptimizer = async () => {
@@ -74,9 +94,24 @@ export default function Dashboard() {
       <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-4 gap-8">
         <div className="lg:col-span-1 space-y-6">
           <div className="bg-slate-900 border border-slate-800 rounded-[2rem] p-8 shadow-2xl relative overflow-hidden group">
-            <h3 className="text-slate-500 text-[10px] font-black uppercase mb-6 flex items-center gap-2">
-              <Activity size={12} className="text-indigo-400" /> Vector State
-            </h3>
+            
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-slate-500 text-[10px] font-black uppercase flex items-center gap-2">
+                <Activity size={12} className="text-indigo-400" /> Vector State
+              </h3>
+              
+              {/* --- TOGGLE BUTTON --- */}
+              {activeStrategy && (
+                <button 
+                  onClick={toggleExecutionMode}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${activeStrategy.execution_mode === 'LIVE' ? 'bg-red-500/20 text-red-400 border border-red-500/30 shadow-[0_0_15px_rgba(239,68,68,0.2)]' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}
+                >
+                  <Power size={10} className={activeStrategy.execution_mode === 'LIVE' ? 'animate-pulse' : ''} />
+                  {activeStrategy.execution_mode || 'PAPER'}
+                </button>
+              )}
+            </div>
+
             {activeStrategy ? (
               <div className="space-y-6">
                 <div className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">{activeStrategy.strategy}</div>
