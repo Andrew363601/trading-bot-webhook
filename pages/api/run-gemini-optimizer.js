@@ -6,7 +6,7 @@ if (dns.setDefaultResultOrder) {
   dns.setDefaultResultOrder('ipv4first');
 }
 
-export default async function handler(req, res)
+export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: "Method not allowed" });
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -73,5 +73,5 @@ export default async function handler(req, res)
   } catch (err) {
     console.error("[OPTIMIZER FAULT]:", err.message);
     return res.status(500).json({ error: err.message });
-
   }
+}
