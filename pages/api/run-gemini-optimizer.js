@@ -35,9 +35,9 @@ export default async function handler(req, res) {
     
     Current Strategy Parameters: ${JSON.stringify(current.parameters)}
     Recent Trade History: ${logs.length === 0 ? 'COLD START' : JSON.stringify(logs)}`;
-    
-    // Use the explicit 'latest' tag on v1beta to bypass the 404 router error
-    const model = "gemini-1.5-flash-latest"; 
+
+   / Strict v1beta endpoint with standard flash model
+    const model = "gemini-1.5-flash"; 
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
 
     const aiResponse = await fetch(apiUrl, {
