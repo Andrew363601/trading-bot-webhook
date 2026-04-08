@@ -6,11 +6,6 @@ if (dns.setDefaultResultOrder) {
   dns.setDefaultResultOrder('ipv4first');
 }
 
-/**
- * R(ΨC) ULTRA-RESILIENT OPTIMIZER
- * ---------------------------------------------------------
- * Target: gemini-1.5-flash (Highest stability for REST)
- */
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: "Method not allowed" });
 
@@ -39,9 +34,9 @@ export default async function handler(req, res) {
     const systemPrompt = "Act as an elite quantitative researcher. Optimize 'coherence_threshold' (0.5 to 0.85). Respond ONLY with valid JSON. No markdown backticks.";
     const userQuery = `Strategy: ${JSON.stringify(current.parameters)}. History: ${logs.length === 0 ? 'COLD START' : JSON.stringify(logs)}`;
     
-    // UPDATED: Using the standard production gemini-1.5-flash model
+    // UPDATED: Using stable V1 endpoint and Gemini 1.5 Flash
     const model = "gemini-1.5-flash"; 
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+    const apiUrl = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${geminiKey}`;
 
     const aiResponse = await fetch(apiUrl, {
       method: 'POST',
@@ -55,7 +50,7 @@ export default async function handler(req, res) {
 
     if (!aiResponse.ok) {
       const errBody = await aiResponse.json().catch(() => ({}));
-      throw new Error(`AI Rejection: ${errBody.error?.message || "Invalid Model/Identity"}`);
+      throw new Error(`AI Rejection: ${errBody.error?.message || "Invalid Model/Identity Configuration"}`);
     }
 
     const aiResult = await aiResponse.json();

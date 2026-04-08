@@ -8,7 +8,7 @@ import '../styles/globals.css';
  */
 export default function MyApp({ Component, pageProps }) {
   return (
-    <div className="bg-[#020617] min-h-screen">
+    <div className="bg-[#020617] min-h-screen selection:bg-indigo-500/30">
       <Component {...pageProps} />
     </div>
   );

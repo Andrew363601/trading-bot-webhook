@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { 
   Activity, Zap, TrendingUp, ShieldAlert, RefreshCcw, Database, 
-  BarChart3, Clock, Power, ShieldCheck, Cpu, LayoutGrid 
+  BarChart3, Clock, Power, Cpu, Terminal, ShieldCheck
 } from 'lucide-react';
 
 const SUPABASE_URL = "https://wsrioyxzhxxrtzjncfvn.supabase.co";
@@ -17,22 +17,22 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [optLoading, setOptLoading] = useState(false);
-  const [isToggling, setIsToggling] = useState(false);
+  const [isToggling, setIsToggling] = useState(false); // UI Lock
   const [msg, setMsg] = useState('');
 
   const fetchData = async () => {
-    // If we are currently toggling, don't overwrite the local state with stale DB data
-    if (isToggling) return;
+    if (isToggling) return; // Prevent reversion during DB update
 
     try {
       const { data: strat } = await supabase.from('strategy_config').select('*').eq('is_active', true).single();
-      if (strat && typeof strat.parameters === 'string') strat.parameters = JSON.parse(strat.parameters);
+      if (strat && typeof strat.parameters === 'string') {
+        try { strat.parameters = JSON.parse(strat.parameters); } catch(e) {}
+      }
       setActiveStrategy(strat);
 
-      const { data: logs } = await supabase.from('trade_logs').select('*').order('id', { ascending: false }).limit(15);
+      const { data: logs } = await supabase.from('trade_logs').select('*').order('id', { ascending: false }).limit(12);
       setTradeLogs(logs || []);
     } catch (e) { 
-      console.error(e);
       setError(e.message);
     } finally {
       setLoading(false);
@@ -54,7 +54,7 @@ export default function Dashboard() {
     
     // Optimistic Update
     setActiveStrategy(prev => ({ ...prev, execution_mode: newMode }));
-    setMsg(`Requesting ${newMode} Shift...`);
+    setMsg(`Requesting Shift to ${newMode}...`);
 
     try {
       const { error } = await supabase
@@ -64,22 +64,22 @@ export default function Dashboard() {
         
       if (error) throw error;
       
-      setMsg(`System actualized: ${newMode}`);
-      // Keep isToggling true for a moment to let DB catch up
+      setMsg(`Nexus System: ${newMode} Mode Actualized.`);
       setTimeout(() => {
         setIsToggling(false);
         setMsg('');
-      }, 2000);
+      }, 4000); // 4s buffer for DB consistency
+
     } catch (err) {
       setActiveStrategy(prev => ({ ...prev, execution_mode: oldMode }));
-      setError(`Failed to toggle: ${err.message}`);
+      setError(`Toggle Fault: ${err.message}`);
       setIsToggling(false);
     }
   };
 
   const triggerOptimizer = async () => {
     setOptLoading(true);
-    setMsg('AI Auditing Consciousness Field...');
+    setMsg('AI Resonance Shift in progress...');
     try {
       const res = await fetch('/api/run-gemini-optimizer', {
         method: 'POST',
@@ -108,10 +108,10 @@ export default function Dashboard() {
   );
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-200 p-4 md:p-10 font-sans selection:bg-indigo-500/30">
+    <div className="min-h-screen bg-[#020617] text-slate-200 p-4 md:p-10 font-sans">
       <header className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center mb-12 border-b border-white/5 pb-10">
         <div>
-          <h1 className="text-4xl md:text-5xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 via-cyan-400 to-indigo-400 bg-clip-text text-transparent uppercase leading-none">
+          <h1 className="text-4xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 via-cyan-400 to-indigo-400 bg-clip-text text-transparent uppercase leading-none">
             Nexus Coherence
           </h1>
           <div className="flex items-center gap-4 mt-4 text-slate-500 text-[10px] font-black uppercase tracking-[0.4em] italic">
@@ -119,7 +119,7 @@ export default function Dashboard() {
           </div>
         </div>
         
-        <div className="flex items-center gap-6 mt-8 md:mt-0 bg-white/5 p-4 rounded-3xl border border-white/10 backdrop-blur-md">
+        <div className="hidden md:flex items-center gap-6 bg-white/5 p-4 rounded-3xl border border-white/10 backdrop-blur-xl">
            <div className="text-right">
              <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Network Status</div>
              <div className="text-emerald-400 text-xs font-black uppercase flex items-center gap-2 justify-end">
@@ -130,9 +130,9 @@ export default function Dashboard() {
       </header>
 
       <main className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-4 gap-8">
-        {/* Left Panel: Configuration */}
+        {/* Left Panel */}
         <div className="lg:col-span-1 space-y-6">
-          <div className="bg-slate-900 border border-white/10 rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden group">
+          <div className="bg-slate-900/80 border border-white/10 rounded-[2.5rem] p-8 shadow-2xl backdrop-blur-md relative overflow-hidden">
             <div className="flex justify-between items-center mb-10">
               <h3 className="text-slate-500 text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
                 <Cpu size={14} className="text-indigo-400" /> Vector State
@@ -143,7 +143,7 @@ export default function Dashboard() {
                 disabled={isToggling}
                 className={`flex items-center gap-2 px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all duration-500 border ${
                   activeStrategy?.execution_mode === 'LIVE' 
-                    ? 'bg-red-500/20 text-red-400 border-red-500/30 shadow-[0_0_20px_rgba(239,68,68,0.2)]' 
+                    ? 'bg-red-500/20 text-red-400 border-red-500/30 shadow-[0_0_20px_rgba(239,68,68,0.4)]' 
                     : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                 }`}
               >
@@ -158,14 +158,16 @@ export default function Dashboard() {
                   <div className="text-3xl font-black text-white italic tracking-tighter uppercase leading-tight">
                     {activeStrategy.strategy}
                   </div>
-                  <div className="text-indigo-400 font-mono text-[10px] uppercase font-bold tracking-[0.2em] mt-2 flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></span>
-                    Version {activeStrategy.version} Active
+                  <div className="text-indigo-400 font-mono text-[10px] uppercase font-bold tracking-[0.2em] mt-2 flex items-center gap-2 italic">
+                    <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full shadow-[0_0_8px_rgba(99,102,241,0.5)]"></span>
+                    v{activeStrategy.version} Optimized
                   </div>
                 </div>
 
-                <div className="bg-black/40 border border-white/5 rounded-2xl p-5 shadow-inner">
-                  <div className="text-[9px] font-black text-slate-600 uppercase mb-4 tracking-widest">Logic Map</div>
+                <div className="bg-black/60 border border-white/5 rounded-2xl p-5 shadow-inner">
+                  <div className="text-[9px] font-black text-slate-600 uppercase mb-4 tracking-widest flex items-center gap-2">
+                    <Terminal size={10} /> Parameters
+                  </div>
                   <pre className="text-[10px] font-mono text-cyan-400/90 leading-relaxed overflow-x-auto">
                     {JSON.stringify(activeStrategy.parameters, null, 2)}
                   </pre>
@@ -174,10 +176,10 @@ export default function Dashboard() {
                 <button 
                   onClick={triggerOptimizer} 
                   disabled={optLoading} 
-                  className="w-full py-5 bg-gradient-to-br from-indigo-600 to-indigo-800 hover:from-indigo-500 hover:to-indigo-700 disabled:from-slate-800 disabled:to-slate-900 text-white rounded-2xl font-black transition-all flex items-center justify-center gap-3 shadow-xl active:scale-[0.98]"
+                  className="w-full py-5 bg-gradient-to-br from-indigo-600 to-indigo-800 hover:from-indigo-500 hover:to-indigo-700 disabled:from-slate-800 disabled:to-slate-900 text-white rounded-2xl font-black transition-all flex items-center justify-center gap-3 shadow-xl active:scale-[0.98] border border-white/5"
                 >
                   {optLoading ? <RefreshCcw className="animate-spin" size={18} /> : <Zap size={18} />}
-                  <span className="uppercase text-xs tracking-widest">Optimize R(ΨC)</span>
+                  <span className="uppercase text-xs tracking-widest">Optimize Nexus</span>
                 </button>
                 
                 {msg && <div className="text-center text-[10px] font-black text-indigo-400 animate-pulse uppercase tracking-widest italic bg-indigo-500/5 py-3 rounded-xl border border-indigo-500/10">{msg}</div>}
@@ -192,9 +194,9 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Right Panel: Data Stream */}
-        <div className="lg:col-span-3">
-          <div className="bg-slate-900 border border-white/10 rounded-[2.5rem] shadow-2xl overflow-hidden h-full flex flex-col">
+        {/* Right Panel */}
+        <div className="lg:col-span-3 h-full">
+          <div className="bg-slate-900/50 border border-white/10 rounded-[3rem] shadow-2xl overflow-hidden min-h-[500px] flex flex-col backdrop-blur-xl">
             <div className="px-10 py-8 border-b border-white/5 flex justify-between items-center bg-slate-900/40">
               <h3 className="text-slate-500 text-[10px] font-black tracking-[0.3em] uppercase flex items-center gap-3">
                 <BarChart3 size={14} className="text-cyan-400" /> Execution Stream
@@ -214,22 +216,22 @@ export default function Dashboard() {
                 </thead>
                 <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
                   {tradeLogs.length > 0 ? tradeLogs.map((log, i) => (
-                    <tr key={i} className="hover:bg-white/[0.02] transition-colors">
+                    <tr key={i} className="hover:bg-white/[0.02] transition-colors group">
                       <td className="px-10 py-6 text-slate-500 flex items-center gap-2">
-                        <Clock size={12} className="opacity-40" />
-                        {log.exit_time ? new Date(log.exit_time).toLocaleTimeString() : 'In Flight...'}
+                        <Clock size={12} className="opacity-40 group-hover:text-indigo-400" />
+                        {log.exit_time ? new Date(log.exit_time).toLocaleTimeString() : '...'}
                       </td>
-                      <td className="px-10 py-6 font-black text-slate-200 uppercase">{log.symbol}</td>
+                      <td className="px-10 py-6 font-black text-slate-200 uppercase tracking-tighter">{log.symbol}</td>
                       <td className="px-10 py-6">
                         <span className={`text-[8px] font-black px-2 py-0.5 rounded border uppercase tracking-tighter ${
-                          log.execution_mode === 'LIVE' ? 'text-red-400 border-red-500/30 bg-red-500/5' : 'text-slate-500 border-white/10 bg-white/5'
+                          log.execution_mode === 'LIVE' ? 'text-red-400 border-red-500/30 bg-red-500/5 shadow-[0_0_10px_rgba(239,68,68,0.1)]' : 'text-slate-500 border-white/10 bg-white/5'
                         }`}>
                           {log.execution_mode || 'PAPER'}
                         </span>
                       </td>
                       <td className="px-10 py-6">
-                        <span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase italic ${
-                          log.side === 'LONG' || log.side === 'Buy' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'
+                        <span className={`px-3 py-1 rounded-xl text-[9px] font-black uppercase italic border ${
+                          log.side === 'LONG' || log.side === 'Buy' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
                         }`}>
                           {log.side}
                         </span>
@@ -240,7 +242,7 @@ export default function Dashboard() {
                     </tr>
                   )) : (
                     <tr>
-                      <td colSpan="5" className="py-40 text-center opacity-10 uppercase text-xs font-black tracking-[1em]">Scanning Consciousness...</td>
+                      <td colSpan="5" className="py-40 text-center opacity-10 uppercase text-xs font-black tracking-[1em] italic">Scanning Consciousness...</td>
                     </tr>
                   )}
                 </tbody>
