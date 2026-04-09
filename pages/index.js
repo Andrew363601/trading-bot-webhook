@@ -131,6 +131,37 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* NEW: Capital Allocation Card */}
+<div className="mt-auto pt-6 space-y-4 border-t border-white/5 bg-black/20 p-4 rounded-b-[2.5rem]">
+  <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between">
+    Capital Allocation 
+    <span className="text-cyan-400">● LIVE</span>
+  </div>
+  
+  <div className="space-y-3">
+    {/* Live Portfolio */}
+    <div className="flex justify-between items-end border-b border-white/5 pb-2">
+      <div>
+        <div className="text-[8px] text-slate-500 uppercase font-bold">Total Equity</div>
+        <div className="text-lg font-black font-mono text-white">$1,240.52</div>
+      </div>
+      <div className="text-right">
+        <div className="text-[8px] text-emerald-400 font-black uppercase">ROI</div>
+        <div className="text-xs font-black text-emerald-400 font-mono">+4.2%</div>
+      </div>
+    </div>
+
+    {/* Paper Portfolio */}
+    <div className="flex justify-between items-end opacity-60">
+      <div>
+        <div className="text-[8px] text-slate-500 uppercase font-bold">Paper Funds</div>
+        <div className="text-md font-black font-mono text-slate-300">$5,000.00</div>
+      </div>
+      <div className="text-right text-[10px] text-slate-500 font-mono italic">Demo Only</div>
+    </div>
+  </div>
+</div>
+
         {/* CENTER: Chart & Trades (Main View) */}
         <div className="lg:col-span-7 flex flex-col gap-6 overflow-hidden">
           {/* Chart Container */}

@@ -24,20 +24,28 @@ export default async function handler(req, res) {
     const { data: logs } = await supabase.from('trade_logs').select('*').order('id', { ascending: false }).limit(5);
 
     const systemPrompt = `
-      You are Nexus, an elite autonomous quantitative trading agent managing a DOGE-USDT portfolio.
-      You communicate in a sleek, calculated, highly technical persona. Keep responses concise.
-      
-      --- CURRENT SYSTEM STATE ---
-      Execution Mode: ${config?.execution_mode || 'PAPER'}
-      Strategy: ${config?.strategy || 'Unknown'} (v${config?.version || '1.0'})
-      Parameters: ${JSON.stringify(config?.parameters || {})}
-
-      --- RECENT EXECUTIONS ---
-      ${JSON.stringify(logs || [])}
-
-      You have the ability to physically update the database using the deployStrategy tool. 
-      Only trigger this tool if the user explicitly commands a parameter change or mode shift.
-    `;
+    You are Nexus, the elite Portfolio Architect. You manage an autonomous fleet of quantitative strategies for Andrew.
+    
+    --- YOUR IDENTITY ---
+    1. PERSONA: Sleek, technical, calculated, and high-efficiency. You communicate like a quant-trader, not a general assistant.
+    2. AUTHORITY: You have full CRUD (Create, Read, Update, Delete) access to the strategy matrix via the manageStrategy tool.
+    3. GOAL: Maximize ROI while maintaining strict risk management.
+  
+    --- CURRENT TELEMETRY ---
+    Active Strategy: ${config?.strategy || 'None'}
+    Execution Mode: ${config?.execution_mode || 'PAPER'}
+    Config Version: ${config?.version || 'v1.0'}
+    Current Parameters: ${JSON.stringify(config?.parameters || {})}
+  
+    --- HISTORICAL PERFORMANCE (FEEDBACK LOOP) ---
+    Recent Trade Data: ${JSON.stringify(logs || [])}
+  
+    --- OPERATIONAL PROTOCOL ---
+    - If Andrew asks to "Start a new strategy" for a coin (e.g., SOL or AVAX), use manageStrategy to create the record.
+    - If trade logs show consistent losses, analyze the parameters (MCI threshold, etc.) and suggest a mutation.
+    - You are authorized to toggle between PAPER and LIVE if Andrew provides the command.
+    - Keep responses under 3 sentences unless explaining complex math logic.
+  `;
 
     const result = await streamText({
       model: google('gemini-2.5-flash'),
@@ -45,28 +53,32 @@ export default async function handler(req, res) {
       messages,
       maxSteps: 5,
       tools: {
-        deployStrategy: tool({
-          description: 'Updates the live strategy parameters or execution mode in the Supabase database.',
+        manageStrategy: tool({
+          description: 'Creates or updates a strategy configuration for a specific asset. Use this to spawn new strategies or toggle existing ones.',
           parameters: z.object({
+            asset: z.string().describe('The asset symbol, e.g., DOGE-USDT'),
+            strategy_id: z.string().describe('The name of the logic, e.g., LTC_4x4_STF or MOMENTUM_SCALPER'),
             execution_mode: z.enum(['LIVE', 'PAPER']).optional(),
-            coherence_threshold: z.number().optional(),
-            lookback_period: z.number().optional(),
+            is_active: z.boolean().optional(),
+            parameters: z.record(z.any()).optional()
           }),
           execute: async (args) => {
-            const updates = { last_updated: new Date().toISOString() };
-            if (args.execution_mode) updates.execution_mode = args.execution_mode;
-            
-            if (args.coherence_threshold || args.lookback_period) {
-              updates.parameters = { ...config.parameters };
-              if (args.coherence_threshold) updates.parameters.coherence_threshold = args.coherence_threshold;
-              if (args.lookback_period) updates.parameters.lookback_period = args.lookback_period;
-              updates.version = (parseFloat(config.version || "1.0") + 0.1).toFixed(1);
-            }
-
-            const { error } = await supabase.from('strategy_config').update(updates).eq('id', config.id);
-            
+            // This uses Supabase .upsert() - it updates if the ID matches, otherwise it creates a new row.
+            const { data, error } = await supabase
+              .from('strategy_config')
+              .upsert({
+                asset: args.asset,
+                strategy: args.strategy_id,
+                execution_mode: args.execution_mode || 'PAPER',
+                is_active: args.is_active ?? true,
+                parameters: args.parameters || {},
+                last_updated: new Date().toISOString(),
+                version: "1.0"
+              }, { onConflict: 'asset, strategy' }) // Prevents duplicate rows for the same coin/strategy
+              .select();
+      
             if (error) return { success: false, error: error.message };
-            return { success: true, updated_state: args };
+            return { success: true, message: `Nexus has deployed ${args.strategy_id} for ${args.asset}.` };
           },
         }),
       },
