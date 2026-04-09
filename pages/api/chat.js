@@ -52,7 +52,7 @@ export default async function handler(req, res) {
     `;
 
     const result = await streamText({
-      model: google('gemini-2.5-flash'),
+      model: google('models/gemini-2.5-flash'),
       system: systemPrompt,
       messages,
       maxSteps: 5,
