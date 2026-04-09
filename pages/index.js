@@ -133,7 +133,8 @@ export default function Dashboard() {
           <div className="text-[10px] font-black uppercase text-slate-500 mb-2 px-2 tracking-widest flex-shrink-0">Market Scanners</div>
           
           <div className="space-y-1 overflow-y-auto pr-2 flex-grow">
-            {dynamicAssets.map(asset => (
+            {/* Map over the constant ASSETS array instead of dynamicAssets */}
+            {ASSETS.map(asset => (
                 <button
                 key={asset}
                 onClick={() => setActiveAsset(asset)}

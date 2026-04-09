@@ -92,7 +92,16 @@ export default async function handler(req, res) {
     result.pipeDataStreamToResponse(res);
 
   } catch (err) {
-    console.error("[CHAT FAULT]:", err.message);
-    return res.status(500).json({ error: err.message });
+    console.error("====== FULL CHAT FAULT ENCOUNTERED ======");
+    console.error("NAME:", err.name);
+    console.error("MESSAGE:", err.message);
+    console.error("CAUSE:", err.cause);
+    console.error("RAW ERROR OBJECT:", err);
+    console.error("=========================================");
+    
+    return res.status(500).json({ 
+      error: err.message, 
+      details: err.cause ? String(err.cause) : "No underlying cause provided by SDK" 
+    });
   }
 }
