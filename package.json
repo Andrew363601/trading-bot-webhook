@@ -14,7 +14,7 @@
     "react": "^18",
     "react-dom": "^18",
     "@supabase/supabase-js": "^2.39.7",
-    "@coinbase/coinbase-sdk": "^0.11.0",
+    "coinbase-advanced-node": "^2.0.0",
     "ai": "^3.0.0",
     "@ai-sdk/google": "^0.0.9",
     "zod": "^3.22.4",
