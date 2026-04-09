@@ -1,135 +1,105 @@
 // pages/api/genetic-optimizer.js
 import { createClient } from '@supabase/supabase-js';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { generateText } from 'ai';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Define Evolutionary Boundaries
-const PARAM_BOUNDS = {
-    coherence: { min: 0.4, max: 0.95 },
-    lookback: { min: 5, max: 50 }
-};
-
-const GENERATIONS = 3;
-const POPULATION_SIZE = 20;
+const google = createGoogleGenerativeAI({
+  apiKey: process.env.GEMINI_API_KEY,
+});
 
 export default async function handler(req, res) {
-    if (req.method !== 'POST') return res.status(405).json({ error: "Method not allowed" });
+  try {
+    // 1. Fetch all active strategies
+    const { data: configs } = await supabase.from('strategy_config').select('*').eq('is_active', true);
+    if (!configs) return res.status(200).json({ status: "No active strategies to optimize." });
 
-    try {
-        // 1. Fetch Market Reality
-        const { data: logs } = await supabase.from('trade_logs').select('*').order('id', { ascending: false }).limit(50);
-        if (!logs || logs.length < 5) return res.status(400).json({ error: "Insufficient generational data." });
+    const mutations = [];
 
-        // Helper: The Fitness Test
-        const evaluateFitness = (gene) => {
-            let simulatedPnL = 0;
-            logs.forEach(trade => {
-                if (trade.mci_at_entry >= gene.coherence) {
-                    simulatedPnL += trade.pnl || 0; 
-                }
-            });
-            // Heavily penalize negative PnL, lightly reward efficiency
-            return simulatedPnL > 0 ? simulatedPnL * (1 / (gene.lookback * 0.1)) : simulatedPnL * 2;
-        };
+    for (const config of configs) {
+      // 2. Fetch the last 20 trades for this specific asset
+      const { data: trades } = await supabase
+        .from('trade_logs')
+        .select('pnl, side, entry_price, exit_price')
+        .eq('symbol', config.asset.replace('-', ''))
+        .order('id', { ascending: false })
+        .limit(20);
 
-        // 2. Genesis (Generation 0)
-        let population = Array.from({ length: POPULATION_SIZE }, () => ({
-            coherence: parseFloat((Math.random() * (PARAM_BOUNDS.coherence.max - PARAM_BOUNDS.coherence.min) + PARAM_BOUNDS.coherence.min).toFixed(2)),
-            lookback: Math.floor(Math.random() * (PARAM_BOUNDS.lookback.max - PARAM_BOUNDS.lookback.min + 1) + PARAM_BOUNDS.lookback.min),
-            fitness: 0
-        }));
+      // We need at least 3 trades to establish a statistical baseline
+      if (!trades || trades.length < 3) continue;
 
-        let alphaGene = null;
-        let evolutionHistory = [];
+      const totalPnL = trades.reduce((sum, t) => sum + (t.pnl || 0), 0);
+      const winningTrades = trades.filter(t => t.pnl > 0).length;
+      const winRate = (winningTrades / trades.length) * 100;
 
-        // 3. The Evolutionary Loop
-        for (let gen = 0; gen < GENERATIONS; gen++) {
-            
-            // Grade the current population
-            population.forEach(gene => gene.fitness = evaluateFitness(gene));
-            
-            // Sort by fittest (descending)
-            population.sort((a, b) => b.fitness - a.fitness);
-            
-            alphaGene = population[0];
-            evolutionHistory.push({ 
-                generation: gen, 
-                top_fitness: alphaGene.fitness.toFixed(4), 
-                top_coherence: alphaGene.coherence, 
-                top_lookback: alphaGene.lookback 
-            });
+      // 3. The LLM acts as the Genetic Mutator
+      const prompt = `
+        You are the Nexus Genetic Optimizer. You evaluate trading algorithms and mutate their parameters to increase alpha.
+        
+        --- ASSET & STRATEGY ---
+        Asset: ${config.asset}
+        Strategy: ${config.strategy}
+        Current Parameters: ${JSON.stringify(config.parameters)}
+        
+        --- RECENT PERFORMANCE ---
+        Total PnL: ${totalPnL.toFixed(4)}
+        Win Rate: ${winRate.toFixed(1)}%
+        Trade History: ${JSON.stringify(trades)}
 
-            // If we are on the final generation, break before breeding again
-            if (gen === GENERATIONS - 1) break;
-
-            // ELITISM: The top 4 parents survive into the next generation automatically
-            const parents = population.slice(0, 4);
-            let nextGeneration = [...parents]; 
-
-            // CROSSOVER & MUTATION: Breed the children
-            while (nextGeneration.length < POPULATION_SIZE) {
-                // Select two random parents from the elite pool
-                const parentA = parents[Math.floor(Math.random() * parents.length)];
-                const parentB = parents[Math.floor(Math.random() * parents.length)];
-
-                // Crossover: Take Coherence from A, Lookback from B
-                let child = {
-                    coherence: parentA.coherence,
-                    lookback: parentB.lookback,
-                    fitness: 0
-                };
-
-                // Mutation: 20% chance to genetically mutate the child to maintain diversity
-                if (Math.random() < 0.20) {
-                    const mutateCoherence = (Math.random() > 0.5 ? 0.05 : -0.05); // +/- 5% shift
-                    child.coherence = Math.min(Math.max(child.coherence + mutateCoherence, PARAM_BOUNDS.coherence.min), PARAM_BOUNDS.coherence.max);
-                    child.coherence = parseFloat(child.coherence.toFixed(2));
-                    
-                    const mutateLookback = (Math.random() > 0.5 ? 2 : -2); // +/- 2 periods
-                    child.lookback = Math.min(Math.max(child.lookback + mutateLookback, PARAM_BOUNDS.lookback.min), PARAM_BOUNDS.lookback.max);
-                }
-
-                nextGeneration.push(child);
-            }
-            
-            // Replace the old, weak generation with the newly bred super-generation
-            population = nextGeneration;
+        --- DIRECTIVE ---
+        If the Win Rate is below 75% or PnL is negative, mutate the parameters to be stricter (e.g., raise coherence_threshold, increase RSI lengths, or demand higher volume spikes).
+        If the Win Rate is high, attempt a micro-mutation to optimize for slightly earlier entries.
+        
+        Respond ONLY with a valid JSON object in this exact format, with no markdown formatting:
+        {
+          "parameters": { "coherence_threshold": 0.75, "adx_len": 14 },
+          "reasoning": "Tightened threshold because win rate was 40% and PnL was bleeding. Higher threshold reduces false positives in current chop."
         }
+      `;
 
-        // 4. Natural Selection / Deployment
-        if (alphaGene && alphaGene.fitness > 0) {
-            const { data: config } = await supabase.from('strategy_config').select('*').eq('is_active', true).single();
-            const nextVer = (parseFloat(config.version || "1.0") + 0.1).toFixed(1);
+      const { text } = await generateText({
+        model: google('models/gemini-2.0-flash'),
+        prompt: prompt
+      });
 
-            // Update the live system brain
-            await supabase.from('strategy_config').update({
-                parameters: {
-                    coherence_threshold: alphaGene.coherence,
-                    lookback_period: alphaGene.lookback
-                },
-                version: nextVer,
-                last_updated: new Date().toISOString()
-            }).eq('id', config.id);
+      // 4. Parse the LLM's mutation
+      try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const mutation = JSON.parse(jsonMatch[0]);
+          
+          // Generate a new version number (e.g. v1.1, v1.2)
+          const oldVersion = parseFloat(config.version?.replace('v', '') || '1.0');
+          const newVersion = `v${(oldVersion + 0.1).toFixed(1)}`;
 
-            return res.status(200).json({ 
-                status: "Multi-Generational Evolution Complete", 
-                alpha_survivor: alphaGene,
-                evolution_history: evolutionHistory,
-                deployed_version: nextVer 
-            });
+          // 5. Inject the evolved parameters back into the database
+          await supabase.from('strategy_config').update({
+            parameters: mutation.parameters,
+            reasoning: `[AUTO-EVOLVED] ${mutation.reasoning}`,
+            version: newVersion,
+            last_updated: new Date().toISOString()
+          }).eq('id', config.id);
+
+          mutations.push({
+            asset: config.asset,
+            old_pnl: totalPnL,
+            new_version: newVersion,
+            reasoning: mutation.reasoning
+          });
         }
-
-        return res.status(200).json({ 
-            status: "Stagnation", 
-            message: "All mutations died (No positive PnL found). Reverting to baseline.",
-            evolution_history: evolutionHistory
-        });
-
-    } catch (err) {
-        console.error("[EVOLUTION FAULT]:", err.message);
-        return res.status(500).json({ error: err.message });
+      } catch (parseErr) {
+        console.error(`Failed to parse mutation for ${config.asset}:`, parseErr);
+      }
     }
+
+    return res.status(200).json({ status: "Evolution Cycle Complete", mutations });
+
+  } catch (err) {
+    console.error("[OPTIMIZER FAULT]:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
 }

@@ -58,31 +58,49 @@ export default async function handler(req, res) {
       maxSteps: 5,
       tools: {
         manageStrategy: tool({
-          description: 'Creates or updates a strategy configuration for a specific asset. Use this to spawn new strategies or toggle existing ones.',
+          description: 'Creates or updates a strategy config. You MUST provide mathematical/logical reasoning for the parameters chosen.',
           parameters: z.object({
             asset: z.string().describe('The asset symbol, e.g., DOGE-USDT'),
             strategy_id: z.string().describe('The name of the logic, e.g., LTC_4x4_STF or MOMENTUM_SCALPER'),
             execution_mode: z.enum(['LIVE', 'PAPER']).optional(),
             is_active: z.boolean().optional(),
-            parameters: z.record(z.any()).optional()
+            parameters: z.record(z.any()).optional(),
+            reasoning: z.string().describe('Your technical reasoning for deploying this strategy and selecting these specific parameters.')
           }),
           execute: async (args) => {
-            // This uses Supabase .upsert() - it updates if the ID matches, otherwise it creates a new row.
-            const { data, error } = await supabase
+            // 1. Manually check if the strategy already exists for this coin
+            const { data: existing } = await supabase
               .from('strategy_config')
-              .upsert({
-                asset: args.asset,
-                strategy: args.strategy_id,
-                execution_mode: args.execution_mode || 'PAPER',
-                is_active: args.is_active ?? true,
-                parameters: args.parameters || {},
-                last_updated: new Date().toISOString(),
-                version: "1.0"
-              }, { onConflict: 'asset, strategy' }) // Prevents duplicate rows for the same coin/strategy
-              .select();
+              .select('id')
+              .eq('asset', args.asset)
+              .eq('strategy', args.strategy_id)
+              .single();
+
+            const payload = {
+              asset: args.asset,
+              strategy: args.strategy_id,
+              execution_mode: args.execution_mode || 'PAPER',
+              is_active: args.is_active ?? true,
+              parameters: args.parameters || {},
+              last_updated: new Date().toISOString(),
+              version: "1.0",
+              reasoning: args.reasoning // The bot's logic is permanently stored
+            };
+            
+            let result;
+            if (existing) {
+              // Update existing row (Bypasses the composite key error)
+              result = await supabase.from('strategy_config').update(payload).eq('id', existing.id);
+            } else {
+              // Insert brand new row
+              result = await supabase.from('strategy_config').insert([payload]);
+            }
       
-            if (error) return { success: false, error: error.message };
-            return { success: true, message: `Nexus has deployed ${args.strategy_id} for ${args.asset}.` };
+            if (result.error) return { success: false, error: result.error.message };
+            return { 
+                success: true, 
+                message: `Nexus has deployed ${args.strategy_id} for ${args.asset}. Reasoning securely logged.` 
+            };
           },
         }),
       },
