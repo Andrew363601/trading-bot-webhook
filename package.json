@@ -7,27 +7,22 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
-    "engine": "node --dns-result-order=ipv4first trading_engine.js"
+    "lint": "next lint"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.101.1",
-    "autoprefixer": "^10.4.27",
-    "axios": "^1.6.7",
-    "bybit-api": "^4.6.0",
-    "ccxt": "^4.5.47",
-    "dotenv": "^16.4.5",
-    "eslint": "^9.39.4",
-    "eslint-config-next": "^16.2.2",
-    "lucide-react": "^0.344.0",
     "next": "14.1.0",
-    "postcss": "^8.5.9",
     "react": "^18",
     "react-dom": "^18",
-    "tailwindcss": "^3.4.19",
-    "technicalindicators": "^3.1.0"
-  },
-  "devDependencies": {
-    "@types/react": "19.2.14"
+    "@supabase/supabase-js": "^2.39.7",
+    "@coinbase/coinbase-sdk": "^0.11.0",
+    "ai": "^3.0.0",
+    "@ai-sdk/google": "^0.0.9",
+    "zod": "^3.22.4",
+    "lucide-react": "^0.344.0",
+    "tailwindcss": "^3.4.1",
+    "postcss": "^8.4.35",
+    "autoprefixer": "^10.4.18",
+    "eslint": "8.56.0",
+    "eslint-config-next": "14.1.0"
   }
 }

@@ -1,79 +1,79 @@
-// pages/api/execute-trade.js
+import { Coinbase, RESTClient } from "@coinbase/coinbase-sdk";
 import { createClient } from '@supabase/supabase-js';
-import ccxt from 'ccxt';
 
 const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 export default async function handler(req, res) {
-    if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
-    try {
-        const data = req.body; 
-        const mode = data.execution_mode || 'PAPER';
-        const isTestnet = mode === 'PAPER';
+  try {
+    const data = req.body;
+    const mode = data.execution_mode || 'PAPER';
+    const isPaper = mode === 'PAPER';
 
-        // 1. Select the correct API Keys based on the Dashboard Mode
-        const BYBIT_API_KEY = isTestnet ? process.env.BYBIT_API_KEY_DEMO : process.env.BYBIT_API_KEY_MAIN;
-        const BYBIT_SECRET = isTestnet ? process.env.BYBIT_SECRET_DEMO : process.env.BYBIT_SECRET_MAIN; 
+    // 1. Initialize Coinbase Client
+    // Ensure COINBASE_API_KEY is the "organizations/.../apiKeys/..." string
+    // Ensure COINBASE_API_SECRET is the full "---BEGIN EC PRIVATE KEY---" block
+    const client = new RESTClient(
+      process.env.COINBASE_API_KEY,
+      process.env.COINBASE_API_SECRET
+    );
 
-        if (!BYBIT_API_KEY || !BYBIT_SECRET) {
-            throw new Error(`Bybit API keys missing for ${mode} mode. Check Vercel variables.`);
-        }
+    // 2. Format Asset String (e.g., "DOGE-USDT")
+    let rawSymbol = data.symbol || 'DOGEUSDT';
+    rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '');
+    const coinbaseProduct = rawSymbol.includes('-') ? rawSymbol : rawSymbol.replace('USDT', '-USDT');
 
-        // DIAGNOSTIC LOG: Proving the keys and network are correct
-        console.log("--- DIAGNOSTIC CHECK ---");
-        console.log("Mode:", mode);
-        console.log("Testnet Flag:", isTestnet);
-        console.log("API Key (First 4):", BYBIT_API_KEY ? BYBIT_API_KEY.substring(0, 4) : "UNDEFINED");
-        console.log("Secret Length:", BYBIT_SECRET ? BYBIT_SECRET.length : "UNDEFINED");
-        console.log("------------------------");
+    const side = (data.side || 'buy').toUpperCase() === 'LONG' || (data.side || 'buy').toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
+    const qty = data.qty?.toString() || "100";
 
-        // 2. Clean and Format the Symbol for CCXT Futures ("DOGE/USDT:USDT")
-        let rawSymbol = data.symbol || 'DOGEUSDT';
-        rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '');
-        const ccxtSymbol = rawSymbol.replace('USDT', '/USDT:USDT');
+    console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Side: ${side}`);
 
-        const side = data.side?.toLowerCase() === 'long' || data.side?.toLowerCase() === 'buy' ? 'buy' : 'sell';
-        const qty = data.qty || 100; // Hardcoded test quantity for now
+    let executionResult = { status: 'simulated', price: data.price || 0 };
 
-        // 3. Initialize CCXT
-        const exchange = new ccxt.bybit({
-            apiKey: BYBIT_API_KEY,
-            secret: BYBIT_SECRET,
-            options: { defaultType: 'future' },
-        });
-
-        // Toggle CCXT Sandbox Mode if Dashboard is set to PAPER
-        if (isTestnet) {
-            exchange.setSandboxMode(true);
-        }
-
-        console.log(`[EXECUTE] Mode: ${mode} | Attempting ${side.toUpperCase()} ${qty} ${ccxtSymbol}`);
-
-        // 4. Fire the Trade
-        const orderResult = await exchange.createMarketOrder(ccxtSymbol, side, qty);
-
-        // 5. Log the actualized trade to Supabase
-        await supabase.from('trade_logs').insert([{
-            symbol: rawSymbol,
-            side: side.toUpperCase(),
-            entry_price: orderResult.average || data.price,
-            pnl: 0,
-            mci_at_entry: data.mci || 0,
-            execution_mode: mode,
-            exit_time: new Date().toISOString()
-        }]);
-
-        return res.status(200).json({ 
-            message: `Success: ${side.toUpperCase()} ${qty} ${ccxtSymbol} (${mode})`,
-            order: orderResult.id
-        });
-
-    } catch (err) {
-        console.error('[EXECUTE FAULT]:', err.message);
-        return res.status(500).json({ error: err.message });
+    if (!isPaper) {
+      // LIVE EXECUTION
+      const order = await client.createMarketOrder({
+        productId: coinbaseProduct,
+        side: side,
+        baseSize: qty,
+      });
+      executionResult = { status: 'filled', price: order.average_filled_price || data.price };
+    } else {
+      // PAPER DRY-RUN: Fetch actual market price to ensure the simulation is realistic
+      try {
+        const product = await client.getProduct(coinbaseProduct);
+        executionResult.price = parseFloat(product.price);
+      } catch (e) {
+        console.warn("[PAPER] Could not fetch live price, using alert price.");
+      }
     }
+
+    // 3. Log to Supabase trade_logs
+    const { error: logError } = await supabase.from('trade_logs').insert([{
+      symbol: rawSymbol,
+      side: side,
+      entry_price: executionResult.price,
+      execution_mode: mode,
+      pnl: 0,
+      mci_at_entry: data.mci || 0,
+      exit_time: new Date().toISOString()
+    }]);
+
+    if (logError) throw logError;
+
+    return res.status(200).json({
+      status: "success",
+      mode,
+      product: coinbaseProduct,
+      executed_price: executionResult.price
+    });
+
+  } catch (err) {
+    console.error("[COINBASE ENGINE FAULT]:", err.message);
+    return res.status(500).json({ error: err.message });
+  }
 }
