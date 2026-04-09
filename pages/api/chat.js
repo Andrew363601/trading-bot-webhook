@@ -2,22 +2,20 @@
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText, tool } from 'ai';
 import { createClient } from '@supabase/supabase-js';
-import { z } from 'zod'; // Zod forces the AI to use perfect JSON schemas
+import { z } from 'zod';
 
-export const runtime = 'edge';
-
-export default async function handler(req) {
-  if (req.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    const { messages } = await req.json();
+    // 1. In standard Node.js, the body is automatically parsed into req.body
+    const { messages } = req.body;
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
       process.env.SUPABASE_SERVICE_ROLE_KEY
     );
 
-    // FIX: Explicitly bind your existing API key to the SDK
     const google = createGoogleGenerativeAI({
       apiKey: process.env.GEMINI_API_KEY,
     });
@@ -45,7 +43,7 @@ export default async function handler(req) {
       model: google('gemini-2.5-flash'),
       system: systemPrompt,
       messages,
-      maxSteps: 5, // Allows the AI to call a tool and then send a final text response
+      maxSteps: 5,
       tools: {
         deployStrategy: tool({
           description: 'Updates the live strategy parameters or execution mode in the Supabase database.',
@@ -74,10 +72,11 @@ export default async function handler(req) {
       },
     });
 
-    return result.toDataStreamResponse();
+    // 2. Stream the AI text seamlessly back to the Glassmorphism UI
+    result.pipeDataStreamToResponse(res);
 
   } catch (err) {
     console.error("[CHAT FAULT]:", err.message);
-    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+    return res.status(500).json({ error: err.message });
   }
 }
