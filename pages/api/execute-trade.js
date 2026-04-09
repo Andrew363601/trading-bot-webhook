@@ -1,5 +1,5 @@
 // pages/api/execute-trade.js
-import { RESTClient } from "@coinbase/coinbase-sdk";
+import { Coinbase } from 'coinbase-advanced-node';
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     const mode = data.execution_mode || 'PAPER';
     const isPaper = mode === 'PAPER';
 
-    // 1. Initialize Coinbase Client with Secret Scrubber
+    // 1. Fetch Keys
     const apiKeyName = process.env.COINBASE_API_KEY;
     let apiSecret = process.env.COINBASE_API_SECRET;
 
@@ -23,12 +23,13 @@ export default async function handler(req, res) {
       throw new Error("Missing Coinbase API credentials in environment.");
     }
 
-    // SCRUBBER: Fixes newline characters if they were mangled during copy-paste
-    const formattedSecret = apiSecret.replace(/\\n/g, '\n');
+    // 2. Initialize the Correct Advanced Trade Client
+    const client = new Coinbase({
+        cloudApiKeyName: apiKeyName,
+        cloudApiSecret: apiSecret.replace(/\\n/g, '\n') // Fixes copy-paste newline errors
+    });
 
-    const client = new RESTClient(apiKeyName, formattedSecret);
-
-    // 2. Format Symbol (DOGEUSDT -> DOGE-USDT)
+    // 3. Format Symbol (DOGEUSDT -> DOGE-USDT)
     let rawSymbol = data.symbol || 'DOGEUSDT';
     rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '');
     const coinbaseProduct = rawSymbol.includes('-') ? rawSymbol : rawSymbol.replace('USDT', '-USDT');
@@ -40,23 +41,30 @@ export default async function handler(req, res) {
 
     let executionPrice = data.price || 0;
 
-    // 3. Execution Logic
+    // 4. Execution Logic
     if (!isPaper) {
       // LIVE TRADE (Spot)
-      const order = await client.createMarketOrder({
+      const order = await client.rest.order.placeOrder({
+        clientOrderId: `nexus_${Date.now()}`,
         productId: coinbaseProduct,
         side: side,
-        baseSize: qty,
+        orderConfiguration: {
+          marketMarketIoc: {
+            baseSize: qty,
+          }
+        }
       });
-      executionPrice = order.average_filled_price || data.price;
+      // Fallback depending on exact API payload shape
+      executionPrice = order?.success_response?.average_price || data.price; 
     } else {
-      // PAPER DRY-RUN: Check Coinbase live price to verify keys are working
-      const product = await client.getProduct(coinbaseProduct);
-      executionPrice = parseFloat(product.price);
+      // PAPER DRY-RUN: Fetch live price to verify API Keys are valid
+      const response = await client.rest.product.getProduct(coinbaseProduct);
+      // Ensure we grab the price regardless of payload nesting
+      executionPrice = parseFloat(response?.price || response?.product?.price || data.price);
       console.log(`[PAPER] Verified live price: $${executionPrice}`);
     }
 
-    // 4. Log to Supabase
+    // 5. Log to Supabase
     const { error: logError } = await supabase.from('trade_logs').insert([{
       symbol: rawSymbol,
       side: side,
