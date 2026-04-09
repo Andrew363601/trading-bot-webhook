@@ -80,33 +80,41 @@ export default async function handler(req, res) {
 }
 
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
-  const path = `/api/v3/brokerage/products/${asset}/candles`;
-  const end = Math.floor(Date.now() / 1000);
-  const start = end - (3600 * 48); 
-  const query = `?start=${start}&end=${end}&granularity=${granularity}`;
-
-  const token = jwt.sign({
-    iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
-    sub: apiKey, uri: `GET api.coinbase.com${path}`,
-  }, secret, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
-
-  const resp = await fetch(`https://api.coinbase.com${path}${query}`, { 
-      headers: { 'Authorization': `Bearer ${token}` } 
-  });
-
-  const data = await resp.json();
-
-  if (!resp.ok) {
-    console.error(`[COINBASE API ERROR] ${asset}:`, data);
-    return null;
+    const path = `/api/v3/brokerage/products/${asset}/candles`;
+    const end = Math.floor(Date.now() / 1000);
+    
+    // FIX: Adjust lookback based on granularity to stay under 350 candles
+    // 1-Hour: 48 hours = 48 candles
+    // 5-Minute: 20 hours = 240 candles (Safe under 350)
+    const lookbackHours = granularity === 'ONE_HOUR' ? 48 : 20;
+    const start = end - (3600 * lookbackHours); 
+    
+    const query = `?start=${start}&end=${end}&granularity=${granularity}`;
+  
+    const token = jwt.sign({
+      iss: 'cdp', 
+      nbf: Math.floor(Date.now() / 1000), 
+      exp: Math.floor(Date.now() / 1000) + 120,
+      sub: apiKey, 
+      uri: `GET api.coinbase.com${path}`,
+    }, secret, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
+  
+    const resp = await fetch(`https://api.coinbase.com${path}${query}`, { 
+        headers: { 'Authorization': `Bearer ${token}` } 
+    });
+  
+    const data = await resp.json();
+  
+    if (!resp.ok) {
+      console.error(`[COINBASE API ERROR] ${asset}:`, data);
+      return null;
+    }
+  
+    if (!data.candles || data.candles.length === 0) return null;
+  
+    return data.candles.map(c => ({ 
+        close: parseFloat(c.close), 
+        high: parseFloat(c.high), 
+        low: parseFloat(c.low) 
+    })).reverse();
   }
-
-  // Double check the candles property exists before returning
-  if (!data.candles) return null;
-
-  return data.candles.map(c => ({ 
-      close: parseFloat(c.close), 
-      high: parseFloat(c.high), 
-      low: parseFloat(c.low) 
-  })).reverse();
-}
