@@ -62,7 +62,7 @@ export default async function handler(req, res) {
       `;
 
       const { text } = await generateText({
-        model: google('models/gemini-2.0-flash'),
+        model: google('models/gemini-2.5-flash'),
         prompt: prompt
       });
 

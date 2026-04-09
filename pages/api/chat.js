@@ -67,6 +67,25 @@ export default async function handler(req, res) {
             parameters: z.record(z.any()).optional(),
             reasoning: z.string().describe('Your technical reasoning for deploying this strategy and selecting these specific parameters.')
           }),
+
+          runOptimizer: tool({
+            description: 'Triggers the genetic optimizer to analyze recent trade logs and mutate strategy parameters.',
+            parameters: z.object({}),
+            execute: async () => {
+              // Ping your own optimizer endpoint
+              const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https';
+              const host = process.env.VERCEL_URL || 'trading-bot-webhook.vercel.app';
+              
+              try {
+                const resp = await fetch(`${protocol}://${host}/api/genetic-optimizer`);
+                const result = await resp.json();
+                return { success: true, data: result };
+              } catch (e) {
+                return { success: false, error: e.message };
+              }
+            },
+          }),
+
           execute: async (args) => {
             // 1. Manually check if the strategy already exists for this coin
             const { data: existing } = await supabase
