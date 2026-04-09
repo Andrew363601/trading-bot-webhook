@@ -1,9 +1,9 @@
 // pages/api/chat.js
-import { google } from '@ai-sdk/google';
-import { streamText } from 'ai';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { streamText, tool } from 'ai';
 import { createClient } from '@supabase/supabase-js';
+import { z } from 'zod'; // Zod forces the AI to use perfect JSON schemas
 
-// We use the Edge runtime for instant character-by-character streaming
 export const runtime = 'edge';
 
 export default async function handler(req) {
@@ -12,38 +12,66 @@ export default async function handler(req) {
   try {
     const { messages } = await req.json();
 
-    // 1. Initialize Supabase inside the Edge Route
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
       process.env.SUPABASE_SERVICE_ROLE_KEY
     );
 
-    // 2. Fetch the Live Context
+    // FIX: Explicitly bind your existing API key to the SDK
+    const google = createGoogleGenerativeAI({
+      apiKey: process.env.GEMINI_API_KEY,
+    });
+
     const { data: config } = await supabase.from('strategy_config').select('*').eq('is_active', true).single();
     const { data: logs } = await supabase.from('trade_logs').select('*').order('id', { ascending: false }).limit(5);
 
-    // 3. The "God Prompt" - Injecting Supabase data directly into the Agent's brain
     const systemPrompt = `
       You are Nexus, an elite autonomous quantitative trading agent managing a DOGE-USDT portfolio.
-      You communicate in a sleek, calculated, highly technical persona. 
-      Keep responses concise, analytical, and professional. Do not use markdown headers, just raw text.
-
+      You communicate in a sleek, calculated, highly technical persona. Keep responses concise.
+      
       --- CURRENT SYSTEM STATE ---
       Execution Mode: ${config?.execution_mode || 'PAPER'}
       Strategy: ${config?.strategy || 'Unknown'} (v${config?.version || '1.0'})
       Parameters: ${JSON.stringify(config?.parameters || {})}
 
-      --- RECENT EXECUTIONS (LAST 5 TRADES) ---
+      --- RECENT EXECUTIONS ---
       ${JSON.stringify(logs || [])}
 
-      Use this exact data to answer the user's queries about past performance, strategy logic, or current configurations.
+      You have the ability to physically update the database using the deployStrategy tool. 
+      Only trigger this tool if the user explicitly commands a parameter change or mode shift.
     `;
 
-    // 4. Stream the Response using the correct, live model
     const result = await streamText({
-      model: google('gemini-2.5-flash'), 
+      model: google('gemini-2.5-flash'),
       system: systemPrompt,
       messages,
+      maxSteps: 5, // Allows the AI to call a tool and then send a final text response
+      tools: {
+        deployStrategy: tool({
+          description: 'Updates the live strategy parameters or execution mode in the Supabase database.',
+          parameters: z.object({
+            execution_mode: z.enum(['LIVE', 'PAPER']).optional(),
+            coherence_threshold: z.number().optional(),
+            lookback_period: z.number().optional(),
+          }),
+          execute: async (args) => {
+            const updates = { last_updated: new Date().toISOString() };
+            if (args.execution_mode) updates.execution_mode = args.execution_mode;
+            
+            if (args.coherence_threshold || args.lookback_period) {
+              updates.parameters = { ...config.parameters };
+              if (args.coherence_threshold) updates.parameters.coherence_threshold = args.coherence_threshold;
+              if (args.lookback_period) updates.parameters.lookback_period = args.lookback_period;
+              updates.version = (parseFloat(config.version || "1.0") + 0.1).toFixed(1);
+            }
+
+            const { error } = await supabase.from('strategy_config').update(updates).eq('id', config.id);
+            
+            if (error) return { success: false, error: error.message };
+            return { success: true, updated_state: args };
+          },
+        }),
+      },
     });
 
     return result.toDataStreamResponse();
