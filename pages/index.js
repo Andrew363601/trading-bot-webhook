@@ -32,7 +32,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   // Vercel AI SDK Chat
-  const { messages, input, handleInputChange, handleSubmit, append, setMessages } = useChat();
+  const { messages, input, handleInputChange, handleSubmit, append } = useChat();
   const chatEndRef = useRef(null);
 
   const fetchData = useCallback(async () => {
@@ -99,58 +99,106 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4">
-      <header className="max-w-[1600px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
+      <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
         <h1 className="text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Command</h1>
-        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2"><Database size={12} /> Sync: wsrioyxzhxxrtzjncfvn</div>
+        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+            <Database size={12} /> Sync: wsrioyxzhxxrtzjncfvn
+        </div>
       </header>
 
-      <main className="max-w-[1600px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow">
+      <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
         
-        {/* Left Sidebar: Asset Watchlist */}
+        {/* LEFT: Asset Watchlist (Sidebar) */}
         <div className="lg:col-span-2 space-y-2 flex flex-col">
           <div className="text-[10px] font-black uppercase text-slate-500 mb-2 px-2 tracking-widest">Market Scanners</div>
-          {ASSETS.map(asset => (
-            <button
-              key={asset}
-              onClick={() => setActiveAsset(asset)}
-              className={`w-full text-left px-4 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all border ${
-                activeAsset === asset 
-                ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30 shadow-[0_0_15px_rgba(99,102,241,0.1)]' 
-                : 'bg-transparent text-slate-500 border-transparent hover:bg-white/5'
-              }`}
-            >
-              <div className="flex justify-between items-center">
-                {asset}
-                {activeAsset === asset && <Activity size={12} className="text-cyan-400 animate-pulse" />}
-              </div>
-            </button>
-          ))}
+          <div className="space-y-1 overflow-y-auto pr-2">
+            {ASSETS.map(asset => (
+                <button
+                key={asset}
+                onClick={() => setActiveAsset(asset)}
+                className={`w-full text-left px-4 py-3 rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all border ${
+                    activeAsset === asset 
+                    ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30 shadow-[0_0_15px_rgba(99,102,241,0.1)]' 
+                    : 'bg-transparent text-slate-500 border-transparent hover:bg-white/5'
+                }`}
+                >
+                <div className="flex justify-between items-center">
+                    {asset}
+                    {activeAsset === asset && <Activity size={12} className="text-cyan-400 animate-pulse" />}
+                </div>
+                </button>
+            ))}
+          </div>
         </div>
 
-        {/* Center: Chart Area */}
-        <div className="lg:col-span-7 flex flex-col gap-6">
-          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden h-[500px] relative shadow-2xl">
+        {/* CENTER: Chart & Trades (Main View) */}
+        <div className="lg:col-span-7 flex flex-col gap-6 overflow-hidden">
+          {/* Chart Container */}
+          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] relative shadow-2xl flex-shrink-0">
             <div id="tv_chart_container" className="absolute inset-0" />
             
-            {/* Trade Plot Overlay */}
-            <div className="absolute top-4 right-4 z-10 flex flex-col gap-2">
-               {tradeLogs.slice(0, 4).map((log, i) => (
-                 <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-4 min-w-[180px]">
+            {/* Live Plot Overlay (Floating) */}
+            <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 max-w-[220px]">
+               {tradeLogs.slice(0, 3).map((log, i) => (
+                 <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400' : 'text-amber-400'}>●</span>
-                      <span className="text-slate-300 uppercase">{log.side} @ {log.entry_price}</span>
+                      <span className="text-slate-300 uppercase truncate">{log.side} @ {log.entry_price}</span>
                     </div>
-                    <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400 font-bold'}>{log.pnl >= 0 ? '+' : ''}{log.pnl?.toFixed(2)}</span>
+                    <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400 font-bold'}>
+                        {log.pnl >= 0 ? '+' : ''}{log.pnl?.toFixed(2)}
+                    </span>
                  </div>
                ))}
-               {tradeLogs.length === 0 && <div className="bg-black/40 p-2 rounded text-[9px] text-slate-500 italic uppercase">No trades on current horizon</div>}
             </div>
           </div>
 
-          {/* System Matrix: Strategy Selector */}
-          <div className="bg-slate-900/40 border border-white/10 rounded-[2rem] p-6 shadow-xl">
-            <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center gap-2"><Layers size={14} className="text-cyan-400" /> Active System Matrix</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Execution History Table (Under Chart) */}
+          <div className="bg-slate-900/40 border border-white/10 rounded-[2.5rem] overflow-hidden flex flex-col grow shadow-xl">
+             <div className="px-6 py-4 border-b border-white/5 bg-slate-900/40 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2">
+                <Target size={14} className="text-cyan-400" /> Execution Stream: {activeAsset}
+             </div>
+             <div className="overflow-y-auto max-h-[300px]">
+                <table className="w-full text-left">
+                  <thead className="bg-slate-950/40 text-[9px] font-black text-slate-600 uppercase tracking-[0.2em] sticky top-0 backdrop-blur-md z-10">
+                    <tr>
+                      <th className="px-6 py-3">Time</th>
+                      <th className="px-6 py-3 text-center">Vector</th>
+                      <th className="px-6 py-3">Entry</th>
+                      <th className="px-6 py-3 text-right">PnL</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
+                    {tradeLogs.map((log, i) => (
+                      <tr key={i} className="hover:bg-white/[0.02] transition-colors">
+                        <td className="px-6 py-4 text-[10px] text-slate-500 truncate">{new Date(log.exit_time).toLocaleTimeString()}</td>
+                        <td className="px-6 py-4 text-center">
+                            <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'LONG' || log.side === 'BUY' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
+                                {log.side}
+                            </span>
+                        </td>
+                        <td className="px-6 py-4 text-slate-300">{log.entry_price}</td>
+                        <td className={`px-6 py-4 text-right font-black ${log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {log.pnl >= 0 ? '+' : ''}{log.pnl?.toFixed(4)}
+                        </td>
+                      </tr>
+                    ))}
+                    {tradeLogs.length === 0 && (
+                        <tr><td colSpan="4" className="py-20 text-center text-slate-600 italic uppercase text-[10px] tracking-widest">No market activity recorded</td></tr>
+                    )}
+                  </tbody>
+                </table>
+             </div>
+          </div>
+        </div>
+
+        {/* RIGHT: Strategy Matrix & Agent (Sidebar) */}
+        <div className="lg:col-span-3 flex flex-col gap-6 overflow-hidden">
+          
+          {/* Strategy Matrix (On Top of Terminal) */}
+          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
+            <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center gap-2"><Layers size={14} className="text-cyan-400" /> Active Matrix</h3>
+            <div className="flex flex-col gap-3">
               {Object.keys(STRATEGY_DETAILS).map(id => (
                 <button 
                   key={id} 
@@ -163,55 +211,55 @@ export default function Dashboard() {
                     <span className="text-xs font-black text-white uppercase tracking-tighter">{id}</span>
                     <TrendingUp size={12} className={selectedStrat === id ? 'text-emerald-400' : 'text-slate-600'} />
                   </div>
-                  <div className="text-[9px] text-slate-500 uppercase font-mono italic">Click to brief agent</div>
+                  <div className="text-[9px] text-slate-500 uppercase font-mono italic">Initiate Briefing</div>
                 </button>
               ))}
             </div>
           </div>
-        </div>
 
-        {/* Right: Agent Terminal */}
-        <div className="lg:col-span-3 flex flex-col overflow-hidden bg-slate-950 border border-white/10 rounded-[2.5rem] shadow-2xl">
-          <div className="px-6 py-4 border-b border-white/5 bg-slate-900/40 text-[10px] font-black uppercase text-slate-500 flex items-center justify-between">
-            <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
-            <div className="flex gap-1">
-              <div className="w-1.5 h-1.5 rounded-full bg-red-500/40" />
-              <div className="w-1.5 h-1.5 rounded-full bg-amber-500/40" />
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/40" />
+          {/* Agent Terminal (Bottom Right) */}
+          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden grow">
+            <div className="px-6 py-4 border-b border-white/5 bg-slate-900/40 text-[10px] font-black uppercase text-slate-500 flex items-center justify-between">
+              <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
+              <div className="flex gap-1">
+                <div className="w-1.5 h-1.5 rounded-full bg-red-500/40" />
+                <div className="w-1.5 h-1.5 rounded-full bg-amber-500/40" />
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/40" />
+              </div>
             </div>
-          </div>
-          
-          <div className="p-4 grow overflow-y-auto font-mono text-xs space-y-4">
-            {messages.length === 0 && (
-              <div className="text-slate-600 italic leading-relaxed uppercase text-[10px]">
-                Nexus system ready. Asset: {activeAsset}. Select a strategy to initiate telemetry briefing...
-              </div>
-            )}
-            {messages.map(m => (
-              <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[90%] rounded-2xl px-4 py-3 leading-relaxed ${
-                  m.role === 'user' 
-                  ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px]' 
-                  : 'bg-slate-900/80 text-cyan-400 border border-white/5'
-                }`}>
-                  {m.content}
+            
+            <div className="p-4 grow overflow-y-auto font-mono text-xs space-y-4">
+              {messages.length === 0 && (
+                <div className="text-slate-600 italic leading-relaxed uppercase text-[10px]">
+                  Telemetric link established. Select a strategy matrix or query system vectors...
                 </div>
-              </div>
-            ))}
-            <div ref={chatEndRef} />
-          </div>
+              )}
+              {messages.map(m => (
+                <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[90%] rounded-2xl px-4 py-3 leading-relaxed ${
+                    m.role === 'user' 
+                    ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px]' 
+                    : 'bg-slate-900/80 text-cyan-400 border border-white/5'
+                  }`}>
+                    {m.content}
+                  </div>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
 
-          <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
-            <input
-              className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white placeholder-slate-700 focus:outline-none focus:border-indigo-500/50 transition-all"
-              value={input} 
-              onChange={handleInputChange} 
-              placeholder="Query parameters or logic..."
-            />
-            <button type="submit" className="bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-xl px-4 py-3 hover:bg-indigo-500/30 transition-all">
-              <Send size={16} />
-            </button>
-          </form>
+            <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+              <input
+                className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white placeholder-slate-700 focus:outline-none focus:border-indigo-500/50 transition-all"
+                value={input} 
+                onChange={handleInputChange} 
+                placeholder="Query parameters..."
+              />
+              <button type="submit" className="bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-xl px-4 py-3 hover:bg-indigo-500/30 transition-all flex-shrink-0">
+                <Send size={16} />
+              </button>
+            </form>
+          </div>
         </div>
 
       </main>
