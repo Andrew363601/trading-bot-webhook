@@ -12,49 +12,71 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    const data = req.body;
+    let data = req.body;
+
+    // FIX 1: PARSE TRADINGVIEW STRINGS
+    // If the payload is a raw string from TV, clean and parse it into JSON
+    if (typeof data === 'string') {
+      try {
+        if (data.startsWith('LOG_TRADE:')) data = JSON.parse(data.replace('LOG_TRADE:', ''));
+        else if (data.startsWith('EXECUTE_ORDER:')) data = JSON.parse(data.replace('EXECUTE_ORDER:', ''));
+        else data = JSON.parse(data);
+      } catch (e) {
+        throw new Error("Invalid payload format received.");
+      }
+    }
+
     const mode = data.execution_mode || 'PAPER';
     const isPaper = mode === 'PAPER';
-
     const apiKeyName = process.env.COINBASE_API_KEY;
     const apiSecret = process.env.COINBASE_API_SECRET;
 
-    if (!apiKeyName || !apiSecret) {
-      throw new Error("Missing Coinbase API credentials in environment.");
-    }
+    if (!apiKeyName || !apiSecret) throw new Error("Missing Coinbase API credentials in environment.");
 
-    // SCRUBBER: Format the ECDSA key correctly
     const formattedSecret = apiSecret.replace(/\\n/g, '\n');
 
     // Format Product String (DOGEUSDT -> DOGE-USDT)
-    let rawSymbol = data.symbol || 'DOGEUSDT';
+    let rawSymbol = data.symbol || data.symbol_tv || 'DOGEUSDT';
     rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '');
     const coinbaseProduct = rawSymbol.includes('-') ? rawSymbol : rawSymbol.replace('USDT', '-USDT');
 
     const side = (data.side || 'BUY').toUpperCase() === 'LONG' || (data.side || 'BUY').toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
     const qty = (data.qty || 10).toString();
 
+    // FIX 2: STATE MANAGEMENT (Check for open trades)
+    // Find if there is an active trade for this symbol that hasn't been closed yet
+    const { data: openTrades } = await supabase
+      .from('trade_logs')
+      .select('*')
+      .eq('symbol', rawSymbol)
+      .is('exit_price', null)
+      .order('id', { ascending: false })
+      .limit(1);
+    
+    const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
+
+    // Is this just a "LOG_TRADE" event from TV? (No execution, just DB update)
+    if (data.pnl !== undefined && data.exit_price !== undefined) {
+      if (openTrade) {
+        await supabase.from('trade_logs').update({
+          exit_price: data.exit_price,
+          pnl: data.pnl,
+          exit_time: new Date().toISOString()
+        }).eq('id', openTrade.id);
+      }
+      return res.status(200).json({ status: "Trade Logged Successfully" });
+    }
+
     console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Side: ${side}`);
 
-    // --- JWT GENERATOR FOR COINBASE CDP ---
-    // This perfectly signs the request exactly how Coinbase Advanced Trade demands
     const generateToken = (method, path) => {
       return jwt.sign(
         {
-          iss: 'cdp',
-          nbf: Math.floor(Date.now() / 1000),
-          exp: Math.floor(Date.now() / 1000) + 120,
-          sub: apiKeyName,
-          uri: `${method} api.coinbase.com${path}`,
+          iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
+          sub: apiKeyName, uri: `${method} api.coinbase.com${path}`,
         },
         formattedSecret,
-        {
-          algorithm: 'ES256',
-          header: {
-            kid: apiKeyName,
-            nonce: crypto.randomBytes(16).toString('hex'),
-          },
-        }
+        { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
       );
     };
 
@@ -71,17 +93,13 @@ export default async function handler(req, res) {
         product_id: coinbaseProduct,
         side: side,
         order_configuration: {
-          // Note: Coinbase requires 'quote_size' (USD amount) for Buys, and 'base_size' (Coin amount) for Sells
           market_market_ioc: side === 'BUY' ? { quote_size: qty } : { base_size: qty }
         }
       };
 
       const resp = await fetch(`https://api.coinbase.com${path}`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       
@@ -92,7 +110,7 @@ export default async function handler(req, res) {
       executionStatus = 'filled';
       
     } else {
-      // 🟢 PAPER DRY-RUN (Fetch Live Market Price to verify Keys)
+      // 🟢 PAPER DRY-RUN
       const path = `/api/v3/brokerage/products/${coinbaseProduct}`;
       const token = generateToken('GET', path);
 
@@ -108,18 +126,37 @@ export default async function handler(req, res) {
       console.log(`[PAPER] Verified live market price: $${executionPrice}`);
     }
 
-    // Log the actualized execution to Supabase
-    const { error: logError } = await supabase.from('trade_logs').insert([{
-      symbol: rawSymbol,
-      side: side,
-      entry_price: executionPrice,
-      execution_mode: mode,
-      pnl: 0,
-      mci_at_entry: data.mci || 0,
-      exit_time: new Date().toISOString()
-    }]);
+    // FIX 3: RECORD THE DB STATE
+    // If an open trade exists AND the new signal is the opposite direction, we CLOSE the trade
+    if (openTrade && openTrade.side !== side) {
+      // Calculate PnL based on direction
+      const pnl = openTrade.side === 'BUY' 
+        ? executionPrice - openTrade.entry_price 
+        : openTrade.entry_price - executionPrice;
 
-    if (logError) throw new Error(`Supabase Error: ${logError.message}`);
+      const { error: updateError } = await supabase.from('trade_logs').update({
+        exit_price: executionPrice,
+        pnl: pnl,
+        exit_time: new Date().toISOString()
+      }).eq('id', openTrade.id);
+
+      if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
+      executionStatus = 'closed_position';
+      
+    } else {
+      // Otherwise, open a BRAND NEW trade row (leave exit_price null)
+      const { error: insertError } = await supabase.from('trade_logs').insert([{
+        symbol: rawSymbol,
+        side: side,
+        entry_price: executionPrice,
+        execution_mode: mode,
+        mci_at_entry: data.mci || 0,
+        // exit_time, exit_price, and pnl remain null until the trade is closed
+      }]);
+
+      if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
+      executionStatus = 'opened_position';
+    }
 
     return res.status(200).json({ 
       status: executionStatus, 

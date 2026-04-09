@@ -20,10 +20,8 @@ export default async function handler(req, res) {
       apiKey: process.env.GEMINI_API_KEY,
     });
 
-    const { data: config } = await supabase.from('strategy_config').select('*').eq('is_active', true).single();
+    const { data: activeConfigs } = await supabase.from('strategy_config').select('*').eq('is_active', true);
     const { data: logs } = await supabase.from('trade_logs').select('*').order('id', { ascending: false }).limit(5);
-    
-    // NEW: Fetch the memory of recent scans
     const { data: latestScans } = await supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(10);
     
     const systemPrompt = `
@@ -36,10 +34,7 @@ export default async function handler(req, res) {
         3. GOAL: Maximize ROI while maintaining strict risk management.
       
         --- CURRENT TELEMETRY ---
-        Active Strategy: ${config?.strategy || 'None'}
-        Execution Mode: ${config?.execution_mode || 'PAPER'}
-        Config Version: ${config?.version || 'v1.0'}
-        Current Parameters: ${JSON.stringify(config?.parameters || {})}
+        Active Strategies Matrix: ${JSON.stringify(activeConfigs || [])}
       
         --- HISTORICAL PERFORMANCE (FEEDBACK LOOP) ---
         Recent Trade Data: ${JSON.stringify(logs || [])}
@@ -57,7 +52,7 @@ export default async function handler(req, res) {
     `;
 
     const result = await streamText({
-      model: google('gemini-2.5-flash'),
+      model: google('gemini-2.0-flash'),
       system: systemPrompt,
       messages,
       maxSteps: 5,
