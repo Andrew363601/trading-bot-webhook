@@ -1,4 +1,5 @@
-import { Coinbase, RESTClient } from "@coinbase/coinbase-sdk";
+// pages/api/execute-trade.js
+import { RESTClient } from "@coinbase/coinbase-sdk";
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
@@ -14,66 +15,68 @@ export default async function handler(req, res) {
     const mode = data.execution_mode || 'PAPER';
     const isPaper = mode === 'PAPER';
 
-    // 1. Initialize Coinbase Client
-    // Ensure COINBASE_API_KEY is the "organizations/.../apiKeys/..." string
-    // Ensure COINBASE_API_SECRET is the full "---BEGIN EC PRIVATE KEY---" block
-    const client = new RESTClient(
-      process.env.COINBASE_API_KEY,
-      process.env.COINBASE_API_SECRET
-    );
+    // 1. Initialize Coinbase Client with Secret Scrubber
+    const apiKeyName = process.env.COINBASE_API_KEY;
+    let apiSecret = process.env.COINBASE_API_SECRET;
 
-    // 2. Format Asset String (e.g., "DOGE-USDT")
+    if (!apiKeyName || !apiSecret) {
+      throw new Error("Missing Coinbase API credentials in environment.");
+    }
+
+    // SCRUBBER: Fixes newline characters if they were mangled during copy-paste
+    const formattedSecret = apiSecret.replace(/\\n/g, '\n');
+
+    const client = new RESTClient(apiKeyName, formattedSecret);
+
+    // 2. Format Symbol (DOGEUSDT -> DOGE-USDT)
     let rawSymbol = data.symbol || 'DOGEUSDT';
     rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '');
     const coinbaseProduct = rawSymbol.includes('-') ? rawSymbol : rawSymbol.replace('USDT', '-USDT');
 
-    const side = (data.side || 'buy').toUpperCase() === 'LONG' || (data.side || 'buy').toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
-    const qty = data.qty?.toString() || "100";
+    const side = (data.side || 'BUY').toUpperCase() === 'LONG' || (data.side || 'BUY').toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
+    const qty = (data.qty || 100).toString();
 
-    console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Side: ${side}`);
+    console.log(`[COINBASE ENGINE] Processing ${side} for ${coinbaseProduct} (${mode})`);
 
-    let executionResult = { status: 'simulated', price: data.price || 0 };
+    let executionPrice = data.price || 0;
 
+    // 3. Execution Logic
     if (!isPaper) {
-      // LIVE EXECUTION
+      // LIVE TRADE (Spot)
       const order = await client.createMarketOrder({
         productId: coinbaseProduct,
         side: side,
         baseSize: qty,
       });
-      executionResult = { status: 'filled', price: order.average_filled_price || data.price };
+      executionPrice = order.average_filled_price || data.price;
     } else {
-      // PAPER DRY-RUN: Fetch actual market price to ensure the simulation is realistic
-      try {
-        const product = await client.getProduct(coinbaseProduct);
-        executionResult.price = parseFloat(product.price);
-      } catch (e) {
-        console.warn("[PAPER] Could not fetch live price, using alert price.");
-      }
+      // PAPER DRY-RUN: Check Coinbase live price to verify keys are working
+      const product = await client.getProduct(coinbaseProduct);
+      executionPrice = parseFloat(product.price);
+      console.log(`[PAPER] Verified live price: $${executionPrice}`);
     }
 
-    // 3. Log to Supabase trade_logs
+    // 4. Log to Supabase
     const { error: logError } = await supabase.from('trade_logs').insert([{
       symbol: rawSymbol,
       side: side,
-      entry_price: executionResult.price,
+      entry_price: executionPrice,
       execution_mode: mode,
       pnl: 0,
       mci_at_entry: data.mci || 0,
       exit_time: new Date().toISOString()
     }]);
 
-    if (logError) throw logError;
+    if (logError) throw new Error(`Supabase Log Error: ${logError.message}`);
 
-    return res.status(200).json({
-      status: "success",
-      mode,
-      product: coinbaseProduct,
-      executed_price: executionResult.price
+    return res.status(200).json({ 
+      status: "executed", 
+      product: coinbaseProduct, 
+      price: executionPrice 
     });
 
   } catch (err) {
-    console.error("[COINBASE ENGINE FAULT]:", err.message);
+    console.error("[EXECUTE FAULT]:", err.message);
     return res.status(500).json({ error: err.message });
   }
 }

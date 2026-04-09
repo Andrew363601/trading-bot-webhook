@@ -7,44 +7,48 @@ const supabase = createClient(
 );
 
 export default async function handler(req, res) {
-  if (req.method === 'GET') return res.status(200).send("🛰️ Webhook Online.");
+  if (req.method === 'GET') return res.status(200).send("🛰️ Nexus Webhook Online.");
 
   if (req.method === 'POST') {
     try {
       let data = req.body;
-      if (typeof data === 'string' && data.startsWith('LOG_TRADE:')) {
-        data = JSON.parse(data.replace('LOG_TRADE:', ''));
-      }
 
-      // 1. Read the toggle state from your Dashboard
+      // 1. Determine Mode from Dashboard
       const { data: config, error: configErr } = await supabase
         .from('strategy_config')
         .select('execution_mode')
         .eq('is_active', true)
         .single();
 
-      if (configErr) throw new Error("Could not determine execution mode.");
+      if (configErr) throw new Error("Could not fetch execution mode.");
 
-      // 2. Attach the mode to the signal
-      const mode = config.execution_mode || "PAPER";
+      const mode = config?.execution_mode || "PAPER";
       data.execution_mode = mode; 
 
-      // 3. Forward EVERYTHING to the Execution Engine
+      // 2. Route to Coinbase Engine
       const protocol = req.headers['x-forwarded-proto'] || 'http';
       const host = req.headers.host;
       const executeUrl = `${protocol}://${host}/api/execute-trade`;
 
-      // Fire and forget so TradingView doesn't time out
-      fetch(executeUrl, {
+      console.log(`[ROUTER] Forwarding ${data.symbol} to Engine in ${mode} mode...`);
+
+      // CRITICAL: We MUST await this fetch so Vercel doesn't kill the process early
+      const forwardRequest = await fetch(executeUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
-      }).catch(e => console.error("[ROUTING FAULT]", e));
+      });
 
-      return res.status(200).json({ status: "success", mode: mode, action: "Routed to Execution Engine" });
+      const forwardResult = await forwardRequest.json();
+
+      return res.status(200).json({ 
+        status: "success", 
+        mode: mode, 
+        engine_response: forwardResult 
+      });
 
     } catch (err) {
-      console.error("[WEBHOOK] Error:", err.message);
+      console.error("[WEBHOOK FAULT]:", err.message);
       return res.status(500).json({ error: err.message });
     }
   }
