@@ -126,10 +126,10 @@ export default async function handler(req, res) {
       console.log(`[PAPER] Verified live market price: $${executionPrice}`);
     }
 
-    // FIX 3: RECORD THE DB STATE
-    // If an open trade exists AND the new signal is the opposite direction, we CLOSE the trade
-    if (openTrade && openTrade.side !== side) {
-      // Calculate PnL based on direction
+ // FIX: PROPER STATE MANAGEMENT (Single-Entry Mode)
+ if (openTrade) {
+    if (openTrade.side !== side) {
+      // CLOSE REVERSAL: The signal flipped. Close the old trade.
       const pnl = openTrade.side === 'BUY' 
         ? executionPrice - openTrade.entry_price 
         : openTrade.entry_price - executionPrice;
@@ -144,19 +144,23 @@ export default async function handler(req, res) {
       executionStatus = 'closed_position';
       
     } else {
-      // Otherwise, open a BRAND NEW trade row (leave exit_price null)
-      const { error: insertError } = await supabase.from('trade_logs').insert([{
-        symbol: rawSymbol,
-        side: side,
-        entry_price: executionPrice,
-        execution_mode: mode,
-        mci_at_entry: data.mci || 0,
-        // exit_time, exit_price, and pnl remain null until the trade is closed
-      }]);
-
-      if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
-      executionStatus = 'opened_position';
+      // ALREADY IN: We already have an open trade in this direction. Do nothing.
+      console.log(`[ENGINE] Position already open for ${coinbaseProduct}. Ignoring signal.`);
+      return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
     }
+  } else {
+    // BRAND NEW TRADE: No open trades exist.
+    const { error: insertError } = await supabase.from('trade_logs').insert([{
+      symbol: rawSymbol,
+      side: side,
+      entry_price: executionPrice,
+      execution_mode: mode,
+      mci_at_entry: data.mci || 0,
+    }]);
+
+    if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
+    executionStatus = 'opened_position';
+  }
 
     return res.status(200).json({ 
       status: executionStatus, 
