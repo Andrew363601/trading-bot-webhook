@@ -101,12 +101,10 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     // 1. Bulletproof the inputs
     const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
     
-    // THE ULTIMATE HYPHEN FIX: 
-    // Strips ALL existing hyphens, then safely rebuilds it with exactly one.
-    const cleanAsset = asset.replace(/-/g, '');
-    const coinbaseProduct = cleanAsset.replace('USDT', '-USDT').replace('USD', '-USD');
-    
-    const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+// THE ULTIMATE HYPHEN FIX (Corrected)
+const cleanAsset = asset.replace(/-/g, '');
+const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
+const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
     
     const end = Math.floor(Date.now() / 1000);
     

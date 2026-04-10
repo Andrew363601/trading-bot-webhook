@@ -127,9 +127,10 @@ export default async function handler(req, res) {
                     const crypto = require('crypto');
         
                    // Replace the old path builder with this:
-            const cleanAsset = asset.replace(/-/g, '');
-            const coinbaseProduct = cleanAsset.replace('USDT', '-USDT').replace('USD', '-USD');
-            const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+   // Apply the same fix here:
+   const cleanAsset = asset.replace(/-/g, '');
+   const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
+   const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
                     
                     let lookbackSeconds;
                     switch (granularity) {
