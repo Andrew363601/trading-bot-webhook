@@ -45,7 +45,7 @@ export default async function handler(req, res) {
       const winningTrades = trades.filter(t => t.pnl > 0).length;
       const winRate = (winningTrades / trades.length) * 100;
 
-      // 2. THE RESEARCHER LOOP: Deep Paginated Fetch based on Strategy Timeframe
+      // 2. THE RESEARCHER LOOP: Deep Paginated Fetch based on Strategy Timefram
       let marketContext = [];
       const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
       
