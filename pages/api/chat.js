@@ -49,6 +49,7 @@ export default async function handler(req, res) {
         - If trade logs show consistent losses, analyze the parameters (MCI threshold, etc.) and suggest a mutation.
         - You are authorized to toggle between PAPER and LIVE if Andrew provides the command.
         - Keep responses under 3 sentences unless explaining complex math logic.
+        - If asked to run or trigger a cycle of the genetic optimizer api use the runoptimizer tool.
     `;
 
     const result = await streamText({
