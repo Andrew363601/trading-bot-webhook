@@ -53,11 +53,12 @@ export default async function handler(req, res) {
     `;
 
     const result = await streamText({
-      model: google('models/gemini-2.5-flash'),
+      model: google('models/gemini-2.5-flash'), // <-- Fixed model routing
       system: systemPrompt,
       messages,
       maxSteps: 5,
       tools: {
+        // --- TOOL 1: manageStrategy ---
         manageStrategy: tool({
           description: 'Creates or updates a strategy config. You MUST provide mathematical/logical reasoning for the parameters chosen.',
           parameters: z.object({
@@ -68,25 +69,6 @@ export default async function handler(req, res) {
             parameters: z.record(z.any()).optional(),
             reasoning: z.string().describe('Your technical reasoning for deploying this strategy and selecting these specific parameters.')
           }),
-
-          runOptimizer: tool({
-            description: 'Triggers the genetic optimizer to analyze recent trade logs and mutate strategy parameters.',
-            parameters: z.object({}),
-            execute: async () => {
-              // Ping your own optimizer endpoint
-              const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https';
-              const host = process.env.VERCEL_URL || 'trading-bot-webhook.vercel.app';
-              
-              try {
-                const resp = await fetch(`${protocol}://${host}/api/genetic-optimizer`);
-                const result = await resp.json();
-                return { success: true, data: result };
-              } catch (e) {
-                return { success: false, error: e.message };
-              }
-            },
-          }),
-
           execute: async (args) => {
             // 1. Manually check if the strategy already exists for this coin
             const { data: existing } = await supabase
@@ -104,25 +86,38 @@ export default async function handler(req, res) {
               parameters: args.parameters || {},
               last_updated: new Date().toISOString(),
               version: "1.0",
-              reasoning: args.reasoning // The bot's logic is permanently stored
+              reasoning: args.reasoning
             };
             
             let result;
             if (existing) {
-              // Update existing row (Bypasses the composite key error)
               result = await supabase.from('strategy_config').update(payload).eq('id', existing.id);
             } else {
-              // Insert brand new row
               result = await supabase.from('strategy_config').insert([payload]);
             }
       
             if (result.error) return { success: false, error: result.error.message };
-            return { 
-                success: true, 
-                message: `Nexus has deployed ${args.strategy_id} for ${args.asset}. Reasoning securely logged.` 
-            };
+            return { success: true, message: `Nexus has deployed ${args.strategy_id} for ${args.asset}. Reasoning securely logged.` };
           },
-        }),
+        }), // <--- THIS COMMA CLOSES THE FIRST TOOL
+
+        // --- TOOL 2: runOptimizer ---
+        runOptimizer: tool({
+          description: 'Triggers the genetic optimizer to analyze recent trade logs and mutate strategy parameters.',
+          parameters: z.object({}),
+          execute: async () => {
+            const protocol = process.env.NODE_ENV === 'development' ? 'http' : 'https';
+            const host = process.env.VERCEL_URL || 'trading-bot-webhook.vercel.app';
+            
+            try {
+              const resp = await fetch(`${protocol}://${host}/api/genetic-optimizer`);
+              const result = await resp.json();
+              return { success: true, data: result };
+            } catch (e) {
+              return { success: false, error: e.message };
+            }
+          },
+        }), // <--- THIS CLOSES THE SECOND TOOL
       },
     });
 
