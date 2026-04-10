@@ -14,18 +14,6 @@ export default async function handler(req, res) {
   try {
     let data = req.body;
 
-    // FIX 1: PARSE TRADINGVIEW STRINGS
-    // If the payload is a raw string from TV, clean and parse it into JSON
-    if (typeof data === 'string') {
-      try {
-        if (data.startsWith('LOG_TRADE:')) data = JSON.parse(data.replace('LOG_TRADE:', ''));
-        else if (data.startsWith('EXECUTE_ORDER:')) data = JSON.parse(data.replace('EXECUTE_ORDER:', ''));
-        else data = JSON.parse(data);
-      } catch (e) {
-        throw new Error("Invalid payload format received.");
-      }
-    }
-
     const mode = data.execution_mode || 'PAPER';
     const isPaper = mode === 'PAPER';
     const apiKeyName = process.env.COINBASE_API_KEY;
@@ -35,44 +23,35 @@ export default async function handler(req, res) {
 
     const formattedSecret = apiSecret.replace(/\\n/g, '\n');
 
-    // Format Product String (DOGEUSDT -> DOGE-USDT)
-    let rawSymbol = data.symbol || data.symbol_tv || 'DOGEUSDT';
+    // Format Product String
+    let rawSymbol = data.symbol || 'DOGEUSDT';
     rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '');
     const coinbaseProduct = rawSymbol.includes('-') ? rawSymbol : rawSymbol.replace('USDT', '-USDT');
 
     const side = (data.side || 'BUY').toUpperCase() === 'LONG' || (data.side || 'BUY').toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
     const qty = (data.qty || 10).toString();
 
-    // FIX 2: STATE MANAGEMENT (Check for open trades)
-    // Find if there is an active trade for this symbol that hasn't been closed yet
+    // 1. EXTRACT ADVANCED TRACKING VARIABLES
     const strategyId = data.strategy_id || 'MANUAL';
     const version = data.version || 'v1.0';
+    const leverage = data.leverage || 1;
+    const marketType = data.market_type || 'SPOT';
+    let tpPrice = data.tp_price || null;
+    let slPrice = data.sl_price || null;
 
-    // FIX: Isolate Open Trades by Symbol AND Strategy ID
+    // 2. ISOLATE OPEN TRADES (By Symbol AND Strategy ID)
     const { data: openTrades } = await supabase
       .from('trade_logs')
       .select('*')
       .eq('symbol', rawSymbol)
-      .eq('strategy_id', strategyId) // Prevent crossover interference
+      .eq('strategy_id', strategyId) 
       .is('exit_price', null)
       .order('id', { ascending: false })
       .limit(1);
     
     const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
 
-    // Is this just a "LOG_TRADE" event from TV? (No execution, just DB update)
-    if (data.pnl !== undefined && data.exit_price !== undefined) {
-      if (openTrade) {
-        await supabase.from('trade_logs').update({
-          exit_price: data.exit_price,
-          pnl: data.pnl,
-          exit_time: new Date().toISOString()
-        }).eq('id', openTrade.id);
-      }
-      return res.status(200).json({ status: "Trade Logged Successfully" });
-    }
-
-    console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Side: ${side}`);
+    console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Side: ${side} | Leverage: ${leverage}x`);
 
     const generateToken = (method, path) => {
       return jwt.sign(
@@ -89,7 +68,7 @@ export default async function handler(req, res) {
     let executionStatus = 'simulated';
 
     if (!isPaper) {
-      // 🔴 LIVE TRADE EXECUTION
+      // 🔴 LIVE TRADE EXECUTION (Updated for Coinbase Futures)
       const path = '/api/v3/brokerage/orders';
       const token = generateToken('POST', path);
       
@@ -98,7 +77,8 @@ export default async function handler(req, res) {
         product_id: coinbaseProduct,
         side: side,
         order_configuration: {
-          market_market_ioc: side === 'BUY' ? { quote_size: qty } : { base_size: qty }
+          // Futures strictly require base_size for BOTH longs and shorts
+          market_market_ioc: { base_size: qty } 
         }
       };
 
@@ -131,39 +111,46 @@ export default async function handler(req, res) {
       console.log(`[PAPER] Verified live market price: $${executionPrice}`);
     }
 
- // FIX: PROPER STATE MANAGEMENT (Single-Entry Mode)
- if (openTrade) {
-  if (openTrade.side !== side) {
-    const pnl = openTrade.side === 'BUY' 
-      ? executionPrice - openTrade.entry_price 
-      : openTrade.entry_price - executionPrice;
+    // 3. PROPER STATE MANAGEMENT (With PnL Scaling)
+    if (openTrade) {
+      if (openTrade.side !== side) {
+        // CLOSE TRADE: Calculate PnL accurately using position quantity
+        const pnl = openTrade.side === 'BUY' 
+          ? (executionPrice - openTrade.entry_price) * (openTrade.qty || 1)
+          : (openTrade.entry_price - executionPrice) * (openTrade.qty || 1);
 
-    const { error: updateError } = await supabase.from('trade_logs').update({
-      exit_price: executionPrice,
-      pnl: pnl,
-      exit_time: new Date().toISOString()
-    }).eq('id', openTrade.id);
+        const { error: updateError } = await supabase.from('trade_logs').update({
+          exit_price: executionPrice,
+          pnl: pnl,
+          exit_time: new Date().toISOString()
+        }).eq('id', openTrade.id);
 
-    if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
-    executionStatus = 'closed_position';
-  } else {
-    return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
-  }
-} else {
-  // FIX: Inject the tracking variables into the new trade
-  const { error: insertError } = await supabase.from('trade_logs').insert([{
-    symbol: rawSymbol,
-    side: side,
-    entry_price: executionPrice,
-    execution_mode: mode,
-    mci_at_entry: data.mci || 0,
-    strategy_id: strategyId,
-    version: version
-  }]);
+        if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
+        executionStatus = 'closed_position';
+      } else {
+        return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
+      }
+    } else {
+      // BRAND NEW ISOLATED TRADE
+      const { error: insertError } = await supabase.from('trade_logs').insert([{
+        symbol: rawSymbol,
+        side: side,
+        entry_price: executionPrice,
+        execution_mode: mode,
+        mci_at_entry: data.mci || 0,
+        strategy_id: strategyId,
+        version: version,
+        qty: parseFloat(qty),
+        leverage: leverage,
+        market_type: marketType,
+        tp_price: tpPrice,
+        sl_price: slPrice
+      }]);
 
-  if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
-  executionStatus = 'opened_position';
-}
+      if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
+      executionStatus = 'opened_position';
+    }
+
     return res.status(200).json({ 
       status: executionStatus, 
       product: coinbaseProduct, 

@@ -185,44 +185,61 @@ export default function Dashboard() {
           </div>
 
           {/* Execution History Table */}
-          <div className="bg-slate-900/40 border border-white/10 rounded-[2.5rem] overflow-hidden flex flex-col grow shadow-xl">
-             <div className="px-6 py-4 border-b border-white/5 bg-slate-900/40 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2">
-                <TerminalIcon size={14} className="text-cyan-400" /> Execution Stream: {activeAsset}
-             </div>
-             <div className="overflow-y-auto max-h-[300px]">
-                <table className="w-full text-left table-fixed">
+          <table className="w-full text-left table-fixed">
                   <thead className="bg-slate-950/40 text-[9px] font-black text-slate-600 uppercase tracking-[0.2em] sticky top-0 backdrop-blur-md z-10">
                     <tr>
-                      <th className="w-1/4 px-6 py-3">Time</th>
-                      <th className="w-1/4 px-6 py-3 text-center">Vector</th>
-                      <th className="w-1/4 px-6 py-3">Entry</th>
-                      <th className="w-1/4 px-6 py-3 text-right">PnL</th>
+                      <th className="w-[15%] px-4 py-3">Time</th>
+                      <th className="w-[20%] px-4 py-3 text-center">Vector</th>
+                      <th className="w-[15%] px-4 py-3">Entry</th>
+                      <th className="w-[20%] px-4 py-3 text-center">Target (TP / SL)</th>
+                      <th className="w-[15%] px-4 py-3">Exit</th>
+                      <th className="w-[15%] px-4 py-3 text-right">PnL</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
                     {tradeLogs.map((log, i) => (
                       <tr key={i} className="hover:bg-white/[0.02] transition-colors">
-                        <td className="px-6 py-4 text-[10px] text-slate-500 truncate">{new Date(log.exit_time || log.created_at).toLocaleTimeString()}</td>
-                        <td className="px-6 py-4 text-center">
-                            <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'LONG' || log.side === 'BUY' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
-                                {log.side}
-                            </span>
+                        <td className="px-4 py-4 text-[9px] text-slate-500 truncate">
+                            {new Date(log.exit_time || log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                         </td>
-                        <td className="px-6 py-4 text-slate-300 truncate">{log.entry_price}</td>
-                        <td className={`px-6 py-4 text-right font-black ${!log.exit_price ? 'text-indigo-400 animate-pulse' : (log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400')}`}>
-                            {!log.exit_price ? 'OPEN' : `${log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}`}
+                        
+                        <td className="px-4 py-4 text-center">
+                            <div className="flex flex-col items-center gap-1">
+                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'LONG' || log.side === 'BUY' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'}`}>
+                                    {log.side} {log.leverage > 1 ? `${log.leverage}x` : ''}
+                                </span>
+                                <span className="text-[8px] text-slate-600 uppercase font-black tracking-widest">{log.market_type || 'SPOT'}</span>
+                            </div>
+                        </td>
+
+                        <td className="px-4 py-4 text-slate-300 truncate text-[10px]">${log.entry_price}</td>
+                        
+                        <td className="px-4 py-4 text-center">
+                            {log.tp_price || log.sl_price ? (
+                                <div className="flex flex-col text-[9px]">
+                                    <span className="text-emerald-400/70">TP: {log.tp_price ? `$${log.tp_price}` : '--'}</span>
+                                    <span className="text-red-400/70">SL: {log.sl_price ? `$${log.sl_price}` : '--'}</span>
+                                </div>
+                            ) : (
+                                <span className="text-[9px] text-slate-600 italic">Dynamic</span>
+                            )}
+                        </td>
+
+                        <td className="px-4 py-4 text-[10px] text-slate-400">
+                            {log.exit_price ? `$${log.exit_price}` : <span className="text-indigo-400 animate-pulse font-black text-[9px] uppercase tracking-widest">Active</span>}
+                        </td>
+
+                        <td className={`px-4 py-4 text-right font-black ${!log.exit_price ? 'text-slate-600' : (log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400')}`}>
+                            {!log.exit_price ? '--' : `${log.pnl >= 0 ? '+' : ''}$${log.pnl?.toFixed(4)}`}
                         </td>
                       </tr>
                     ))}
                     {tradeLogs.length === 0 && (
-                        <tr><td colSpan="4" className="py-20 text-center text-slate-600 italic uppercase text-[10px] tracking-widest">No market activity recorded</td></tr>
+                        <tr><td colSpan="6" className="py-20 text-center text-slate-600 italic uppercase text-[10px] tracking-widest">No market activity recorded</td></tr>
                     )}
                   </tbody>
                 </table>
-             </div>
-          </div>
-        </div>
-
+</div>
         {/* RIGHT: Strategy Matrix & Agent (Sidebar) */}
         <div className="lg:col-span-3 flex flex-col gap-6 overflow-hidden h-full min-h-0">
           
