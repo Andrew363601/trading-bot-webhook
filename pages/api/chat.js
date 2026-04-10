@@ -106,18 +106,16 @@ export default async function handler(req, res) {
           description: 'Triggers the genetic optimizer to analyze recent trade logs and mutate strategy parameters.',
           parameters: z.object({}),
           execute: async () => {
-            // FIX 1: Dynamically grab the exact host the chat is currently running on
-            const protocol = req.headers['x-forwarded-proto'] || 'http';
-            const host = req.headers.host;
-            const url = `${protocol}://${host}/api/genetic-optimizer`;
+            // FIX: Hardcode the production URL to bypass StackBlitz/Preview 401 auth blocks
+            const url = `https://trading-bot-webhook.vercel.app/api/genetic-optimizer`;
             
             try {
               const resp = await fetch(url);
               
-              // FIX 2: If Vercel throws an HTML error page, intercept it
+              // This will now print the ACTUAL error if something goes wrong
               if (!resp.ok) {
                   const errorText = await resp.text();
-                  throw new Error(`Server returned ${resp.status}. This is usually a Vercel 10s timeout.`);
+                  throw new Error(`Server returned ${resp.status}: ${errorText}`);
               }
               
               const result = await resp.json();
