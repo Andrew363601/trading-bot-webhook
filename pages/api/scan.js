@@ -2,7 +2,7 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { calculateMCI } from '../../lib/strategies/coherence-engine';
+import { evaluateStrategy } from '../../lib/strategy-router.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -15,7 +15,6 @@ export default async function handler(req, res) {
     const apiKeyName = process.env.COINBASE_API_KEY;
     const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
 
-    // 1. Fetch ALL active strategies from the DB
     const { data: activeConfigs, error: configErr } = await supabase
       .from('strategy_config')
       .select('*')
@@ -26,53 +25,62 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: "No active strategies to scan." });
     }
 
-    // 2. Loop through every active strategy row independently
     for (const config of activeConfigs) {
       const asset = config.asset;
       if (!asset) continue;
 
       try {
-        const threshold = config.parameters?.coherence_threshold || 0.7;
-        const macroCandles = await fetchCoinbaseData(asset, 'ONE_HOUR', apiKeyName, apiSecret);
-        const triggerCandles = await fetchCoinbaseData(asset, 'FIVE_MINUTE', apiKeyName, apiSecret);
+        // 1. Read Dynamic Timeframes from the DB (Fallback to 1H/5M if not set)
+        const macroTf = config.parameters?.macro_tf || 'ONE_HOUR';
+        const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
+
+        // 2. Concurrently fetch the exact timeframes requested by the strategy
+        const [macroCandles, triggerCandles] = await Promise.all([
+            fetchCoinbaseData(asset, macroTf, apiKeyName, apiSecret),
+            fetchCoinbaseData(asset, triggerTf, apiKeyName, apiSecret)
+        ]);
 
         if (!macroCandles || macroCandles.length < 31 || !triggerCandles || triggerCandles.length < 31) {
             results.push({ asset, strategy: config.strategy, status: "INSUFFICIENT_DATA" });
             continue;
         }
 
-        const macroMCI = calculateMCI(macroCandles, { adx_len: 14, er_len: 10, threshold });
-        const triggerMCI = calculateMCI(triggerCandles, { adx_len: 14, er_len: 10, threshold });
-
-        const isResonant = macroMCI.mci > 0.60 && triggerMCI.mci >= threshold;
+        // 3. Package data and route to the dynamic brain
+        const marketData = { macro: macroCandles, trigger: triggerCandles };
+        
+        // ADD AWAIT HERE: The scanner must wait for the dynamic file to import and execute
+        const decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
 
         const scanEntry = {
           asset,
-          macro_mci: macroMCI.mci,
-          trigger_mci: triggerMCI.mci,
-          status: isResonant ? "RESONANT" : "STABLE"
+          macro_mci: decision.mci || 0,
+          trigger_mci: decision.mci || 0,
+          status: decision.signal ? "RESONANT" : "STABLE"
         };
         
         results.push(scanEntry);
         await supabase.from('scan_results').insert([scanEntry]);
 
-        if (isResonant) {
-          const side = triggerMCI.di_plus > triggerMCI.di_minus ? 'LONG' : 'SHORT';
+        // 4. If the router returned a signal, fire the execution payload
+        if (decision.signal) {
           const protocol = req.headers['x-forwarded-proto'] || 'https';
           const host = req.headers.host;
           
-          // 3. Send the execution payload WITH tracking variables
           await fetch(`${protocol}://${host}/api/execute-trade`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               symbol: asset.replace('-', ''),
-              side,
-              price: triggerCandles[triggerCandles.length - 1].close,
-              mci: triggerMCI.mci,
+              side: decision.signal,
+              price: decision.entryPrice,
+              mci: decision.mci,
               strategy_id: config.strategy,
               version: config.version || 'v1.0',
-              execution_mode: config.execution_mode
+              execution_mode: config.execution_mode,
+              leverage: decision.leverage,
+              market_type: decision.marketType,
+              tp_price: decision.tpPrice,
+              sl_price: decision.slPrice
             })
           });
         }
@@ -91,8 +99,19 @@ export default async function handler(req, res) {
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   const path = `/api/v3/brokerage/products/${asset}/candles`;
   const end = Math.floor(Date.now() / 1000);
-  const lookbackHours = granularity === 'ONE_HOUR' ? 48 : 20;
-  const start = end - (3600 * lookbackHours); 
+  
+  // Calculate lookback dynamically based on the timeframe requested
+  let lookbackSeconds;
+  switch (granularity) {
+      case 'ONE_MINUTE': lookbackSeconds = 60 * 60; break;          // 1 hour
+      case 'FIVE_MINUTE': lookbackSeconds = 300 * 60; break;        // 5 hours
+      case 'FIFTEEN_MINUTE': lookbackSeconds = 900 * 60; break;     // 15 hours
+      case 'ONE_HOUR': lookbackSeconds = 3600 * 48; break;          // 48 hours
+      case 'ONE_DAY': lookbackSeconds = 86400 * 45; break;          // 45 days
+      default: lookbackSeconds = 3600 * 24;                         // Fallback 24h
+  }
+  
+  const start = end - lookbackSeconds; 
   const query = `?start=${start}&end=${end}&granularity=${granularity}`;
 
   const token = jwt.sign({
