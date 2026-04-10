@@ -123,7 +123,8 @@ export default async function handler(req, res) {
                     const jwt = require('jsonwebtoken');
                     const crypto = require('crypto');
         
-                    const path = `/api/v3/brokerage/products/${asset.replace('-', '')}/candles`;
+                    const coinbaseProduct = asset.includes('-') ? asset : asset.replace('USDT', '-USDT').replace('USD', '-USD');
+                    const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
                     
                     let lookbackSeconds;
                     switch (granularity) {
