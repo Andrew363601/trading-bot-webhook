@@ -98,9 +98,14 @@ export default async function handler(req, res) {
 
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   try {
-    // 1. Bulletproof the inputs (Fixes spaces or lowercase typos from the DB)
+    // 1. Bulletproof the inputs
     const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
-    const coinbaseProduct = asset.includes('-') ? asset : asset.replace('USDT', '-USDT').replace('USD', '-USD');
+    
+    // THE ULTIMATE HYPHEN FIX: 
+    // Strips ALL existing hyphens, then safely rebuilds it with exactly one.
+    const cleanAsset = asset.replace(/-/g, '');
+    const coinbaseProduct = cleanAsset.replace('USDT', '-USDT').replace('USD', '-USD');
+    
     const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
     
     const end = Math.floor(Date.now() / 1000);

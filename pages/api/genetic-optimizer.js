@@ -50,8 +50,10 @@ export default async function handler(req, res) {
       const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
       
       if (apiKeyName && apiSecret) {
-        const coinbaseProduct = config.asset.includes('-') ? config.asset : config.asset.replace('USDT', '-USDT').replace('USD', '-USD');
-        const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+       // Replace the old path builder with this:
+       const cleanAsset = config.asset.replace(/-/g, '');
+       const coinbaseProduct = cleanAsset.replace('USDT', '-USDT').replace('USD', '-USD');
+       const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
         
         let lookbackSeconds;
         switch (triggerTf) {
