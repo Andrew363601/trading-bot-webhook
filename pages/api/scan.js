@@ -97,36 +97,56 @@ export default async function handler(req, res) {
 }
 
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
-  // FIX: Force the hyphen format so Coinbase API accepts it
-  const coinbaseProduct = asset.includes('-') ? asset : asset.replace('USDT', '-USDT').replace('USD', '-USD');
-  const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
-  
-  const end = Math.floor(Date.now() / 1000);
-  
-  // Calculate lookback dynamically based on the timeframe requested
-  let lookbackSeconds;
-  switch (granularity) {
-      case 'ONE_MINUTE': lookbackSeconds = 60 * 60; break;          // 1 hour
-      case 'FIVE_MINUTE': lookbackSeconds = 300 * 60; break;        // 5 hours
-      case 'FIFTEEN_MINUTE': lookbackSeconds = 900 * 60; break;     // 15 hours
-      case 'ONE_HOUR': lookbackSeconds = 3600 * 48; break;          // 48 hours
-      case 'ONE_DAY': lookbackSeconds = 86400 * 45; break;          // 45 days
-      default: lookbackSeconds = 3600 * 24;                         // Fallback 24h
+  try {
+    // 1. Bulletproof the inputs (Fixes spaces or lowercase typos from the DB)
+    const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
+    const coinbaseProduct = asset.includes('-') ? asset : asset.replace('USDT', '-USDT').replace('USD', '-USD');
+    const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+    
+    const end = Math.floor(Date.now() / 1000);
+    
+    // 2. Dynamic Lookback Calculation
+    let lookbackSeconds;
+    switch (safeGranularity) {
+        case 'ONE_MINUTE': lookbackSeconds = 60 * 60; break;          // 1 hour
+        case 'FIVE_MINUTE': lookbackSeconds = 300 * 60; break;        // 5 hours
+        case 'FIFTEEN_MINUTE': lookbackSeconds = 900 * 60; break;     // 15 hours
+        case 'ONE_HOUR': lookbackSeconds = 3600 * 48; break;          // 48 hours
+        case 'ONE_DAY': lookbackSeconds = 86400 * 45; break;          // 45 days
+        default: lookbackSeconds = 3600 * 24;                         // Fallback 24h
+    }
+    
+    const start = end - lookbackSeconds; 
+    const query = `?start=${start}&end=${end}&granularity=${safeGranularity}`;
+
+    // 3. Token Generation
+    const token = jwt.sign({
+      iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
+      sub: apiKey, uri: `GET api.coinbase.com${path}`,
+    }, secret, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
+
+    // 4. The Request
+    const resp = await fetch(`https://api.coinbase.com${path}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
+    const data = await resp.json();
+    
+    // --- THE DIAGNOSTIC LOGS ---
+    if (!resp.ok) {
+        console.error(`[COINBASE API REJECTED] ${coinbaseProduct} | ${safeGranularity} | Status: ${resp.status}`, data);
+        return null;
+    }
+
+    if (!data.candles || data.candles.length === 0) {
+        console.error(`[COINBASE EMPTY CANDLES] ${coinbaseProduct} | ${safeGranularity} | Data:`, data);
+        return null;
+    }
+
+    // 5. Clean output
+    return data.candles.map(c => ({ 
+        close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low) 
+    })).reverse();
+
+  } catch (err) {
+    console.error(`[FETCH FATAL ERROR] ${asset}:`, err.message);
+    return null;
   }
-  
-  const start = end - lookbackSeconds; 
-  const query = `?start=${start}&end=${end}&granularity=${granularity}`;
-
-  const token = jwt.sign({
-    iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
-    sub: apiKey, uri: `GET api.coinbase.com${path}`,
-  }, secret, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
-
-  const resp = await fetch(`https://api.coinbase.com${path}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
-  const data = await resp.json();
-  if (!resp.ok || !data.candles || data.candles.length === 0) return null;
-
-  return data.candles.map(c => ({ 
-      close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low) 
-  })).reverse();
 }
