@@ -47,7 +47,10 @@ export default async function handler(req, res) {
     --- PROTOCOL 2: NEW STRATEGY CREATION (HUMAN HANDOFF) ---
     If Andrew asks to "Start a new strategy" or design a new algorithm (e.g., "Create a day trading strategy for DOGE"):
     1. Use \`fetchHistoricalData\` to backtest your thesis and find the optimal timeframe/parameters.
-    2. Generate the COMPLETE JavaScript code for the new strategy. It MUST export \`async function run(macroCandles, triggerCandles, parameters)\`.
+    2. Generate the COMPLETE JavaScript code for the new strategy. 
+       - It MUST export \`async function run(macroCandles, triggerCandles, parameters)\`.
+       - It MUST return a strict Decision Envelope: \`{ signal: 'LONG' | 'SHORT' | null, entryPrice, leverage, marketType, tpPrice, slPrice }\`. Do not use 'BUY' or 'SELL'.
+       - Use the \`technicalindicators\` npm package (e.g., EMA, SMA, MACD, RSI) instead of writing your own math helper functions.
     3. Use the \`manageStrategy\` tool to stage the database row. You MUST set \`is_active: false\` and \`version: "v1.0"\`. Include your backtest reasoning.
     4. Inform Andrew exactly like this: "I have designed the [STRATEGY_NAME] architecture and staged it in the database. Please create the file \`lib/strategies/[strategy_name].js\`, paste the code below, and push the deployment. Let me know when ready, and I will activate it."
 
