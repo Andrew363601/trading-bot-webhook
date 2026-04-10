@@ -45,10 +45,15 @@ export default async function handler(req, res) {
 
     // FIX 2: STATE MANAGEMENT (Check for open trades)
     // Find if there is an active trade for this symbol that hasn't been closed yet
+    const strategyId = data.strategy_id || 'MANUAL';
+    const version = data.version || 'v1.0';
+
+    // FIX: Isolate Open Trades by Symbol AND Strategy ID
     const { data: openTrades } = await supabase
       .from('trade_logs')
       .select('*')
       .eq('symbol', rawSymbol)
+      .eq('strategy_id', strategyId) // Prevent crossover interference
       .is('exit_price', null)
       .order('id', { ascending: false })
       .limit(1);
@@ -128,40 +133,37 @@ export default async function handler(req, res) {
 
  // FIX: PROPER STATE MANAGEMENT (Single-Entry Mode)
  if (openTrade) {
-    if (openTrade.side !== side) {
-      // CLOSE REVERSAL: The signal flipped. Close the old trade.
-      const pnl = openTrade.side === 'BUY' 
-        ? executionPrice - openTrade.entry_price 
-        : openTrade.entry_price - executionPrice;
+  if (openTrade.side !== side) {
+    const pnl = openTrade.side === 'BUY' 
+      ? executionPrice - openTrade.entry_price 
+      : openTrade.entry_price - executionPrice;
 
-      const { error: updateError } = await supabase.from('trade_logs').update({
-        exit_price: executionPrice,
-        pnl: pnl,
-        exit_time: new Date().toISOString()
-      }).eq('id', openTrade.id);
+    const { error: updateError } = await supabase.from('trade_logs').update({
+      exit_price: executionPrice,
+      pnl: pnl,
+      exit_time: new Date().toISOString()
+    }).eq('id', openTrade.id);
 
-      if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
-      executionStatus = 'closed_position';
-      
-    } else {
-      // ALREADY IN: We already have an open trade in this direction. Do nothing.
-      console.log(`[ENGINE] Position already open for ${coinbaseProduct}. Ignoring signal.`);
-      return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
-    }
+    if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
+    executionStatus = 'closed_position';
   } else {
-    // BRAND NEW TRADE: No open trades exist.
-    const { error: insertError } = await supabase.from('trade_logs').insert([{
-      symbol: rawSymbol,
-      side: side,
-      entry_price: executionPrice,
-      execution_mode: mode,
-      mci_at_entry: data.mci || 0,
-    }]);
-
-    if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
-    executionStatus = 'opened_position';
+    return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
   }
+} else {
+  // FIX: Inject the tracking variables into the new trade
+  const { error: insertError } = await supabase.from('trade_logs').insert([{
+    symbol: rawSymbol,
+    side: side,
+    entry_price: executionPrice,
+    execution_mode: mode,
+    mci_at_entry: data.mci || 0,
+    strategy_id: strategyId,
+    version: version
+  }]);
 
+  if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
+  executionStatus = 'opened_position';
+}
     return res.status(200).json({ 
       status: executionStatus, 
       product: coinbaseProduct, 
