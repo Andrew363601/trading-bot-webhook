@@ -97,7 +97,10 @@ export default async function handler(req, res) {
 }
 
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
-  const path = `/api/v3/brokerage/products/${asset}/candles`;
+  // FIX: Force the hyphen format so Coinbase API accepts it
+  const coinbaseProduct = asset.includes('-') ? asset : asset.replace('USDT', '-USDT').replace('USD', '-USD');
+  const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+  
   const end = Math.floor(Date.now() / 1000);
   
   // Calculate lookback dynamically based on the timeframe requested
