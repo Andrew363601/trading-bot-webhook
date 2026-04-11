@@ -203,11 +203,21 @@ export default function Dashboard() {
                               )}
                           </div>
                           
-                          <div className="flex items-center justify-between">
-                              <span className="text-[9px] text-slate-400 font-mono">
-                                  MCI: {scan.trigger_mci ? scan.trigger_mci.toFixed(2) : '--'}
-                              </span>
-                              <span className={`text-[9px] font-black tracking-widest uppercase ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`}>
+                          <div className="flex items-center justify-between mt-1 pt-1 border-t border-white/5">
+                              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                                  {/* Dynamic Telemetry Mapping */}
+                                  {scan.telemetry && Object.keys(scan.telemetry).length > 0 ? (
+                                      Object.entries(scan.telemetry).map(([key, val]) => (
+                                          <span key={key} className="text-[9px] text-slate-400 font-mono">
+                                              <span className="text-slate-500 uppercase">{key}:</span> {typeof val === 'number' ? val.toFixed(2) : val}
+                                          </span>
+                                      ))
+                                  ) : (
+                                      <span className="text-[9px] text-slate-600 font-mono italic">Awaiting Telemetry...</span>
+                                  )}
+                              </div>
+                              
+                              <span className={`text-[9px] font-black tracking-widest uppercase flex-shrink-0 ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`}>
                                   {scan.status}
                               </span>
                           </div>

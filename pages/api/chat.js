@@ -129,26 +129,25 @@ export default async function handler(req, res) {
               // SECURITY CHECK 1: Prevent Path Traversal (e.g., trying to read "../../.env")
               const safeFileName = path.basename(fileName);
               
-              // SECURITY CHECK 2: Only allow .js files
-              if (!safeFileName.endsWith('.js')) {
-                 // Auto-append .js if the bot forgot it
-                 fileName = `${safeFileName}.js`;
-              } else {
-                 fileName = safeFileName;
-              }
+              // THE BULLETPROOF FORMATTER: 
+              // Cleans the safe string so the AI doesn't fail on case-sensitivity or spacing
+              const cleanName = safeFileName.toLowerCase().replace('.js', '').trim();
+              
+              // SECURITY CHECK 2: Strictly enforce the .js extension
+              const finalFileName = `${cleanName}.js`;
 
               // Build the absolute path to the strategies folder
-              const filePath = path.join(process.cwd(), 'lib', 'strategies', fileName);
+              const filePath = path.join(process.cwd(), 'lib', 'strategies', finalFileName);
               
               if (!fs.existsSync(filePath)) {
-                return { error: `Strategy file not found: ${fileName}. Ensure you are using the exact filename in lowercase.` };
+                return { error: `Strategy file not found: ${finalFileName}. Ensure you are using the exact filename in lowercase.` };
               }
               
               // Read and return the raw code
               const code = fs.readFileSync(filePath, 'utf8');
               return { 
                   success: true,
-                  fileName: fileName,
+                  fileName: finalFileName,
                   architecture: code 
               };
             } catch (err) {

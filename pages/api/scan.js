@@ -82,8 +82,7 @@ export default async function handler(req, res) {
       const scanEntry = {
         strategy: config.strategy,
         asset,
-        macro_mci: decision.mci || 0,
-        trigger_mci: decision.mci || 0,
+        telemetry: decision.telemetry || {},
         status: decision.signal ? "RESONANT" : "STABLE"
       };
       
