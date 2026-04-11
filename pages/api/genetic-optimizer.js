@@ -144,7 +144,7 @@ export default async function handler(req, res) {
 
       // 5. STRUCTURED GENERATION
       const { object } = await generateObject({
-      model: google('models/gemini-3.1-pro-preview'),
+      model: google('models/gemini-3-flash-preview'),
       system: "You are a quantitative genetic algorithm. Output strictly valid JSON. You MUST retain the exact parameter keys provided in the current configuration. Do not hallucinate new parameter names.",
       schema: z.object({
         parameters: z.record(z.any()).describe(`The evolved parameter object. Keys MUST perfectly match this list: ${Object.keys(config.parameters).join(', ')}`),
