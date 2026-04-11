@@ -12,8 +12,11 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    // 1. In standard Node.js, the body is automatically parsed into req.body
     const { messages } = req.body;
+
+    // --- THE VERCEL TIMEOUT FIX (Part 1) ---
+    // Keep the conversation history lean so Gemini 3.1 Pro doesn't waste time thinking about old data.
+    const safeMessages = messages.length > 4 ? messages.slice(-4) : messages;
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -123,18 +126,17 @@ export default async function handler(req, res) {
 `;
 
     const result = await streamText({
-      model: google('models/gemini-3.1-pro-preview'), // <-- Fixed model routing
+      model: google('models/gemini-3.1-pro-preview'),
       system: systemPrompt,
-      messages,
+      messages: safeMessages, // <-- Passed the sliced messages here
       maxSteps: 5,
       tools: {
-        // --- TOOL 1: manageStrategy ---
         manageStrategy: tool({
           description: 'Creates or updates a strategy config. MUST include mathematical reasoning and increment version on updates.',
           parameters: z.object({
             asset: z.string().describe('The asset symbol, e.g., DOGE-USDT'),
             strategy_id: z.string().describe('The name of the logic, e.g., LTC_4x4_STF'),
-            version: z.string().describe('The version number, e.g., v1.0 or v1.1'), // <-- NEW
+            version: z.string().describe('The version number, e.g., v1.0 or v1.1'),
             execution_mode: z.enum(['LIVE', 'PAPER']).optional(),
             is_active: z.boolean().optional(),
             parameters: z.record(z.any()).optional(),
@@ -152,8 +154,8 @@ export default async function handler(req, res) {
               asset: args.asset,
               strategy: args.strategy_id,
               execution_mode: args.execution_mode || 'PAPER',
-              is_active: args.is_active ?? false, // Defaults to false for safety
-              version: args.version || "v1.0", // <-- NEW
+              is_active: args.is_active ?? false,
+              version: args.version || "v1.0",
               parameters: args.parameters || {},
               last_updated: new Date().toISOString(),
               reasoning: args.reasoning
@@ -169,7 +171,7 @@ export default async function handler(req, res) {
             if (result.error) return { success: false, error: result.error.message };
             return { success: true, message: `Strategy ${args.strategy_id} updated to ${payload.version}.` };
           },
-        }), // <--- THIS COMMA CLOSES THE FIRST TOOL
+        }), 
 
         readStrategyLogic: tool({
           description: 'Reads the raw JavaScript source code of a specific strategy file to understand its mathematical logic, indicator crossover rules, and risk management.',
@@ -178,24 +180,16 @@ export default async function handler(req, res) {
           }),
           execute: async ({ fileName }) => {
             try {
-              // SECURITY CHECK 1: Prevent Path Traversal (e.g., trying to read "../../.env")
               const safeFileName = path.basename(fileName);
-              
-              // THE BULLETPROOF FORMATTER: 
-              // Cleans the safe string so the AI doesn't fail on case-sensitivity or spacing
               const cleanName = safeFileName.toLowerCase().replace('.js', '').trim();
-              
-              // SECURITY CHECK 2: Strictly enforce the .js extension
               const finalFileName = `${cleanName}.js`;
 
-              // Build the absolute path to the strategies folder
               const filePath = path.join(process.cwd(), 'lib', 'strategies', finalFileName);
               
               if (!fs.existsSync(filePath)) {
                 return { error: `Strategy file not found: ${finalFileName}. Ensure you are using the exact filename in lowercase.` };
               }
               
-              // Read and return the raw code
               const code = fs.readFileSync(filePath, 'utf8');
               return { 
                   success: true,
@@ -208,13 +202,12 @@ export default async function handler(req, res) {
           }
         }),
 
-        // TOOL 3
         fetchHistoricalData: tool({
           description: 'Fetches historical OHLC candles from Coinbase with pagination to bypass the 300-candle limit. Can fetch thousands of candles for deep backtesting.',
           parameters: z.object({
             asset: z.string().describe('The asset symbol, e.g., DOGE-USDT'),
             granularity: z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']),
-            lookback_candles: z.number().max(5000).default(500).describe('Total number of candles to fetch (e.g., 2000)')
+            lookback_candles: z.number().max(5000).default(150).describe('Total number of candles to fetch (e.g., 2000)')
           }),
           execute: async ({ asset, granularity, lookback_candles }) => {
             const apiKeyName = process.env.COINBASE_API_KEY;
@@ -224,10 +217,11 @@ export default async function handler(req, res) {
             const jwt = require('jsonwebtoken');
             const crypto = require('crypto');
 
-            // Apply the same fix here:
             const cleanAsset = asset.replace(/-/g, '');
             const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
-            const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+            
+            // Renamed to apiPath to prevent a collision with the Node.js 'path' module you imported at the top!
+            const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
             
             let lookbackSeconds;
             switch (granularity) {
@@ -252,27 +246,25 @@ export default async function handler(req, res) {
 
                 const token = jwt.sign({
                   iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
-                  sub: apiKeyName, uri: `GET api.coinbase.com${path}`,
+                  sub: apiKeyName, uri: `GET api.coinbase.com${apiPath}`,
                 }, apiSecret, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
 
-                const resp = await fetch(`https://api.coinbase.com${path}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
+                const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
                 const data = await resp.json();
                 
                 if (!resp.ok || !data.candles || data.candles.length === 0) break;
                 
-                // Coinbase returns newest first. Append batches as we walk backward.
                 allCandles = allCandles.concat(data.candles);
-                
                 currentEnd = currentStart;
                 candlesLeft -= batchSize;
                 
-                // Micro-pause to respect Coinbase rate limits
                 await new Promise(resolve => setTimeout(resolve, 100));
               }
               
-              // --- THE SAFETY LIMITER ---
-              // We map it, reverse it (so it is chronological), and slice off only the most recent 400.
-              // This protects Vercel's 4.5MB payload limit so the chat never goes blank!
+              // --- THE VERCEL TIMEOUT FIX (Part 2) ---
+              // Gemini 3.1 Pro Preview takes too long to "think" about 400-500 candles, causing Vercel to kill the server at 60s (Exit 128).
+              // We slice this down to 150 candles (5 months of data on the 1-Day chart). 
+              // This is plenty of data to see compression, but small enough that Gemini responds before Vercel crashes!
               const formattedCandles = allCandles.map(c => ({ 
                   close: parseFloat(c.close), 
                   high: parseFloat(c.high), 
@@ -280,7 +272,7 @@ export default async function handler(req, res) {
                   volume: parseFloat(c.volume) 
               })).reverse();
 
-              const safeData = formattedCandles.slice(-400);
+              const safeData = formattedCandles.slice(-150);
 
               return { 
                 asset, 
@@ -295,18 +287,15 @@ export default async function handler(req, res) {
           }
         }),
 
-        // --- TOOL 2: runOptimizer ---
         runOptimizer: tool({
           description: 'Triggers the genetic optimizer to analyze recent trade logs and mutate strategy parameters.',
           parameters: z.object({}),
           execute: async () => {
-            // FIX: Hardcode the production URL to bypass StackBlitz/Preview 401 auth blocks
             const url = `https://trading-bot-webhook.vercel.app/api/genetic-optimizer`;
             
             try {
               const resp = await fetch(url);
               
-              // This will now print the ACTUAL error if something goes wrong
               if (!resp.ok) {
                   const errorText = await resp.text();
                   throw new Error(`Server returned ${resp.status}: ${errorText}`);
@@ -322,7 +311,6 @@ export default async function handler(req, res) {
       },
     });
 
-    // 2. Stream the AI text seamlessly back to the Glassmorphism UI
     result.pipeDataStreamToResponse(res);
 
   } catch (err) {
