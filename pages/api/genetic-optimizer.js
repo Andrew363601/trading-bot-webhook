@@ -7,6 +7,8 @@ import { generateObject } from 'ai';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -44,6 +46,20 @@ export default async function handler(req, res) {
       const totalPnL = trades.reduce((sum, t) => sum + (t.pnl || 0), 0);
       const winningTrades = trades.filter(t => t.pnl > 0).length;
       const winRate = (winningTrades / trades.length) * 100;
+
+      // --- NEW: THE ARCHITECTURE READER ---
+      let strategyLogic = "Source code unavailable.";
+      try {
+          const fileName = `${config.strategy.toLowerCase()}.js`;
+          const filePath = path.join(process.cwd(), 'lib', 'strategies', fileName);
+          if (fs.existsSync(filePath)) {
+              strategyLogic = fs.readFileSync(filePath, 'utf8');
+          } else {
+              console.warn(`[OPTIMIZER WARN] Could not find file for ${config.strategy}`);
+          }
+      } catch (err) {
+          console.error(`[OPTIMIZER FS ERROR]`, err.message);
+      }
 
       // 2. THE RESEARCHER LOOP: Deep Paginated Fetch based on Strategy Timefram
       let marketContext = [];
@@ -93,30 +109,33 @@ const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
         marketContext = allCandles.map(c => ({ close: parseFloat(c.close), volume: parseFloat(c.volume) })).reverse().slice(-150);
       }
 
-      // 3. THE OMNISCIENT PROMPT
-      const prompt = `
-        You are the Nexus Genetic Optimizer. Your task is to mathematically mutate the parameters of this trading strategy to increase ROI.
-        
-        --- ACTIVE CONFIGURATION ---
-        Asset: ${config.asset}
-        Strategy Architecture: ${config.strategy}
-        Current Version: ${config.version || 'v1.0'}
-        Current Parameters: ${JSON.stringify(config.parameters)}
-        
-        --- TELEMETRY ---
-        Total PnL: $${totalPnL.toFixed(4)}
-        Win Rate: ${winRate.toFixed(1)}%
-        Recent Trades: ${JSON.stringify(trades)}
-        Recent Market Context (Last 150 ${triggerTf} candles): ${JSON.stringify(marketContext)}
+    // 3. THE OMNISCIENT PROMPT
+    const prompt = `
+    You are the Nexus Genetic Optimizer. Your task is to mathematically mutate the parameters of this trading strategy to increase ROI.
+    
+    --- ACTIVE CONFIGURATION ---
+    Asset: ${config.asset}
+    Strategy Name: ${config.strategy}
+    Current Version: ${config.version || 'v1.0'}
+    Current Parameters: ${JSON.stringify(config.parameters)}
+    
+    --- RAW STRATEGY SOURCE CODE ---
+    Read this logic carefully to understand exactly how the parameters are used in the math:
+    ${strategyLogic}
+    
+    --- TELEMETRY ---
+    Total PnL: $${totalPnL.toFixed(4)}
+    Win Rate: ${winRate.toFixed(1)}%
+    Recent Trades: ${JSON.stringify(trades)}
+    Recent Market Context (Last 150 ${triggerTf} candles): ${JSON.stringify(marketContext)}
 
-        --- DIRECTIVE ---
-        1. Analyze the Market Context. Did the strategy lose because the timeframe was too noisy? Was the stop-loss too tight during consolidation?
-        2. Mutate the parameters. You are fully authorized to change:
-           - Timeframes: 'macro_tf' and 'trigger_tf' (Valid: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, ONE_HOUR, ONE_DAY)
-           - Risk Controls: 'leverage' (1 to 10), 'tp_percent' (e.g., 0.02 for 2%), 'sl_percent' (e.g., 0.01 for 1%)
-           - Core logic thresholds specific to this strategy architecture.
-        3. You MUST increment the version number by exactly 0.1 (e.g., v1.0 becomes v1.1).
-      `;
+    --- DIRECTIVE ---
+    1. Analyze the Market Context alongside the Raw Source Code. Did the strategy lose because the timeframe was too noisy? Was the stop-loss too tight during consolidation?
+    2. Mutate the parameters. Ensure your new parameters match the variables expected in the source code.
+       - Timeframes: 'macro_tf' and 'trigger_tf' (Valid: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, ONE_HOUR, ONE_DAY)
+       - Risk Controls: 'leverage' (1 to 10), 'tp_percent' (e.g., 0.02 for 2%), 'sl_percent' (e.g., 0.01 for 1%)
+    3. You MUST increment the version number by exactly 0.1 (e.g., v1.0 becomes v1.1).
+  `;
 
       // 4. STRUCTURED GENERATION (No more manual JSON scrubbing)
       const { object } = await generateObject({

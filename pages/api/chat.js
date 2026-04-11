@@ -3,6 +3,8 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText, tool } from 'ai';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
+import fs from 'fs';
+import path from 'path';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
@@ -43,6 +45,12 @@ export default async function handler(req, res) {
     - You are authorized to toggle strategies between PAPER and LIVE if Andrew provides the command.
     - If trade logs show consistent losses, run historical data, analyze the failure points, and mutate the parameters.
     - If asked to run the genetic optimizer, use the runOptimizer tool.
+
+    --- PROTOCOL 2: SYSTEM INQUIRIES & AUDITS ---
+        If Andrew asks about active strategies, performance, or portfolio status:
+        1. Use \`fetchPortfolio\` and \`fetchActiveStrategies\`.
+        2. IF Andrew asks you to analyze, review, or optimize a specific strategy, you MUST use the \`readStrategyLogic\` tool to read the raw source code of that strategy BEFORE giving advice. You cannot optimize a strategy if you don't know the math behind it.
+        3. Cross-reference the raw code with recent execution logs to see why trades are winning or losing.
 
     --- PROTOCOL 2: NEW STRATEGY CREATION (HUMAN HANDOFF) ---
     If Andrew asks to "Start a new strategy" or design a new algorithm (e.g., "Create a day trading strategy for DOGE"):
@@ -110,6 +118,45 @@ export default async function handler(req, res) {
             return { success: true, message: `Strategy ${args.strategy_id} updated to ${payload.version}.` };
           },
         }), // <--- THIS COMMA CLOSES THE FIRST TOOL
+
+        readStrategyLogic: tool({
+          description: 'Reads the raw JavaScript source code of a specific strategy file to understand its mathematical logic, indicator crossover rules, and risk management.',
+          parameters: z.object({
+            fileName: z.string().describe('The name of the strategy file to read, e.g., "doge_hf_scalper_v1.js"')
+          }),
+          execute: async ({ fileName }) => {
+            try {
+              // SECURITY CHECK 1: Prevent Path Traversal (e.g., trying to read "../../.env")
+              const safeFileName = path.basename(fileName);
+              
+              // SECURITY CHECK 2: Only allow .js files
+              if (!safeFileName.endsWith('.js')) {
+                 // Auto-append .js if the bot forgot it
+                 fileName = `${safeFileName}.js`;
+              } else {
+                 fileName = safeFileName;
+              }
+
+              // Build the absolute path to the strategies folder
+              const filePath = path.join(process.cwd(), 'lib', 'strategies', fileName);
+              
+              if (!fs.existsSync(filePath)) {
+                return { error: `Strategy file not found: ${fileName}. Ensure you are using the exact filename in lowercase.` };
+              }
+              
+              // Read and return the raw code
+              const code = fs.readFileSync(filePath, 'utf8');
+              return { 
+                  success: true,
+                  fileName: fileName,
+                  architecture: code 
+              };
+            } catch (err) {
+              return { error: `Failed to read file: ${err.message}` };
+            }
+          }
+        }),
+
                  // tOOL 3
                  fetchHistoricalData: tool({
                   description: 'Fetches historical OHLC candles from Coinbase with pagination to bypass the 300-candle limit. Can fetch thousands of candles for deep backtesting.',
