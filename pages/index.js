@@ -184,17 +184,26 @@ export default function Dashboard() {
               </div>
               
               <div className="space-y-2 overflow-y-auto pr-2 custom-scrollbar flex-grow">
-                  {scanStream.map((scan, i) => (
-                      <div key={i} className="flex items-center justify-between p-2 bg-slate-900/40 rounded border border-white/5 hover:bg-white/[0.02] transition-colors">
-                          <div className="flex items-center gap-3">
-                              <span className="text-[9px] text-slate-500 font-mono">
-                                  {new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                              </span>
-                              <span className="text-[10px] font-bold text-slate-300 tracking-wider">
-                                  {scan.asset}
-                              </span>
+              {scanStream.map((scan, i) => (
+                      <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 hover:bg-white/[0.02] transition-colors gap-1.5">
+                          <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                  <span className="text-[9px] text-slate-500 font-mono">
+                                      {new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                  </span>
+                                  <span className="text-[10px] font-bold text-slate-300 tracking-wider">
+                                      {scan.asset}
+                                  </span>
+                              </div>
+                              {/* NEW: Strategy Name Badge */}
+                              {scan.strategy && (
+                                  <span className="text-[8px] font-black tracking-tighter uppercase px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                                      {scan.strategy}
+                                  </span>
+                              )}
                           </div>
-                          <div className="flex items-center gap-3">
+                          
+                          <div className="flex items-center justify-between">
                               <span className="text-[9px] text-slate-400 font-mono">
                                   MCI: {scan.trigger_mci ? scan.trigger_mci.toFixed(2) : '--'}
                               </span>

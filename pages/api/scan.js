@@ -80,6 +80,7 @@ export default async function handler(req, res) {
 
       // The database payload (matches your Supabase columns exactly)
       const scanEntry = {
+        strategy: config.strategy,
         asset,
         macro_mci: decision.mci || 0,
         trigger_mci: decision.mci || 0,
