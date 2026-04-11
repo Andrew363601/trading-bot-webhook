@@ -1,4 +1,4 @@
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 // pages/api/genetic-optimizer.js
 import { createClient } from '@supabase/supabase-js';
