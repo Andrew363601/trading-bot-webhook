@@ -1,0 +1,142 @@
+async function run(macroCandles, triggerCandles, parameters) {
+    const { leverage, breakout_period, volume_threshold_multiplier, fast_ema_period, slow_ema_period, stop_loss_percentage, take_profit_percentage } = parameters;
+
+    if (triggerCandles.length < Math.max(breakout_period + 1, slow_ema_period) || macroCandles.length < slow_ema_period) {
+        return { signal: null };
+    }
+
+    const currentPrice = triggerCandles[triggerCandles.length - 1].close;
+    const currentVolume = triggerCandles[triggerCandles.length - 1].volume;
+
+    // Calculate EMAs for macro trend
+    const macroCloses = macroCandles.map(c => c.close);
+    const macroFastEma = technicalindicators.EMA.calculate({ period: fast_ema_ema_period, values: macroCloses });
+    const macroSlowEma = technicalindicators.EMA.calculate({ period: slow_ema_period, values: macroCloses });
+
+    const lastMacroFastEma = macroFastEma[macroFastEma.length - 1];
+    const lastMacroSlowEma = macroSlowEma[macroSlowEma.length - 1];
+
+    let signal = null;
+    let entryPrice = currentPrice;
+    let tpPrice = null;
+    let slPrice = null;
+
+    // Calculate breakout levels and average volume on trigger timeframe
+    let highestHigh = -Infinity;
+    let lowestLow = Infinity;
+    let totalVolume = 0;
+
+    // Iterate over the last 'breakout_period' candles excluding the current one
+    for (let i = triggerCandles.length - 1 - breakout_period; i < triggerCandles.length - 1; i++) {
+        if (triggerCandles[i].high > highestHigh) {
+            highestHigh = triggerCandles[i].high;
+        }
+        if (triggerCandles[i].low < lowestLow) {
+            lowestLow = triggerCandles[i].low;
+        }
+        totalVolume += triggerCandles[i].volume;
+    }
+    const averageVolume = totalVolume / breakout_period;
+
+    // Check for Long Breakout
+    if (lastMacroFastEma > lastMacroSlowEma && // Uptrend on macro
+        currentPrice > highestHigh && // Price broke above recent high
+        currentVolume > averageVolume * volume_threshold_multiplier) { // Volume confirmation
+        
+        signal = 'LONG';
+        slPrice = entryPrice * (1 - stop_loss_percentage);
+        tpPrice = entryPrice * (1 + take_profit_percentage);
+
+    } 
+    // Check for Short Breakout
+    else if (lastMacroFastEma < lastMacroSlowEma && // Downtrend on macro
+               currentPrice < lowestLow && // Price broke below recent low
+               currentVolume > averageVolume * volume_threshold_multiplier) { // Volume confirmation
+        
+        signal = 'SHORT';
+        slPrice = entryPrice * (1 + stop_loss_percentage);
+        tpPrice = entryPrice * (1 - take_profit_percentage);
+    }
+
+    return {
+        signal,
+        entryPrice,
+        leverage,
+        marketType: 'SPOT',
+        tpPrice,
+        slPrice
+    };
+}
+```
+I have designed the BTC_BREAKOUT_V1 architecture and staged it in the database. Please create the file `lib/strategies/btc_breakout_v1.js`, paste the code below, and push the deployment. Let me know when ready, and I will activate it.
+
+```javascript
+async function run(macroCandles, triggerCandles, parameters) {
+    const { leverage, breakout_period, volume_threshold_multiplier, fast_ema_period, slow_ema_period, stop_loss_percentage, take_profit_percentage } = parameters;
+
+    if (triggerCandles.length < Math.max(breakout_period + 1, slow_ema_period) || macroCandles.length < slow_ema_period) {
+        return { signal: null };
+    }
+
+    const currentPrice = triggerCandles[triggerCandles.length - 1].close;
+    const currentVolume = triggerCandles[triggerCandles.length - 1].volume;
+
+    // Calculate EMAs for macro trend
+    const macroCloses = macroCandles.map(c => c.close);
+    const macroFastEma = technicalindicators.EMA.calculate({ period: fast_ema_period, values: macroCloses });
+    const macroSlowEma = technicalindicators.EMA.calculate({ period: slow_ema_period, values: macroCloses });
+
+    const lastMacroFastEma = macroFastEma[macroFastEma.length - 1];
+    const lastMacroSlowEma = macroSlowEma[macroSlowEma.length - 1];
+
+    let signal = null;
+    let entryPrice = currentPrice;
+    let tpPrice = null;
+    let slPrice = null;
+
+    // Calculate breakout levels and average volume on trigger timeframe
+    let highestHigh = -Infinity;
+    let lowestLow = Infinity;
+    let totalVolume = 0;
+
+    // Iterate over the last 'breakout_period' candles excluding the current one
+    for (let i = triggerCandles.length - 1 - breakout_period; i < triggerCandles.length - 1; i++) {
+        if (triggerCandles[i].high > highestHigh) {
+            highestHigh = triggerCandles[i].high;
+        }
+        if (triggerCandles[i].low < lowestLow) {
+            lowestLow = triggerCandles[i].low;
+        }
+        totalVolume += triggerCandles[i].volume;
+    }
+    const averageVolume = totalVolume / breakout_period;
+
+    // Check for Long Breakout
+    if (lastMacroFastEma > lastMacroSlowEma && // Uptrend on macro
+        currentPrice > highestHigh && // Price broke above recent high
+        currentVolume > averageVolume * volume_threshold_multiplier) { // Volume confirmation
+        
+        signal = 'LONG';
+        slPrice = entryPrice * (1 - stop_loss_percentage);
+        tpPrice = entryPrice * (1 + take_profit_percentage);
+
+    } 
+    // Check for Short Breakout
+    else if (lastMacroFastEma < lastMacroSlowEma && // Downtrend on macro
+               currentPrice < lowestLow && // Price broke below recent low
+               currentVolume > averageVolume * volume_threshold_multiplier) { // Volume confirmation
+        
+        signal = 'SHORT';
+        slPrice = entryPrice * (1 + stop_loss_percentage);
+        tpPrice = entryPrice * (1 - take_profit_percentage);
+    }
+
+    return {
+        signal,
+        entryPrice,
+        leverage,
+        marketType: 'SPOT',
+        tpPrice,
+        slPrice
+    };
+}
