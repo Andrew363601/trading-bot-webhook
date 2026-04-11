@@ -16,7 +16,7 @@ export default function Dashboard() {
   const [activeAsset, setActiveAsset] = useState('DOGE-USDT');
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
-  const [scanStream, setScanStream] = useState([]); // NEW: Scan telemetry state
+  const [scanStream, setScanStream] = useState([]); 
   const [portfolio, setPortfolio] = useState({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 } });
   const [selectedStrat, setSelectedStrat] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -195,7 +195,7 @@ export default function Dashboard() {
                                       {scan.asset}
                                   </span>
                               </div>
-                              {/* NEW: Strategy Name Badge */}
+                              {/* Strategy Name Badge */}
                               {scan.strategy && (
                                   <span className="text-[8px] font-black tracking-tighter uppercase px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
                                       {scan.strategy}
@@ -203,7 +203,7 @@ export default function Dashboard() {
                               )}
                           </div>
                           
-                          <div className="flex items-center justify-between mt-1 pt-1 border-t border-white/5">
+                         <div className="flex items-center justify-between mt-1 pt-1 border-t border-white/5">
                               <div className="flex flex-wrap gap-x-3 gap-y-1">
                                   {/* Dynamic Telemetry Mapping */}
                                   {scan.telemetry && Object.keys(scan.telemetry).length > 0 ? (
@@ -228,25 +228,26 @@ export default function Dashboard() {
                   )}
               </div>
           </div>
-
         </div>
 
-        {/* CENTER: Chart & Trades (Main View) */}
-        <div className="lg:col-span-7 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden">
-          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex-shrink-0">
-            <div id="tv_chart_container" className="absolute inset-0" />
+        {/* MIDDLE: Chart & Execution Logs */}
+        <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
+          {/* Chart Container */}
+          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex-shrink-0 flex flex-col p-4">
             
-            <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 max-w-[220px]">
+            <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
+            
+            <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[220px] pointer-events-none">
                {tradeLogs.slice(0, 3).map((log, i) => (
-                 <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400' : 'text-amber-400'}>●</span>
-                      <span className="text-slate-300 uppercase truncate">{log.side} @ {log.entry_price}</span>
-                    </div>
-                    <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400 font-bold'}>
-                        {log.pnl >= 0 ? '+' : ''}{log.pnl?.toFixed(2)}
-                    </span>
-                 </div>
+                  <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-3 pointer-events-auto">
+                     <div className="flex items-center gap-2">
+                       <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400' : 'text-amber-400'}>●</span>
+                       <span className="text-slate-300 uppercase truncate">{log.side} @ {log.entry_price}</span>
+                     </div>
+                     <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400 font-bold'}>
+                         {log.pnl >= 0 ? '+' : ''}{log.pnl?.toFixed(2)}
+                     </span>
+                  </div>
                ))}
             </div>
           </div>
@@ -372,7 +373,6 @@ export default function Dashboard() {
               </div>
             </div>
             
-            {/* FIX: Chat Window is now perfectly scroll-locked */}
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
               {messages.length === 0 && (
                 <div className="text-slate-600 italic leading-relaxed uppercase text-[10px]">
