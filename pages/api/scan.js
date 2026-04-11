@@ -36,30 +36,61 @@ export default async function handler(req, res) {
 
         // 2. Concurrently fetch the exact timeframes requested by the strategy
         const [macroCandles, triggerCandles] = await Promise.all([
-            fetchCoinbaseData(asset, macroTf, apiKeyName, apiSecret),
-            fetchCoinbaseData(asset, triggerTf, apiKeyName, apiSecret)
-        ]);
+          fetchCoinbaseData(asset, macroTf, apiKeyName, apiSecret),
+          fetchCoinbaseData(asset, triggerTf, apiKeyName, apiSecret)
+      ]);
 
-        if (!macroCandles || macroCandles.length < 31 || !triggerCandles || triggerCandles.length < 31) {
-            results.push({ asset, strategy: config.strategy, status: "INSUFFICIENT_DATA" });
-            continue;
-        }
+      // DIAGNOSTIC 1: Did the API fail completely?
+      if (!macroCandles || !triggerCandles) {
+          results.push({ 
+              strategy: config.strategy, 
+              asset, 
+              status: "API_FETCH_FAILED", 
+              details: "Coinbase rejected the request. Check Vercel logs for the 400/401 error." 
+          });
+          continue;
+      }
 
-        // 3. Package data and route to the dynamic brain
-        const marketData = { macro: macroCandles, trigger: triggerCandles };
-        
-        // ADD AWAIT HERE: The scanner must wait for the dynamic file to import and execute
-        const decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
+      // DIAGNOSTIC 2: Did it return data, but not enough?
+      if (macroCandles.length < 31 || triggerCandles.length < 31) {
+          results.push({ 
+              strategy: config.strategy, 
+              asset, 
+              status: "INSUFFICIENT_DATA",
+              macro_candles_received: macroCandles.length,
+              trigger_candles_received: triggerCandles.length
+          });
+          continue;
+      }
 
-        const scanEntry = {
-          asset,
-          macro_mci: decision.mci || 0,
-          trigger_mci: decision.mci || 0,
-          status: decision.signal ? "RESONANT" : "STABLE"
-        };
-        
-        results.push(scanEntry);
-        await supabase.from('scan_results').insert([scanEntry]);
+      // 3. Package data and route to the dynamic brain
+      const marketData = { macro: macroCandles, trigger: triggerCandles };
+      const decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
+
+      // DIAGNOSTIC 3: Did the Dynamic Router fail to find your .js file?
+      if (decision.error) {
+          results.push({
+              strategy: config.strategy,
+              asset,
+              status: "ROUTER_ERROR",
+              details: decision.error
+          });
+          continue;
+      }
+
+      // The database payload (matches your Supabase columns exactly)
+      const scanEntry = {
+        asset,
+        macro_mci: decision.mci || 0,
+        trigger_mci: decision.mci || 0,
+        status: decision.signal ? "RESONANT" : "STABLE"
+      };
+      
+      // Push to the cron log WITH the strategy name so you can read it!
+      results.push({ strategy: config.strategy, ...scanEntry });
+      
+      // Insert into Supabase so the UI streams it
+      await supabase.from('scan_results').insert([scanEntry]);
 
         // 4. If the router returned a signal, fire the execution payload
         if (decision.signal) {
