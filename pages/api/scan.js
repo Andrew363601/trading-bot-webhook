@@ -141,12 +141,12 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     // 2. Dynamic Lookback Calculation (Maxed out buffer to 500)
     let lookbackSeconds;
     switch (safeGranularity) {
-        case 'ONE_MINUTE': lookbackSeconds = 60 * 500; break;          
-        case 'FIVE_MINUTE': lookbackSeconds = 300 * 500; break;        
-        case 'FIFTEEN_MINUTE': lookbackSeconds = 900 * 500; break;     
-        case 'ONE_HOUR': lookbackSeconds = 3600 * 500; break;          
-        case 'ONE_DAY': lookbackSeconds = 86400 * 500; break;          
-        default: lookbackSeconds = 3600 * 500;                         
+        case 'ONE_MINUTE': lookbackSeconds = 60 * 300; break;          
+        case 'FIVE_MINUTE': lookbackSeconds = 300 * 300; break;        
+        case 'FIFTEEN_MINUTE': lookbackSeconds = 900 * 300; break;     
+        case 'ONE_HOUR': lookbackSeconds = 3600 * 300; break;          
+        case 'ONE_DAY': lookbackSeconds = 86400 * 300; break;          
+        default: lookbackSeconds = 3600 * 300;                         
     }
     
     const start = end - lookbackSeconds; 

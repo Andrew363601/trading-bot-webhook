@@ -54,8 +54,7 @@ export default async function handler(req, res) {
     2. Generate the COMPLETE JavaScript code for the new strategy. You MUST strictly adhere to the following architectural template. DO NOT deviate from this structure, DO NOT skip the telemetry object, and DO NOT hallucinate variables that you haven't calculated:
 
     \`\`\`javascript
-    // 1. Explicitly import only what you use
-    import { /* YOUR INDICATORS */ } from 'technicalindicators';
+    // 1. Explicitly import only what you use    import { /* YOUR INDICATORS */ } from 'technicalindicators';
 
     export async function run(macroCandles, triggerCandles, parameters) {
         // 2. Extract parameters with safe fallbacks matching the DB
@@ -209,86 +208,92 @@ export default async function handler(req, res) {
           }
         }),
 
-                 // tOOL 3
-                 fetchHistoricalData: tool({
-                  description: 'Fetches historical OHLC candles from Coinbase with pagination to bypass the 300-candle limit. Can fetch thousands of candles for deep backtesting.',
-                  parameters: z.object({
-                    asset: z.string().describe('The asset symbol, e.g., DOGE-USDT'),
-                    granularity: z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']),
-                    lookback_candles: z.number().max(5000).default(500).describe('Total number of candles to fetch (e.g., 2000)')
-                  }),
-                  execute: async ({ asset, granularity, lookback_candles }) => {
-                    const apiKeyName = process.env.COINBASE_API_KEY;
-                    const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
-                    if (!apiKeyName || !apiSecret) return { error: "Missing Coinbase Credentials" };
-        
-                    const jwt = require('jsonwebtoken');
-                    const crypto = require('crypto');
-        
-                   // Replace the old path builder with this:
-   // Apply the same fix here:
-   const cleanAsset = asset.replace(/-/g, '');
-   const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
-   const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
-                    
-                    let lookbackSeconds;
-                    switch (granularity) {
-                        case 'ONE_MINUTE': lookbackSeconds = 60; break;
-                        case 'FIVE_MINUTE': lookbackSeconds = 300; break;
-                        case 'FIFTEEN_MINUTE': lookbackSeconds = 900; break;
-                        case 'ONE_HOUR': lookbackSeconds = 3600; break;
-                        case 'ONE_DAY': lookbackSeconds = 86400; break;
-                        default: lookbackSeconds = 3600;
-                    }
-                    
-                    let allCandles = [];
-                    let currentEnd = Math.floor(Date.now() / 1000);
-                    let candlesLeft = lookback_candles;
-        
-                    try {
-                      // The Pagination Loop
-                      while (candlesLeft > 0) {
-                        const batchSize = Math.min(candlesLeft, 300);
-                        const currentStart = currentEnd - (batchSize * lookbackSeconds);
-                        const query = `?start=${currentStart}&end=${currentEnd}&granularity=${granularity}`;
-        
-                        const token = jwt.sign({
-                          iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
-                          sub: apiKeyName, uri: `GET api.coinbase.com${path}`,
-                        }, apiSecret, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
-        
-                        const resp = await fetch(`https://api.coinbase.com${path}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
-                        const data = await resp.json();
-                        
-                        if (!resp.ok || !data.candles || data.candles.length === 0) break;
-                        
-                        // Coinbase returns newest first. Append batches as we walk backward.
-                        allCandles = allCandles.concat(data.candles);
-                        
-                        currentEnd = currentStart;
-                        candlesLeft -= batchSize;
-                        
-                        // Micro-pause to respect Coinbase rate limits
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                      }
-                      
-                      return { 
-                        asset, 
-                        granularity, 
-                        total_fetched: allCandles.length,
-                        // Reverse at the very end so the AI reads it chronologically (oldest to newest)
-                        data: allCandles.map(c => ({ 
-                            close: parseFloat(c.close), 
-                            high: parseFloat(c.high), 
-                            low: parseFloat(c.low), 
-                            volume: parseFloat(c.volume) 
-                        })).reverse()
-                      };
-                    } catch (err) {
-                      return { error: err.message };
-                    }
-                  }
-                }),
+        // TOOL 3
+        fetchHistoricalData: tool({
+          description: 'Fetches historical OHLC candles from Coinbase with pagination to bypass the 300-candle limit. Can fetch thousands of candles for deep backtesting.',
+          parameters: z.object({
+            asset: z.string().describe('The asset symbol, e.g., DOGE-USDT'),
+            granularity: z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']),
+            lookback_candles: z.number().max(5000).default(500).describe('Total number of candles to fetch (e.g., 2000)')
+          }),
+          execute: async ({ asset, granularity, lookback_candles }) => {
+            const apiKeyName = process.env.COINBASE_API_KEY;
+            const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
+            if (!apiKeyName || !apiSecret) return { error: "Missing Coinbase Credentials" };
+
+            const jwt = require('jsonwebtoken');
+            const crypto = require('crypto');
+
+            // Apply the same fix here:
+            const cleanAsset = asset.replace(/-/g, '');
+            const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
+            const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+            
+            let lookbackSeconds;
+            switch (granularity) {
+                case 'ONE_MINUTE': lookbackSeconds = 60; break;
+                case 'FIVE_MINUTE': lookbackSeconds = 300; break;
+                case 'FIFTEEN_MINUTE': lookbackSeconds = 900; break;
+                case 'ONE_HOUR': lookbackSeconds = 3600; break;
+                case 'ONE_DAY': lookbackSeconds = 86400; break;
+                default: lookbackSeconds = 3600;
+            }
+            
+            let allCandles = [];
+            let currentEnd = Math.floor(Date.now() / 1000);
+            let candlesLeft = lookback_candles;
+
+            try {
+              // The Pagination Loop
+              while (candlesLeft > 0) {
+                const batchSize = Math.min(candlesLeft, 300);
+                const currentStart = currentEnd - (batchSize * lookbackSeconds);
+                const query = `?start=${currentStart}&end=${currentEnd}&granularity=${granularity}`;
+
+                const token = jwt.sign({
+                  iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
+                  sub: apiKeyName, uri: `GET api.coinbase.com${path}`,
+                }, apiSecret, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
+
+                const resp = await fetch(`https://api.coinbase.com${path}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
+                const data = await resp.json();
+                
+                if (!resp.ok || !data.candles || data.candles.length === 0) break;
+                
+                // Coinbase returns newest first. Append batches as we walk backward.
+                allCandles = allCandles.concat(data.candles);
+                
+                currentEnd = currentStart;
+                candlesLeft -= batchSize;
+                
+                // Micro-pause to respect Coinbase rate limits
+                await new Promise(resolve => setTimeout(resolve, 100));
+              }
+              
+              // --- THE SAFETY LIMITER ---
+              // We map it, reverse it (so it is chronological), and slice off only the most recent 400.
+              // This protects Vercel's 4.5MB payload limit so the chat never goes blank!
+              const formattedCandles = allCandles.map(c => ({ 
+                  close: parseFloat(c.close), 
+                  high: parseFloat(c.high), 
+                  low: parseFloat(c.low), 
+                  volume: parseFloat(c.volume) 
+              })).reverse();
+
+              const safeData = formattedCandles.slice(-400);
+
+              return { 
+                asset, 
+                granularity, 
+                total_fetched_from_api: allCandles.length,
+                candles_returned_to_ai: safeData.length,
+                data: safeData
+              };
+            } catch (err) {
+              return { error: err.message };
+            }
+          }
+        }),
 
         // --- TOOL 2: runOptimizer ---
         runOptimizer: tool({

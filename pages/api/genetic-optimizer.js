@@ -61,15 +61,16 @@ export default async function handler(req, res) {
           console.error(`[OPTIMIZER FS ERROR]`, err.message);
       }
 
-      // 2. THE RESEARCHER LOOP: Deep Paginated Fetch based on Strategy Timefram
+      // 2. THE RESEARCHER LOOP: Deep Paginated Fetch based on Strategy Timeframe
       let marketContext = [];
       const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
       
       if (apiKeyName && apiSecret) {
-// And here:
-const cleanAsset = config.asset.replace(/-/g, '');
-const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
-const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+        const cleanAsset = config.asset.replace(/-/g, '');
+        const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
+        
+        // FIX 1: Renamed 'path' to 'apiPath' to prevent crashing the Node 'path' module!
+        const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
         
         let lookbackSeconds;
         switch (triggerTf) {
@@ -92,10 +93,10 @@ const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
 
             const token = jwt.sign({
                 iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
-                sub: apiKeyName, uri: `GET api.coinbase.com${path}`,
+                sub: apiKeyName, uri: `GET api.coinbase.com${apiPath}`, // Updated to apiPath
             }, apiSecret, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
 
-            const resp = await fetch(`https://api.coinbase.com${path}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
+            const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } }); // Updated to apiPath
             if (!resp.ok) break;
             const data = await resp.json();
             if (!data.candles || data.candles.length === 0) break;
@@ -105,48 +106,53 @@ const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
             candlesLeft -= batchSize;
         }
 
-        // Slice down slightly to respect context limits but provide enough trend data
-        marketContext = allCandles.map(c => ({ close: parseFloat(c.close), volume: parseFloat(c.volume) })).reverse().slice(-150);
+        // FIX 2: Added high and low so the AI can actually calculate breakouts and wicks!
+        // We still keep your slice(-150) payload limiter so it doesn't crash Vercel.
+        marketContext = allCandles.map(c => ({ 
+            close: parseFloat(c.close), 
+            high: parseFloat(c.high),
+            low: parseFloat(c.low),
+            volume: parseFloat(c.volume) 
+        })).reverse().slice(-150);
       }
 
- // 3. THE OMNISCIENT PROMPT
- const prompt = `
- You are the Nexus Genetic Optimizer. Your task is to mathematically mutate the parameters of this trading strategy to increase ROI.
- 
- --- ACTIVE CONFIGURATION ---
- Asset: ${config.asset}
- Strategy Name: ${config.strategy}
- Current Version: ${config.version || 'v1.0'}
- Current Parameters: ${JSON.stringify(config.parameters)}
- 
- --- RAW STRATEGY SOURCE CODE ---
- Read this logic carefully to understand exactly how the parameters are used in the math:
- ${strategyLogic}
- 
- --- TELEMETRY ---
- Total PnL: $${totalPnL.toFixed(4)}
- Win Rate: ${winRate.toFixed(1)}%
- Recent Trades: ${JSON.stringify(trades)}
- Recent Market Context (Last 150 ${triggerTf} candles): ${JSON.stringify(marketContext)}
+      // 3. THE OMNISCIENT PROMPT
+      const prompt = `
+      You are the Nexus Genetic Optimizer. Your task is to mathematically mutate the parameters of this trading strategy to increase ROI.
+      
+      --- ACTIVE CONFIGURATION ---
+      Asset: ${config.asset}
+      Strategy Name: ${config.strategy}
+      Current Version: ${config.version || 'v1.0'}
+      Current Parameters: ${JSON.stringify(config.parameters)}
+      
+      --- RAW STRATEGY SOURCE CODE ---
+      Read this logic carefully to understand exactly how the parameters are used in the math:
+      ${strategyLogic}
+      
+      --- TELEMETRY ---
+      Total PnL: $${totalPnL.toFixed(4)}
+      Win Rate: ${winRate.toFixed(1)}%
+      Recent Trades: ${JSON.stringify(trades)}
+      Recent Market Context (Last 150 ${triggerTf} candles): ${JSON.stringify(marketContext)}
 
- --- DIRECTIVE ---
- 1. Analyze the Market Context alongside the Raw Source Code. 
- 2. Mutate the parameters based on the math. YOU MUST KEEP THE EXACT SAME JSON KEYS AS 'Current Parameters'. DO NOT rename, add, or remove any keys. Only change the values.
-    - Timeframes must strictly be: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, ONE_HOUR, ONE_DAY.
- 3. You MUST increment the version number by exactly 0.1 (e.g., v1.0 becomes v1.1).
-`;
+      --- DIRECTIVE ---
+      1. Analyze the Market Context alongside the Raw Source Code. 
+      2. Mutate the parameters based on the math. YOU MUST KEEP THE EXACT SAME JSON KEYS AS 'Current Parameters'. DO NOT rename, add, or remove any keys. Only change the values.
+         - Timeframes must strictly be: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, ONE_HOUR, ONE_DAY.
+      3. You MUST increment the version number by exactly 0.1 (e.g., v1.0 becomes v1.1).
+      `;
 
-// 4. STRUCTURED GENERATION (With Strict Key Enforcement)
-const { object } = await generateObject({
- model: google('models/gemini-3.1-pro-preview'),
- system: "You are a quantitative genetic algorithm. Output strictly valid JSON. You MUST retain the exact parameter keys provided in the current configuration. Do not hallucinate new parameter names.",
- schema: z.object({
-   // We dynamically inject the exact keys from the database into the schema description so the AI cannot deviate
-   parameters: z.record(z.any()).describe(`The evolved parameter object. Keys MUST perfectly match this list: ${Object.keys(config.parameters).join(', ')}`),
-   new_version: z.string().describe("The incremented version string, e.g., v1.1"),
-   reasoning: z.string().describe("Mathematical and market-context reasoning for this mutation.")
- })
-});
+      // 4. STRUCTURED GENERATION (With Strict Key Enforcement)
+      const { object } = await generateObject({
+      model: google('models/gemini-3.1-pro-preview'),
+      system: "You are a quantitative genetic algorithm. Output strictly valid JSON. You MUST retain the exact parameter keys provided in the current configuration. Do not hallucinate new parameter names.",
+      schema: z.object({
+        parameters: z.record(z.any()).describe(`The evolved parameter object. Keys MUST perfectly match this list: ${Object.keys(config.parameters).join(', ')}`),
+        new_version: z.string().describe("The incremented version string, e.g., v1.1"),
+        reasoning: z.string().describe("Mathematical and market-context reasoning for this mutation.")
+      })
+      });
 
       // 5. DATABASE DEPLOYMENT
       await supabase.from('strategy_config').update({
