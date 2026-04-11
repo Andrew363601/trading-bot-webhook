@@ -17,6 +17,7 @@ export default function Dashboard() {
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
   const [scanStream, setScanStream] = useState([]); 
+  const [activeStudies, setActiveStudies] = useState([]); // NEW: Tracks chart indicators
   const [portfolio, setPortfolio] = useState({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 } });
   const [selectedStrat, setSelectedStrat] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -69,10 +70,28 @@ export default function Dashboard() {
     return () => clearInterval(int);
   }, [fetchData]);
 
-  // FIX: Auto-scroll chat to bottom
+  // Auto-scroll chat to bottom
   useEffect(() => { 
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); 
   }, [messages]);
+
+  // Telemetric Chart Sync: Auto-switches asset AND applies indicators based on chat
+  useEffect(() => {
+    if (messages.length > 0) {
+      const latestMsg = messages[messages.length - 1].content.toUpperCase();
+      
+      const mentionedAsset = ASSETS.find(asset => latestMsg.includes(asset));
+      if (mentionedAsset && mentionedAsset !== activeAsset) {
+        setActiveAsset(mentionedAsset);
+      }
+
+      // If Nexus mentions a specific strategy by name, snap the indicators onto the chart
+      const mentionedStrat = activeStrategies.find(s => latestMsg.includes(s.strategy));
+      if (mentionedStrat) {
+         setActiveStudies(getStudiesForStrategy(mentionedStrat.strategy));
+      }
+    }
+  }, [messages, activeAsset, activeStrategies]);
 
   const handleStrategySelect = (stratId) => {
     setSelectedStrat(stratId);
@@ -83,6 +102,18 @@ export default function Dashboard() {
   };
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
+
+  // Translates your custom strategies into TradingView indicators
+  const getStudiesForStrategy = (stratName) => {
+    if (!stratName) return [];
+    const name = stratName.toUpperCase();
+    if (name.includes('SOL_RANGE_REVERSION')) return ["BB@tv-basicstudies", "RSI@tv-basicstudies"];
+    if (name.includes('HF_SCALPER')) return ["MASimple@tv-basicstudies", "RSI@tv-basicstudies"];
+    if (name.includes('BREAKOUT_SCALPER') || name.includes('BTC_BREAKOUT')) return ["MASimple@tv-basicstudies"];
+    if (name.includes('SCALPER')) return ["VWAP@tv-basicstudies", "MASimple@tv-basicstudies"];
+    if (name.includes('COHERENCE')) return ["MASimple@tv-basicstudies"]; // Proxy for ADX/Trend
+    return [];
+  };
 
   useEffect(() => {
     const container = document.getElementById('tv_chart_container');
@@ -96,19 +127,20 @@ export default function Dashboard() {
         new window.TradingView.widget({
           "autosize": true,
           "symbol": `COINBASE:${activeAsset.replace('-', '')}`,
-          "interval": "60",
+          "interval": "1", // Unlocked for scalping
           "theme": "dark",
           "style": "1",
-          "container_id": "tv_chart_container",
           "backgroundColor": "#020617",
-          "hide_top_toolbar": true,
-          "hide_legend": true,
+          "hide_top_toolbar": false, // Unlocked toolbars
+          "hide_legend": false,      // Unlocked legend
           "save_image": false,
+          "container_id": "tv_chart_container",
+          "studies": activeStudies // Magic indicator injection
         });
       }
     };
     container.appendChild(script);
-  }, [activeAsset]);
+  }, [activeAsset, activeStudies]);
 
   if (loading) return <div className="min-h-screen bg-[#020617] flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">Establishing Nexus...</div>;
 
@@ -235,6 +267,16 @@ export default function Dashboard() {
           {/* Chart Container */}
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex-shrink-0 flex flex-col p-4">
             
+            {/* Clear Indicators Button (Overlay) */}
+            {activeStudies.length > 0 && (
+              <button 
+                onClick={() => setActiveStudies([])}
+                className="absolute top-4 left-1/2 transform -translate-x-1/2 z-30 bg-red-500/20 text-red-400 border border-red-500/30 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest hover:bg-red-500/40 transition-colors backdrop-blur-md shadow-[0_0_15px_rgba(239,68,68,0.2)]"
+              >
+                Clear Indicators
+              </button>
+            )}
+
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
             
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[220px] pointer-events-none">
@@ -341,7 +383,19 @@ export default function Dashboard() {
                   >
                     <div className="flex justify-between items-center mb-2">
                       <span className="text-xs font-black text-white uppercase tracking-tighter">{strat.strategy}</span>
-                      <span className="text-[8px] bg-white/10 px-1.5 py-0.5 rounded text-slate-300">{strat.version || 'v1.0'}</span>
+                      <div className="flex items-center gap-2">
+                        {/* THE NEW APPLY TO CHART BUTTON */}
+                        <button 
+                          onClick={(e) => {
+                             e.stopPropagation(); // Prevents the card click from interfering
+                             setActiveStudies(getStudiesForStrategy(strat.strategy));
+                          }}
+                          className="text-[8px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded hover:bg-cyan-500/40 transition-colors font-black"
+                        >
+                          + CHART
+                        </button>
+                        <span className="text-[8px] bg-white/10 px-1.5 py-0.5 rounded text-slate-300">{strat.version || 'v1.0'}</span>
+                      </div>
                     </div>
                     
                     {openTrade ? (

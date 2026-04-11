@@ -1,4 +1,5 @@
 export const maxDuration = 60; // Unlocks Vercel's 60-second execution limit
+export const maxDuration = 60;
 
 // pages/api/genetic-optimizer.js
 import { createClient } from '@supabase/supabase-js';

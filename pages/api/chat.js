@@ -1,3 +1,5 @@
+export const maxDuration = 60;
+
 // pages/api/chat.js
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText, tool } from 'ai';
