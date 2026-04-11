@@ -243,7 +243,7 @@ export default async function handler(req, res) {
                   volume: parseFloat(c.volume) 
               })).reverse();
 
-              const safeData = formattedCandles.slice(-150);
+              const safeData = formattedCandles.slice(-500);
 
               return { 
                 asset, 

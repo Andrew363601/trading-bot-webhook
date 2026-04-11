@@ -1,3 +1,4 @@
+// Unleashing Vercel Pro limit (5 full minutes!)
 export const maxDuration = 300;
 
 // pages/api/genetic-optimizer.js
@@ -30,7 +31,7 @@ export default async function handler(req, res) {
     const mutations = [];
 
     for (const config of configs) {
-      // 1. Fetch trades strictly isolated to this version
+      // 1. FORCE-FEED: Look at Supabase Logs
       const { data: trades } = await supabase
         .from('trade_logs')
         .select('pnl, side, entry_price, exit_price, exit_time')
@@ -47,7 +48,7 @@ export default async function handler(req, res) {
       const winningTrades = trades.filter(t => t.pnl > 0).length;
       const winRate = (winningTrades / trades.length) * 100;
 
-      // --- NEW: THE ARCHITECTURE READER ---
+      // 2. FORCE-FEED: Read Strategy Source Code
       let strategyLogic = "Source code unavailable.";
       try {
           const fileName = `${config.strategy.toLowerCase()}.js`;
@@ -61,7 +62,7 @@ export default async function handler(req, res) {
           console.error(`[OPTIMIZER FS ERROR]`, err.message);
       }
 
-      // 2. THE RESEARCHER LOOP: Deep Paginated Fetch based on Strategy Timeframe
+      // 3. FORCE-FEED: Fetch Historical Data
       let marketContext = [];
       const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
       
@@ -69,7 +70,6 @@ export default async function handler(req, res) {
         const cleanAsset = config.asset.replace(/-/g, '');
         const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
         
-        // FIX 1: Renamed 'path' to 'apiPath' to prevent crashing the Node 'path' module!
         const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
         
         let lookbackSeconds;
@@ -84,7 +84,7 @@ export default async function handler(req, res) {
 
         let allCandles = [];
         let currentEnd = Math.floor(Date.now() / 1000);
-        let candlesLeft = 600; // Pulling 600 candles of deep historical context
+        let candlesLeft = 600; 
         
         while (candlesLeft > 0) {
             const batchSize = Math.min(candlesLeft, 300);
@@ -93,10 +93,10 @@ export default async function handler(req, res) {
 
             const token = jwt.sign({
                 iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
-                sub: apiKeyName, uri: `GET api.coinbase.com${apiPath}`, // Updated to apiPath
+                sub: apiKeyName, uri: `GET api.coinbase.com${apiPath}`,
             }, apiSecret, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
 
-            const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } }); // Updated to apiPath
+            const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
             if (!resp.ok) break;
             const data = await resp.json();
             if (!data.candles || data.candles.length === 0) break;
@@ -106,17 +106,16 @@ export default async function handler(req, res) {
             candlesLeft -= batchSize;
         }
 
-        // FIX 2: Added high and low so the AI can actually calculate breakouts and wicks!
-        // We still keep your slice(-150) payload limiter so it doesn't crash Vercel.
+        // UPGRADED VISION: Slicing to 500 candles now that Vercel allows 300 seconds of compute time!
         marketContext = allCandles.map(c => ({ 
             close: parseFloat(c.close), 
             high: parseFloat(c.high),
             low: parseFloat(c.low),
             volume: parseFloat(c.volume) 
-        })).reverse().slice(-150);
+        })).reverse().slice(-500);
       }
 
-      // 3. THE OMNISCIENT PROMPT
+      // 4. THE OMNISCIENT PROMPT
       const prompt = `
       You are the Nexus Genetic Optimizer. Your task is to mathematically mutate the parameters of this trading strategy to increase ROI.
       
@@ -134,7 +133,7 @@ export default async function handler(req, res) {
       Total PnL: $${totalPnL.toFixed(4)}
       Win Rate: ${winRate.toFixed(1)}%
       Recent Trades: ${JSON.stringify(trades)}
-      Recent Market Context (Last 150 ${triggerTf} candles): ${JSON.stringify(marketContext)}
+      Recent Market Context (Last 500 ${triggerTf} candles): ${JSON.stringify(marketContext)}
 
       --- DIRECTIVE ---
       1. Analyze the Market Context alongside the Raw Source Code. 
@@ -143,7 +142,7 @@ export default async function handler(req, res) {
       3. You MUST increment the version number by exactly 0.1 (e.g., v1.0 becomes v1.1).
       `;
 
-      // 4. STRUCTURED GENERATION (With Strict Key Enforcement)
+      // 5. STRUCTURED GENERATION
       const { object } = await generateObject({
       model: google('models/gemini-3.1-pro-preview'),
       system: "You are a quantitative genetic algorithm. Output strictly valid JSON. You MUST retain the exact parameter keys provided in the current configuration. Do not hallucinate new parameter names.",
@@ -151,10 +150,11 @@ export default async function handler(req, res) {
         parameters: z.record(z.any()).describe(`The evolved parameter object. Keys MUST perfectly match this list: ${Object.keys(config.parameters).join(', ')}`),
         new_version: z.string().describe("The incremented version string, e.g., v1.1"),
         reasoning: z.string().describe("Mathematical and market-context reasoning for this mutation.")
-      })
+      }),
+      prompt: prompt
       });
 
-      // 5. DATABASE DEPLOYMENT
+      // 6. DATABASE DEPLOYMENT
       await supabase.from('strategy_config').update({
         parameters: object.parameters,
         reasoning: `[AUTO-EVOLVED] ${object.reasoning}`,
