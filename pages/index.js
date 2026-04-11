@@ -74,24 +74,35 @@ export default function Dashboard() {
   useEffect(() => { 
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); 
   }, [messages]);
-
-  // Telemetric Chart Sync: Auto-switches asset AND applies indicators based on chat
-  useEffect(() => {
-    if (messages.length > 0) {
-      const latestMsg = messages[messages.length - 1].content.toUpperCase();
+// Telemetric Chart Sync: Auto-switches asset AND applies indicators instantly BEFORE the AI responds
+useEffect(() => {
+  if (messages.length > 0) {
+    // FIX: Read the User's last message instead of the AI's streaming message.
+    // This stops the chart from lagging and reloading 50 times a second while the AI types!
+    const lastUserMsg = messages.slice().reverse().find(m => m.role === 'user');
+    
+    if (lastUserMsg) {
+      const content = lastUserMsg.content.toUpperCase();
       
-      const mentionedAsset = ASSETS.find(asset => latestMsg.includes(asset));
+      // 1. Instant Asset Snapping
+      const mentionedAsset = ASSETS.find(asset => content.includes(asset));
       if (mentionedAsset && mentionedAsset !== activeAsset) {
         setActiveAsset(mentionedAsset);
       }
 
-      // If Nexus mentions a specific strategy by name, snap the indicators onto the chart
-      const mentionedStrat = activeStrategies.find(s => latestMsg.includes(s.strategy));
+      // 2. Instant Indicator Snapping
+      const mentionedStrat = activeStrategies.find(s => content.includes(s.strategy));
       if (mentionedStrat) {
-         setActiveStudies(getStudiesForStrategy(mentionedStrat.strategy));
+         const targetStudies = getStudiesForStrategy(mentionedStrat.strategy);
+         
+         // Deep comparison to prevent the iframe from glitching/reloading if the indicators are already applied
+         if (JSON.stringify(targetStudies) !== JSON.stringify(activeStudies)) {
+           setActiveStudies(targetStudies);
+         }
       }
     }
-  }, [messages, activeAsset, activeStrategies]);
+  }
+}, [messages, activeAsset, activeStrategies, activeStudies]);
 
   const handleStrategySelect = (stratId) => {
     setSelectedStrat(stratId);
