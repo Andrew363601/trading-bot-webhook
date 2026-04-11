@@ -52,7 +52,7 @@ export default async function handler(req, res) {
       }
 
       // DIAGNOSTIC 2: Did it return data, but not enough?
-      if (macroCandles.length < 31 || triggerCandles.length < 31) {
+      if (macroCandles.length < 21 || triggerCandles.length < 21) {
           results.push({ 
               strategy: config.strategy, 
               asset, 
