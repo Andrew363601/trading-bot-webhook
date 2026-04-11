@@ -46,13 +46,64 @@ export default async function handler(req, res) {
     - If trade logs show consistent losses, run historical data, analyze the failure points, and mutate the parameters.
     - If asked to run the genetic optimizer, use the runOptimizer tool.
 
-    --- PROTOCOL 2: SYSTEM INQUIRIES & AUDITS ---
-        If Andrew asks about active strategies, performance, or portfolio status:
-        1. Use \`fetchPortfolio\` and \`fetchActiveStrategies\`.
-        2. IF Andrew asks you to analyze, review, or optimize a specific strategy, you MUST use the \`readStrategyLogic\` tool to read the raw source code of that strategy BEFORE giving advice. You cannot optimize a strategy if you don't know the math behind it.
-        3. Cross-reference the raw code with recent execution logs to see why trades are winning or losing.
-
     --- PROTOCOL 2: NEW STRATEGY CREATION (HUMAN HANDOFF) ---
+    If Andrew asks to "Start a new strategy" or design a new algorithm (e.g., "Create a day trading strategy for DOGE"):
+    1. Use \`fetchHistoricalData\` to backtest your thesis and find the optimal timeframe/parameters.
+    2. Generate the COMPLETE JavaScript code for the new strategy. You MUST strictly adhere to the following architectural template. DO NOT deviate from this structure, DO NOT skip the telemetry object, and DO NOT hallucinate variables that you haven't calculated:
+
+    \`\`\`javascript
+    // 1. Explicitly import only what you use
+    import { /* YOUR INDICATORS */ } from 'technicalindicators';
+
+    export async function run(macroCandles, triggerCandles, parameters) {
+        // 2. Extract parameters with safe fallbacks matching the DB
+        const { leverage = 10, market_type = 'SPOT', tp_percent = 0.02, sl_percent = 0.01 /* ADD YOURS */ } = parameters;
+
+        // 3. Fatal Error Prevention: Array length checks
+        if (!macroCandles || !triggerCandles || triggerCandles.length < /* YOUR MIN LENGTH */) {
+            return { signal: null };
+        }
+
+        let signal = null;
+        let entryPrice = triggerCandles[triggerCandles.length - 1].close;
+
+        // 4. CORE MATH & LOGIC
+        // ... calculate indicators and set signal to 'LONG' or 'SHORT'
+
+        // 5. THE TELEMETRY FIX (MANDATORY)
+        // You MUST define this object before the early exit using ONLY variables you have explicitly calculated above.
+        const currentTelemetry = {
+            metric_1: calculatedValue1,
+            metric_2: calculatedValue2
+        };
+
+        // 6. EARLY EXIT (MANDATORY)
+        // If conditions aren't met, exit safely but pass the telemetry for the dashboard
+        if (!signal) {
+            return { signal: null, telemetry: currentTelemetry };
+        }
+
+        // 7. DYNAMIC EXITS
+        const tpPrice = signal === 'LONG' ? entryPrice * (1 + tp_percent) : entryPrice * (1 - tp_percent);
+        const slPrice = signal === 'LONG' ? entryPrice * (1 - sl_percent) : entryPrice * (1 + sl_percent);
+
+        // 8. STANDARDIZED DECISION ENVELOPE
+        return {
+            signal: signal,
+            entryPrice: entryPrice,
+            leverage: leverage,
+            marketType: market_type,
+            tpPrice: parseFloat(tpPrice.toFixed(6)),
+            slPrice: parseFloat(slPrice.toFixed(6)),
+            telemetry: currentTelemetry // MUST match the object above perfectly
+        };
+    }
+    \`\`\`
+    
+    3. Use the \`manageStrategy\` tool to stage the database row. You MUST set \`is_active: false\` and \`version: "v1.0"\`.
+    4. Inform Andrew exactly like this: "I have designed the [STRATEGY_NAME] architecture and staged it in the database. Please create the file \`lib/strategies/[strategy_name].js\`, paste the code below, add the explicit import to \`strategy-router.js\`, and push the deployment."
+
+    --- PROTOCOL 3: NEW STRATEGY CREATION (HUMAN HANDOFF) ---
     If Andrew asks to "Start a new strategy" or design a new algorithm (e.g., "Create a day trading strategy for DOGE"):
     1. Use \`fetchHistoricalData\` to backtest your thesis and find the optimal timeframe/parameters.
     2. Generate the COMPLETE JavaScript code for the new strategy. 
@@ -62,16 +113,16 @@ export default async function handler(req, res) {
     3. Use the \`manageStrategy\` tool to stage the database row. You MUST set \`is_active: false\` and \`version: "v1.0"\`. Include your backtest reasoning.
     4. Inform Andrew exactly like this: "I have designed the [STRATEGY_NAME] architecture and staged it in the database. Please create the file \`lib/strategies/[strategy_name].js\`, paste the code below, and push the deployment. Let me know when ready, and I will activate it."
 
-    --- PROTOCOL 3: VERSION CONTROL & OPTIMIZATION ---
+    --- PROTOCOL 4: VERSION CONTROL & OPTIMIZATION ---
     If modifying an EXISTING strategy via \`manageStrategy\`:
     1. You MUST increment the version number (e.g., v1.0 to v1.1).
 
-    --- PROTOCOL 4: OPERATIONAL AWARENESS ---
+    --- PROTOCOL 5: OPERATIONAL AWARENESS ---
     - Keep responses under 3 sentences unless explaining complex math or providing code.
 `;
 
     const result = await streamText({
-      model: google('models/gemini-2.5-flash'), // <-- Fixed model routing
+      model: google('models/gemini-3.1-pro-preview'), // <-- Fixed model routing
       system: systemPrompt,
       messages,
       maxSteps: 5,

@@ -109,45 +109,44 @@ const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
         marketContext = allCandles.map(c => ({ close: parseFloat(c.close), volume: parseFloat(c.volume) })).reverse().slice(-150);
       }
 
-    // 3. THE OMNISCIENT PROMPT
-    const prompt = `
-    You are the Nexus Genetic Optimizer. Your task is to mathematically mutate the parameters of this trading strategy to increase ROI.
-    
-    --- ACTIVE CONFIGURATION ---
-    Asset: ${config.asset}
-    Strategy Name: ${config.strategy}
-    Current Version: ${config.version || 'v1.0'}
-    Current Parameters: ${JSON.stringify(config.parameters)}
-    
-    --- RAW STRATEGY SOURCE CODE ---
-    Read this logic carefully to understand exactly how the parameters are used in the math:
-    ${strategyLogic}
-    
-    --- TELEMETRY ---
-    Total PnL: $${totalPnL.toFixed(4)}
-    Win Rate: ${winRate.toFixed(1)}%
-    Recent Trades: ${JSON.stringify(trades)}
-    Recent Market Context (Last 150 ${triggerTf} candles): ${JSON.stringify(marketContext)}
+ // 3. THE OMNISCIENT PROMPT
+ const prompt = `
+ You are the Nexus Genetic Optimizer. Your task is to mathematically mutate the parameters of this trading strategy to increase ROI.
+ 
+ --- ACTIVE CONFIGURATION ---
+ Asset: ${config.asset}
+ Strategy Name: ${config.strategy}
+ Current Version: ${config.version || 'v1.0'}
+ Current Parameters: ${JSON.stringify(config.parameters)}
+ 
+ --- RAW STRATEGY SOURCE CODE ---
+ Read this logic carefully to understand exactly how the parameters are used in the math:
+ ${strategyLogic}
+ 
+ --- TELEMETRY ---
+ Total PnL: $${totalPnL.toFixed(4)}
+ Win Rate: ${winRate.toFixed(1)}%
+ Recent Trades: ${JSON.stringify(trades)}
+ Recent Market Context (Last 150 ${triggerTf} candles): ${JSON.stringify(marketContext)}
 
-    --- DIRECTIVE ---
-    1. Analyze the Market Context alongside the Raw Source Code. Did the strategy lose because the timeframe was too noisy? Was the stop-loss too tight during consolidation?
-    2. Mutate the parameters. Ensure your new parameters match the variables expected in the source code.
-       - Timeframes: 'macro_tf' and 'trigger_tf' (Valid: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, ONE_HOUR, ONE_DAY)
-       - Risk Controls: 'leverage' (1 to 10), 'tp_percent' (e.g., 0.02 for 2%), 'sl_percent' (e.g., 0.01 for 1%)
-    3. You MUST increment the version number by exactly 0.1 (e.g., v1.0 becomes v1.1).
-  `;
+ --- DIRECTIVE ---
+ 1. Analyze the Market Context alongside the Raw Source Code. 
+ 2. Mutate the parameters based on the math. YOU MUST KEEP THE EXACT SAME JSON KEYS AS 'Current Parameters'. DO NOT rename, add, or remove any keys. Only change the values.
+    - Timeframes must strictly be: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, ONE_HOUR, ONE_DAY.
+ 3. You MUST increment the version number by exactly 0.1 (e.g., v1.0 becomes v1.1).
+`;
 
-      // 4. STRUCTURED GENERATION (No more manual JSON scrubbing)
-      const { object } = await generateObject({
-        model: google('models/gemini-2.5-flash'),
-        system: "You are a quantitative genetic algorithm. Output strictly valid JSON parameters and incremented version numbers.",
-        schema: z.object({
-          parameters: z.record(z.any()).describe("The complete, evolved parameter JSON object"),
-          new_version: z.string().describe("The incremented version string, e.g., v1.1"),
-          reasoning: z.string().describe("Mathematical and market-context reasoning for this mutation.")
-        }),
-        prompt: prompt
-      });
+// 4. STRUCTURED GENERATION (With Strict Key Enforcement)
+const { object } = await generateObject({
+ model: google('models/gemini-3.1-pro-preview'),
+ system: "You are a quantitative genetic algorithm. Output strictly valid JSON. You MUST retain the exact parameter keys provided in the current configuration. Do not hallucinate new parameter names.",
+ schema: z.object({
+   // We dynamically inject the exact keys from the database into the schema description so the AI cannot deviate
+   parameters: z.record(z.any()).describe(`The evolved parameter object. Keys MUST perfectly match this list: ${Object.keys(config.parameters).join(', ')}`),
+   new_version: z.string().describe("The incremented version string, e.g., v1.1"),
+   reasoning: z.string().describe("Mathematical and market-context reasoning for this mutation.")
+ })
+});
 
       // 5. DATABASE DEPLOYMENT
       await supabase.from('strategy_config').update({
