@@ -38,82 +38,81 @@ export default async function handler(req, res) {
         const [macroCandles, triggerCandles] = await Promise.all([
           fetchCoinbaseData(asset, macroTf, apiKeyName, apiSecret),
           fetchCoinbaseData(asset, triggerTf, apiKeyName, apiSecret)
-      ]);
+        ]);
 
-      // DIAGNOSTIC 1: Did the API fail completely?
-      if (!macroCandles || !triggerCandles) {
-          results.push({ 
-              strategy: config.strategy, 
-              asset, 
-              status: "API_FETCH_FAILED", 
-              details: "Coinbase rejected the request. Check Vercel logs for the 400/401 error." 
-          });
-          continue;
-      }
+        // DIAGNOSTIC 1: Did the API fail completely?
+        if (!macroCandles || !triggerCandles) {
+            results.push({ 
+                strategy: config.strategy, 
+                asset, 
+                status: "API_FETCH_FAILED", 
+                details: "Coinbase rejected the request. Check Vercel logs for the 400/401 error." 
+            });
+            continue;
+        }
 
-      // DIAGNOSTIC 2: Did it return data, but not enough?
-      if (macroCandles.length < 21 || triggerCandles.length < 21) {
-          results.push({ 
-              strategy: config.strategy, 
-              asset, 
-              status: "INSUFFICIENT_DATA",
-              macro_candles_received: macroCandles.length,
-              trigger_candles_received: triggerCandles.length
-          });
-          continue;
-      }
+        // DIAGNOSTIC 2: Did it return data, but not enough?
+        if (macroCandles.length < 21 || triggerCandles.length < 21) {
+            results.push({ 
+                strategy: config.strategy, 
+                asset, 
+                status: "INSUFFICIENT_DATA",
+                macro_candles_received: macroCandles.length,
+                trigger_candles_received: triggerCandles.length
+            });
+            continue;
+        }
 
-      // 3. Package data and route to the dynamic brain
-      const marketData = { macro: macroCandles, trigger: triggerCandles };
-      const decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
+        // 3. Package data and route to the dynamic brain
+        const marketData = { macro: macroCandles, trigger: triggerCandles };
+        const decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
 
-      // DIAGNOSTIC 3: Did the Dynamic Router fail to find your .js file?
-      if (decision.error) {
-          results.push({
-              strategy: config.strategy,
-              asset,
-              status: "ROUTER_ERROR",
-              details: decision.error
-          });
-          continue;
-      }
+        // DIAGNOSTIC 3: Did the Dynamic Router fail to find your .js file?
+        if (decision.error) {
+            results.push({
+                strategy: config.strategy,
+                asset,
+                status: "ROUTER_ERROR",
+                details: decision.error
+            });
+            continue;
+        }
 
-      // The database payload (matches your Supabase columns exactly)
-      const scanEntry = {
-        strategy: config.strategy,
-        asset,
-        telemetry: decision.telemetry || {},
-        status: decision.signal ? "RESONANT" : "STABLE"
-      };
-      
-      // Push to the cron log WITH the strategy name so you can read it!
-      results.push({ strategy: config.strategy, ...scanEntry });
-      
-      // Insert into Supabase so the UI streams it
-      await supabase.from('scan_results').insert([scanEntry]);
+        // The database payload (matches your Supabase columns exactly)
+        const scanEntry = {
+          strategy: config.strategy,
+          asset,
+          telemetry: decision.telemetry || {},
+          status: decision.signal ? "RESONANT" : "STABLE"
+        };
+        
+        // Push to the cron log 
+        results.push(scanEntry);
+        
+        // Insert into Supabase so the UI streams it
+        await supabase.from('scan_results').insert([scanEntry]);
 
-        // 4. If the router returned a signal, fire the execution payload
+        // 4. THE EXECUTION TRIGGER
+        // If the strategy actually fired a LONG or SHORT, log the physical trade!
         if (decision.signal) {
-          const protocol = req.headers['x-forwarded-proto'] || 'https';
-          const host = req.headers.host;
-          
-          await fetch(`${protocol}://${host}/api/execute-trade`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              symbol: asset.replace('-', ''),
-              side: decision.signal,
-              price: decision.entryPrice,
-              mci: decision.mci,
-              strategy_id: config.strategy,
-              version: config.version || 'v1.0',
-              execution_mode: config.execution_mode,
-              leverage: decision.leverage,
-              market_type: decision.marketType,
-              tp_price: decision.tpPrice,
-              sl_price: decision.slPrice
-            })
-          });
+            const tradePayload = {
+                symbol: asset, // Saves as 'SOL-USDT'
+                strategy: config.strategy,
+                side: decision.signal,
+                entry_price: decision.entryPrice,
+                tp_price: decision.tpPrice,
+                sl_price: decision.slPrice,
+                leverage: decision.leverage || 1,
+                market_type: decision.marketType || 'SPOT'
+            };
+            
+            const { error: tradeErr } = await supabase.from('trade_logs').insert([tradePayload]);
+            
+            if (tradeErr) {
+                console.error(`[TRADE EXECUTION FAILED] ${config.strategy}:`, tradeErr.message);
+            } else {
+                console.log(`[TRADE EXECUTED] ${decision.signal} on ${asset} via ${config.strategy}`);
+            }
         }
       } catch (assetErr) {
         console.error(`[ASSET ERROR] ${asset}:`, assetErr.message);
@@ -132,22 +131,22 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     // 1. Bulletproof the inputs
     const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
     
-// THE ULTIMATE HYPHEN FIX (Corrected)
-const cleanAsset = asset.replace(/-/g, '');
-const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
-const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+    // THE ULTIMATE HYPHEN FIX
+    const cleanAsset = asset.replace(/-/g, '');
+    const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
+    const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
     
     const end = Math.floor(Date.now() / 1000);
     
-    // 2. Dynamic Lookback Calculation
+    // 2. Dynamic Lookback Calculation (Maxed out buffer to 500)
     let lookbackSeconds;
     switch (safeGranularity) {
-        case 'ONE_MINUTE': lookbackSeconds = 60 * 300; break;          
-        case 'FIVE_MINUTE': lookbackSeconds = 300 * 300; break;        
-        case 'FIFTEEN_MINUTE': lookbackSeconds = 900 * 300; break;     
-        case 'ONE_HOUR': lookbackSeconds = 3600 * 300; break;          
-        case 'ONE_DAY': lookbackSeconds = 86400 * 300; break;          
-        default: lookbackSeconds = 3600 * 300;                         
+        case 'ONE_MINUTE': lookbackSeconds = 60 * 500; break;          
+        case 'FIVE_MINUTE': lookbackSeconds = 300 * 500; break;        
+        case 'FIFTEEN_MINUTE': lookbackSeconds = 900 * 500; break;     
+        case 'ONE_HOUR': lookbackSeconds = 3600 * 500; break;          
+        case 'ONE_DAY': lookbackSeconds = 86400 * 500; break;          
+        default: lookbackSeconds = 3600 * 500;                         
     }
     
     const start = end - lookbackSeconds; 
@@ -174,9 +173,12 @@ const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
         return null;
     }
 
-    // 5. Clean output
+    // 5. Clean output (Volume mapping added so breakout logic doesn't crash!)
     return data.candles.map(c => ({ 
-        close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low) 
+        close: parseFloat(c.close), 
+        high: parseFloat(c.high), 
+        low: parseFloat(c.low),
+        volume: parseFloat(c.volume)
     })).reverse();
 
   } catch (err) {
