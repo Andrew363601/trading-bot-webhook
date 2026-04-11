@@ -362,7 +362,7 @@ export default function Dashboard() {
               )}
               {messages.map(m => (
                 <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[90%] rounded-2xl px-4 py-3 leading-relaxed ${
+                  <div className={`max-w-[90%] rounded-2xl px-4 py-3 leading-relaxed whitespace-pre-wrap ${
                     m.role === 'user' 
                     ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px]' 
                     : 'bg-slate-900/80 text-cyan-400 border border-white/5'

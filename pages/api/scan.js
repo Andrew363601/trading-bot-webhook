@@ -111,12 +111,12 @@ const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
     // 2. Dynamic Lookback Calculation
     let lookbackSeconds;
     switch (safeGranularity) {
-        case 'ONE_MINUTE': lookbackSeconds = 60 * 60; break;          // 1 hour
-        case 'FIVE_MINUTE': lookbackSeconds = 300 * 60; break;        // 5 hours
-        case 'FIFTEEN_MINUTE': lookbackSeconds = 900 * 60; break;     // 15 hours
-        case 'ONE_HOUR': lookbackSeconds = 3600 * 48; break;          // 48 hours
-        case 'ONE_DAY': lookbackSeconds = 86400 * 45; break;          // 45 days
-        default: lookbackSeconds = 3600 * 24;                         // Fallback 24h
+        case 'ONE_MINUTE': lookbackSeconds = 60 * 300; break;          
+        case 'FIVE_MINUTE': lookbackSeconds = 300 * 300; break;        
+        case 'FIFTEEN_MINUTE': lookbackSeconds = 900 * 300; break;     
+        case 'ONE_HOUR': lookbackSeconds = 3600 * 300; break;          
+        case 'ONE_DAY': lookbackSeconds = 86400 * 300; break;          
+        default: lookbackSeconds = 3600 * 300;                         
     }
     
     const start = end - lookbackSeconds; 
