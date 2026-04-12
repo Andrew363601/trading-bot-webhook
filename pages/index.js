@@ -10,14 +10,16 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhx
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const ASSETS = ['BTC-PERP', 'ETH-PERP', 'SOL-PERP', 'DOGE-PERP', 'AVAX-PERP'];
+const ASSETS = ['BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-INTX', 'AVAX-PERP-INTX'];
 
 export default function Dashboard() {
-  const [activeAsset, setActiveAsset] = useState('DOGE-USDT');
+  // FIX 1: Initial state must match the new Futures array!
+  const [activeAsset, setActiveAsset] = useState('DOGE-PERP-INTX');
+  
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
   const [scanStream, setScanStream] = useState([]); 
-  const [activeStudies, setActiveStudies] = useState([]); // NEW: Tracks chart indicators
+  const [activeStudies, setActiveStudies] = useState([]);
   const [portfolio, setPortfolio] = useState({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 } });
   const [selectedStrat, setSelectedStrat] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -27,29 +29,26 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      // 1. Fetch Real Portfolio Data
       const portResp = await fetch('/api/portfolio');
       if (portResp.ok) {
         const portData = await portResp.json();
         setPortfolio(portData);
       }
 
-      // 2. Fetch Execution Logs
+      // FIX 2: Removed .replace('-', '') so it perfectly matches the Futures DB entries!
       const { data: logs } = await supabase
         .from('trade_logs')
         .select('*')
-        .eq('symbol', activeAsset.replace('-', ''))
+        .eq('symbol', activeAsset)
         .order('id', { ascending: false });
       setTradeLogs(logs || []);
 
-      // 3. Fetch Active Strategies (Dynamic Matrix)
       const { data: configs } = await supabase
         .from('strategy_config')
         .select('*')
         .eq('is_active', true);
       setActiveStrategies(configs || []);
 
-      // 4. Fetch Live Scan Telemetry
       const { data: scans } = await supabase
         .from('scan_results')
         .select('*')
@@ -70,39 +69,32 @@ export default function Dashboard() {
     return () => clearInterval(int);
   }, [fetchData]);
 
-  // Auto-scroll chat to bottom
   useEffect(() => { 
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); 
   }, [messages]);
-// Telemetric Chart Sync: Auto-switches asset AND applies indicators instantly BEFORE the AI responds
-useEffect(() => {
-  if (messages.length > 0) {
-    // FIX: Read the User's last message instead of the AI's streaming message.
-    // This stops the chart from lagging and reloading 50 times a second while the AI types!
-    const lastUserMsg = messages.slice().reverse().find(m => m.role === 'user');
-    
-    if (lastUserMsg) {
-      const content = lastUserMsg.content.toUpperCase();
-      
-      // 1. Instant Asset Snapping
-      const mentionedAsset = ASSETS.find(asset => content.includes(asset));
-      if (mentionedAsset && mentionedAsset !== activeAsset) {
-        setActiveAsset(mentionedAsset);
-      }
 
-      // 2. Instant Indicator Snapping
-      const mentionedStrat = activeStrategies.find(s => content.includes(s.strategy));
-      if (mentionedStrat) {
-         const targetStudies = getStudiesForStrategy(mentionedStrat.strategy);
-         
-         // Deep comparison to prevent the iframe from glitching/reloading if the indicators are already applied
-         if (JSON.stringify(targetStudies) !== JSON.stringify(activeStudies)) {
-           setActiveStudies(targetStudies);
-         }
+  useEffect(() => {
+    if (messages.length > 0) {
+      const lastUserMsg = messages.slice().reverse().find(m => m.role === 'user');
+      
+      if (lastUserMsg) {
+        const content = lastUserMsg.content.toUpperCase();
+        
+        const mentionedAsset = ASSETS.find(asset => content.includes(asset));
+        if (mentionedAsset && mentionedAsset !== activeAsset) {
+          setActiveAsset(mentionedAsset);
+        }
+
+        const mentionedStrat = activeStrategies.find(s => content.includes(s.strategy));
+        if (mentionedStrat) {
+           const targetStudies = getStudiesForStrategy(mentionedStrat.strategy);
+           if (JSON.stringify(targetStudies) !== JSON.stringify(activeStudies)) {
+             setActiveStudies(targetStudies);
+           }
+        }
       }
     }
-  }
-}, [messages, activeAsset, activeStrategies, activeStudies]);
+  }, [messages, activeAsset, activeStrategies, activeStudies]);
 
   const handleStrategySelect = (stratId) => {
     setSelectedStrat(stratId);
@@ -114,7 +106,6 @@ useEffect(() => {
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
 
-  // Translates your custom strategies into TradingView indicators
   const getStudiesForStrategy = (stratName) => {
     if (!stratName) return [];
     const name = stratName.toUpperCase();
@@ -122,7 +113,7 @@ useEffect(() => {
     if (name.includes('HF_SCALPER')) return ["MASimple@tv-basicstudies", "RSI@tv-basicstudies"];
     if (name.includes('BREAKOUT_SCALPER') || name.includes('BTC_BREAKOUT')) return ["MASimple@tv-basicstudies"];
     if (name.includes('SCALPER')) return ["VWAP@tv-basicstudies", "MASimple@tv-basicstudies"];
-    if (name.includes('COHERENCE')) return ["MASimple@tv-basicstudies"]; // Proxy for ADX/Trend
+    if (name.includes('COHERENCE')) return ["MASimple@tv-basicstudies"]; 
     return [];
   };
 
@@ -137,16 +128,17 @@ useEffect(() => {
       if (window.TradingView) {
         new window.TradingView.widget({
           "autosize": true,
-          "symbol": `COINBASE:${activeAsset.replace('-', '')}`,
-          "interval": "1", // Unlocked for scalping
+          // FIX 3: Fixed the fatal JSX syntax error here!
+          "symbol": `COINBASE:${activeAsset.replace('-INTX', '').replace('-', '')}`,
+          "interval": "1", 
           "theme": "dark",
           "style": "1",
           "backgroundColor": "#020617",
-          "hide_top_toolbar": false, // Unlocked toolbars
-          "hide_legend": false,      // Unlocked legend
+          "hide_top_toolbar": false, 
+          "hide_legend": false,      
           "save_image": false,
           "container_id": "tv_chart_container",
-          "studies": activeStudies // Magic indicator injection
+          "studies": activeStudies 
         });
       }
     };
@@ -395,10 +387,9 @@ useEffect(() => {
                     <div className="flex justify-between items-center mb-2">
                       <span className="text-xs font-black text-white uppercase tracking-tighter">{strat.strategy}</span>
                       <div className="flex items-center gap-2">
-                        {/* THE NEW APPLY TO CHART BUTTON */}
                         <button 
                           onClick={(e) => {
-                             e.stopPropagation(); // Prevents the card click from interfering
+                             e.stopPropagation(); 
                              setActiveStudies(getStudiesForStrategy(strat.strategy));
                           }}
                           className="text-[8px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded hover:bg-cyan-500/40 transition-colors font-black"

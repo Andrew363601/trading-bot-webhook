@@ -8,22 +8,26 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Advanced Scrubber: Rebuilds flattened or malformed PEM keys
+// Advanced Scrubber: Rebuilds flattened, mangled, or headerless PEM keys
 const formatPrivateKey = (key) => {
   if (!key) return '';
-  let formatted = key.replace(/^["']|["']$/g, ''); // Remove wrapping quotes
-  formatted = formatted.replace(/\\n/g, '\n'); // Convert literal \n
   
-  // If the key got flattened with spaces instead of newlines
-  if (formatted.includes('-----BEGIN') && !formatted.includes('\n')) {
-     const base64Body = formatted
-        .replace('-----BEGIN EC PRIVATE KEY-----', '')
-        .replace('-----END EC PRIVATE KEY-----', '')
-        .replace(/\s+/g, ''); // Strip all spaces from the base64 core
-     
-     formatted = `-----BEGIN EC PRIVATE KEY-----\n${base64Body}\n-----END EC PRIVATE KEY-----`;
+  // 1. Strip all accidental quotes and convert literal \n to real line breaks
+  let cleanKey = key.replace(/["']/g, '').replace(/\\n/g, '\n').trim();
+
+  // 2. If it has headers but got flattened into a single line with spaces
+  if (cleanKey.includes('-----BEGIN') && !cleanKey.includes('\n')) {
+     const base64 = cleanKey.replace(/-----.*?-----/g, '').replace(/\s+/g, '');
+     return `-----BEGIN EC PRIVATE KEY-----\n${base64}\n-----END EC PRIVATE KEY-----`;
   }
-  return formatted;
+
+  // 3. If the headers got completely deleted and it's just the raw base64 string
+  if (!cleanKey.includes('-----BEGIN')) {
+     cleanKey = cleanKey.replace(/\s+/g, '');
+     return `-----BEGIN EC PRIVATE KEY-----\n${cleanKey}\n-----END EC PRIVATE KEY-----`;
+  }
+
+  return cleanKey;
 };
 
 export default async function handler(req, res) {
