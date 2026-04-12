@@ -8,8 +8,7 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 
-// THE EXIT 128 FIX: 
-// These MUST be at the top of the file. If they are inside the tool, Vercel runs out of RAM and kills the server.
+// Loaded at the top to prevent Vercel memory leaks
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
@@ -18,9 +17,21 @@ export default async function handler(req, res) {
 
   try {
     const { messages } = req.body;
-    
-    // Protect Vercel memory by only feeding the AI the last 6 messages
-    const safeMessages = messages.length > 6 ? messages.slice(-6) : messages;
+
+    // --- THE THOUGHT SIGNATURE FIX ---
+    // We strip past tool blocks from the history, leaving only the text conversation.
+    // This prevents Google from crashing when it looks for thought_signatures on old tool calls!
+    const cleanMessages = messages.filter(msg => {
+      if (msg.role === 'tool') return false; 
+      if (msg.role === 'assistant' && msg.toolInvocations) return false; 
+      return true;
+    });
+
+    // Protect Vercel memory by only feeding the AI the last 6 clean messages
+    const safeMessages = cleanMessages.length > 6 ? cleanMessages.slice(-6) : cleanMessages;
+    while (safeMessages.length > 0 && safeMessages[0].role !== 'user') {
+      safeMessages.shift(); 
+    }
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -55,9 +66,9 @@ export default async function handler(req, res) {
     - If asked to run the genetic optimizer, use the runOptimizer tool.
 
     --- PROTOCOL 2: NEW STRATEGY CREATION (HUMAN HANDOFF) ---
-    If Andrew asks to "Start a new strategy" or design a new algorithm (e.g., "Create a day trading strategy for DOGE"):
+    If Andrew asks to "Start a new strategy" or design a new algorithm:
     1. Use \`fetchHistoricalData\` to backtest your thesis and find the optimal timeframe/parameters.
-    2. Generate the COMPLETE JavaScript code for the new strategy. You MUST strictly adhere to the following architectural template. DO NOT deviate from this structure:
+    2. Generate the COMPLETE JavaScript code for the new strategy. You MUST strictly adhere to the following architectural template:
 
     \`\`\`javascript
     import { /* YOUR INDICATORS */ } from 'technicalindicators';
@@ -107,9 +118,9 @@ export default async function handler(req, res) {
 `;
 
     const result = await streamText({
-      model: google('models/gemini-3-flash-preview'), 
+      model: google('models/gemini-3.1-pro-preview'), // Restored your elite model!
       system: systemPrompt,
-      messages: safeMessages,
+      messages: safeMessages, // Passing the signature-scrubbed messages
       maxSteps: 5,
       tools: {
         manageStrategy: tool({
@@ -155,7 +166,7 @@ export default async function handler(req, res) {
         }), 
 
         readStrategyLogic: tool({
-          description: 'Reads the raw JavaScript source code of a specific strategy file to understand its mathematical logic, indicator crossover rules, and risk management.',
+          description: 'Reads the raw JavaScript source code of a specific strategy file.',
           parameters: z.object({
             fileName: z.string().describe('The name of the strategy file to read, e.g., "doge_hf_scalper_v1.js"')
           }),
@@ -171,11 +182,7 @@ export default async function handler(req, res) {
               }
               
               const code = fs.readFileSync(filePath, 'utf8');
-              return { 
-                  success: true,
-                  fileName: finalFileName,
-                  architecture: code 
-              };
+              return { success: true, fileName: finalFileName, architecture: code };
             } catch (err) {
               return { error: `Failed to read file: ${err.message}` };
             }
@@ -218,7 +225,6 @@ export default async function handler(req, res) {
                 const currentStart = currentEnd - (batchSize * lookbackSeconds);
                 const query = `?start=${currentStart}&end=${currentEnd}&granularity=${granularity}`;
 
-                // The imports were moved to the top of the file!
                 const token = jwt.sign({
                   iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
                   sub: apiKeyName, uri: `GET api.coinbase.com${apiPath}`,
