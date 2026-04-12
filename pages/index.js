@@ -15,7 +15,6 @@ const ASSETS = ['BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-IN
 export default function Dashboard() {
   const [activeAsset, setActiveAsset] = useState('DOGE-PERP-INTX');
   const [livePrice, setLivePrice] = useState(0); 
-  
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
   const [scanStream, setScanStream] = useState([]); 
@@ -29,7 +28,7 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      // 1. Fetch Portfolio AND Live Price via secure server proxy (Fixes CORS/Ghost PnL)
+      // 1. Unified Portfolio & Price Fetch
       const portResp = await fetch(`/api/portfolio?asset=${activeAsset}`);
       if (portResp.ok) {
         const portData = await portResp.json();
@@ -52,7 +51,7 @@ export default function Dashboard() {
         .eq('is_active', true);
       setActiveStrategies(configs || []);
 
-      // 4. Fetch Live Scan Telemetry
+      // 4. Fetch Scan Stream
       const { data: scans } = await supabase
         .from('scan_results')
         .select('*')
@@ -60,11 +59,7 @@ export default function Dashboard() {
         .limit(15);
       if (scans) setScanStream(scans);
       
-    } catch (e) { 
-      console.error(e); 
-    } finally { 
-      setLoading(false); 
-    }
+    } catch (e) { console.error(e); } finally { setLoading(false); }
   }, [activeAsset]);
 
   useEffect(() => {
@@ -95,9 +90,7 @@ export default function Dashboard() {
   const handleClosePosition = async (trade) => {
     const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id}?`);
     if (!confirmClose) return;
-
     const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
-    
     await fetch('/api/execute-trade', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -116,10 +109,7 @@ export default function Dashboard() {
 
   const handleStrategySelect = (stratId) => {
     setSelectedStrat(stratId);
-    append({
-      role: 'user',
-      content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}. What parameters are dictating its logic?`
-    });
+    append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
   };
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
@@ -152,9 +142,6 @@ export default function Dashboard() {
           "theme": "dark",
           "style": "1",
           "backgroundColor": "#020617",
-          "hide_top_toolbar": false, 
-          "hide_legend": false,      
-          "save_image": false,
           "container_id": "tv_chart_container",
           "studies": activeStudies 
         });
@@ -169,34 +156,16 @@ export default function Dashboard() {
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4">
       <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
         <h1 className="text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Command</h1>
-        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
-            <Database size={12} /> Sync: wsrioyxzhxxrtzjncfvn
-        </div>
+        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2"><Database size={12} /> Sync: wsrioyxzhxxrtzjncfvn</div>
       </header>
 
       <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
-        
-        {/* LEFT: Sidebar */}
         <div className="lg:col-span-2 flex flex-col h-[calc(100vh-100px)] min-h-0 gap-6">
           <div className="bg-slate-900/50 p-5 rounded-[2rem] border border-white/10 flex-shrink-0 shadow-xl">
-            <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">
-              Capital Allocation <span className="text-cyan-400 animate-pulse">● LIVE</span>
-            </div>
+            <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">Capital Allocation <span className="text-cyan-400 animate-pulse">● LIVE</span></div>
             <div className="space-y-4">
-              <div className="border-b border-white/5 pb-3">
-                <div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Shield size={10} className="text-emerald-400"/> Live Equity (Coinbase)</div>
-                <div className="text-xl font-black font-mono text-white">${portfolio.live?.balance?.toFixed(2) || '0.00'}</div>
-              </div>
-              <div>
-                <div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Cpu size={10} className="text-indigo-400"/> Nexus Paper Funds</div>
-                <div className="flex justify-between items-end">
-                  <div className="text-lg font-black font-mono text-slate-300">${portfolio.paper?.balance?.toFixed(2) || '5000.00'}</div>
-                  <div className={`text-[10px] font-mono font-black ${portfolio.paper?.balance >= portfolio.paper?.initial ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {portfolio.paper?.balance >= portfolio.paper?.initial ? '+' : ''}
-                    {(((portfolio.paper?.balance - portfolio.paper?.initial) / portfolio.paper?.initial) * 100).toFixed(2)}%
-                  </div>
-                </div>
-              </div>
+              <div><div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Shield size={10} className="text-emerald-400"/> Live Equity (Coinbase)</div><div className="text-xl font-black font-mono text-white">${portfolio.live?.balance?.toFixed(2) || '0.00'}</div></div>
+              <div><div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Cpu size={10} className="text-indigo-400"/> Nexus Paper Funds</div><div className="text-lg font-black font-mono text-slate-300">${portfolio.paper?.balance?.toFixed(2) || '5000.00'}</div></div>
             </div>
           </div>
 
@@ -204,10 +173,7 @@ export default function Dashboard() {
             <div className="text-[10px] font-black uppercase text-slate-500 mb-3 px-2 tracking-widest flex items-center gap-2"><Target size={12}/> Market Scanners</div>
             <div className="space-y-1 overflow-y-auto max-h-[250px] custom-scrollbar">
               {ASSETS.map(asset => (
-                  <button key={asset} onClick={() => setActiveAsset(asset)}
-                  className={`w-full text-left px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${activeAsset === asset ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30' : 'bg-transparent text-slate-500 border-transparent hover:bg-white/5'}`}>
-                      {asset}
-                  </button>
+                  <button key={asset} onClick={() => setActiveAsset(asset)} className={`w-full text-left px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest border transition-all ${activeAsset === asset ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30' : 'bg-transparent text-slate-500 border-transparent hover:bg-white/5'}`}>{asset}</button>
               ))}
             </div>
           </div>
@@ -219,10 +185,7 @@ export default function Dashboard() {
                       <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 hover:bg-white/[0.02] transition-colors gap-1.5">
                           <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
-                                  {/* Timestamp */}
-                                  <span className="text-[9px] text-slate-500 font-mono">
-                                      {new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                                  </span>
+                                  <span className="text-[9px] text-slate-500 font-mono">{new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
                                   <span className="text-[10px] font-bold text-slate-300 tracking-wider">{scan.asset}</span>
                               </div>
                               <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">{scan.strategy}</span>
@@ -233,36 +196,29 @@ export default function Dashboard() {
                                       <span key={key} className="text-[9px] text-slate-400 font-mono"><span className="text-slate-500 uppercase">{key}:</span> {typeof val === 'number' ? val.toFixed(2) : val}</span>
                                   ))}
                               </div>
-                              {/* Status Badge */}
-                              <span className={`text-[9px] font-black tracking-widest uppercase flex-shrink-0 ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`}>
-                                  {scan.status}
-                              </span>
+                              <span className={`text-[9px] font-black tracking-widest uppercase flex-shrink-0 ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`}>{scan.status}</span>
                           </div>
                       </div>
                   ))}
-                  {scanStream.length === 0 && (
-                      <div className="text-center py-4 text-[9px] text-slate-600 uppercase tracking-widest italic">Awaiting first scan cycle...</div>
-                  )}
               </div>
           </div>
         </div>
 
-        {/* MIDDLE: Chart & Active HUD */}
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex flex-col p-4">
-            {activeStudies.length > 0 && (
-              <button onClick={() => setActiveStudies([])} className="absolute top-4 left-1/2 transform -translate-x-1/2 z-30 bg-red-500/20 text-red-400 border border-red-500/30 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest hover:bg-red-500/40 transition-colors backdrop-blur-md shadow-lg">Clear Indicators</button>
-            )}
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
-            
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {tradeLogs.slice(0, 3).map((log, i) => {
-                 let displayPnl = log.pnl;
+                 // FIX: Added guard to prevent blank "+" HUD glitch
+                 let displayPnl = null;
                  let isUnrealized = false;
                  if (!log.exit_price && livePrice > 0) {
                     displayPnl = (log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1);
                     isUnrealized = true;
+                 } else if (log.exit_price) {
+                    displayPnl = log.pnl;
                  }
+
                  return (
                   <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-4 pointer-events-auto shadow-lg">
                      <div className="flex flex-col gap-0.5">
@@ -272,16 +228,17 @@ export default function Dashboard() {
                        </div>
                        <span className="text-[7px] text-slate-500 font-black tracking-widest uppercase pl-3">{log.strategy_id}</span>
                      </div>
-                     <span className={`font-black ${displayPnl >= 0 ? (isUnrealized ? 'text-cyan-400' : 'text-emerald-400') : (isUnrealized ? 'text-amber-400' : 'text-red-400')}`}>
-                         {displayPnl >= 0 ? '+' : ''}{displayPnl ? displayPnl.toFixed(4) : ''}
-                     </span>
+                     {displayPnl !== null && (
+                         <span className={`font-black ${displayPnl >= 0 ? (isUnrealized ? 'text-cyan-400' : 'text-emerald-400') : (isUnrealized ? 'text-amber-400' : 'text-red-400')}`}>
+                             {displayPnl >= 0 ? '+' : ''}{displayPnl.toFixed(4)}
+                         </span>
+                     )}
                   </div>
                  )
                })}
             </div>
           </div>
 
-          {/* TABLE: Execution History */}
           <div className="flex-grow overflow-y-auto custom-scrollbar border border-white/5 rounded-[2rem] bg-slate-900/30">
             <table className="w-full text-left table-fixed">
                     <thead className="bg-slate-950/80 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
@@ -291,17 +248,12 @@ export default function Dashboard() {
                       {tradeLogs.map((log, i) => {
                         let pnlDisplay = log.exit_price ? <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span> : 
                         (livePrice > 0 ? <span className={`animate-pulse ${(log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${((log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1)).toFixed(4)} (U)</span> : '--');
-                        
                         return (
                         <tr key={i} className="hover:bg-white/[0.02] transition-colors">
                           <td className="px-4 py-4 text-[9px] text-slate-500">{new Date(log.created_at).toLocaleTimeString()}</td>
-                          <td className="px-4 py-4 text-center">
-                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span>
-                          </td>
+                          <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span></td>
                           <td className="px-4 py-4 text-slate-300 text-[10px]">${log.entry_price}</td>
-                          <td className="px-4 py-4 flex items-center gap-2">
-                              {log.exit_price ? `$${log.exit_price}` : <><span className="text-indigo-400 animate-pulse font-black text-[9px]">ACTIVE</span> <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}
-                          </td>
+                          <td className="px-4 py-4 flex items-center gap-2">{log.exit_price ? `$${log.exit_price}` : <><span className="text-indigo-400 animate-pulse font-black text-[9px]">ACTIVE</span> <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}</td>
                           <td className="px-4 py-4 text-right font-black text-[10px]">{pnlDisplay}</td>
                         </tr>
                       )})}
@@ -310,32 +262,27 @@ export default function Dashboard() {
             </div>
         </div>
 
-        {/* RIGHT: Agent & Matrix */}
         <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
-            <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between">
-              <span>Active Matrix</span>
-              <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span>
-            </h3>
+            <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between"><span>Active Matrix</span><span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span></h3>
             <div className="flex flex-col gap-3">
-              {currentAssetStrategies.map(strat => (
-                <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5">
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="text-xs font-black text-white uppercase">{strat.strategy}</span>
-                    <button onClick={(e) => { e.stopPropagation(); setActiveStudies(getStudiesForStrategy(strat.strategy)); }} className="text-[8px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded">+ CHART</button>
-                  </div>
-                  <div className="text-[10px] text-slate-500 font-mono">Status: <span className="text-emerald-400 font-bold">STABLE</span></div>
-                </button>
-              ))}
+              {currentAssetStrategies.map(strat => {
+                const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy);
+                const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
+                return (
+                  <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5">
+                    <div className="flex justify-between items-center mb-1"><span className="text-xs font-black text-white uppercase">{strat.strategy}</span><button onClick={(e) => { e.stopPropagation(); setActiveStudies(getStudiesForStrategy(strat.strategy)); }} className="text-[8px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded">+ CHART</button></div>
+                    <div className="text-[10px] text-slate-500 font-mono">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
+                  </button>
+                )
+              })}
             </div>
           </div>
           <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
             <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
               {messages.map(m => (
-                <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>{m.content}</div>
-                </div>
+                <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}><div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>{m.content}</div></div>
               ))}
               <div ref={chatEndRef} />
             </div>
