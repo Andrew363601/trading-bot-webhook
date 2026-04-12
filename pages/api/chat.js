@@ -18,9 +18,16 @@ export default async function handler(req, res) {
   try {
     const { messages } = req.body;
 
-    // THE FIX: We removed the manual message slicing and sanitizing.
-    // Gemini 1.5 Pro requires the strict, unbroken sequence of tool calls and responses. 
-    // Since it has a 2-million token context window, it can handle the raw array flawlessly!
+    const cleanMessages = messages.filter(msg => {
+      if (msg.role === 'tool') return false; 
+      if (msg.role === 'assistant' && msg.toolInvocations) return false; 
+      return true;
+    });
+
+    const safeMessages = cleanMessages.length > 6 ? cleanMessages.slice(-6) : cleanMessages;
+    while (safeMessages.length > 0 && safeMessages[0].role !== 'user') {
+      safeMessages.shift(); 
+    }
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -41,15 +48,16 @@ export default async function handler(req, res) {
     1. PERSONA: Sleek, technical, calculated, and high-efficiency. You communicate like a quant-trader.
     2. AUTHORITY: Full CRUD access to the strategy matrix via the manageStrategy tool.
     3. CAPABILITY: You design and evaluate algorithmic trading logic using diverse technical indicators.
-    4. GOAL: Maximize ROI while maintaining strict risk management.
+    4. GOAL: Maximize ROI using Perpetual Futures leverage while maintaining strict risk management.
   
     --- CURRENT TELEMETRY ---
     Active Strategies Matrix: ${JSON.stringify(activeConfigs || [])}
     Recent Trade Data: ${JSON.stringify(logs || [])}
   
     --- PROTOCOL 1: MARKET ANALYSIS & EXECUTION ---
+    - Andrew exclusively trades Perpetual Futures for leverage. The standard format for assets on this exchange is [COIN]-PERP-INTX (e.g., BTC-PERP-INTX, DOGE-PERP-INTX, SOL-PERP-INTX).
+    - ALWAYS use the \`fetchHistoricalData\` tool with the -PERP-INTX symbol to analyze market context before deploying a new strategy or answering queries.
     - Strategies are highly modular. Evaluate trades based on the specific logic and parameters defined in the active configuration.
-    - ALWAYS use the \`fetchHistoricalData\` tool to analyze market context (OHLC candles) across multiple timeframes before deploying a new strategy or answering market outlook queries.
     - You are authorized to toggle strategies between PAPER and LIVE if Andrew provides the command.
     - If trade logs show consistent losses, run historical data, analyze the failure points, and mutate the parameters.
     - If asked to run the genetic optimizer, use the runOptimizer tool.
@@ -63,7 +71,8 @@ export default async function handler(req, res) {
     import { /* YOUR INDICATORS */ } from 'technicalindicators';
 
     export async function run(macroCandles, triggerCandles, parameters) {
-        const { leverage = 10, market_type = 'SPOT', tp_percent = 0.02, sl_percent = 0.01 } = parameters;
+        // Default to FUTURES market type for leverage
+        const { leverage = 10, market_type = 'FUTURES', tp_percent = 0.02, sl_percent = 0.01 } = parameters;
 
         if (!macroCandles || !triggerCandles || triggerCandles.length < /* YOUR MIN LENGTH */) {
             return { signal: null };
@@ -109,13 +118,13 @@ export default async function handler(req, res) {
     const result = await streamText({
       model: google('models/gemini-2.5-pro'), 
       system: systemPrompt,
-      messages: messages, // Pass the raw, unbroken sequence directly!
+      messages: safeMessages,
       maxSteps: 5,
       tools: {
         manageStrategy: tool({
-          description: 'Creates or updates a strategy config. MUST include mathematical reasoning and increment version on updates.',
+          description: 'Creates or updates a strategy config.',
           parameters: z.object({
-            asset: z.string().describe('The asset symbol, e.g., DOGE-USDT'),
+            asset: z.string().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
             strategy_id: z.string().describe('The name of the logic, e.g., LTC_4x4_STF'),
             version: z.string().describe('The version number, e.g., v1.0 or v1.1'), 
             execution_mode: z.enum(['LIVE', 'PAPER']).optional(),
@@ -179,9 +188,9 @@ export default async function handler(req, res) {
         }),
 
         fetchHistoricalData: tool({
-          description: 'Fetches historical OHLC candles from Coinbase with pagination to bypass the 300-candle limit.',
+          description: 'Fetches historical OHLC candles from Coinbase.',
           parameters: z.object({
-            asset: z.string().describe('The asset symbol, e.g., DOGE-USDT'),
+            asset: z.string().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
             granularity: z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']),
             lookback_candles: z.number().max(5000).default(150).describe('Total number of candles to fetch')
           }),
@@ -190,8 +199,19 @@ export default async function handler(req, res) {
             const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
             if (!apiKeyName || !apiSecret) return { error: "Missing Coinbase Credentials" };
 
-            const cleanAsset = asset.replace(/-/g, '');
-            const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
+            // --- THE PERPETUAL FUTURES FIX ---
+            // Intelligently parse Spot vs Perp symbols without destroying the hyphens!
+            let coinbaseProduct = asset.toUpperCase().trim();
+            if (!coinbaseProduct.includes('-')) {
+                if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+                else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+                else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP-INTX');
+            } 
+            // Append the Advanced Trade suffix if the AI just passed DOGE-PERP
+            if (coinbaseProduct.endsWith('-PERP')) {
+                coinbaseProduct = coinbaseProduct + '-INTX';
+            }
+
             const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
             
             let lookbackSeconds;
@@ -222,7 +242,6 @@ export default async function handler(req, res) {
                 const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
                 const data = await resp.json();
                 
-                // THE FIX: Stop silently swallowing errors! Pass them directly to the AI.
                 if (!resp.ok) {
                     return { error: `Coinbase API Error ${resp.status}: ${data.message || data.error_details || JSON.stringify(data)}` };
                 }
@@ -246,7 +265,7 @@ export default async function handler(req, res) {
               const safeData = formattedCandles.slice(-500);
 
               return { 
-                asset, 
+                asset: coinbaseProduct, 
                 granularity, 
                 total_fetched_from_api: allCandles.length,
                 candles_returned_to_ai: safeData.length,
@@ -259,7 +278,7 @@ export default async function handler(req, res) {
         }),
 
         runOptimizer: tool({
-          description: 'Triggers the genetic optimizer to analyze recent trade logs and mutate strategy parameters.',
+          description: 'Triggers the genetic optimizer.',
           parameters: z.object({}),
           execute: async () => {
             const url = `https://trading-bot-webhook.vercel.app/api/genetic-optimizer`;

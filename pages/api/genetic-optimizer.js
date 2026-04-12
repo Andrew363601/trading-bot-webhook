@@ -67,8 +67,16 @@ export default async function handler(req, res) {
       const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
       
       if (apiKeyName && apiSecret) {
-        const cleanAsset = config.asset.replace(/-/g, '');
-        const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
+        // --- THE PERPETUAL FUTURES FIX ---
+        let coinbaseProduct = config.asset.toUpperCase().trim();
+        if (!coinbaseProduct.includes('-')) {
+            if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+            else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+            else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP-INTX');
+        } 
+        if (coinbaseProduct.endsWith('-PERP')) {
+            coinbaseProduct = coinbaseProduct + '-INTX';
+        }
         
         const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
         
