@@ -14,7 +14,7 @@ const ASSETS = ['BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-IN
 
 export default function Dashboard() {
   const [activeAsset, setActiveAsset] = useState('DOGE-PERP-INTX');
-  const [livePrice, setLivePrice] = useState(0); // NEW: Live Price Tracker
+  const [livePrice, setLivePrice] = useState(0); 
   
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
@@ -29,26 +29,15 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      // 1. Fetch Portfolio
-      const portResp = await fetch('/api/portfolio');
+      // 1. Fetch Portfolio AND Live Price in one secure server-side sweep
+      const portResp = await fetch(`/api/portfolio?asset=${activeAsset}`);
       if (portResp.ok) {
         const portData = await portResp.json();
         setPortfolio(portData);
+        if (portData.price > 0) setLivePrice(portData.price);
       }
 
-      // 2. Fetch Live Price (Public Binance feed to save Coinbase API limits!)
-      try {
-        const binanceSymbol = `${activeAsset.split('-')[0]}USDT`;
-        const priceResp = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${binanceSymbol}`);
-        if (priceResp.ok) {
-          const { price } = await priceResp.json();
-          setLivePrice(parseFloat(price));
-        }
-      } catch (priceErr) {
-        console.warn("Could not fetch live price for UI.");
-      }
-
-      // 3. Fetch Trade Logs
+      // 2. Fetch Trade Logs
       const { data: logs } = await supabase
         .from('trade_logs')
         .select('*')
@@ -56,14 +45,14 @@ export default function Dashboard() {
         .order('id', { ascending: false });
       setTradeLogs(logs || []);
 
-      // 4. Fetch Strategy Matrix
+      // 3. Fetch Strategy Matrix
       const { data: configs } = await supabase
         .from('strategy_config')
         .select('*')
         .eq('is_active', true);
       setActiveStrategies(configs || []);
 
-      // 5. Fetch Sonar Scans
+      // 4. Fetch Sonar Scans
       const { data: scans } = await supabase
         .from('scan_results')
         .select('*')
@@ -91,32 +80,24 @@ export default function Dashboard() {
   useEffect(() => {
     if (messages.length > 0) {
       const lastUserMsg = messages.slice().reverse().find(m => m.role === 'user');
-      
       if (lastUserMsg) {
         const content = lastUserMsg.content.toUpperCase();
-        
         const mentionedAsset = ASSETS.find(asset => content.includes(asset));
-        if (mentionedAsset && mentionedAsset !== activeAsset) {
-          setActiveAsset(mentionedAsset);
-        }
+        if (mentionedAsset && mentionedAsset !== activeAsset) setActiveAsset(mentionedAsset);
 
         const mentionedStrat = activeStrategies.find(s => content.includes(s.strategy));
         if (mentionedStrat) {
            const targetStudies = getStudiesForStrategy(mentionedStrat.strategy);
-           if (JSON.stringify(targetStudies) !== JSON.stringify(activeStudies)) {
-             setActiveStudies(targetStudies);
-           }
+           if (JSON.stringify(targetStudies) !== JSON.stringify(activeStudies)) setActiveStudies(targetStudies);
         }
       }
     }
   }, [messages, activeAsset, activeStrategies, activeStudies]);
 
-  // NEW: The Manual Liquidation Handler
   const handleClosePosition = async (trade) => {
     const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id}?`);
     if (!confirmClose) return;
 
-    // Flip the side to execute the offsetting closure order
     const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
     
     await fetch('/api/execute-trade', {
@@ -127,21 +108,18 @@ export default function Dashboard() {
         strategy_id: trade.strategy_id,
         version: trade.version,
         side: closingSide,
-        execution_mode: trade.execution_mode, // Ensures Paper closes Paper, Live closes Live
-        qty: trade.qty, // Sends exact quantity back to zero out the position
-        price: livePrice // Passes the UI's live price down for Paper execution math
+        execution_mode: trade.execution_mode,
+        qty: trade.qty, 
+        price: livePrice 
       })
     });
     
-    fetchData(); // Force an instant UI refresh
+    fetchData(); 
   };
 
   const handleStrategySelect = (stratId) => {
     setSelectedStrat(stratId);
-    append({
-      role: 'user',
-      content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}. What parameters are dictating its logic?`
-    });
+    append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
   };
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
@@ -197,9 +175,8 @@ export default function Dashboard() {
 
       <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
         
-        {/* LEFT: Capital & Watchlist (Sidebar) */}
+        {/* LEFT SIDEBAR */}
         <div className="lg:col-span-2 flex flex-col h-[calc(100vh-100px)] min-h-0 gap-6">
-          
           <div className="bg-slate-900/50 p-5 rounded-[2rem] border border-white/10 flex-shrink-0 shadow-xl">
             <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">
               Capital Allocation <span className="text-cyan-400 animate-pulse">● LIVE</span>
@@ -222,7 +199,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Asset Watchlist */}
           <div className="flex flex-col flex-shrink-0">
             <div className="text-[10px] font-black uppercase text-slate-500 mb-3 px-2 tracking-widest flex items-center gap-2"><Target size={12}/> Market Scanners</div>
             <div className="space-y-1">
@@ -245,71 +221,39 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* LIVE SCAN TELEMETRY */}
           <div className="mt-2 pt-4 border-t border-white/5 flex flex-col min-h-0 flex-grow">
               <div className="flex justify-between items-center mb-3">
                   <h3 className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-black">Live Sonar Stream</h3>
-                  <div className="flex items-center gap-2">
-                      <span className="relative flex h-2 w-2">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                      </span>
-                  </div>
               </div>
-              
               <div className="space-y-2 overflow-y-auto pr-2 custom-scrollbar flex-grow">
               {scanStream.map((scan, i) => (
-                      <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 hover:bg-white/[0.02] transition-colors gap-1.5">
+                      <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 gap-1.5">
                           <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
                                   <span className="text-[9px] text-slate-500 font-mono">
                                       {new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                                   </span>
-                                  <span className="text-[10px] font-bold text-slate-300 tracking-wider">
-                                      {scan.asset}
-                                  </span>
                               </div>
-                              {/* Strategy Name Badge */}
                               {scan.strategy && (
                                   <span className="text-[8px] font-black tracking-tighter uppercase px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
                                       {scan.strategy}
                                   </span>
                               )}
                           </div>
-                          
                          <div className="flex items-center justify-between mt-1 pt-1 border-t border-white/5">
-                              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                                  {/* Dynamic Telemetry Mapping */}
-                                  {scan.telemetry && Object.keys(scan.telemetry).length > 0 ? (
-                                      Object.entries(scan.telemetry).map(([key, val]) => (
-                                          <span key={key} className="text-[9px] text-slate-400 font-mono">
-                                              <span className="text-slate-500 uppercase">{key}:</span> {typeof val === 'number' ? val.toFixed(2) : val}
-                                          </span>
-                                      ))
-                                  ) : (
-                                      <span className="text-[9px] text-slate-600 font-mono italic">Awaiting Telemetry...</span>
-                                  )}
-                              </div>
-                              
                               <span className={`text-[9px] font-black tracking-widest uppercase flex-shrink-0 ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`}>
                                   {scan.status}
                               </span>
                           </div>
                       </div>
                   ))}
-                  {scanStream.length === 0 && (
-                      <div className="text-center py-4 text-[9px] text-slate-600 uppercase tracking-widest italic">Awaiting first scan cycle...</div>
-                  )}
               </div>
           </div>
         </div>
 
         {/* MIDDLE: Chart & Execution Logs */}
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
-          {/* Chart Container */}
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex-shrink-0 flex flex-col p-4">
-            
-            {/* Clear Indicators Button (Overlay) */}
             {activeStudies.length > 0 && (
               <button 
                 onClick={() => setActiveStudies([])}
@@ -318,16 +262,14 @@ export default function Dashboard() {
                 Clear Indicators
               </button>
             )}
-
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
             
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[220px] pointer-events-none">
                {tradeLogs.slice(0, 3).map((log, i) => {
-                 // Dynamic HUD PnL 
                  let displayPnl = log.pnl;
                  let isUnrealized = false;
                  if (!log.exit_price && livePrice > 0) {
-                    displayPnl = (log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1);
+                    displayPnl = log.side === 'BUY' || log.side === 'LONG' ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1);
                     isUnrealized = true;
                  }
                  return (
@@ -337,7 +279,7 @@ export default function Dashboard() {
                        <span className="text-slate-300 uppercase truncate">{log.side} @ {log.entry_price}</span>
                      </div>
                      <span className={displayPnl >= 0 ? (isUnrealized ? 'text-cyan-400' : 'text-emerald-400') : (isUnrealized ? 'text-amber-400' : 'text-red-400')}>
-                         {displayPnl >= 0 ? '+' : ''}{displayPnl?.toFixed(2)}
+                         {displayPnl >= 0 ? '+' : ''}{displayPnl?.toFixed(4)}
                      </span>
                   </div>
                  )
@@ -345,7 +287,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Execution History Table */}
           <div className="flex-grow overflow-y-auto custom-scrollbar border border-white/5 rounded-[2rem] bg-slate-900/30">
             <table className="w-full text-left table-fixed">
                     <thead className="bg-slate-950/80 text-[9px] font-black text-slate-600 uppercase tracking-[0.2em] sticky top-0 backdrop-blur-md z-10">
@@ -360,7 +301,6 @@ export default function Dashboard() {
                     </thead>
                     <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
                       {tradeLogs.map((log, i) => {
-                        // NEW: Unrealized PnL Calculation for the Table
                         let pnlDisplay;
                         if (log.exit_price) {
                             pnlDisplay = <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span>;
@@ -401,16 +341,13 @@ export default function Dashboard() {
                                       <span className="text-emerald-400/70">TP: {log.tp_price ? `$${log.tp_price}` : '--'}</span>
                                       <span className="text-red-400/70">SL: {log.sl_price ? `$${log.sl_price}` : '--'}</span>
                                   </div>
-                              ) : (
-                                  <span className="text-[9px] text-slate-600 italic">Dynamic</span>
-                              )}
+                              ) : <span className="text-[9px] text-slate-600 italic">Dynamic</span>}
                           </td>
 
                           <td className="px-4 py-4 text-[10px] text-slate-400 flex items-center gap-2">
                               {log.exit_price ? `$${log.exit_price}` : (
                                 <>
                                   <span className="text-indigo-400 animate-pulse font-black text-[9px] uppercase tracking-widest">Active</span>
-                                  {/* THE EMERGENCY CLOSE BUTTON */}
                                   <button 
                                       onClick={() => handleClosePosition(log)}
                                       className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] hover:bg-red-500/30 transition-colors font-black tracking-widest"
@@ -434,21 +371,14 @@ export default function Dashboard() {
             </div>
         </div>
 
-        {/* RIGHT: Strategy Matrix & Agent (Sidebar) */}
+        {/* RIGHT SIDEBAR (Agent) */}
         <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden">
-          
-          {/* Dynamic Strategy Matrix */}
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
             <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between">
               <span className="flex items-center gap-2"><Layers size={14} className="text-cyan-400" /> Active Matrix</span>
               <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span>
             </h3>
-            
             <div className="flex flex-col gap-3">
-              {currentAssetStrategies.length === 0 && (
-                <div className="text-center text-slate-600 italic text-[10px] py-4">No active strategies deployed for this asset. Ask Nexus to deploy one.</div>
-              )}
-              
               {currentAssetStrategies.map(strat => {
                 const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy);
                 const openTrade = stratLogs.find(l => !l.exit_price);
@@ -464,20 +394,11 @@ export default function Dashboard() {
                   >
                     <div className="flex justify-between items-center mb-2">
                       <span className="text-xs font-black text-white uppercase tracking-tighter">{strat.strategy}</span>
-                      <div className="flex items-center gap-2">
-                        <button 
-                          onClick={(e) => {
-                             e.stopPropagation(); 
-                             setActiveStudies(getStudiesForStrategy(strat.strategy));
-                          }}
+                      <button 
+                          onClick={(e) => { e.stopPropagation(); setActiveStudies(getStudiesForStrategy(strat.strategy)); }}
                           className="text-[8px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded hover:bg-cyan-500/40 transition-colors font-black"
-                        >
-                          + CHART
-                        </button>
-                        <span className="text-[8px] bg-white/10 px-1.5 py-0.5 rounded text-slate-300">{strat.version || 'v1.0'}</span>
-                      </div>
+                      >+ CHART</button>
                     </div>
-                    
                     {openTrade ? (
                       <div className="flex justify-between items-center text-[10px] font-mono mt-1">
                         <span className="text-slate-500 uppercase">Status: <span className="text-indigo-400 animate-pulse font-bold">IN TRADE ({openTrade.side})</span></span>
@@ -496,47 +417,21 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Agent Terminal */}
           <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] shadow-2xl flex flex-col flex-grow min-h-0 overflow-hidden">
             <div className="px-6 py-4 border-b border-white/5 bg-slate-900/40 text-[10px] font-black uppercase text-slate-500 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
-              <div className="flex gap-1">
-                <div className="w-1.5 h-1.5 rounded-full bg-red-500/40" />
-                <div className="w-1.5 h-1.5 rounded-full bg-amber-500/40" />
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-500/40" />
-              </div>
             </div>
-            
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
-              {messages.length === 0 && (
-                <div className="text-slate-600 italic leading-relaxed uppercase text-[10px]">
-                  Telemetric link established. Select a strategy matrix or query system vectors...
-                </div>
-              )}
               {messages.map(m => (
                 <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[90%] rounded-2xl px-4 py-3 leading-relaxed whitespace-pre-wrap ${
-                    m.role === 'user' 
-                    ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px]' 
-                    : 'bg-slate-900/80 text-cyan-400 border border-white/5'
-                  }`}>
-                    {m.content}
-                  </div>
+                  <div className={`max-w-[90%] rounded-2xl px-4 py-3 leading-relaxed whitespace-pre-wrap ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[10px]' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>{m.content}</div>
                 </div>
               ))}
               <div ref={chatEndRef} className="h-1" />
             </div>
-
             <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3 flex-shrink-0">
-              <input
-                className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white placeholder-slate-700 focus:outline-none focus:border-indigo-500/50 transition-all"
-                value={input} 
-                onChange={handleInputChange} 
-                placeholder="Query parameters or command deployment..."
-              />
-              <button type="submit" className="bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-xl px-4 py-3 hover:bg-indigo-500/30 transition-all flex-shrink-0">
-                <Send size={16} />
-              </button>
+              <input className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white placeholder-slate-700 focus:outline-none focus:border-indigo-500/50" value={input} onChange={handleInputChange} placeholder="Query parameters or command deployment..." />
+              <button type="submit" className="bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-xl px-4 py-3 hover:bg-indigo-500/30"><Send size={16} /></button>
             </form>
           </div>
         </div>
