@@ -1,3 +1,6 @@
+// Unleashing Vercel Pro limit (5 full minutes) to prevent execution timeouts
+export const maxDuration = 300;
+
 // pages/api/execute-trade.js
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
@@ -23,10 +26,20 @@ export default async function handler(req, res) {
 
     const formattedSecret = apiSecret.replace(/\\n/g, '\n');
 
-    // Format Product String
-    let rawSymbol = data.symbol || 'DOGEUSDT';
-    rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '');
-    const coinbaseProduct = rawSymbol.includes('-') ? rawSymbol : rawSymbol.replace('USDT', '-USDT');
+    // --- THE PERPETUAL FUTURES FIX ---
+    // Bulletproof symbol parsing so it perfectly matches the database and Coinbase API
+    let rawSymbol = data.symbol || 'DOGE-PERP-INTX';
+    rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '').toUpperCase().trim();
+    
+    let coinbaseProduct = rawSymbol;
+    if (!coinbaseProduct.includes('-')) {
+        if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+        else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+        else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP-INTX');
+    }
+    if (coinbaseProduct.endsWith('-PERP')) {
+        coinbaseProduct = coinbaseProduct + '-INTX';
+    }
 
     const side = (data.side || 'BUY').toUpperCase() === 'LONG' || (data.side || 'BUY').toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
     const qty = (data.qty || 10).toString();
@@ -35,7 +48,7 @@ export default async function handler(req, res) {
     const strategyId = data.strategy_id || 'MANUAL';
     const version = data.version || 'v1.0';
     const leverage = data.leverage || 1;
-    const marketType = data.market_type || 'SPOT';
+    const marketType = data.market_type || 'FUTURES'; // Defaulting to Futures!
     let tpPrice = data.tp_price || null;
     let slPrice = data.sl_price || null;
 
@@ -68,7 +81,7 @@ export default async function handler(req, res) {
     let executionStatus = 'simulated';
 
     if (!isPaper) {
-      // 🔴 LIVE TRADE EXECUTION (Updated for Coinbase Futures)
+      // 🔴 LIVE TRADE EXECUTION (Perfectly formatted for Coinbase Futures)
       const path = '/api/v3/brokerage/orders';
       const token = generateToken('POST', path);
       
