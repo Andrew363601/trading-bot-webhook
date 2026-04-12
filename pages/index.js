@@ -129,7 +129,7 @@ export default function Dashboard() {
         new window.TradingView.widget({
           "autosize": true,
           // FIX 3: Fixed the fatal JSX syntax error here!
-          "symbol": `{activeAsset.replace('-INTX', '').replace('-', '')}`,
+          "symbol": `BINANCE:${activeAsset.split('-')[0]}USDT.P`,
           "interval": "1", 
           "theme": "dark",
           "style": "1",
