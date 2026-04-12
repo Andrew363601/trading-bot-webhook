@@ -131,7 +131,6 @@ export default function Dashboard() {
 
       <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
         
-        {/* LEFT SIDEBAR */}
         <div className="lg:col-span-2 flex flex-col h-[calc(100vh-100px)] min-h-0 gap-6">
           <div className="bg-slate-900/50 p-5 rounded-[2rem] border border-white/10 flex-shrink-0 shadow-xl">
             <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">Capital Allocation <span className="text-cyan-400 animate-pulse">● LIVE</span></div>
@@ -176,12 +175,9 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* MIDDLE: Chart & Active HUD */}
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
-          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex-shrink-0 flex flex-col p-4">
+          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex flex-col p-4">
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
-            
-            {/* UPDATED HUD: Now with TP/SL Targets */}
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {tradeLogs.slice(0, 3).map((log, i) => {
                  let displayPnl = null;
@@ -192,7 +188,6 @@ export default function Dashboard() {
                  } else if (log.exit_price) {
                     displayPnl = log.pnl;
                  }
-
                  return (
                   <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-4 pointer-events-auto shadow-lg">
                      <div className="flex flex-col gap-0.5">
@@ -223,9 +218,9 @@ export default function Dashboard() {
                     <thead className="bg-slate-950/80 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
                       <tr>
                         <th className="px-4 py-3">Date / Time</th>
+                        <th className="px-4 py-3 text-center">Strategy</th>
                         <th className="px-4 py-3 text-center">Vector</th>
                         <th className="px-4 py-3">Entry</th>
-                        {/* RESTORED: Target Header */}
                         <th className="px-4 py-3 text-center">Target (TP / SL)</th>
                         <th className="px-4 py-3">Status/Exit</th>
                         <th className="px-4 py-3 text-right">PnL</th>
@@ -248,10 +243,14 @@ export default function Dashboard() {
                                   <span className="text-[8px] opacity-60">{formattedTime}</span>
                               </div>
                           </td>
+                          {/* NEW: Strategy Column Body */}
+                          <td className="px-4 py-4 text-center">
+                              <span className="text-[9px] font-black text-indigo-300/80 uppercase bg-indigo-500/5 px-2 py-1 rounded border border-indigo-500/10">
+                                  {log.strategy_id?.replace('_V1', '')}
+                              </span>
+                          </td>
                           <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span></td>
                           <td className="px-4 py-4 text-slate-300 text-[10px]">${log.entry_price}</td>
-                          
-                          {/* RESTORED: Target Body Cells */}
                           <td className="px-4 py-4 text-center">
                               {log.tp_price || log.sl_price ? (
                                   <div className="flex flex-col text-[8px] tracking-tighter uppercase">
@@ -260,7 +259,6 @@ export default function Dashboard() {
                                   </div>
                               ) : <span className="text-slate-700 italic text-[9px]">Dynamic</span>}
                           </td>
-
                           <td className="px-4 py-4 flex items-center gap-2">{log.exit_price ? `$${log.exit_price}` : <><span className="text-indigo-400 animate-pulse font-black text-[9px]">ACTIVE</span> <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}</td>
                           <td className="px-4 py-4 text-right font-black text-[10px]">{pnlDisplay}</td>
                         </tr>
@@ -270,7 +268,6 @@ export default function Dashboard() {
             </div>
         </div>
 
-        {/* RIGHT SIDEBAR */}
         <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
             <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between"><span>Active Matrix</span><span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span></h3>
