@@ -129,7 +129,7 @@ export default function Dashboard() {
         new window.TradingView.widget({
           "autosize": true,
           // FIX 3: Fixed the fatal JSX syntax error here!
-          "symbol": `COINBASE:${activeAsset.replace('-INTX', '').replace('-', '')}`,
+          "symbol": `{activeAsset.replace('-INTX', '').replace('-', '')}`,
           "interval": "1", 
           "theme": "dark",
           "style": "1",

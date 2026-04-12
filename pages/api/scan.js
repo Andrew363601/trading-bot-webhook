@@ -94,28 +94,32 @@ export default async function handler(req, res) {
         
         // Insert into Supabase so the UI streams it
         await supabase.from('scan_results').insert([scanEntry]);
+// 4. THE EXECUTION TRIGGER
+if (decision.signal) {
+  const tradePayload = {
+      symbol: asset, 
+      strategy_id: config.strategy, 
+      version: config.version || 'v1.0',
+      side: decision.signal,
+      price: decision.entryPrice,
+      tp_price: decision.tpPrice,
+      sl_price: decision.slPrice,
+      execution_mode: config.execution_mode || 'PAPER'
+  };
+  
+  // Route it to your actual execution engine instead of bypassing it!
+  const protocol = req.headers['x-forwarded-proto'] || 'http';
+  const host = req.headers.host;
+  const baseUrl = `${protocol}://${host}`;
+  
+  await fetch(`${baseUrl}/api/execute-trade`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(tradePayload)
+  });
+  
+  console.log(`[TRADE ROUTED] ${decision.signal} on ${asset} via ${config.strategy}`);
 
-        // 4. THE EXECUTION TRIGGER
-        // If the strategy actually fired a LONG or SHORT, log the physical trade!
-        if (decision.signal) {
-            const tradePayload = {
-                symbol: asset, 
-                strategy: config.strategy,
-                side: decision.signal,
-                entry_price: decision.entryPrice,
-                tp_price: decision.tpPrice,
-                sl_price: decision.slPrice,
-                leverage: decision.leverage || 1,
-                market_type: decision.marketType || 'FUTURES' // Defaulting execution logs to Futures!
-            };
-            
-            const { error: tradeErr } = await supabase.from('trade_logs').insert([tradePayload]);
-            
-            if (tradeErr) {
-                console.error(`[TRADE EXECUTION FAILED] ${config.strategy}:`, tradeErr.message);
-            } else {
-                console.log(`[TRADE EXECUTED] ${decision.signal} on ${asset} via ${config.strategy}`);
-            }
         }
       } catch (assetErr) {
         console.error(`[ASSET ERROR] ${asset}:`, assetErr.message);
