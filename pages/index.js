@@ -154,7 +154,7 @@ export default function Dashboard() {
               <h3 className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-black mb-3">Live Sonar Stream</h3>
               <div className="space-y-2 overflow-y-auto pr-2 custom-scrollbar flex-grow">
               {scanStream.map((scan, i) => (
-                      <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 gap-1.5">
+                      <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 hover:bg-white/[0.02] transition-colors gap-1.5">
                           <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
                                   <span className="text-[9px] text-slate-500 font-mono">{new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
@@ -176,9 +176,12 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* MIDDLE: Chart & Active HUD */}
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
-          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex flex-col p-4">
+          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex-shrink-0 flex flex-col p-4">
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
+            
+            {/* UPDATED HUD: Now with TP/SL Targets */}
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {tradeLogs.slice(0, 3).map((log, i) => {
                  let displayPnl = null;
@@ -189,6 +192,7 @@ export default function Dashboard() {
                  } else if (log.exit_price) {
                     displayPnl = log.pnl;
                  }
+
                  return (
                   <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-4 pointer-events-auto shadow-lg">
                      <div className="flex flex-col gap-0.5">
@@ -196,7 +200,12 @@ export default function Dashboard() {
                          <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400 animate-pulse' : 'text-amber-400 animate-pulse'}>●</span>
                          <span className="text-slate-300 uppercase font-bold">{log.side} @ {log.entry_price}</span>
                        </div>
-                       <span className="text-[7px] text-slate-500 font-black tracking-widest uppercase pl-3">{log.strategy_id}</span>
+                       <div className="flex items-center gap-3">
+                         <span className="text-[7px] text-slate-500 font-black tracking-widest uppercase pl-3">{log.strategy_id}</span>
+                         {!log.exit_price && log.tp_price && (
+                             <span className="text-[7px] text-emerald-500/80 font-bold uppercase tracking-tighter">Target: ${log.tp_price}</span>
+                         )}
+                       </div>
                      </div>
                      {displayPnl !== null && (
                          <span className={`font-black ${displayPnl >= 0 ? (isUnrealized ? 'text-cyan-400' : 'text-emerald-400') : (isUnrealized ? 'text-amber-400' : 'text-red-400')}`}>
@@ -211,38 +220,57 @@ export default function Dashboard() {
 
           <div className="flex-grow overflow-y-auto custom-scrollbar border border-white/5 rounded-[2rem] bg-slate-900/30">
             <table className="w-full text-left table-fixed">
-              <thead className="bg-slate-950/80 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
-                <tr><th className="px-4 py-3">Date / Time</th><th className="px-4 py-3 text-center">Vector</th><th className="px-4 py-3">Entry</th><th className="px-4 py-3">Status/Exit</th><th className="px-4 py-3 text-right">PnL</th></tr>
-              </thead>
-              <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
-                {tradeLogs.map((log, i) => {
-                  let pnlDisplay = log.exit_price ? <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span> : 
-                  (livePrice > 0 ? <span className={`animate-pulse ${(log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${((log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1)).toFixed(4)} (U)</span> : '--');
-                  
-                  // DATE FORMATTING FIX
-                  const timestamp = log.created_at || log.exit_time;
-                  const formattedDate = timestamp ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }) : "Awaiting...";
-                  const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
+                    <thead className="bg-slate-950/80 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
+                      <tr>
+                        <th className="px-4 py-3">Date / Time</th>
+                        <th className="px-4 py-3 text-center">Vector</th>
+                        <th className="px-4 py-3">Entry</th>
+                        {/* RESTORED: Target Header */}
+                        <th className="px-4 py-3 text-center">Target (TP / SL)</th>
+                        <th className="px-4 py-3">Status/Exit</th>
+                        <th className="px-4 py-3 text-right">PnL</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
+                      {tradeLogs.map((log, i) => {
+                        let pnlDisplay = log.exit_price ? <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span> : 
+                        (livePrice > 0 ? <span className={`animate-pulse ${(log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${((log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1)).toFixed(4)} (U)</span> : '--');
+                        
+                        const timestamp = log.created_at || log.exit_time;
+                        const formattedDate = timestamp ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }) : "Awaiting...";
+                        const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
 
-                  return (
-                    <tr key={i} className="hover:bg-white/[0.02] transition-colors">
-                      <td className="px-4 py-4 text-[9px] text-slate-500">
-                        <div className="flex flex-col">
-                          <span className="font-bold text-slate-400">{formattedDate}</span>
-                          <span className="text-[8px] opacity-60">{formattedTime}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span></td>
-                      <td className="px-4 py-4 text-slate-300 text-[10px]">${log.entry_price}</td>
-                      <td className="px-4 py-4 flex items-center gap-2">{log.exit_price ? `$${log.exit_price}` : <><span className="text-indigo-400 animate-pulse font-black text-[9px]">ACTIVE</span> <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}</td>
-                      <td className="px-4 py-4 text-right font-black text-[10px]">{pnlDisplay}</td>
-                    </tr>
-                  )})}
-              </tbody>
-            </table>
-          </div>
+                        return (
+                        <tr key={i} className="hover:bg-white/[0.02] transition-colors">
+                          <td className="px-4 py-4 text-[9px] text-slate-500">
+                              <div className="flex flex-col">
+                                  <span className="font-bold text-slate-400">{formattedDate}</span>
+                                  <span className="text-[8px] opacity-60">{formattedTime}</span>
+                              </div>
+                          </td>
+                          <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span></td>
+                          <td className="px-4 py-4 text-slate-300 text-[10px]">${log.entry_price}</td>
+                          
+                          {/* RESTORED: Target Body Cells */}
+                          <td className="px-4 py-4 text-center">
+                              {log.tp_price || log.sl_price ? (
+                                  <div className="flex flex-col text-[8px] tracking-tighter uppercase">
+                                      <span className="text-emerald-500/60">TP: ${log.tp_price}</span>
+                                      <span className="text-red-500/60">SL: ${log.sl_price}</span>
+                                  </div>
+                              ) : <span className="text-slate-700 italic text-[9px]">Dynamic</span>}
+                          </td>
+
+                          <td className="px-4 py-4 flex items-center gap-2">{log.exit_price ? `$${log.exit_price}` : <><span className="text-indigo-400 animate-pulse font-black text-[9px]">ACTIVE</span> <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}</td>
+                          <td className="px-4 py-4 text-right font-black text-[10px]">{pnlDisplay}</td>
+                        </tr>
+                      )})}
+                    </tbody>
+                  </table>
+            </div>
         </div>
 
+        {/* RIGHT SIDEBAR */}
         <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
             <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between"><span>Active Matrix</span><span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span></h3>
