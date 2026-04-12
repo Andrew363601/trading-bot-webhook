@@ -18,16 +18,14 @@ export default async function handler(req, res) {
   try {
     const { messages } = req.body;
 
-    // --- THE THOUGHT SIGNATURE FIX ---
-    // We strip past tool blocks from the history, leaving only the text conversation.
-    // This prevents Google from crashing when it looks for thought_signatures on old tool calls!
+    // --- THE MESSAGE SANITIZER ---
+    // Cleans out old tool artifacts to prevent sequence crashing
     const cleanMessages = messages.filter(msg => {
       if (msg.role === 'tool') return false; 
       if (msg.role === 'assistant' && msg.toolInvocations) return false; 
       return true;
     });
 
-    // Protect Vercel memory by only feeding the AI the last 6 clean messages
     const safeMessages = cleanMessages.length > 6 ? cleanMessages.slice(-6) : cleanMessages;
     while (safeMessages.length > 0 && safeMessages[0].role !== 'user') {
       safeMessages.shift(); 
@@ -118,9 +116,10 @@ export default async function handler(req, res) {
 `;
 
     const result = await streamText({
-      model: google('models/gemini-3.1-pro-preview'), // Restored your elite model!
+      // THE FIX: Bypassing the Vercel internal Thought Signature bug
+      model: google('models/gemini-1.5-pro-latest'), 
       system: systemPrompt,
-      messages: safeMessages, // Passing the signature-scrubbed messages
+      messages: safeMessages,
       maxSteps: 5,
       tools: {
         manageStrategy: tool({
