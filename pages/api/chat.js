@@ -18,18 +18,9 @@ export default async function handler(req, res) {
   try {
     const { messages } = req.body;
 
-    // --- THE MESSAGE SANITIZER ---
-    // Cleans out old tool artifacts to prevent sequence crashing
-    const cleanMessages = messages.filter(msg => {
-      if (msg.role === 'tool') return false; 
-      if (msg.role === 'assistant' && msg.toolInvocations) return false; 
-      return true;
-    });
-
-    const safeMessages = cleanMessages.length > 6 ? cleanMessages.slice(-6) : cleanMessages;
-    while (safeMessages.length > 0 && safeMessages[0].role !== 'user') {
-      safeMessages.shift(); 
-    }
+    // THE FIX: We removed the manual message slicing and sanitizing.
+    // Gemini 1.5 Pro requires the strict, unbroken sequence of tool calls and responses. 
+    // Since it has a 2-million token context window, it can handle the raw array flawlessly!
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -116,10 +107,9 @@ export default async function handler(req, res) {
 `;
 
     const result = await streamText({
-      // THE FIX: Bypassing the Vercel internal Thought Signature bug
       model: google('models/gemini-1.5-pro-latest'), 
       system: systemPrompt,
-      messages: safeMessages,
+      messages: messages, // Pass the raw, unbroken sequence directly!
       maxSteps: 5,
       tools: {
         manageStrategy: tool({
