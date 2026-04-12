@@ -15,7 +15,6 @@ const ASSETS = ['BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-IN
 export default function Dashboard() {
   const [activeAsset, setActiveAsset] = useState('DOGE-PERP-INTX');
   const [livePrice, setLivePrice] = useState(0); 
-  
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
   const [scanStream, setScanStream] = useState([]); 
@@ -35,32 +34,13 @@ export default function Dashboard() {
         setPortfolio(portData);
         if (portData.price > 0) setLivePrice(portData.price);
       }
-
-      const { data: logs } = await supabase
-        .from('trade_logs')
-        .select('*')
-        .eq('symbol', activeAsset)
-        .order('id', { ascending: false });
+      const { data: logs } = await supabase.from('trade_logs').select('*').eq('symbol', activeAsset).order('id', { ascending: false });
       setTradeLogs(logs || []);
-
-      const { data: configs } = await supabase
-        .from('strategy_config')
-        .select('*')
-        .eq('is_active', true);
+      const { data: configs } = await supabase.from('strategy_config').select('*').eq('is_active', true);
       setActiveStrategies(configs || []);
-
-      const { data: scans } = await supabase
-        .from('scan_results')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(15);
+      const { data: scans } = await supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(15);
       if (scans) setScanStream(scans);
-      
-    } catch (e) { 
-      console.error(e); 
-    } finally { 
-      setLoading(false); 
-    }
+    } catch (e) { console.error(e); } finally { setLoading(false); }
   }, [activeAsset]);
 
   useEffect(() => {
@@ -78,7 +58,6 @@ export default function Dashboard() {
         const content = lastUserMsg.content.toUpperCase();
         const mentionedAsset = ASSETS.find(asset => content.includes(asset));
         if (mentionedAsset && mentionedAsset !== activeAsset) setActiveAsset(mentionedAsset);
-
         const mentionedStrat = activeStrategies.find(s => content.includes(s.strategy));
         if (mentionedStrat) {
            const targetStudies = getStudiesForStrategy(mentionedStrat.strategy);
@@ -91,20 +70,13 @@ export default function Dashboard() {
   const handleClosePosition = async (trade) => {
     const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id}?`);
     if (!confirmClose) return;
-
     const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
-    
     await fetch('/api/execute-trade', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        symbol: trade.symbol,
-        strategy_id: trade.strategy_id,
-        version: trade.version,
-        side: closingSide,
-        execution_mode: trade.execution_mode,
-        qty: trade.qty,
-        price: livePrice 
+        symbol: trade.symbol, strategy_id: trade.strategy_id, version: trade.version,
+        side: closingSide, execution_mode: trade.execution_mode, qty: trade.qty, price: livePrice 
       })
     });
     fetchData(); 
@@ -112,10 +84,7 @@ export default function Dashboard() {
 
   const handleStrategySelect = (stratId) => {
     setSelectedStrat(stratId);
-    append({
-      role: 'user',
-      content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}. What parameters are dictating its logic?`
-    });
+    append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
   };
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
@@ -142,17 +111,9 @@ export default function Dashboard() {
     script.onload = () => {
       if (window.TradingView) {
         new window.TradingView.widget({
-          "autosize": true,
-          "symbol": `BINANCE:${activeAsset.split('-')[0]}USDT.P`,
-          "interval": "1", 
-          "theme": "dark",
-          "style": "1",
-          "backgroundColor": "#020617",
-          "hide_top_toolbar": false, 
-          "hide_legend": false,      
-          "save_image": false,
-          "container_id": "tv_chart_container",
-          "studies": activeStudies 
+          "autosize": true, "symbol": `BINANCE:${activeAsset.split('-')[0]}USDT.P`,
+          "interval": "1", "theme": "dark", "style": "1", "backgroundColor": "#020617",
+          "container_id": "tv_chart_container", "studies": activeStudies 
         });
       }
     };
@@ -165,9 +126,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4">
       <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
         <h1 className="text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Command</h1>
-        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
-            <Database size={12} /> Sync: wsrioyxzhxxrtzjncfvn
-        </div>
+        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2"><Database size={12} /> Sync: wsrioyxzhxxrtzjncfvn</div>
       </header>
 
       <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
@@ -175,24 +134,10 @@ export default function Dashboard() {
         {/* LEFT SIDEBAR */}
         <div className="lg:col-span-2 flex flex-col h-[calc(100vh-100px)] min-h-0 gap-6">
           <div className="bg-slate-900/50 p-5 rounded-[2rem] border border-white/10 flex-shrink-0 shadow-xl">
-            <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">
-              Capital Allocation <span className="text-cyan-400 animate-pulse">● LIVE</span>
-            </div>
+            <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">Capital Allocation <span className="text-cyan-400 animate-pulse">● LIVE</span></div>
             <div className="space-y-4">
-              <div className="border-b border-white/5 pb-3">
-                <div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Shield size={10} className="text-emerald-400"/> Live Equity (Coinbase)</div>
-                <div className="text-xl font-black font-mono text-white">${portfolio.live?.balance?.toFixed(2) || '0.00'}</div>
-              </div>
-              <div>
-                <div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Cpu size={10} className="text-indigo-400"/> Nexus Paper Funds</div>
-                <div className="flex justify-between items-end">
-                  <div className="text-lg font-black font-mono text-slate-300">${portfolio.paper?.balance?.toFixed(2) || '5000.00'}</div>
-                  <div className={`text-[10px] font-mono font-black ${portfolio.paper?.balance >= portfolio.paper?.initial ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {portfolio.paper?.balance >= portfolio.paper?.initial ? '+' : ''}
-                    {(((portfolio.paper?.balance - portfolio.paper?.initial) / portfolio.paper?.initial) * 100).toFixed(2)}%
-                  </div>
-                </div>
-              </div>
+              <div><div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Shield size={10} className="text-emerald-400 inline mr-1"/> Live Equity</div><div className="text-xl font-black font-mono text-white">${portfolio.live?.balance?.toFixed(2) || '0.00'}</div></div>
+              <div><div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Cpu size={10} className="text-indigo-400 inline mr-1"/> Nexus Paper</div><div className="text-lg font-black font-mono text-slate-300">${portfolio.paper?.balance?.toFixed(2) || '5000.00'}</div></div>
             </div>
           </div>
 
@@ -200,10 +145,7 @@ export default function Dashboard() {
             <div className="text-[10px] font-black uppercase text-slate-500 mb-3 px-2 tracking-widest flex items-center gap-2"><Target size={12}/> Market Scanners</div>
             <div className="space-y-1 overflow-y-auto max-h-[250px] custom-scrollbar">
               {ASSETS.map(asset => (
-                  <button key={asset} onClick={() => setActiveAsset(asset)}
-                  className={`w-full text-left px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all border ${activeAsset === asset ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30' : 'bg-transparent text-slate-500 border-transparent hover:bg-white/5'}`}>
-                      {asset}
-                  </button>
+                  <button key={asset} onClick={() => setActiveAsset(asset)} className={`w-full text-left px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest border transition-all ${activeAsset === asset ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30' : 'bg-transparent text-slate-500 border-transparent hover:bg-white/5'}`}>{asset}</button>
               ))}
             </div>
           </div>
@@ -212,13 +154,11 @@ export default function Dashboard() {
               <h3 className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-black mb-3">Live Sonar Stream</h3>
               <div className="space-y-2 overflow-y-auto pr-2 custom-scrollbar flex-grow">
               {scanStream.map((scan, i) => (
-                      <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 hover:bg-white/[0.02] transition-colors gap-1.5">
+                      <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 gap-1.5">
                           <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2">
-                                  <span className="text-[9px] text-slate-500 font-mono">
-                                      {new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                                  </span>
-                                  <span className="text-[10px] font-bold text-slate-300 tracking-wider">{scan.asset}</span>
+                                  <span className="text-[9px] text-slate-500 font-mono">{new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                                  <span className="text-[10px] font-bold text-slate-300">{scan.asset}</span>
                               </div>
                               <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">{scan.strategy}</span>
                           </div>
@@ -228,27 +168,17 @@ export default function Dashboard() {
                                       <span key={key} className="text-[9px] text-slate-400 font-mono"><span className="text-slate-500 uppercase">{key}:</span> {typeof val === 'number' ? val.toFixed(2) : val}</span>
                                   ))}
                               </div>
-                              <span className={`text-[9px] font-black tracking-widest uppercase flex-shrink-0 ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`}>
-                                  {scan.status}
-                              </span>
+                              <span className={`text-[9px] font-black tracking-widest uppercase flex-shrink-0 ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`}>{scan.status}</span>
                           </div>
                       </div>
                   ))}
-                  {scanStream.length === 0 && (
-                      <div className="text-center py-4 text-[9px] text-slate-600 uppercase tracking-widest italic">Awaiting first scan cycle...</div>
-                  )}
               </div>
           </div>
         </div>
 
-        {/* MIDDLE: Chart & Active HUD */}
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex flex-col p-4">
-            {activeStudies.length > 0 && (
-              <button onClick={() => setActiveStudies([])} className="absolute top-4 left-1/2 transform -translate-x-1/2 z-30 bg-red-500/20 text-red-400 border border-red-500/30 px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest hover:bg-red-500/40 transition-colors backdrop-blur-md shadow-lg">Clear Indicators</button>
-            )}
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
-            
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {tradeLogs.slice(0, 3).map((log, i) => {
                  let displayPnl = null;
@@ -279,58 +209,43 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* EXECUTION HISTORY TABLE: Restored Date Formatting */}
           <div className="flex-grow overflow-y-auto custom-scrollbar border border-white/5 rounded-[2rem] bg-slate-900/30">
             <table className="w-full text-left table-fixed">
-                    <thead className="bg-slate-950/80 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
-                      <tr>
-                        <th className="px-4 py-3">Date / Time</th>
-                        <th className="px-4 py-3 text-center">Vector</th>
-                        <th className="px-4 py-3">Entry</th>
-                        <th className="px-4 py-3">Status/Exit</th>
-                        <th className="px-4 py-3 text-right">PnL</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
-                      {tradeLogs.map((log, i) => {
-                        let pnlDisplay = log.exit_price ? <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span> : 
-                        (livePrice > 0 ? <span className={`animate-pulse ${(log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${((log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1)).toFixed(4)} (U)</span> : '--');
-                        
-                        return (
-                        <tr key={i} className="hover:bg-white/[0.02] transition-colors">
-                          <td className="px-4 py-4 text-[9px] text-slate-500">
-                              <div className="flex flex-col">
-                                  {/* Showing Month/Day stacked over Time */}
-                                  <span className="font-bold text-slate-400">
-                                    {new Date(log.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
-                                  </span>
-                                  <span className="text-[8px] opacity-60">
-                                    {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                  </span>
-                              </div>
-                          </td>
-                          <td className="px-4 py-4 text-center">
-                              <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span>
-                          </td>
-                          <td className="px-4 py-4 text-slate-300 text-[10px]">${log.entry_price}</td>
-                          <td className="px-4 py-4 flex items-center gap-2">
-                              {log.exit_price ? `$${log.exit_price}` : <><span className="text-indigo-400 animate-pulse font-black text-[9px]">ACTIVE</span> <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}
-                          </td>
-                          <td className="px-4 py-4 text-right font-black text-[10px]">{pnlDisplay}</td>
-                        </tr>
-                      )})}
-                    </tbody>
-                  </table>
-            </div>
+              <thead className="bg-slate-950/80 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
+                <tr><th className="px-4 py-3">Date / Time</th><th className="px-4 py-3 text-center">Vector</th><th className="px-4 py-3">Entry</th><th className="px-4 py-3">Status/Exit</th><th className="px-4 py-3 text-right">PnL</th></tr>
+              </thead>
+              <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
+                {tradeLogs.map((log, i) => {
+                  let pnlDisplay = log.exit_price ? <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span> : 
+                  (livePrice > 0 ? <span className={`animate-pulse ${(log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${((log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1)).toFixed(4)} (U)</span> : '--');
+                  
+                  // DATE FORMATTING FIX
+                  const timestamp = log.created_at || log.exit_time;
+                  const formattedDate = timestamp ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }) : "Awaiting...";
+                  const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
+
+                  return (
+                    <tr key={i} className="hover:bg-white/[0.02] transition-colors">
+                      <td className="px-4 py-4 text-[9px] text-slate-500">
+                        <div className="flex flex-col">
+                          <span className="font-bold text-slate-400">{formattedDate}</span>
+                          <span className="text-[8px] opacity-60">{formattedTime}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span></td>
+                      <td className="px-4 py-4 text-slate-300 text-[10px]">${log.entry_price}</td>
+                      <td className="px-4 py-4 flex items-center gap-2">{log.exit_price ? `$${log.exit_price}` : <><span className="text-indigo-400 animate-pulse font-black text-[9px]">ACTIVE</span> <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}</td>
+                      <td className="px-4 py-4 text-right font-black text-[10px]">{pnlDisplay}</td>
+                    </tr>
+                  )})}
+              </tbody>
+            </table>
+          </div>
         </div>
 
-        {/* RIGHT SIDEBAR */}
         <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
-            <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between">
-              <span>Active Matrix</span>
-              <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span>
-            </h3>
+            <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between"><span>Active Matrix</span><span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span></h3>
             <div className="flex flex-col gap-3">
               {currentAssetStrategies.map(strat => {
                 const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy);
@@ -348,9 +263,7 @@ export default function Dashboard() {
             <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
               {messages.map(m => (
-                <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>{m.content}</div>
-                </div>
+                <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}><div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>{m.content}</div></div>
               ))}
               <div ref={chatEndRef} />
             </div>
