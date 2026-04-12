@@ -94,38 +94,46 @@ export default async function handler(req, res) {
         
         // Insert into Supabase so the UI streams it
         await supabase.from('scan_results').insert([scanEntry]);
-// 4. THE EXECUTION TRIGGER
-if (decision.signal) {
-  const tradePayload = {
-      symbol: asset, 
-      strategy_id: config.strategy, 
-      version: config.version || 'v1.0',
-      side: decision.signal,
-      price: decision.entryPrice,
-      tp_price: decision.tpPrice,
-      sl_price: decision.slPrice,
-      execution_mode: config.execution_mode || 'PAPER',
-      
-      // THE FIX: Passing the missing envelope variables down the wire!
-      leverage: decision.leverage || 1,
-      market_type: decision.marketType || 'FUTURES',
-      qty: config.parameters?.qty || 10 // Grabs qty from your config, or defaults to 10
-  };
-  
-  // Route it to your actual execution engine instead of bypassing it!
-  const protocol = req.headers['x-forwarded-proto'] || 'http';
-  const host = req.headers.host;
-  const baseUrl = `${protocol}://${host}`;
-  
-  await fetch(`${baseUrl}/api/execute-trade`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(tradePayload)
-  });
-  
-  console.log(`[TRADE ROUTED] ${decision.signal} on ${asset} via ${config.strategy} at ${tradePayload.leverage}x Leverage`);
 
+        // 4. THE EXECUTION TRIGGER (Now with Dynamic Sizing)
+        if (decision.signal) {
+          
+          // --- DYNAMIC SIZING LOGIC ---
+          let finalQty = config.parameters?.qty || 10; // Fallback to static qty or default 10
+          
+          // Check for target_usd (e.g. 500) in Supabase config
+          if (config.parameters?.target_usd && decision.entryPrice) {
+              finalQty = config.parameters.target_usd / decision.entryPrice;
+          }
+
+          const tradePayload = {
+              symbol: asset, 
+              strategy_id: config.strategy, 
+              version: config.version || 'v1.0',
+              side: decision.signal,
+              price: decision.entryPrice,
+              tp_price: decision.tpPrice,
+              sl_price: decision.slPrice,
+              execution_mode: config.execution_mode || 'PAPER',
+              leverage: decision.leverage || 1,
+              market_type: decision.marketType || 'FUTURES',
+              qty: parseFloat(finalQty.toFixed(2)) // Pass the dynamic unit count
+          };
+          
+          // Route it to your actual execution engine instead of bypassing it!
+          const protocol = req.headers['x-forwarded-proto'] || 'http';
+          const host = req.headers.host;
+          const baseUrl = `${protocol}://${host}`;
+          
+          await fetch(`${baseUrl}/api/execute-trade`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(tradePayload)
+          });
+          
+          console.log(`[TRADE ROUTED] ${decision.signal} on ${asset} | Units: ${tradePayload.qty} | Value: ~$${config.parameters?.target_usd || 'Static'}`);
         }
+
       } catch (assetErr) {
         console.error(`[ASSET ERROR] ${asset}:`, assetErr.message);
       }
@@ -143,7 +151,6 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
     
     // --- THE PERPETUAL FUTURES FIX ---
-    // Safely parse Spot vs Perp symbols without destroying hyphens
     let coinbaseProduct = asset.toUpperCase().trim();
     if (!coinbaseProduct.includes('-')) {
         if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
