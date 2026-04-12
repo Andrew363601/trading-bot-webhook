@@ -104,7 +104,12 @@ if (decision.signal) {
       price: decision.entryPrice,
       tp_price: decision.tpPrice,
       sl_price: decision.slPrice,
-      execution_mode: config.execution_mode || 'PAPER'
+      execution_mode: config.execution_mode || 'PAPER',
+      
+      // THE FIX: Passing the missing envelope variables down the wire!
+      leverage: decision.leverage || 1,
+      market_type: decision.marketType || 'FUTURES',
+      qty: config.parameters?.qty || 10 // Grabs qty from your config, or defaults to 10
   };
   
   // Route it to your actual execution engine instead of bypassing it!
@@ -118,7 +123,7 @@ if (decision.signal) {
       body: JSON.stringify(tradePayload)
   });
   
-  console.log(`[TRADE ROUTED] ${decision.signal} on ${asset} via ${config.strategy}`);
+  console.log(`[TRADE ROUTED] ${decision.signal} on ${asset} via ${config.strategy} at ${tradePayload.leverage}x Leverage`);
 
         }
       } catch (assetErr) {

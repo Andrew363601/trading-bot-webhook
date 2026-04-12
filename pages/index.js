@@ -13,8 +13,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const ASSETS = ['BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-INTX', 'AVAX-PERP-INTX'];
 
 export default function Dashboard() {
-  // FIX 1: Initial state must match the new Futures array!
   const [activeAsset, setActiveAsset] = useState('DOGE-PERP-INTX');
+  const [livePrice, setLivePrice] = useState(0); // NEW: Live Price Tracker
   
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
@@ -29,13 +29,26 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
+      // 1. Fetch Portfolio
       const portResp = await fetch('/api/portfolio');
       if (portResp.ok) {
         const portData = await portResp.json();
         setPortfolio(portData);
       }
 
-      // FIX 2: Removed .replace('-', '') so it perfectly matches the Futures DB entries!
+      // 2. Fetch Live Price (Public Binance feed to save Coinbase API limits!)
+      try {
+        const binanceSymbol = `${activeAsset.split('-')[0]}USDT`;
+        const priceResp = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${binanceSymbol}`);
+        if (priceResp.ok) {
+          const { price } = await priceResp.json();
+          setLivePrice(parseFloat(price));
+        }
+      } catch (priceErr) {
+        console.warn("Could not fetch live price for UI.");
+      }
+
+      // 3. Fetch Trade Logs
       const { data: logs } = await supabase
         .from('trade_logs')
         .select('*')
@@ -43,12 +56,14 @@ export default function Dashboard() {
         .order('id', { ascending: false });
       setTradeLogs(logs || []);
 
+      // 4. Fetch Strategy Matrix
       const { data: configs } = await supabase
         .from('strategy_config')
         .select('*')
         .eq('is_active', true);
       setActiveStrategies(configs || []);
 
+      // 5. Fetch Sonar Scans
       const { data: scans } = await supabase
         .from('scan_results')
         .select('*')
@@ -96,6 +111,31 @@ export default function Dashboard() {
     }
   }, [messages, activeAsset, activeStrategies, activeStudies]);
 
+  // NEW: The Manual Liquidation Handler
+  const handleClosePosition = async (trade) => {
+    const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id}?`);
+    if (!confirmClose) return;
+
+    // Flip the side to execute the offsetting closure order
+    const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
+    
+    await fetch('/api/execute-trade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol: trade.symbol,
+        strategy_id: trade.strategy_id,
+        version: trade.version,
+        side: closingSide,
+        execution_mode: trade.execution_mode, // Ensures Paper closes Paper, Live closes Live
+        qty: trade.qty, // Sends exact quantity back to zero out the position
+        price: livePrice // Passes the UI's live price down for Paper execution math
+      })
+    });
+    
+    fetchData(); // Force an instant UI refresh
+  };
+
   const handleStrategySelect = (stratId) => {
     setSelectedStrat(stratId);
     append({
@@ -128,7 +168,6 @@ export default function Dashboard() {
       if (window.TradingView) {
         new window.TradingView.widget({
           "autosize": true,
-          // FIX 3: Fixed the fatal JSX syntax error here!
           "symbol": `BINANCE:${activeAsset.split('-')[0]}USDT.P`,
           "interval": "1", 
           "theme": "dark",
@@ -283,17 +322,26 @@ export default function Dashboard() {
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
             
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[220px] pointer-events-none">
-               {tradeLogs.slice(0, 3).map((log, i) => (
+               {tradeLogs.slice(0, 3).map((log, i) => {
+                 // Dynamic HUD PnL 
+                 let displayPnl = log.pnl;
+                 let isUnrealized = false;
+                 if (!log.exit_price && livePrice > 0) {
+                    displayPnl = (log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1);
+                    isUnrealized = true;
+                 }
+                 return (
                   <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-3 pointer-events-auto">
                      <div className="flex items-center gap-2">
                        <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400' : 'text-amber-400'}>●</span>
                        <span className="text-slate-300 uppercase truncate">{log.side} @ {log.entry_price}</span>
                      </div>
-                     <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400 font-bold'}>
-                         {log.pnl >= 0 ? '+' : ''}{log.pnl?.toFixed(2)}
+                     <span className={displayPnl >= 0 ? (isUnrealized ? 'text-cyan-400' : 'text-emerald-400') : (isUnrealized ? 'text-amber-400' : 'text-red-400')}>
+                         {displayPnl >= 0 ? '+' : ''}{displayPnl?.toFixed(2)}
                      </span>
                   </div>
-               ))}
+                 )
+               })}
             </div>
           </div>
 
@@ -303,15 +351,34 @@ export default function Dashboard() {
                     <thead className="bg-slate-950/80 text-[9px] font-black text-slate-600 uppercase tracking-[0.2em] sticky top-0 backdrop-blur-md z-10">
                       <tr>
                         <th className="w-[15%] px-4 py-3">Time</th>
-                        <th className="w-[20%] px-4 py-3 text-center">Vector</th>
+                        <th className="w-[15%] px-4 py-3 text-center">Vector</th>
                         <th className="w-[15%] px-4 py-3">Entry</th>
-                        <th className="w-[20%] px-4 py-3 text-center">Target (TP / SL)</th>
-                        <th className="w-[15%] px-4 py-3">Exit</th>
-                        <th className="w-[15%] px-4 py-3 text-right">PnL</th>
+                        <th className="w-[15%] px-4 py-3 text-center">Target (TP/SL)</th>
+                        <th className="w-[20%] px-4 py-3">Status / Exit</th>
+                        <th className="w-[20%] px-4 py-3 text-right">PnL</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
-                      {tradeLogs.map((log, i) => (
+                      {tradeLogs.map((log, i) => {
+                        // NEW: Unrealized PnL Calculation for the Table
+                        let pnlDisplay;
+                        if (log.exit_price) {
+                            pnlDisplay = <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span>;
+                        } else {
+                            if (livePrice > 0) {
+                                const unrealizedPnl = (log.side === 'BUY' || log.side === 'LONG') 
+                                    ? (livePrice - log.entry_price) * (log.qty || 1) 
+                                    : (log.entry_price - livePrice) * (log.qty || 1);
+                                
+                                pnlDisplay = <span className={`animate-pulse ${unrealizedPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>
+                                    {unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toFixed(4)} <span className="text-[8px] text-slate-500">(U)</span>
+                                </span>;
+                            } else {
+                                pnlDisplay = <span className="text-slate-600">--</span>;
+                            }
+                        }
+
+                        return (
                         <tr key={i} className="hover:bg-white/[0.02] transition-colors">
                           <td className="px-4 py-4 text-[9px] text-slate-500 truncate">
                               {new Date(log.exit_time || log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -339,15 +406,26 @@ export default function Dashboard() {
                               )}
                           </td>
 
-                          <td className="px-4 py-4 text-[10px] text-slate-400">
-                              {log.exit_price ? `$${log.exit_price}` : <span className="text-indigo-400 animate-pulse font-black text-[9px] uppercase tracking-widest">Active</span>}
+                          <td className="px-4 py-4 text-[10px] text-slate-400 flex items-center gap-2">
+                              {log.exit_price ? `$${log.exit_price}` : (
+                                <>
+                                  <span className="text-indigo-400 animate-pulse font-black text-[9px] uppercase tracking-widest">Active</span>
+                                  {/* THE EMERGENCY CLOSE BUTTON */}
+                                  <button 
+                                      onClick={() => handleClosePosition(log)}
+                                      className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] hover:bg-red-500/30 transition-colors font-black tracking-widest"
+                                  >
+                                      CLOSE
+                                  </button>
+                                </>
+                              )}
                           </td>
 
-                          <td className={`px-4 py-4 text-right font-black ${!log.exit_price ? 'text-slate-600' : (log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400')}`}>
-                              {!log.exit_price ? '--' : `${log.pnl >= 0 ? '+' : ''}$${log.pnl?.toFixed(4)}`}
+                          <td className="px-4 py-4 text-right font-black text-[10px]">
+                              {pnlDisplay}
                           </td>
                         </tr>
-                      ))}
+                      )})}
                       {tradeLogs.length === 0 && (
                           <tr><td colSpan="6" className="py-20 text-center text-slate-600 italic uppercase text-[10px] tracking-widest">No market activity recorded</td></tr>
                       )}
@@ -372,7 +450,7 @@ export default function Dashboard() {
               )}
               
               {currentAssetStrategies.map(strat => {
-                const stratLogs = tradeLogs;
+                const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy);
                 const openTrade = stratLogs.find(l => !l.exit_price);
                 const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
 

@@ -27,7 +27,6 @@ export default async function handler(req, res) {
     const formattedSecret = apiSecret.replace(/\\n/g, '\n');
 
     // --- THE PERPETUAL FUTURES FIX ---
-    // Bulletproof symbol parsing so it perfectly matches the database and Coinbase API
     let rawSymbol = data.symbol || 'DOGE-PERP-INTX';
     rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '').toUpperCase().trim();
     
@@ -42,17 +41,16 @@ export default async function handler(req, res) {
     }
 
     const side = (data.side || 'BUY').toUpperCase() === 'LONG' || (data.side || 'BUY').toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
-    const qty = (data.qty || 10).toString();
 
     // 1. EXTRACT ADVANCED TRACKING VARIABLES
     const strategyId = data.strategy_id || 'MANUAL';
     const version = data.version || 'v1.0';
     const leverage = data.leverage || 1;
-    const marketType = data.market_type || 'FUTURES'; // Defaulting to Futures!
+    const marketType = data.market_type || 'FUTURES'; 
     let tpPrice = data.tp_price || null;
     let slPrice = data.sl_price || null;
 
-    // 2. ISOLATE OPEN TRADES (By Symbol AND Strategy ID)
+    // 2. ISOLATE OPEN TRADES 
     const { data: openTrades } = await supabase
       .from('trade_logs')
       .select('*')
@@ -64,7 +62,13 @@ export default async function handler(req, res) {
     
     const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
 
-    console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Side: ${side} | Leverage: ${leverage}x`);
+    // THE LIQUIDATION LOCK: Ensure closure quantity perfectly matches open quantity
+    let orderQty = parseFloat(data.qty || 10);
+    if (openTrade && openTrade.side !== side) {
+        orderQty = parseFloat(openTrade.qty || orderQty);
+    }
+
+    console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Side: ${side} | Leverage: ${leverage}x | Qty: ${orderQty}`);
 
     const generateToken = (method, path) => {
       return jwt.sign(
@@ -81,7 +85,7 @@ export default async function handler(req, res) {
     let executionStatus = 'simulated';
 
     if (!isPaper) {
-      // 🔴 LIVE TRADE EXECUTION (Perfectly formatted for Coinbase Futures)
+      // 🔴 LIVE TRADE EXECUTION
       const path = '/api/v3/brokerage/orders';
       const token = generateToken('POST', path);
       
@@ -90,8 +94,8 @@ export default async function handler(req, res) {
         product_id: coinbaseProduct,
         side: side,
         order_configuration: {
-          // Futures strictly require base_size for BOTH longs and shorts
-          market_market_ioc: { base_size: qty } 
+          // Live Execution uses the strictly calculated orderQty
+          market_market_ioc: { base_size: orderQty.toString() } 
         }
       };
 
@@ -127,10 +131,10 @@ export default async function handler(req, res) {
     // 3. PROPER STATE MANAGEMENT (With PnL Scaling)
     if (openTrade) {
       if (openTrade.side !== side) {
-        // CLOSE TRADE: Calculate PnL accurately using position quantity
+        // CLOSE TRADE: Calculate PnL accurately using the verified liquidation quantity
         const pnl = openTrade.side === 'BUY' 
-          ? (executionPrice - openTrade.entry_price) * (openTrade.qty || 1)
-          : (openTrade.entry_price - executionPrice) * (openTrade.qty || 1);
+          ? (executionPrice - openTrade.entry_price) * orderQty
+          : (openTrade.entry_price - executionPrice) * orderQty;
 
         const { error: updateError } = await supabase.from('trade_logs').update({
           exit_price: executionPrice,
@@ -153,7 +157,7 @@ export default async function handler(req, res) {
         mci_at_entry: data.mci || 0,
         strategy_id: strategyId,
         version: version,
-        qty: parseFloat(qty),
+        qty: orderQty, // Logs the exact quantity executed
         leverage: leverage,
         market_type: marketType,
         tp_price: tpPrice,
