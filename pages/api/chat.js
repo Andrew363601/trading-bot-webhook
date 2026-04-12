@@ -107,7 +107,7 @@ export default async function handler(req, res) {
 `;
 
     const result = await streamText({
-      model: google('models/gemini-1.5-pro-latest'), 
+      model: google('models/gemini-2.5-pro'), 
       system: systemPrompt,
       messages: messages, // Pass the raw, unbroken sequence directly!
       maxSteps: 5,
