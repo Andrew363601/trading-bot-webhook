@@ -1,3 +1,6 @@
+// Unleashing Vercel Pro limit (5 full minutes) for mass strategy scanning
+export const maxDuration = 300;
+
 // pages/api/scan.js
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
@@ -96,14 +99,14 @@ export default async function handler(req, res) {
         // If the strategy actually fired a LONG or SHORT, log the physical trade!
         if (decision.signal) {
             const tradePayload = {
-                symbol: asset, // Saves as 'SOL-USDT'
+                symbol: asset, 
                 strategy: config.strategy,
                 side: decision.signal,
                 entry_price: decision.entryPrice,
                 tp_price: decision.tpPrice,
                 sl_price: decision.slPrice,
                 leverage: decision.leverage || 1,
-                market_type: decision.marketType || 'SPOT'
+                market_type: decision.marketType || 'FUTURES' // Defaulting execution logs to Futures!
             };
             
             const { error: tradeErr } = await supabase.from('trade_logs').insert([tradePayload]);
@@ -128,17 +131,24 @@ export default async function handler(req, res) {
 
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   try {
-    // 1. Bulletproof the inputs
     const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
     
-    // THE ULTIMATE HYPHEN FIX
-    const cleanAsset = asset.replace(/-/g, '');
-    const coinbaseProduct = cleanAsset.replace(/(USDT|USD)$/, '-$1');
-    const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+    // --- THE PERPETUAL FUTURES FIX ---
+    // Safely parse Spot vs Perp symbols without destroying hyphens
+    let coinbaseProduct = asset.toUpperCase().trim();
+    if (!coinbaseProduct.includes('-')) {
+        if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+        else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+        else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP-INTX');
+    } 
+    if (coinbaseProduct.endsWith('-PERP')) {
+        coinbaseProduct = coinbaseProduct + '-INTX';
+    }
     
+    const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
     const end = Math.floor(Date.now() / 1000);
     
-    // 2. Dynamic Lookback Calculation (Maxed out buffer to 500)
+    // Dynamic Lookback Calculation (Respecting the 300 Coinbase limit)
     let lookbackSeconds;
     switch (safeGranularity) {
         case 'ONE_MINUTE': lookbackSeconds = 60 * 300; break;          
@@ -152,17 +162,14 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     const start = end - lookbackSeconds; 
     const query = `?start=${start}&end=${end}&granularity=${safeGranularity}`;
 
-    // 3. Token Generation
     const token = jwt.sign({
       iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
       sub: apiKey, uri: `GET api.coinbase.com${path}`,
     }, secret, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
 
-    // 4. The Request
     const resp = await fetch(`https://api.coinbase.com${path}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
     const data = await resp.json();
     
-    // --- THE DIAGNOSTIC LOGS ---
     if (!resp.ok) {
         console.error(`[COINBASE API REJECTED] ${coinbaseProduct} | ${safeGranularity} | Status: ${resp.status}`, data);
         return null;
@@ -173,7 +180,6 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
         return null;
     }
 
-    // 5. Clean output (Volume mapping added so breakout logic doesn't crash!)
     return data.candles.map(c => ({ 
         close: parseFloat(c.close), 
         high: parseFloat(c.high), 
