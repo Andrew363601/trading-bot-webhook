@@ -10,13 +10,11 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhx
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Assets verified and synced with Supabase strategy_config
 const ASSETS = ['BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-INTX', 'AVAX-PERP-INTX', 'WLD-PERP-INTX'];
 
 export default function Dashboard() {
   const [activeAsset, setActiveAsset] = useState('DOGE-PERP-INTX');
   const [livePrice, setLivePrice] = useState(0); 
-  
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
   const [scanStream, setScanStream] = useState([]); 
@@ -30,7 +28,6 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      // 1. Fetch Portfolio AND Market Price via Server-Side Proxy (Fixes CORS/Ghost HUD)
       const portResp = await fetch(`/api/portfolio?asset=${activeAsset}`);
       if (portResp.ok) {
         const portData = await portResp.json();
@@ -38,7 +35,6 @@ export default function Dashboard() {
         if (portData.price > 0) setLivePrice(portData.price);
       }
 
-      // 2. Fetch Trade Logs
       const { data: logs } = await supabase
         .from('trade_logs')
         .select('*')
@@ -46,14 +42,12 @@ export default function Dashboard() {
         .order('id', { ascending: false });
       setTradeLogs(logs || []);
 
-      // 3. Fetch Strategy Matrix
       const { data: configs } = await supabase
         .from('strategy_config')
         .select('*')
         .eq('is_active', true);
       setActiveStrategies(configs || []);
 
-      // 4. Fetch Sonar Scans (Telemetry Mapping Intact)
       const { data: scans } = await supabase
         .from('scan_results')
         .select('*')
@@ -76,7 +70,6 @@ export default function Dashboard() {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
-  // Telemetric Chart & Asset Sync
   useEffect(() => {
     if (messages.length > 0) {
       const lastUserMsg = messages.slice().reverse().find(m => m.role === 'user');
@@ -108,8 +101,8 @@ export default function Dashboard() {
         strategy_id: trade.strategy_id,
         version: trade.version,
         side: closingSide,
-        execution_mode: trade.execution_mode, 
-        qty: trade.qty, 
+        execution_mode: trade.execution_mode,
+        qty: trade.qty,
         price: livePrice 
       })
     });
@@ -126,6 +119,7 @@ export default function Dashboard() {
   const getStudiesForStrategy = (stratName) => {
     if (!stratName) return [];
     const name = stratName.toUpperCase();
+    // NEW: Added indicators for WLD
     if (name.includes('WLD_TREND')) return ["MAExp@tv-basicstudies", "MACD@tv-basicstudies"];
     if (name.includes('SOL_RANGE_REVERSION')) return ["BB@tv-basicstudies", "RSI@tv-basicstudies"];
     if (name.includes('HF_SCALPER')) return ["MASimple@tv-basicstudies", "RSI@tv-basicstudies"];
@@ -175,7 +169,7 @@ export default function Dashboard() {
 
       <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
         
-        {/* LEFT SIDEBAR: Watchlist & Scanners */}
+        {/* LEFT SIDEBAR */}
         <div className="lg:col-span-2 flex flex-col h-[calc(100vh-100px)] min-h-0 gap-6">
           <div className="bg-slate-900/50 p-5 rounded-[2rem] border border-white/10 flex-shrink-0 shadow-xl">
             <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">Capital Allocation</div>
@@ -209,13 +203,25 @@ export default function Dashboard() {
               {scanStream.map((scan, i) => (
                       <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 gap-1.5">
                           <div className="flex items-center justify-between">
-                              <span className="text-[10px] font-bold text-slate-300 tracking-wider">{scan.asset}</span>
+                              <div className="flex items-center gap-2">
+                                  {/* RESTORED: Timestamp */}
+                                  <span className="text-[9px] text-slate-500 font-mono">
+                                      {new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                                  </span>
+                                  <span className="text-[10px] font-bold text-slate-300 tracking-wider">{scan.asset}</span>
+                              </div>
                               <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">{scan.strategy}</span>
                           </div>
-                         <div className="flex flex-wrap gap-x-3 gap-y-1">
-                              {scan.telemetry && Object.entries(scan.telemetry).map(([key, val]) => (
-                                  <span key={key} className="text-[9px] text-slate-400 font-mono"><span className="text-slate-500 uppercase">{key}:</span> {typeof val === 'number' ? val.toFixed(2) : val}</span>
-                              ))}
+                         <div className="flex items-center justify-between mt-1 pt-1 border-t border-white/5">
+                              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                                  {scan.telemetry && Object.entries(scan.telemetry).map(([key, val]) => (
+                                      <span key={key} className="text-[9px] text-slate-400 font-mono"><span className="text-slate-500 uppercase">{key}:</span> {typeof val === 'number' ? val.toFixed(2) : val}</span>
+                                  ))}
+                              </div>
+                              {/* RESTORED: Status Badge */}
+                              <span className={`text-[9px] font-black tracking-widest uppercase flex-shrink-0 ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`}>
+                                  {scan.status}
+                              </span>
                           </div>
                       </div>
                   ))}
@@ -228,7 +234,6 @@ export default function Dashboard() {
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex flex-col p-4">
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
             
-            {/* HUD OVERLAY: Updated with Strategy Name */}
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {tradeLogs.slice(0, 3).map((log, i) => {
                  let displayPnl = log.pnl;
@@ -238,10 +243,10 @@ export default function Dashboard() {
                     isUnrealized = true;
                  }
                  return (
-                  <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-4 pointer-events-auto">
+                  <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-4 pointer-events-auto shadow-lg">
                      <div className="flex flex-col gap-0.5">
                        <div className="flex items-center gap-2">
-                         <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400' : 'text-amber-400'}>●</span>
+                         <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400 animate-pulse' : 'text-amber-400 animate-pulse'}>●</span>
                          <span className="text-slate-300 uppercase font-bold">{log.side} @ {log.entry_price}</span>
                        </div>
                        <span className="text-[7px] text-slate-500 font-black tracking-widest uppercase pl-3">{log.strategy_id}</span>
@@ -255,7 +260,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* TABLE: Execution History */}
           <div className="flex-grow overflow-y-auto custom-scrollbar border border-white/5 rounded-[2rem] bg-slate-900/30">
             <table className="w-full text-left table-fixed">
                     <thead className="bg-slate-950/80 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
@@ -284,7 +288,7 @@ export default function Dashboard() {
             </div>
         </div>
 
-        {/* RIGHT: Agent & Matrix */}
+        {/* RIGHT SIDEBAR */}
         <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6">
             <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between">
