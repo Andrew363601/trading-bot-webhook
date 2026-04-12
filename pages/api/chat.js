@@ -222,7 +222,12 @@ export default async function handler(req, res) {
                 const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
                 const data = await resp.json();
                 
-                if (!resp.ok || !data.candles || data.candles.length === 0) break;
+                // THE FIX: Stop silently swallowing errors! Pass them directly to the AI.
+                if (!resp.ok) {
+                    return { error: `Coinbase API Error ${resp.status}: ${data.message || data.error_details || JSON.stringify(data)}` };
+                }
+                
+                if (!data.candles || data.candles.length === 0) break;
                 
                 allCandles = allCandles.concat(data.candles);
                 currentEnd = currentStart;
