@@ -13,7 +13,7 @@ import path from 'path';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY // God-mode access confirmed
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 const google = createGoogleGenerativeAI({
@@ -25,28 +25,27 @@ export default async function handler(req, res) {
     const apiKeyName = process.env.COINBASE_API_KEY;
     const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
 
-    // UPGRADE: Fetch ALL configs, including paused ones, to evaluate for reactivation
     const { data: configs } = await supabase.from('strategy_config').select('*');
     if (!configs || configs.length === 0) return res.status(200).json({ status: "No strategies found." });
 
     const portfolioActions = [];
+    
+    // THE 48-HOUR ROLLING WINDOW
+    const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
 
     for (const config of configs) {
-      // 1. FORCE-FEED: Look at Supabase Logs
+      // 1. FORCE-FEED: Look at Supabase Logs (Strict 48-Hour Timeframe)
       const { data: trades } = await supabase
         .from('trade_logs')
         .select('pnl, side, entry_price, exit_price, exit_time')
-        .eq('symbol', config.asset.replace('-', ''))
+        .eq('symbol', config.asset) // Fixed the hyphen-stripping bug
         .eq('strategy_id', config.strategy)
-        .eq('version', config.version || 'v1.0')
         .not('exit_price', 'is', null)
-        .order('id', { ascending: false })
-        .limit(20);
+        .gte('exit_time', fortyEightHoursAgo) // Only trades from the last 48 hours
+        .order('exit_time', { ascending: false });
 
-      // If the strategy is ACTIVE but lacks recent trades, skip mutating to avoid altering fresh configs.
-      // If it is PAUSED, we bypass this check so the AI can look at the market and reactivate it.
-      if (config.is_active && (!trades || trades.length < 3)) continue;
-
+      // If it's active but hasn't traded in 48 hours, the AI will see an empty array 
+      // and can decide if it's dead in the water (PAUSE) or just waiting for a setup (MAINTAIN).
       const totalPnL = trades ? trades.reduce((sum, t) => sum + (t.pnl || 0), 0) : 0;
       const winningTrades = trades ? trades.filter(t => t.pnl > 0).length : 0;
       const winRate = trades && trades.length > 0 ? (winningTrades / trades.length) * 100 : 0;
@@ -124,7 +123,7 @@ export default async function handler(req, res) {
         })).reverse().slice(-500);
       }
 
-      // 4. THE OMNISCIENT PROMPT - Upgraded for Regime Switching
+      // 4. THE OMNISCIENT PROMPT - Timeframe Context Added
       const prompt = `
       You are the Nexus Quantitative Portfolio Manager. Your task is to evaluate this trading strategy against the current market regime and manage its deployment.
       
@@ -139,10 +138,11 @@ export default async function handler(req, res) {
       Read this logic to understand its core market approach (e.g., trend following, mean reversion, breakout):
       ${strategyLogic}
       
-      --- TELEMETRY (Recent Performance) ---
-      Total PnL: $${totalPnL.toFixed(4)}
+      --- TELEMETRY (Last 48 Hours) ---
+      Number of Trades Taken: ${trades ? trades.length : 0}
+      Total Net PnL: $${totalPnL.toFixed(4)}
       Win Rate: ${winRate.toFixed(1)}%
-      Recent Trades: ${JSON.stringify(trades)}
+      Recent Trades Data: ${JSON.stringify(trades)}
       
       --- MARKET CONTEXT ---
       Recent Market Context (Last 500 ${triggerTf} candles): ${JSON.stringify(marketContext)}

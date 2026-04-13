@@ -13,21 +13,15 @@ export default async function handler(req, res) {
     const { asset } = req.query; 
     const apiKeyName = process.env.COINBASE_API_KEY;
     
-    // --- THE CLEAN PEM PARSER ---
+    // --- THE CLEAN, PROVEN PARSER (Mirrors scan.js) ---
     let apiSecret = process.env.COINBASE_API_SECRET || "";
     
-    // 1. Strip exact outer quotes if your hosting platform wrapped them
+    // 1. Safely strip outer quotes if Vercel/StackBlitz added them
     if (apiSecret.startsWith('"') && apiSecret.endsWith('"')) apiSecret = apiSecret.slice(1, -1);
     if (apiSecret.startsWith("'") && apiSecret.endsWith("'")) apiSecret = apiSecret.slice(1, -1);
     
     // 2. Convert literal "\n" text to system newlines
     apiSecret = apiSecret.replace(/\\n/g, '\n').trim();
-
-    // 3. Force the Elliptic Curve (EC) header if it's missing (Fixes the "Unsupported" error)
-    if (!apiSecret.includes('EC PRIVATE KEY') && apiSecret.includes('BEGIN PRIVATE KEY')) {
-        apiSecret = apiSecret.replace('BEGIN PRIVATE KEY', 'BEGIN EC PRIVATE KEY');
-        apiSecret = apiSecret.replace('END PRIVATE KEY', 'END EC PRIVATE KEY');
-    }
     
     let liveBalance = 0;
     const initialPaperFunds = 5000;
@@ -53,12 +47,6 @@ export default async function handler(req, res) {
         if (apiKeyName && apiSecret) {
           const path = '/api/v3/brokerage/accounts';
           
-          // Force Node to parse it natively BEFORE the JWT library touches it
-          const privateKeyObj = crypto.createPrivateKey({
-              key: apiSecret,
-              format: 'pem'
-          });
-          
           const token = jwt.sign(
             {
               iss: 'cdp',
@@ -67,7 +55,7 @@ export default async function handler(req, res) {
               sub: apiKeyName,
               uri: `GET api.coinbase.com${path}`
             }, 
-            privateKeyObj, // Pass the native Node object, not the string
+            apiSecret, // Passing the raw, clean string directly!
             { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
           );
 
@@ -82,7 +70,6 @@ export default async function handler(req, res) {
           }
         }
     } catch (cryptoErr) {
-        // This will now print the exact line where the crypto parser is failing
         console.warn(`[PORTFOLIO CRYPTO WARN]: ${cryptoErr.message}`);
     }
 
