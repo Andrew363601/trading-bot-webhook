@@ -13,7 +13,7 @@ import path from 'path';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY // God-mode access confirmed
 );
 
 const google = createGoogleGenerativeAI({
@@ -25,10 +25,11 @@ export default async function handler(req, res) {
     const apiKeyName = process.env.COINBASE_API_KEY;
     const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
 
-    const { data: configs } = await supabase.from('strategy_config').select('*').eq('is_active', true);
-    if (!configs || configs.length === 0) return res.status(200).json({ status: "No active strategies to optimize." });
+    // UPGRADE: Fetch ALL configs, including paused ones, to evaluate for reactivation
+    const { data: configs } = await supabase.from('strategy_config').select('*');
+    if (!configs || configs.length === 0) return res.status(200).json({ status: "No strategies found." });
 
-    const mutations = [];
+    const portfolioActions = [];
 
     for (const config of configs) {
       // 1. FORCE-FEED: Look at Supabase Logs
@@ -42,11 +43,13 @@ export default async function handler(req, res) {
         .order('id', { ascending: false })
         .limit(20);
 
-      if (!trades || trades.length < 3) continue;
+      // If the strategy is ACTIVE but lacks recent trades, skip mutating to avoid altering fresh configs.
+      // If it is PAUSED, we bypass this check so the AI can look at the market and reactivate it.
+      if (config.is_active && (!trades || trades.length < 3)) continue;
 
-      const totalPnL = trades.reduce((sum, t) => sum + (t.pnl || 0), 0);
-      const winningTrades = trades.filter(t => t.pnl > 0).length;
-      const winRate = (winningTrades / trades.length) * 100;
+      const totalPnL = trades ? trades.reduce((sum, t) => sum + (t.pnl || 0), 0) : 0;
+      const winningTrades = trades ? trades.filter(t => t.pnl > 0).length : 0;
+      const winRate = trades && trades.length > 0 ? (winningTrades / trades.length) * 100 : 0;
 
       // 2. FORCE-FEED: Read Strategy Source Code
       let strategyLogic = "Source code unavailable.";
@@ -67,7 +70,6 @@ export default async function handler(req, res) {
       const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
       
       if (apiKeyName && apiSecret) {
-        // --- THE PERPETUAL FUTURES FIX ---
         let coinbaseProduct = config.asset.toUpperCase().trim();
         if (!coinbaseProduct.includes('-')) {
             if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
@@ -114,7 +116,6 @@ export default async function handler(req, res) {
             candlesLeft -= batchSize;
         }
 
-        // UPGRADED VISION: Slicing to 500 candles now that Vercel allows 300 seconds of compute time!
         marketContext = allCandles.map(c => ({ 
             close: parseFloat(c.close), 
             high: parseFloat(c.high),
@@ -123,63 +124,79 @@ export default async function handler(req, res) {
         })).reverse().slice(-500);
       }
 
-      // 4. THE OMNISCIENT PROMPT
+      // 4. THE OMNISCIENT PROMPT - Upgraded for Regime Switching
       const prompt = `
-      You are the Nexus Genetic Optimizer. Your task is to mathematically mutate the parameters of this trading strategy to increase ROI.
+      You are the Nexus Quantitative Portfolio Manager. Your task is to evaluate this trading strategy against the current market regime and manage its deployment.
       
-      --- ACTIVE CONFIGURATION ---
+      --- CONFIGURATION ---
       Asset: ${config.asset}
       Strategy Name: ${config.strategy}
+      Status: ${config.is_active ? 'ACTIVE' : 'PAUSED'}
       Current Version: ${config.version || 'v1.0'}
       Current Parameters: ${JSON.stringify(config.parameters)}
       
       --- RAW STRATEGY SOURCE CODE ---
-      Read this logic carefully to understand exactly how the parameters are used in the math:
+      Read this logic to understand its core market approach (e.g., trend following, mean reversion, breakout):
       ${strategyLogic}
       
-      --- TELEMETRY ---
+      --- TELEMETRY (Recent Performance) ---
       Total PnL: $${totalPnL.toFixed(4)}
       Win Rate: ${winRate.toFixed(1)}%
       Recent Trades: ${JSON.stringify(trades)}
+      
+      --- MARKET CONTEXT ---
       Recent Market Context (Last 500 ${triggerTf} candles): ${JSON.stringify(marketContext)}
 
       --- DIRECTIVE ---
-      1. Analyze the Market Context alongside the Raw Source Code. 
-      2. Mutate the parameters based on the math. YOU MUST KEEP THE EXACT SAME JSON KEYS AS 'Current Parameters'. DO NOT rename, add, or remove any keys. Only change the values.
-         - Timeframes must strictly be: ONE_MINUTE, FIVE_MINUTE, FIFTEEN_MINUTE, ONE_HOUR, ONE_DAY.
-      3. You MUST increment the version number by exactly 0.1 (e.g., v1.0 becomes v1.1).
+      Analyze the Market Context and the Strategy Logic. Determine the current market regime (e.g., trending, ranging, volatile chop).
+      
+      You must choose ONE of the following actions:
+      1. PAUSE: If the strategy is ACTIVE, but its core logic is fundamentally unsuited for the current market regime (e.g., it's a trend-follower bleeding in a choppy market). Mutating won't fix a regime mismatch.
+      2. REACTIVATE: If the strategy is PAUSED, but the recent 500 candles show a regime that perfectly matches this strategy's source code logic.
+      3. MUTATE: If the strategy is ACTIVE, suited for the regime, but needs parameter tuning (e.g., wider stops, faster EMA) to increase ROI. You must retain the exact parameter keys.
+      4. MAINTAIN: If the strategy is ACTIVE and perfectly tuned for the current regime, or PAUSED and the regime is still wrong for it.
+
+      If MUTATE, increment the version by 0.1 (e.g., v1.0 to v1.1). Otherwise, keep the current version.
       `;
 
       // 5. STRUCTURED GENERATION
       const { object } = await generateObject({
-      model: google('models/gemini-2.5-pro'),
-      system: "You are a quantitative genetic algorithm. Output strictly valid JSON. You MUST retain the exact parameter keys provided in the current configuration. Do not hallucinate new parameter names.",
-      schema: z.object({
-        parameters: z.record(z.any()).describe(`The evolved parameter object. Keys MUST perfectly match this list: ${Object.keys(config.parameters).join(', ')}`),
-        new_version: z.string().describe("The incremented version string, e.g., v1.1"),
-        reasoning: z.string().describe("Mathematical and market-context reasoning for this mutation.")
-      }),
-      prompt: prompt
+        model: google('models/gemini-2.5-pro'),
+        system: "You are a quantitative portfolio manager. Output strictly valid JSON. You MUST retain exact parameter keys.",
+        schema: z.object({
+          action: z.enum(["MUTATE", "PAUSE", "REACTIVATE", "MAINTAIN"]).describe("The strategic deployment decision."),
+          parameters: z.record(z.any()).describe(`The parameter object. Modify ONLY if action is MUTATE.`),
+          new_version: z.string().describe("Incremented version if MUTATE, otherwise keep current version."),
+          reasoning: z.string().describe("Regime-based and mathematical reasoning for this decision.")
+        }),
+        prompt: prompt
       });
 
       // 6. DATABASE DEPLOYMENT
-      await supabase.from('strategy_config').update({
-        parameters: object.parameters,
-        reasoning: `[AUTO-EVOLVED] ${object.reasoning}`,
-        version: object.new_version,
-        last_updated: new Date().toISOString()
-      }).eq('id', config.id);
+      let is_active_new = config.is_active;
+      if (object.action === 'PAUSE') is_active_new = false;
+      if (object.action === 'REACTIVATE') is_active_new = true;
 
-      mutations.push({
+      // Execute update only if an action was taken to minimize DB writes
+      if (object.action !== 'MAINTAIN') {
+          await supabase.from('strategy_config').update({
+            is_active: is_active_new,
+            parameters: object.parameters,
+            reasoning: `[AUTO-${object.action}] ${object.reasoning}`,
+            version: object.new_version,
+            last_updated: new Date().toISOString()
+          }).eq('id', config.id);
+      }
+
+      portfolioActions.push({
         asset: config.asset,
         strategy: config.strategy,
-        old_version: config.version,
-        new_version: object.new_version,
+        action: object.action,
         reasoning: object.reasoning
       });
     }
 
-    return res.status(200).json({ status: "Evolution Cycle Complete", mutations });
+    return res.status(200).json({ status: "Portfolio Evaluation Complete", portfolioActions });
 
   } catch (err) {
     console.error("[OPTIMIZER FAULT]:", err.message);
