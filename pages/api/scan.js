@@ -6,6 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { evaluateStrategy } from '../../lib/strategy-router.js';
+import { evaluateTradeIdea } from '../../lib/trade-oracle.js'; // NEW: The Oracle
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -33,40 +34,18 @@ export default async function handler(req, res) {
       if (!asset) continue;
 
       try {
-        // 1. Read Dynamic Timeframes from the DB (Fallback to 1H/5M if not set)
         const macroTf = config.parameters?.macro_tf || 'ONE_HOUR';
         const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
 
-        // 2. Concurrently fetch the exact timeframes requested by the strategy
         const [macroCandles, triggerCandles] = await Promise.all([
           fetchCoinbaseData(asset, macroTf, apiKeyName, apiSecret),
           fetchCoinbaseData(asset, triggerTf, apiKeyName, apiSecret)
         ]);
 
-        // DIAGNOSTIC 1: Did the API fail completely?
-        if (!macroCandles || !triggerCandles) {
-            results.push({ 
-                strategy: config.strategy, 
-                asset, 
-                status: "API_FETCH_FAILED", 
-                details: "Coinbase rejected the request. Check Vercel logs for the 400/401 error." 
-            });
-            continue;
-        }
+        if (!macroCandles || !triggerCandles || macroCandles.length < 21 || triggerCandles.length < 21) continue;
+        const currentPrice = triggerCandles[triggerCandles.length - 1].close;
 
-        // DIAGNOSTIC 2: Did it return data, but not enough?
-        if (macroCandles.length < 21 || triggerCandles.length < 21) {
-            results.push({ 
-                strategy: config.strategy, 
-                asset, 
-                status: "INSUFFICIENT_DATA",
-                macro_candles_received: macroCandles.length,
-                trigger_candles_received: triggerCandles.length
-            });
-            continue;
-        }
-
-        // 3. FETCH OPEN TRADES (Crucial for the TP/SL Enforcer)
+        // FETCH OPEN TRADES
         const { data: openTrades } = await supabase
             .from('trade_logs')
             .select('*')
@@ -77,52 +56,88 @@ export default async function handler(req, res) {
             .limit(1);
         
         const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
-
-        // 4. Package data and route to the dynamic brain
-        const marketData = { macro: macroCandles, trigger: triggerCandles };
-        let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
-
-        // DIAGNOSTIC 3: Did the Dynamic Router fail to find your .js file?
-        if (decision.error) {
-            results.push({
-                strategy: config.strategy,
-                asset,
-                status: "ROUTER_ERROR",
-                details: decision.error
-            });
-            continue;
-        }
-
-        // 5. THE VIRTUAL TP/SL ENFORCER
-        // Hijacks the strategy decision if the price has breached your open trade's SL/TP targets
-        const currentPrice = triggerCandles[triggerCandles.length - 1].close;
         let forcedExit = null;
 
-        if (openTrade && openTrade.sl_price && openTrade.tp_price) {
-            // Long Position Checks
+        // --- NEW: THE ORACLE EMERGENCY CHECK (-8% Pain Threshold) ---
+        if (openTrade) {
+            const entryPrice = parseFloat(openTrade.entry_price);
+            const pnlPercent = (openTrade.side === 'BUY' || openTrade.side === 'LONG') 
+                ? (currentPrice - entryPrice) / entryPrice 
+                : (entryPrice - currentPrice) / entryPrice;
+
+            if (pnlPercent <= -0.08) { // If down 8%
+                console.log(`[ORACLE INITIATED] Emergency scan for ${asset}. Down ${(pnlPercent * 100).toFixed(2)}%`);
+                const oracleVerdict = await evaluateTradeIdea({
+                    mode: 'EMERGENCY', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, pnlPercent
+                });
+
+                if (oracleVerdict.action === 'MARKET_CLOSE') {
+                    console.log(`[ORACLE VETO] Structural failure detected. Forcing close on ${asset}. Reasoning: ${oracleVerdict.reasoning}`);
+                    forcedExit = 'ORACLE_EMERGENCY_CLOSE';
+                }
+            }
+        }
+
+        // Evaluate Strategy Logic
+        const marketData = { macro: macroCandles, trigger: triggerCandles };
+        let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
+        if (decision.error) continue;
+
+        // VIRTUAL TP/SL ENFORCER
+        if (openTrade && openTrade.sl_price && openTrade.tp_price && !forcedExit) {
             if (openTrade.side === 'BUY' || openTrade.side === 'LONG') {
                 if (currentPrice <= openTrade.sl_price) forcedExit = 'STOP_LOSS';
                 else if (currentPrice >= openTrade.tp_price) forcedExit = 'TAKE_PROFIT';
-            } 
-            // Short Position Checks
-            else {
+            } else {
                 if (currentPrice >= openTrade.sl_price) forcedExit = 'STOP_LOSS';
                 else if (currentPrice <= openTrade.tp_price) forcedExit = 'TAKE_PROFIT';
             }
+        }
 
-            // If price breached targets, override the strategy signal to FORCE CLOSE
-            if (forcedExit) {
-                console.log(`[EMERGENCY EXIT] ${forcedExit} breached for ${asset} at $${currentPrice}`);
-                decision.signal = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? 'SELL' : 'BUY';
-                decision.entryPrice = currentPrice;
-                decision.tpPrice = null; // Clear targets for the closing order
-                decision.slPrice = null;
-                decision.telemetry = { ...decision.telemetry, exit_reason: forcedExit };
+        // FORCE CLOSE OVERRIDE
+        if (forcedExit) {
+            decision.signal = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? 'SELL' : 'BUY';
+            decision.entryPrice = currentPrice;
+            decision.orderType = 'MARKET'; // Emergencies and stops are always Market orders
+            decision.tpPrice = null; 
+            decision.slPrice = null;
+            decision.telemetry = { ...decision.telemetry, exit_reason: forcedExit };
+        } 
+        
+        // --- NEW: THE ORACLE LIMIT ORDER INTERCEPTOR ---
+        else if (decision.signal && !openTrade) {
+            // A new trade wants to open. Pause and ask the Oracle.
+            console.log(`[ORACLE INITIATED] Scoring ${decision.signal} signal for ${asset}...`);
+            
+            const oracleVerdict = await evaluateTradeIdea({
+                mode: 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, currentPrice, candles: triggerCandles
+            });
+
+            if (oracleVerdict.action === 'VETO') {
+                console.log(`[ORACLE VETO] Signal rejected. Score: ${oracleVerdict.conviction_score}. Reasoning: ${oracleVerdict.reasoning}`);
+                decision.signal = null; // Kill the trade
+            } else {
+                console.log(`[ORACLE APPROVED] Score: ${oracleVerdict.conviction_score}. Mutating to LIMIT order at $${oracleVerdict.limit_price}. Leveraged: ${oracleVerdict.leverage_multiplier}x`);
+                
+                // Mutate the payload to the Oracle's optimized specs
+                decision.entryPrice = oracleVerdict.limit_price; // Snipe the pullback
+                decision.orderType = 'LIMIT';
+                
+                // Recalculate TP/SL based on the NEW optimized limit price
+                const slP = config.parameters?.sl_percent || 0.01;
+                const tpP = config.parameters?.tp_percent || 0.02;
+                decision.tpPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
+                decision.slPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
+                
+                // Apply Conviction Sizing
+                if (oracleVerdict.leverage_multiplier > 1.0 && config.parameters?.target_usd) {
+                     config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.leverage_multiplier;
+                }
+                
+                decision.telemetry = { ...decision.telemetry, oracle_score: oracleVerdict.conviction_score, oracle_reasoning: oracleVerdict.reasoning };
             }
         }
 
-        // 6. LOG RESULTS TO DASHBOARD
-        // The database payload (matches your Supabase columns exactly)
         const scanEntry = {
           strategy: config.strategy,
           asset,
@@ -130,19 +145,12 @@ export default async function handler(req, res) {
           status: decision.signal ? (forcedExit ? `HIT_${forcedExit}` : "RESONANT") : "STABLE"
         };
         
-        // Push to the cron log 
         results.push(scanEntry);
-        
-        // Insert into Supabase so the UI streams it
         await supabase.from('scan_results').insert([scanEntry]);
 
-        // 7. THE EXECUTION TRIGGER (With Dynamic Sizing)
+        // THE EXECUTION TRIGGER
         if (decision.signal) {
-          
-          // --- DYNAMIC SIZING LOGIC ---
-          let finalQty = config.parameters?.qty || 10; // Fallback to static qty or default 10
-          
-          // Check for target_usd (e.g. 500) in Supabase config
+          let finalQty = config.parameters?.qty || 10; 
           if (config.parameters?.target_usd && decision.entryPrice) {
               finalQty = config.parameters.target_usd / decision.entryPrice;
           }
@@ -152,27 +160,24 @@ export default async function handler(req, res) {
               strategy_id: config.strategy, 
               version: config.version || 'v1.0',
               side: decision.signal,
+              order_type: decision.orderType || 'MARKET', // Explicitly declare LIMIT or MARKET
               price: decision.entryPrice,
               tp_price: decision.tpPrice || null,
               sl_price: decision.slPrice || null,
               execution_mode: config.execution_mode || 'PAPER',
               leverage: decision.leverage || 1,
               market_type: decision.marketType || 'FUTURES',
-              qty: parseFloat(finalQty.toFixed(2)) // Pass the dynamic unit count
+              qty: parseFloat(finalQty.toFixed(2)),
+              reason: decision.telemetry?.oracle_reasoning || decision.telemetry?.exit_reason || null 
           };
           
-          // Route it to your actual execution engine instead of bypassing it!
           const protocol = req.headers['x-forwarded-proto'] || 'http';
           const host = req.headers.host;
-          const baseUrl = `${protocol}://${host}`;
-          
-          await fetch(`${baseUrl}/api/execute-trade`, {
+          await fetch(`${protocol}://${host}/api/execute-trade`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(tradePayload)
           });
-          
-          console.log(`[TRADE ROUTED] ${decision.signal} on ${asset} via ${config.strategy} | Units: ${tradePayload.qty} | Value: ~$${config.parameters?.target_usd || 'Static'}`);
         }
 
       } catch (assetErr) {

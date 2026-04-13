@@ -47,6 +47,9 @@ export default async function handler(req, res) {
     const version = data.version || 'v1.0';
     const leverage = data.leverage || 1;
     const marketType = data.market_type || 'FUTURES'; 
+    const orderType = data.order_type || 'MARKET'; // Dynamic extraction
+    const tradeReason = data.reason || null; // Extracts the Oracle's reasoning
+    
     let tpPrice = data.tp_price || null;
     let slPrice = data.sl_price || null;
 
@@ -68,7 +71,7 @@ export default async function handler(req, res) {
         orderQty = parseFloat(openTrade.qty || orderQty);
     }
 
-    console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Side: ${side} | Leverage: ${leverage}x | Qty: ${orderQty}`);
+    console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Type: ${orderType} | Side: ${side} | Leverage: ${leverage}x | Qty: ${orderQty}`);
 
     const generateToken = (method, path) => {
       return jwt.sign(
@@ -93,11 +96,20 @@ export default async function handler(req, res) {
         client_order_id: `nexus_${Date.now()}`,
         product_id: coinbaseProduct,
         side: side,
-        order_configuration: {
-          // Live Execution uses the strictly calculated orderQty
-          market_market_ioc: { base_size: orderQty.toString() } 
-        }
+        order_configuration: {}
       };
+
+      // --- NEW: DYNAMIC ORDER ROUTING ---
+      if (orderType === 'LIMIT') {
+          payload.order_configuration.limit_limit_gtc = {
+              base_size: orderQty.toString(),
+              limit_price: executionPrice.toString()
+          };
+      } else {
+          payload.order_configuration.market_market_ioc = { 
+              base_size: orderQty.toString() 
+          };
+      }
 
       const resp = await fetch(`https://api.coinbase.com${path}`, {
         method: 'POST',
@@ -108,8 +120,9 @@ export default async function handler(req, res) {
       const result = await resp.json();
       if (!resp.ok) throw new Error(`Coinbase Reject: ${JSON.stringify(result)}`);
       
-      executionPrice = result.success_response?.average_price || data.price;
-      executionStatus = 'filled';
+      // If it's a LIMIT order, it won't have an immediate fill average_price
+      executionPrice = result.success_response?.average_price || executionPrice;
+      executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
       
     } else {
       // 🟢 PAPER DRY-RUN
@@ -124,14 +137,15 @@ export default async function handler(req, res) {
       const result = await resp.json();
       if (!resp.ok) throw new Error(`Coinbase Reject: ${JSON.stringify(result)}`);
       
-      executionPrice = parseFloat(result.price || data.price);
-      console.log(`[PAPER] Verified live market price: $${executionPrice}`);
+      // Only overwrite the price if it's a MARKET order. Limit orders stay at the requested price.
+      if (orderType === 'MARKET') executionPrice = parseFloat(result.price || data.price);
+      
+      console.log(`[PAPER] Verified ${orderType} price: $${executionPrice}`);
     }
 
-    // 3. PROPER STATE MANAGEMENT (With PnL Scaling)
+    // 3. PROPER STATE MANAGEMENT 
     if (openTrade) {
       if (openTrade.side !== side) {
-        // CLOSE TRADE: Calculate PnL accurately using the verified liquidation quantity
         const pnl = openTrade.side === 'BUY' 
           ? (executionPrice - openTrade.entry_price) * orderQty
           : (openTrade.entry_price - executionPrice) * orderQty;
@@ -139,7 +153,8 @@ export default async function handler(req, res) {
         const { error: updateError } = await supabase.from('trade_logs').update({
           exit_price: executionPrice,
           pnl: pnl,
-          exit_time: new Date().toISOString()
+          exit_time: new Date().toISOString(),
+          reason: tradeReason // <--- Logs the emergency closure reasoning
         }).eq('id', openTrade.id);
 
         if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
@@ -157,15 +172,16 @@ export default async function handler(req, res) {
         mci_at_entry: data.mci || 0,
         strategy_id: strategyId,
         version: version,
-        qty: orderQty, // Logs the exact quantity executed
+        qty: orderQty, 
         leverage: leverage,
         market_type: marketType,
         tp_price: tpPrice,
-        sl_price: slPrice
+        sl_price: slPrice,
+        reason: tradeReason // <--- Logs the Oracle's Conviction logic
       }]);
 
       if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
-      executionStatus = 'opened_position';
+      executionStatus = orderType === 'LIMIT' ? 'opened_limit_position' : 'opened_position';
     }
 
     return res.status(200).json({ 
