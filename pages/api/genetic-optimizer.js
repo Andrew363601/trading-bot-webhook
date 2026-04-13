@@ -4,7 +4,7 @@ export const maxDuration = 300;
 // pages/api/genetic-optimizer.js
 import { createClient } from '@supabase/supabase-js';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { generateObject } from 'ai';
+import { generateText } from 'ai';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
@@ -168,18 +168,20 @@ Analyze the 500 candles and classify the current market phase for this asset int
       `;
 
       // 5. STRUCTURED GENERATION
-      const { object } = await generateObject({
+      const { object } = await generatetext({
         model: google('gemini-2.5-pro'),
-        mode: 'json', // <--- THE WEB FIX: Forces Vercel to bypass the registry check
         system: "You are a quantitative portfolio manager. Output strictly valid JSON. You MUST retain exact parameter keys.",
-        schema: z.object({
-          action: z.enum(["MUTATE", "PAUSE", "REACTIVATE", "MAINTAIN"]).describe("The strategic deployment decision."),
-          parameters: z.record(z.any()).describe(`The parameter object. Modify ONLY if action is MUTATE.`),
-          new_version: z.string().describe("Incremented version if MUTATE, otherwise keep current version."),
-          reasoning: z.string().describe("Regime-based and mathematical reasoning for this decision.")
-        }),
-        prompt: prompt
+        prompt: prompt + `
+        
+        REQUIRED JSON OUTPUT FORMAT:
+        {
+          "action": "MUTATE" | "PAUSE" | "REACTIVATE" | "MAINTAIN",
+          "parameters": { /* Insert evolved parameters here if mutating */ },
+          "new_version": "vX.X",
+          "reasoning": "Detailed market and math reasoning here."
+        }`
       });
+
 // 6. DATABASE DEPLOYMENT
 let is_active_new = config.is_active;
 if (object.action === 'PAUSE') is_active_new = false;
