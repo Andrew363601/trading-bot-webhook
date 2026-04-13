@@ -147,8 +147,16 @@ export default async function handler(req, res) {
       --- MARKET CONTEXT ---
       Recent Market Context (Last 500 ${triggerTf} candles): ${JSON.stringify(marketContext)}
 
+      --- MARKET STRUCTURE FRAMEWORK ---
+Analyze the 500 candles and classify the current market phase for this asset into one of the following:
+1. ACCUMULATION: Sideways, low volatility, base-building. (Favorable for: Mean-reversion, Grid trading).
+2. MARKUP: Sustained uptrend, higher highs, expanding volume. (Favorable for: Trend-following, Momentum breakouts).
+3. DISTRIBUTION: High volatility chop at the top, failing to break highs. (Favorable for: Range trading, fading breakouts).
+4. MARKDOWN: Sustained downtrend, lower lows. (Favorable for: Short-trend following, avoiding long-only strategies).
+
+
       --- DIRECTIVE ---
-      Analyze the Market Context and the Strategy Logic. Determine the current market regime (e.g., trending, ranging, volatile chop).
+      Analyze the Market Context, check the current market regime (e.g., trending, ranging, volatile chop) and determine if the provided Strategy Logic is mathematically suited for the identified Market Phase.
       
       You must choose ONE of the following actions:
       1. PAUSE: If the strategy is ACTIVE, but its core logic is fundamentally unsuited for the current market regime (e.g., it's a trend-follower bleeding in a choppy market). Mutating won't fix a regime mismatch.
