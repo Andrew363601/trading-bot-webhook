@@ -80,7 +80,7 @@ export default async function handler(req, res) {
         }
         
         const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
-        
+
         
         let lookbackSeconds;
         switch (triggerTf) {
@@ -169,7 +169,7 @@ Analyze the 500 candles and classify the current market phase for this asset int
       `;
 
       // 5. STRUCTURED GENERATION
-      const { object } = await generatetext({
+      const { object } = await generateText({
         model: google('gemini-2.5-pro'),
         system: "You are a quantitative portfolio manager. Output strictly valid JSON. You MUST retain exact parameter keys.",
         prompt: prompt + `
