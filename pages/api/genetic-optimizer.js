@@ -161,7 +161,8 @@ export default async function handler(req, res) {
 
       // 5. STRUCTURED GENERATION
       const { object } = await generateObject({
-        model: google('models/gemini-2.5-pro'),
+        model: google('gemini-2.5-pro'),
+        mode: 'json', // <--- THE WEB FIX: Forces Vercel to bypass the registry check
         system: "You are a quantitative portfolio manager. Output strictly valid JSON. You MUST retain exact parameter keys.",
         schema: z.object({
           action: z.enum(["MUTATE", "PAUSE", "REACTIVATE", "MAINTAIN"]).describe("The strategic deployment decision."),
