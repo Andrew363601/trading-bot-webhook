@@ -13,12 +13,29 @@ export default async function handler(req, res) {
     const { asset } = req.query; 
     const apiKeyName = process.env.COINBASE_API_KEY;
     
-    // --- THE BULLETPROOF PEM FORMATTER ---
+    // --- THE ULTIMATE PEM RECONSTRUCTOR ---
     let apiSecret = process.env.COINBASE_API_SECRET || "";
-    // 1. Violently strip any leading or trailing quotation marks Next.js might have absorbed
-    apiSecret = apiSecret.replace(/^["']|["']$/g, '');
-    // 2. Convert literal \n text characters into actual structural line breaks
-    apiSecret = apiSecret.replace(/\\n/g, '\n');
+    
+    // 1. Strip outer quotes and literal \n tags
+    apiSecret = apiSecret.replace(/^["']|["']$/g, '').replace(/\\n/g, '\n');
+    
+    // 2. The StackBlitz/Vercel Flat-String Fix
+    // If the platform deleted the newlines and turned the key into one flat string:
+    if (apiSecret.startsWith('-----BEGIN') && !apiSecret.includes('\n')) {
+        const headerMatch = apiSecret.match(/-----BEGIN[^-]+-----/);
+        const footerMatch = apiSecret.match(/-----END[^-]+-----/);
+        
+        if (headerMatch && footerMatch) {
+            const header = headerMatch[0];
+            const footer = footerMatch[0];
+            
+            // Extract the base64 body and violently strip ALL spaces
+            const body = apiSecret.replace(header, '').replace(footer, '').replace(/\s+/g, '');
+            
+            // Rebuild the perfect multi-line PEM
+            apiSecret = `${header}\n${body}\n${footer}`;
+        }
+    }
     
     let liveBalance = 0;
     const initialPaperFunds = 5000;
@@ -64,7 +81,6 @@ export default async function handler(req, res) {
           }
         }
     } catch (cryptoErr) {
-        // If it STILL fails, it will at least log the very first few characters so you can see the corruption
         console.warn(`[PORTFOLIO CRYPTO WARN]: Failed to parse Coinbase API Secret. Starts with: ${apiSecret.substring(0, 10)}...`);
     }
 
