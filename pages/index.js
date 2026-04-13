@@ -10,7 +10,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhx
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const ASSETS = ['BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-INTX', 'AVAX-PERP-INTX', 'WLD-PERP-INTX', 'XRP-PERP-INTX'];
+const ASSETS = ['BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-INTX', 'AVAX-PERP-INTX', 'WLD-PERP-INTX', 'XRP-PERP-INTX', 'ADA-PERP-INTX'];
 
 export default function Dashboard() {
   const [activeAsset, setActiveAsset] = useState('DOGE-PERP-INTX');
