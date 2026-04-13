@@ -10,7 +10,7 @@ const supabase = createClient(
 
 export default async function handler(req, res) {
   try {
-    const { asset } = req.query; // NEW: Receives the active asset from the UI
+    const { asset } = req.query; // Receives the active asset from the UI
     const apiKeyName = process.env.COINBASE_API_KEY;
     const rawSecret = process.env.COINBASE_API_SECRET;
     
@@ -19,25 +19,28 @@ export default async function handler(req, res) {
     let paperBalance = initialPaperFunds;
     let currentMarketPrice = 0;
 
-    // 1. Fetch LIVE Market Price (Server-side bypasses browser CORS entirely!)
+    // 1. Fetch LIVE Market Price (Switched to Coinbase Public API to bypass US IP bans)
     try {
         if (asset) {
-            const binanceSymbol = `${asset.split('-')[0]}USDT`;
-            // Using the ultra-stable Binance Spot API purely for UI PnL math
-            const priceResp = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${binanceSymbol}`);
+            const baseCoin = asset.split('-')[0]; // Converts 'DOGE-PERP-INTX' to 'DOGE'
+            const priceResp = await fetch(`https://api.exchange.coinbase.com/products/${baseCoin}-USD/ticker`);
+            
             if (priceResp.ok) {
                 const priceData = await priceResp.json();
                 currentMarketPrice = parseFloat(priceData.price || 0);
+            } else {
+                console.warn(`[PRICE PROXY WARN]: Coinbase returned status ${priceResp.status}`);
             }
         }
     } catch (priceErr) {
-        console.warn("[PRICE PROXY WARN]: Could not fetch live price.");
+        console.warn("[PRICE PROXY WARN]: Could not fetch live price.", priceErr.message);
     }
 
-    // 2. Fetch LIVE Balance from Coinbase
+    // 2. Fetch LIVE Balance from Coinbase (With deep-cleaned API Secret)
     try {
         if (apiKeyName && rawSecret) {
-          const apiSecret = rawSecret.replace(/\\n/g, '\n');
+          // Deep clean the string: Rebuilds newlines and strips all rogue quotes/spaces
+          const apiSecret = rawSecret.replace(/\\n/g, '\n').replace(/['"]/g, '').trim();
           const path = '/api/v3/brokerage/accounts';
           
           const token = jwt.sign(
@@ -50,12 +53,16 @@ export default async function handler(req, res) {
           
           if (resp.ok) {
               const data = await resp.json();
+              // Sum up available USD and USDC balances
               const fiatAccounts = data.accounts?.filter(a => a.currency === 'USD' || a.currency === 'USDC') || [];
               liveBalance = fiatAccounts.reduce((sum, acc) => sum + parseFloat(acc.available_balance.value), 0);
+          } else {
+              const errData = await resp.text();
+              console.warn("[COINBASE BALANCE ERR]:", errData);
           }
         }
     } catch (cryptoErr) {
-        console.warn("[PORTFOLIO CRYPTO WARN]: Failed to parse Coinbase API Secret.");
+        console.warn("[PORTFOLIO CRYPTO WARN]: Failed to parse Coinbase API Secret.", cryptoErr.message);
     }
 
     // 3. Fetch PAPER Balance from Database
