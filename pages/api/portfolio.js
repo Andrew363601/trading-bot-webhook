@@ -13,27 +13,20 @@ export default async function handler(req, res) {
     const { asset } = req.query; 
     const apiKeyName = process.env.COINBASE_API_KEY;
     
-    // --- THE ULTIMATE PEM RECONSTRUCTOR ---
+    // --- THE NUCLEAR PEM RECONSTRUCTOR ---
     let apiSecret = process.env.COINBASE_API_SECRET || "";
     
-    // 1. Strip outer quotes and literal \n tags
-    apiSecret = apiSecret.replace(/^["']|["']$/g, '').replace(/\\n/g, '\n');
-    
-    // 2. The StackBlitz/Vercel Flat-String Fix
-    // If the platform deleted the newlines and turned the key into one flat string:
-    if (apiSecret.startsWith('-----BEGIN') && !apiSecret.includes('\n')) {
-        const headerMatch = apiSecret.match(/-----BEGIN[^-]+-----/);
-        const footerMatch = apiSecret.match(/-----END[^-]+-----/);
-        
-        if (headerMatch && footerMatch) {
-            const header = headerMatch[0];
-            const footer = footerMatch[0];
+    if (apiSecret) {
+        // 1. Rip out the headers, footers, quotes, and ALL invisible formatting/spaces
+        const rawBase64 = apiSecret
+            .replace(/-----BEGIN[^-]+-----/g, '')
+            .replace(/-----END[^-]+-----/g, '')
+            .replace(/["'\s\\n\r]/g, ''); // Destroys spaces, literal \n tags, and quotes
             
-            // Extract the base64 body and violently strip ALL spaces
-            const body = apiSecret.replace(header, '').replace(footer, '').replace(/\s+/g, '');
-            
-            // Rebuild the perfect multi-line PEM
-            apiSecret = `${header}\n${body}\n${footer}`;
+        // 2. Mathematically rebuild the key with strict 64-character line breaks
+        if (rawBase64.length > 0) {
+            const wrappedBase64 = rawBase64.match(/.{1,64}/g).join('\n');
+            apiSecret = `-----BEGIN EC PRIVATE KEY-----\n${wrappedBase64}\n-----END EC PRIVATE KEY-----\n`;
         }
     }
     
@@ -64,10 +57,13 @@ export default async function handler(req, res) {
         if (apiKeyName && apiSecret) {
           const path = '/api/v3/brokerage/accounts';
           
+          // Pre-validate the key using Node's native crypto module before JWT touches it
+          const privateKeyObj = crypto.createPrivateKey(apiSecret);
+          
           const token = jwt.sign({
             iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
             sub: apiKeyName, uri: `GET api.coinbase.com${path}`,
-          }, apiSecret, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
+          }, privateKeyObj, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
 
           const resp = await fetch(`https://api.coinbase.com${path}`, { headers: { 'Authorization': `Bearer ${token}` } });
           
@@ -81,7 +77,7 @@ export default async function handler(req, res) {
           }
         }
     } catch (cryptoErr) {
-        console.warn(`[PORTFOLIO CRYPTO WARN]: Failed to parse Coinbase API Secret. Starts with: ${apiSecret.substring(0, 10)}...`);
+        console.warn(`[PORTFOLIO CRYPTO WARN]: Key Parse Failed. Error: ${cryptoErr.message}`);
     }
 
     // 3. Fetch PAPER Balance from Database
