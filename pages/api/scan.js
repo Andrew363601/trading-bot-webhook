@@ -66,9 +66,21 @@ export default async function handler(req, res) {
             continue;
         }
 
-        // 3. Package data and route to the dynamic brain
+        // 3. FETCH OPEN TRADES (Crucial for the TP/SL Enforcer)
+        const { data: openTrades } = await supabase
+            .from('trade_logs')
+            .select('*')
+            .eq('symbol', asset)
+            .eq('strategy_id', config.strategy)
+            .is('exit_price', null)
+            .order('id', { ascending: false })
+            .limit(1);
+        
+        const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
+
+        // 4. Package data and route to the dynamic brain
         const marketData = { macro: macroCandles, trigger: triggerCandles };
-        const decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
+        let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
 
         // DIAGNOSTIC 3: Did the Dynamic Router fail to find your .js file?
         if (decision.error) {
@@ -81,12 +93,41 @@ export default async function handler(req, res) {
             continue;
         }
 
+        // 5. THE VIRTUAL TP/SL ENFORCER
+        // Hijacks the strategy decision if the price has breached your open trade's SL/TP targets
+        const currentPrice = triggerCandles[triggerCandles.length - 1].close;
+        let forcedExit = null;
+
+        if (openTrade && openTrade.sl_price && openTrade.tp_price) {
+            // Long Position Checks
+            if (openTrade.side === 'BUY' || openTrade.side === 'LONG') {
+                if (currentPrice <= openTrade.sl_price) forcedExit = 'STOP_LOSS';
+                else if (currentPrice >= openTrade.tp_price) forcedExit = 'TAKE_PROFIT';
+            } 
+            // Short Position Checks
+            else {
+                if (currentPrice >= openTrade.sl_price) forcedExit = 'STOP_LOSS';
+                else if (currentPrice <= openTrade.tp_price) forcedExit = 'TAKE_PROFIT';
+            }
+
+            // If price breached targets, override the strategy signal to FORCE CLOSE
+            if (forcedExit) {
+                console.log(`[EMERGENCY EXIT] ${forcedExit} breached for ${asset} at $${currentPrice}`);
+                decision.signal = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? 'SELL' : 'BUY';
+                decision.entryPrice = currentPrice;
+                decision.tpPrice = null; // Clear targets for the closing order
+                decision.slPrice = null;
+                decision.telemetry = { ...decision.telemetry, exit_reason: forcedExit };
+            }
+        }
+
+        // 6. LOG RESULTS TO DASHBOARD
         // The database payload (matches your Supabase columns exactly)
         const scanEntry = {
           strategy: config.strategy,
           asset,
           telemetry: decision.telemetry || {},
-          status: decision.signal ? "RESONANT" : "STABLE"
+          status: decision.signal ? (forcedExit ? `HIT_${forcedExit}` : "RESONANT") : "STABLE"
         };
         
         // Push to the cron log 
@@ -95,7 +136,7 @@ export default async function handler(req, res) {
         // Insert into Supabase so the UI streams it
         await supabase.from('scan_results').insert([scanEntry]);
 
-        // 4. THE EXECUTION TRIGGER (Now with Dynamic Sizing)
+        // 7. THE EXECUTION TRIGGER (With Dynamic Sizing)
         if (decision.signal) {
           
           // --- DYNAMIC SIZING LOGIC ---
@@ -112,8 +153,8 @@ export default async function handler(req, res) {
               version: config.version || 'v1.0',
               side: decision.signal,
               price: decision.entryPrice,
-              tp_price: decision.tpPrice,
-              sl_price: decision.slPrice,
+              tp_price: decision.tpPrice || null,
+              sl_price: decision.slPrice || null,
               execution_mode: config.execution_mode || 'PAPER',
               leverage: decision.leverage || 1,
               market_type: decision.marketType || 'FUTURES',
@@ -131,7 +172,7 @@ export default async function handler(req, res) {
               body: JSON.stringify(tradePayload)
           });
           
-          console.log(`[TRADE ROUTED] ${decision.signal} on ${asset} | Units: ${tradePayload.qty} | Value: ~$${config.parameters?.target_usd || 'Static'}`);
+          console.log(`[TRADE ROUTED] ${decision.signal} on ${asset} via ${config.strategy} | Units: ${tradePayload.qty} | Value: ~$${config.parameters?.target_usd || 'Static'}`);
         }
 
       } catch (assetErr) {
@@ -151,6 +192,7 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
     
     // --- THE PERPETUAL FUTURES FIX ---
+    // Safely parse Spot vs Perp symbols without destroying hyphens
     let coinbaseProduct = asset.toUpperCase().trim();
     if (!coinbaseProduct.includes('-')) {
         if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
