@@ -13,8 +13,12 @@ export default async function handler(req, res) {
     const { asset } = req.query; 
     const apiKeyName = process.env.COINBASE_API_KEY;
     
-    // FIX: Using the EXACT proven parser from your scan.js file
-    const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
+    // --- THE BULLETPROOF PEM FORMATTER ---
+    let apiSecret = process.env.COINBASE_API_SECRET || "";
+    // 1. Violently strip any leading or trailing quotation marks Next.js might have absorbed
+    apiSecret = apiSecret.replace(/^["']|["']$/g, '');
+    // 2. Convert literal \n text characters into actual structural line breaks
+    apiSecret = apiSecret.replace(/\\n/g, '\n');
     
     let liveBalance = 0;
     const initialPaperFunds = 5000;
@@ -60,7 +64,8 @@ export default async function handler(req, res) {
           }
         }
     } catch (cryptoErr) {
-        console.warn("[PORTFOLIO CRYPTO WARN]: Failed to parse Coinbase API Secret.", cryptoErr.message);
+        // If it STILL fails, it will at least log the very first few characters so you can see the corruption
+        console.warn(`[PORTFOLIO CRYPTO WARN]: Failed to parse Coinbase API Secret. Starts with: ${apiSecret.substring(0, 10)}...`);
     }
 
     // 3. Fetch PAPER Balance from Database
