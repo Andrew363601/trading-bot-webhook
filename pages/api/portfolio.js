@@ -10,19 +10,21 @@ const supabase = createClient(
 
 export default async function handler(req, res) {
   try {
-    const { asset } = req.query; // Receives the active asset from the UI
+    const { asset } = req.query; 
     const apiKeyName = process.env.COINBASE_API_KEY;
-    const rawSecret = process.env.COINBASE_API_SECRET;
+    
+    // FIX: Using the EXACT proven parser from your scan.js file
+    const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
     
     let liveBalance = 0;
     const initialPaperFunds = 5000;
     let paperBalance = initialPaperFunds;
     let currentMarketPrice = 0;
 
-    // 1. Fetch LIVE Market Price (Switched to Coinbase Public API to bypass US IP bans)
+    // 1. Fetch LIVE Market Price (Using Coinbase Public API to bypass US IP bans)
     try {
         if (asset) {
-            const baseCoin = asset.split('-')[0]; // Converts 'DOGE-PERP-INTX' to 'DOGE'
+            const baseCoin = asset.split('-')[0]; 
             const priceResp = await fetch(`https://api.exchange.coinbase.com/products/${baseCoin}-USD/ticker`);
             
             if (priceResp.ok) {
@@ -36,24 +38,20 @@ export default async function handler(req, res) {
         console.warn("[PRICE PROXY WARN]: Could not fetch live price.", priceErr.message);
     }
 
-    // 2. Fetch LIVE Balance from Coinbase (With deep-cleaned API Secret)
+    // 2. Fetch LIVE Balance from Coinbase
     try {
-        if (apiKeyName && rawSecret) {
-          // Deep clean the string: Rebuilds newlines and strips all rogue quotes/spaces
-          const apiSecret = rawSecret.replace(/\\n/g, '\n').replace(/['"]/g, '').trim();
+        if (apiKeyName && apiSecret) {
           const path = '/api/v3/brokerage/accounts';
           
-          const token = jwt.sign(
-            { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `GET api.coinbase.com${path}` },
-            apiSecret,
-            { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
-          );
+          const token = jwt.sign({
+            iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
+            sub: apiKeyName, uri: `GET api.coinbase.com${path}`,
+          }, apiSecret, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
 
           const resp = await fetch(`https://api.coinbase.com${path}`, { headers: { 'Authorization': `Bearer ${token}` } });
           
           if (resp.ok) {
               const data = await resp.json();
-              // Sum up available USD and USDC balances
               const fiatAccounts = data.accounts?.filter(a => a.currency === 'USD' || a.currency === 'USDC') || [];
               liveBalance = fiatAccounts.reduce((sum, acc) => sum + parseFloat(acc.available_balance.value), 0);
           } else {
@@ -80,7 +78,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       live: { balance: liveBalance },
       paper: { balance: paperBalance, initial: initialPaperFunds },
-      price: currentMarketPrice // Sends the successful price payload to the frontend
+      price: currentMarketPrice 
     });
 
   } catch (err) {
