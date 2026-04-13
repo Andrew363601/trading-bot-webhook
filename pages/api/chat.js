@@ -7,8 +7,6 @@ import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
-
-// Loaded at the top to prevent Vercel memory leaks
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
@@ -38,20 +36,18 @@ export default async function handler(req, res) {
       apiKey: process.env.GEMINI_API_KEY,
     });
 
-    // 1. THE UNBLINDING: Fetch ALL configs (Active and Paused)
     const { data: allConfigs } = await supabase.from('strategy_config').select('*');
-    
-    // 2. THE TELEMETRY SPLIT: Separate open trades from historical closed trades
     const { data: openTrades } = await supabase.from('trade_logs').select('*').is('exit_price', null);
-    const { data: recentClosedLogs } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(10);
     
-    // 3. THE LIVE PRICE RADAR: Fetch live Coinbase prices for any asset with an open trade
+    // Kept small just for immediate context so the AI knows what just finished
+    const { data: recentClosedLogs } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5);
+    
     let livePrices = {};
     if (openTrades && openTrades.length > 0) {
       const uniqueAssets = [...new Set(openTrades.map(t => t.symbol))];
       for (const asset of uniqueAssets) {
         try {
-          const baseCoin = asset.split('-')[0]; // Converts DOGE-PERP-INTX to DOGE
+          const baseCoin = asset.split('-')[0]; 
           const priceResp = await fetch(`https://api.exchange.coinbase.com/products/${baseCoin}-USD/ticker`);
           if (priceResp.ok) {
             const priceData = await priceResp.json();
@@ -76,15 +72,13 @@ export default async function handler(req, res) {
     Strategy Matrix (All Active & Paused): ${JSON.stringify(allConfigs || [])}
     Current Open Trades: ${JSON.stringify(openTrades || [])}
     Live Market Prices for Open Trades: ${JSON.stringify(livePrices)}
-    Recently Closed Trades: ${JSON.stringify(recentClosedLogs || [])}
+    Recently Closed Trades (Last 5): ${JSON.stringify(recentClosedLogs || [])}
   
     --- PROTOCOL 1: MARKET ANALYSIS & EXECUTION ---
-    - Andrew exclusively trades Perpetual Futures for leverage. The standard format for assets on this exchange is [COIN]-PERP-INTX (e.g., BTC-PERP-INTX, DOGE-PERP-INTX, SOL-PERP-INTX).
-    - If asked for the PnL of active trades, use the 'Live Market Prices' and 'Current Open Trades' data to mathematically calculate and report the Unrealized PnL. (Assume a standard position size of $5000 if not specified).
+    - Andrew exclusively trades Perpetual Futures for leverage. The standard format for assets on this exchange is [COIN]-PERP-INTX (e.g., BTC-PERP-INTX, DOGE-PERP-INTX).
+    - If asked for the PnL of active trades, use the 'Live Market Prices' and 'Current Open Trades' data to mathematically calculate and report the Unrealized PnL.
+    - If asked for historical PnL, win rates, or performance over a specific timeframe (e.g., "this week", "to date", "on DOGE"), ALWAYS use the \`queryTradeLedger\` tool to fetch the exact data. Format the results as a Markdown table.
     - ALWAYS use the \`fetchHistoricalData\` tool with the -PERP-INTX symbol to analyze market context before deploying a new strategy or answering queries.
-    - Strategies are highly modular. Evaluate trades based on the specific logic and parameters defined in the configuration.
-    - You are authorized to toggle strategies between PAPER and LIVE, or PAUSE them, if Andrew provides the command.
-    - If trade logs show consistent losses, run historical data, analyze the failure points, and mutate the parameters.
     - If asked to run the genetic optimizer, use the runOptimizer tool.
 
     --- PROTOCOL 2: NEW STRATEGY CREATION (HUMAN HANDOFF) ---
@@ -96,12 +90,8 @@ export default async function handler(req, res) {
     import { /* YOUR INDICATORS */ } from 'technicalindicators';
 
     export async function run(macroCandles, triggerCandles, parameters) {
-        // Default to FUTURES market type for leverage
         const { leverage = 10, market_type = 'FUTURES', tp_percent = 0.02, sl_percent = 0.01 } = parameters;
-
-        if (!macroCandles || !triggerCandles || triggerCandles.length < /* YOUR MIN LENGTH */) {
-            return { signal: null };
-        }
+        if (!macroCandles || !triggerCandles || triggerCandles.length < 50) return { signal: null };
 
         let signal = null;
         let entryPrice = triggerCandles[triggerCandles.length - 1].close;
@@ -109,10 +99,7 @@ export default async function handler(req, res) {
         // ... logic ...
 
         const currentTelemetry = { metric_1: calculatedValue1 };
-
-        if (!signal) {
-            return { signal: null, telemetry: currentTelemetry };
-        }
+        if (!signal) return { signal: null, telemetry: currentTelemetry };
 
         const tpPrice = signal === 'LONG' ? entryPrice * (1 + tp_percent) : entryPrice * (1 - tp_percent);
         const slPrice = signal === 'LONG' ? entryPrice * (1 - sl_percent) : entryPrice * (1 + sl_percent);
@@ -137,7 +124,7 @@ export default async function handler(req, res) {
     1. You MUST increment the version number (e.g., v1.0 to v1.1).
 
     --- PROTOCOL 4: OPERATIONAL AWARENESS ---
-    - Keep responses under 3 sentences unless explaining complex math or providing code.
+    - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
 `;
 
     const result = await streamText({
@@ -146,6 +133,59 @@ export default async function handler(req, res) {
       messages: safeMessages,
       maxSteps: 5,
       tools: {
+        
+        // --- NEW: THE COMPLETE LEDGER QUERY TOOL ---
+        queryTradeLedger: tool({
+          description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
+          parameters: z.object({
+            asset: z.string().optional().describe('Filter by asset symbol, e.g., DOGE-PERP-INTX. Leave undefined for all assets.'),
+            strategy_id: z.string().optional().describe('Filter by strategy, e.g., KELTNER_EXECUTION_V1. Leave undefined for all strategies.'),
+            days_back: z.number().optional().describe('Number of days back to search (e.g., 7 for this week). Leave undefined for all-time.')
+          }),
+          execute: async ({ asset, strategy_id, days_back }) => {
+            let query = supabase.from('trade_logs').select('*').not('exit_price', 'is', null);
+
+            if (asset) query = query.eq('symbol', asset);
+            if (strategy_id) query = query.eq('strategy_id', strategy_id);
+            if (days_back) {
+              const dateLimit = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
+              query = query.gte('exit_time', dateLimit);
+            }
+
+            const { data: trades, error } = await query;
+            if (error) return { error: error.message };
+
+            const totalTrades = trades.length;
+            const totalPnL = trades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+            const winningTrades = trades.filter(t => parseFloat(t.pnl) > 0).length;
+            const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(2) + '%' : '0%';
+
+            // Group by strategy and asset for a clean breakdown
+            const breakdown = trades.reduce((acc, t) => {
+              const key = `${t.strategy_id} | ${t.symbol}`;
+              if (!acc[key]) acc[key] = { pnl: 0, trades: 0 };
+              acc[key].pnl += (parseFloat(t.pnl) || 0);
+              acc[key].trades += 1;
+              return acc;
+            }, {});
+
+            return {
+              timeframe: days_back ? `Last ${days_back} days` : 'All-Time',
+              filters: { asset: asset || 'ALL', strategy: strategy_id || 'ALL' },
+              summary: {
+                total_trades: totalTrades,
+                total_pnl: parseFloat(totalPnL.toFixed(4)),
+                win_rate: winRate
+              },
+              breakdown: Object.entries(breakdown).map(([key, data]) => ({
+                segment: key,
+                pnl: parseFloat(data.pnl.toFixed(4)),
+                trade_count: data.trades
+              }))
+            };
+          }
+        }),
+
         manageStrategy: tool({
           description: 'Creates or updates a strategy config.',
           parameters: z.object({
