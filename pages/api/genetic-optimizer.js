@@ -172,29 +172,40 @@ export default async function handler(req, res) {
         }),
         prompt: prompt
       });
+// 6. DATABASE DEPLOYMENT
+let is_active_new = config.is_active;
+if (object.action === 'PAUSE') is_active_new = false;
+if (object.action === 'REACTIVATE') is_active_new = true;
 
-      // 6. DATABASE DEPLOYMENT
-      let is_active_new = config.is_active;
-      if (object.action === 'PAUSE') is_active_new = false;
-      if (object.action === 'REACTIVATE') is_active_new = true;
+// Execute update only if an action was taken to minimize DB writes
+if (object.action !== 'MAINTAIN') {
+    // 1. Update the live configuration
+    await supabase.from('strategy_config').update({
+      is_active: is_active_new,
+      parameters: object.parameters || config.parameters,
+      reasoning: `[AUTO-${object.action}] ${object.reasoning}`,
+      version: object.new_version || config.version,
+      last_updated: new Date().toISOString()
+    }).eq('id', config.id);
 
-      // Execute update only if an action was taken to minimize DB writes
-      if (object.action !== 'MAINTAIN') {
-          await supabase.from('strategy_config').update({
-            is_active: is_active_new,
-            parameters: object.parameters,
-            reasoning: `[AUTO-${object.action}] ${object.reasoning}`,
-            version: object.new_version,
-            last_updated: new Date().toISOString()
-          }).eq('id', config.id);
-      }
+    // 2. NEW: Save the exact historical reasoning to the ledger for Nexus to read
+    await supabase.from('optimization_logs').insert({
+      asset: config.asset,
+      strategy: config.strategy,
+      action: object.action,
+      old_version: config.version,
+      new_version: object.new_version || config.version,
+      reasoning: object.reasoning,
+      parameters: object.parameters || config.parameters
+    });
+}
 
-      portfolioActions.push({
-        asset: config.asset,
-        strategy: config.strategy,
-        action: object.action,
-        reasoning: object.reasoning
-      });
+portfolioActions.push({
+  asset: config.asset,
+  strategy: config.strategy,
+  action: object.action,
+  reasoning: object.reasoning
+});
     }
 
     return res.status(200).json({ status: "Portfolio Evaluation Complete", portfolioActions });
