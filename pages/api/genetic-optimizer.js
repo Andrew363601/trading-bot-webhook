@@ -81,6 +81,7 @@ export default async function handler(req, res) {
         
         const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
         
+        
         let lookbackSeconds;
         switch (triggerTf) {
             case 'ONE_MINUTE': lookbackSeconds = 60; break;
