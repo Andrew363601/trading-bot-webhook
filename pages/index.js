@@ -92,6 +92,7 @@ export default function Dashboard() {
   const getStudiesForStrategy = (stratName) => {
     if (!stratName) return [];
     const name = stratName.toUpperCase();
+    if (name.includes('KELTNER')) return ["KeltnerChannels@tv-basicstudies"];
     if (name.includes('WLD_TREND')) return ["MAExp@tv-basicstudies", "MACD@tv-basicstudies"];
     if (name.includes('SOL_RANGE_REVERSION')) return ["BB@tv-basicstudies", "RSI@tv-basicstudies"];
     if (name.includes('HF_SCALPER')) return ["MASimple@tv-basicstudies", "RSI@tv-basicstudies"];
@@ -193,7 +194,8 @@ export default function Dashboard() {
                      <div className="flex flex-col gap-0.5">
                        <div className="flex items-center gap-2">
                          <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400 animate-pulse' : 'text-amber-400 animate-pulse'}>●</span>
-                         <span className="text-slate-300 uppercase font-bold">{log.side} @ {log.entry_price}</span>
+                         {/* UPDATED HUD: Now shows the quantity size inside the HUD */}
+                         <span className="text-slate-300 uppercase font-bold">{log.side} {log.qty ? `(${log.qty.toLocaleString()})` : ''} @ {log.entry_price}</span>
                        </div>
                        <div className="flex items-center gap-3">
                          <span className="text-[7px] text-slate-500 font-black tracking-widest uppercase pl-3">{log.strategy_id}</span>
@@ -220,6 +222,8 @@ export default function Dashboard() {
                         <th className="px-4 py-3">Date / Time</th>
                         <th className="px-4 py-3 text-center">Strategy</th>
                         <th className="px-4 py-3 text-center">Vector</th>
+                        {/* NEW: Size Column */}
+                        <th className="px-4 py-3 text-center">Size</th>
                         <th className="px-4 py-3">Entry</th>
                         <th className="px-4 py-3 text-center">Target (TP / SL)</th>
                         <th className="px-4 py-3">Status/Exit</th>
@@ -243,13 +247,18 @@ export default function Dashboard() {
                                   <span className="text-[8px] opacity-60">{formattedTime}</span>
                               </div>
                           </td>
-                          {/* NEW: Strategy Column Body */}
                           <td className="px-4 py-4 text-center">
                               <span className="text-[9px] font-black text-indigo-300/80 uppercase bg-indigo-500/5 px-2 py-1 rounded border border-indigo-500/10">
                                   {log.strategy_id?.replace('_V1', '')}
                               </span>
                           </td>
                           <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span></td>
+                          
+                          {/* NEW: Populating the Size Column */}
+                          <td className="px-4 py-4 text-center text-[10px] text-slate-300">
+                              {log.qty ? log.qty.toLocaleString() : '--'}
+                          </td>
+
                           <td className="px-4 py-4 text-slate-300 text-[10px]">${log.entry_price}</td>
                           <td className="px-4 py-4 text-center">
                               {log.tp_price || log.sl_price ? (
