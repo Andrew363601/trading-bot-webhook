@@ -38,8 +38,30 @@ export default async function handler(req, res) {
       apiKey: process.env.GEMINI_API_KEY,
     });
 
-    const { data: activeConfigs } = await supabase.from('strategy_config').select('*').eq('is_active', true);
-    const { data: logs } = await supabase.from('trade_logs').select('*').order('id', { ascending: false }).limit(5);
+    // 1. THE UNBLINDING: Fetch ALL configs (Active and Paused)
+    const { data: allConfigs } = await supabase.from('strategy_config').select('*');
+    
+    // 2. THE TELEMETRY SPLIT: Separate open trades from historical closed trades
+    const { data: openTrades } = await supabase.from('trade_logs').select('*').is('exit_price', null);
+    const { data: recentClosedLogs } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(10);
+    
+    // 3. THE LIVE PRICE RADAR: Fetch live Coinbase prices for any asset with an open trade
+    let livePrices = {};
+    if (openTrades && openTrades.length > 0) {
+      const uniqueAssets = [...new Set(openTrades.map(t => t.symbol))];
+      for (const asset of uniqueAssets) {
+        try {
+          const baseCoin = asset.split('-')[0]; // Converts DOGE-PERP-INTX to DOGE
+          const priceResp = await fetch(`https://api.exchange.coinbase.com/products/${baseCoin}-USD/ticker`);
+          if (priceResp.ok) {
+            const priceData = await priceResp.json();
+            livePrices[asset] = parseFloat(priceData.price || 0);
+          }
+        } catch (err) {
+          console.warn(`[NEXUS RADAR WARN] Could not fetch live price for ${asset}`);
+        }
+      }
+    }
     
     const systemPrompt = `
     You are Nexus, the elite Portfolio Architect. You manage an autonomous fleet of quantitative strategies for Andrew.
@@ -51,14 +73,17 @@ export default async function handler(req, res) {
     4. GOAL: Maximize ROI using Perpetual Futures leverage while maintaining strict risk management.
   
     --- CURRENT TELEMETRY ---
-    Active Strategies Matrix: ${JSON.stringify(activeConfigs || [])}
-    Recent Trade Data: ${JSON.stringify(logs || [])}
+    Strategy Matrix (All Active & Paused): ${JSON.stringify(allConfigs || [])}
+    Current Open Trades: ${JSON.stringify(openTrades || [])}
+    Live Market Prices for Open Trades: ${JSON.stringify(livePrices)}
+    Recently Closed Trades: ${JSON.stringify(recentClosedLogs || [])}
   
     --- PROTOCOL 1: MARKET ANALYSIS & EXECUTION ---
     - Andrew exclusively trades Perpetual Futures for leverage. The standard format for assets on this exchange is [COIN]-PERP-INTX (e.g., BTC-PERP-INTX, DOGE-PERP-INTX, SOL-PERP-INTX).
+    - If asked for the PnL of active trades, use the 'Live Market Prices' and 'Current Open Trades' data to mathematically calculate and report the Unrealized PnL. (Assume a standard position size of $5000 if not specified).
     - ALWAYS use the \`fetchHistoricalData\` tool with the -PERP-INTX symbol to analyze market context before deploying a new strategy or answering queries.
-    - Strategies are highly modular. Evaluate trades based on the specific logic and parameters defined in the active configuration.
-    - You are authorized to toggle strategies between PAPER and LIVE if Andrew provides the command.
+    - Strategies are highly modular. Evaluate trades based on the specific logic and parameters defined in the configuration.
+    - You are authorized to toggle strategies between PAPER and LIVE, or PAUSE them, if Andrew provides the command.
     - If trade logs show consistent losses, run historical data, analyze the failure points, and mutate the parameters.
     - If asked to run the genetic optimizer, use the runOptimizer tool.
 
@@ -199,15 +224,12 @@ export default async function handler(req, res) {
             const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
             if (!apiKeyName || !apiSecret) return { error: "Missing Coinbase Credentials" };
 
-            // --- THE PERPETUAL FUTURES FIX ---
-            // Intelligently parse Spot vs Perp symbols without destroying the hyphens!
             let coinbaseProduct = asset.toUpperCase().trim();
             if (!coinbaseProduct.includes('-')) {
                 if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
                 else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
                 else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP-INTX');
             } 
-            // Append the Advanced Trade suffix if the AI just passed DOGE-PERP
             if (coinbaseProduct.endsWith('-PERP')) {
                 coinbaseProduct = coinbaseProduct + '-INTX';
             }
