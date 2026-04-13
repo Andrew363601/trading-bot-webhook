@@ -4,7 +4,6 @@ export const maxDuration = 300;
 // pages/api/genetic-optimizer.js
 import { createClient } from '@supabase/supabase-js';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { generateText } from 'ai';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
@@ -168,20 +167,39 @@ Analyze the 500 candles and classify the current market phase for this asset int
       If MUTATE, increment the version by 0.1 (e.g., v1.0 to v1.1). Otherwise, keep the current version.
       `;
 
-      // 5. STRUCTURED GENERATION
-      const { object } = await generateText({
-        model: google('gemini-2.5-pro'),
-        system: "You are a quantitative portfolio manager. Output strictly valid JSON. You MUST retain exact parameter keys.",
-        prompt: prompt + `
-        
-        REQUIRED JSON OUTPUT FORMAT:
-        {
-          "action": "MUTATE" | "PAUSE" | "REACTIVATE" | "MAINTAIN",
-          "parameters": { /* Insert evolved parameters here if mutating */ },
-          "new_version": "vX.X",
-          "reasoning": "Detailed market and math reasoning here."
-        }`
-      });
+  // 5. STRUCTURED GENERATION (Bypassing Vercel AI SDK for Native Gemini REST API)
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
+      
+  const payload = {
+    systemInstruction: {
+      parts: [{ text: "You are a quantitative portfolio manager. You must output ONLY raw, valid JSON." }]
+    },
+    contents: [{
+      role: "user",
+      parts: [{ text: prompt + `\n\nREQUIRED JSON OUTPUT FORMAT:\n{\n  "action": "MUTATE" | "PAUSE" | "REACTIVATE" | "MAINTAIN",\n  "parameters": { /* Insert evolved parameters here if mutating */ },\n  "new_version": "vX.X",\n  "reasoning": "Detailed market and math reasoning here."\n}` }]
+    }],
+    generationConfig: {
+      responseMimeType: "application/json"
+    }
+  };
+
+  const aiResp = await fetch(geminiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  // If Google rejects the request, this rips out the EXACT reason and logs it
+  if (!aiResp.ok) {
+    const errorText = await aiResp.text();
+    throw new Error(`Gemini API Rejected Request: ${aiResp.status} - ${errorText}`);
+  }
+
+  const aiData = await aiResp.json();
+  
+  // Extract the native JSON text
+  const cleanJsonString = aiData.candidates[0].content.parts[0].text;
+  const object = JSON.parse(cleanJsonString);
 
 // 6. DATABASE DEPLOYMENT
 let is_active_new = config.is_active;
