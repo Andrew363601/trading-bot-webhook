@@ -217,12 +217,17 @@ export default async function handler(req, res) {
           ? (executionPrice - openTrade.entry_price) * orderQty
           : (openTrade.entry_price - executionPrice) * orderQty;
 
-        const { error: updateError } = await supabase.from('trade_logs').update({
-          exit_price: executionPrice,
-          pnl: pnl,
-          exit_time: new Date().toISOString(),
-          reason: tradeReason // <--- Logs the emergency closure reasoning
-        }).eq('id', openTrade.id);
+// Preserves the original Oracle entry critique and appends the exit reason to the bottom
+const updatedReason = openTrade.reason 
+? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${tradeReason || 'MANUAL_CLOSE'}` 
+: (tradeReason || 'MANUAL_CLOSE');
+
+const { error: updateError } = await supabase.from('trade_logs').update({
+exit_price: executionPrice,
+pnl: pnl,
+exit_time: new Date().toISOString(),
+reason: updatedReason // <--- Safe append!
+}).eq('id', openTrade.id);
 
         if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
         executionStatus = 'closed_position';

@@ -342,7 +342,7 @@ export default function Dashboard() {
                           const formattedDate = timestamp ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }) : "Awaiting...";
                           const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
 
-                          const isLiveExchange = log.execution_mode === 'LIVE (EXCHANGE)';
+                          const isLiveExchange = log.execution_mode && log.execution_mode.includes('LIVE');
                           
                           return (
                           <tr key={i} className="hover:bg-white/[0.02] transition-colors">
