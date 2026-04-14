@@ -104,39 +104,46 @@ export default async function handler(req, res) {
             decision.telemetry = { ...decision.telemetry, exit_reason: forcedExit };
         } 
         
-        // --- NEW: THE ORACLE LIMIT ORDER INTERCEPTOR ---
-        else if (decision.signal && !openTrade) {
-            // A new trade wants to open. Pause and ask the Oracle.
-            console.log(`[ORACLE INITIATED] Scoring ${decision.signal} signal for ${asset}...`);
-            
-            const oracleVerdict = await evaluateTradeIdea({
-                mode: 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, currentPrice, candles: triggerCandles
-            });
+       // --- NEW: THE ORACLE LIMIT ORDER INTERCEPTOR ---
+       else if (decision.signal && !openTrade) {
+        // A new trade wants to open. Pause and ask the Oracle.
+        console.log(`[ORACLE INITIATED] Scoring ${decision.signal} signal for ${asset}...`);
+        
+        const oracleVerdict = await evaluateTradeIdea({
+            mode: 'ENTRY', 
+            asset, 
+            strategy: config.strategy, 
+            signal: decision.signal, 
+            currentPrice, 
+            candles: triggerCandles,
+            marketType: config.parameters?.market_type || 'FUTURES' 
+        });
 
-            if (oracleVerdict.action === 'VETO') {
-                console.log(`[ORACLE VETO] Signal rejected. Score: ${oracleVerdict.conviction_score}. Reasoning: ${oracleVerdict.reasoning}`);
-                decision.signal = null; // Kill the trade
-            } else {
-                console.log(`[ORACLE APPROVED] Score: ${oracleVerdict.conviction_score}. Mutating to LIMIT order at $${oracleVerdict.limit_price}. Leveraged: ${oracleVerdict.leverage_multiplier}x`);
-                
-                // Mutate the payload to the Oracle's optimized specs
-                decision.entryPrice = oracleVerdict.limit_price; // Snipe the pullback
-                decision.orderType = 'LIMIT';
-                
-                // Recalculate TP/SL based on the NEW optimized limit price
-                const slP = config.parameters?.sl_percent || 0.01;
-                const tpP = config.parameters?.tp_percent || 0.02;
-                decision.tpPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
-                decision.slPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
-                
-                // Apply Conviction Sizing
-                if (oracleVerdict.leverage_multiplier > 1.0 && config.parameters?.target_usd) {
-                     config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.leverage_multiplier;
-                }
-                
-                decision.telemetry = { ...decision.telemetry, oracle_score: oracleVerdict.conviction_score, oracle_reasoning: oracleVerdict.reasoning };
+        if (oracleVerdict.action === 'VETO') {
+            console.log(`[ORACLE VETO] Signal rejected. Score: ${oracleVerdict.conviction_score}. Reasoning: ${oracleVerdict.reasoning}`);
+            decision.signal = null; // Kill the trade
+        } else {
+            console.log(`[ORACLE APPROVED] Score: ${oracleVerdict.conviction_score}. Mutating to LIMIT order at $${oracleVerdict.limit_price}. Size Multiplier: ${oracleVerdict.size_multiplier}x`);
+            
+            // Mutate the payload to the Oracle's optimized specs
+            decision.entryPrice = oracleVerdict.limit_price; // Snipe the pullback
+            decision.orderType = 'LIMIT';
+            
+            // Recalculate TP/SL based on the NEW optimized limit price
+            const slP = config.parameters?.sl_percent || 0.01;
+            const tpP = config.parameters?.tp_percent || 0.02;
+            decision.tpPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
+            decision.slPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
+            
+            // Apply Conviction Sizing using the updated size_multiplier
+            if (oracleVerdict.size_multiplier > 1.0 && config.parameters?.target_usd) {
+                 config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
             }
+            
+            // Perfectly preserves the tagging configuration for the dashboard!
+            decision.telemetry = { ...decision.telemetry, oracle_score: oracleVerdict.conviction_score, oracle_reasoning: oracleVerdict.reasoning };
         }
+    }
 
         const scanEntry = {
           strategy: config.strategy,
