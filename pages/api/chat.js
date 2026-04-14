@@ -14,9 +14,19 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    // 1. Ditch the manual message cleaning. 
-    // The @ai-sdk handles tool/assistant/user roles perfectly natively now.
     const { messages } = req.body;
+
+    // THE ROLLBACK: Put the manual filtering back in
+    const cleanMessages = messages.filter(msg => {
+      if (msg.role === 'tool') return false; 
+      if (msg.role === 'assistant' && msg.toolInvocations) return false; 
+      return true;
+    });
+
+    const safeMessages = cleanMessages.length > 6 ? cleanMessages.slice(-6) : cleanMessages;
+    while (safeMessages.length > 0 && safeMessages[0].role !== 'user') {
+      safeMessages.shift(); 
+    }
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -116,12 +126,12 @@ export default async function handler(req, res) {
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
 `;
 
-// 2. Pass the RAW messages directly to the SDK
-const result = await streamText({
-  model: google('gemini-2.5-pro'), // THE FIX: Removed "models/" prefix and upgraded to Pro!
-  system: systemPrompt,
-  messages: messages, 
-  maxSteps: 5,
+    const result = await streamText({
+      // THE ROLLBACK: Use the 2.5-flash model via the old models/ prefix method
+      model: google('models/gemini-2.5-flash'), 
+      system: systemPrompt,
+      messages: safeMessages, // THE ROLLBACK: Pass the manually cleaned messages
+      maxSteps: 5,
       tools: {
         queryTradeLedger: tool({
           description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',

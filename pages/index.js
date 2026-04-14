@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { useChat } from '@ai-sdk/react';
+import { useChat } from 'ai/react';
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet 
@@ -23,20 +23,16 @@ export default function Dashboard() {
   const [selectedStrat, setSelectedStrat] = useState(null);
   const [loading, setLoading] = useState(true);
   
-  // NEW: Live Exchange State
   const [livePositions, setLivePositions] = useState([]);
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  const { messages, input, handleInputChange, handleSubmit, append, error, isLoading } = useChat({
-    api: '/api/chat',
-    onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
-});
+  // THE ROLLBACK: Back to the stable hook
+  const { messages, input, handleInputChange, handleSubmit, append } = useChat();
   const chatEndRef = useRef(null);
 
   const fetchData = useCallback(async () => {
     try {
-      // Fetch Supabase Data
       const portResp = await fetch(`/api/portfolio?asset=${activeAsset}`);
       if (portResp.ok) {
         const portData = await portResp.json();
@@ -53,7 +49,6 @@ export default function Dashboard() {
       const { data: scans } = await supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(15);
       if (scans) setScanStream(scans);
 
-      // NEW: Fetch Live Coinbase Data
       try {
         const syncResp = await fetch('/api/coinbase-sync');
         if (syncResp.ok) {
@@ -105,13 +100,9 @@ export default function Dashboard() {
     fetchData(); 
   };
 
-  const handleStrategySelect = async (stratId) => {
+  const handleStrategySelect = (stratId) => {
     setSelectedStrat(stratId);
-    try {
-        await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
-    } catch (err) {
-        console.error("Append Error:", err);
-    }
+    append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
   };
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
@@ -148,7 +139,6 @@ export default function Dashboard() {
     container.appendChild(script);
   }, [activeAsset, activeStudies]);
 
-  // --- HYBRID LEDGER FILTERING LOGIC ---
   const paperPositions = tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER');
   
   const formattedLivePositions = livePositions.map(pos => ({
@@ -387,10 +377,9 @@ export default function Dashboard() {
             </div>
           </div>
           <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
-          <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
+            <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
               
-              {/* RENDER MESSAGES */}
               {messages.map(m => (
                 <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>
@@ -399,34 +388,13 @@ export default function Dashboard() {
                 </div>
               ))}
               
-              {/* RENDER ERRORS SO WE CAN DIAGNOSE */}
-              {error && (
-                <div className="flex justify-start">
-                    <div className="max-w-[90%] rounded-2xl px-4 py-3 bg-red-500/10 text-red-400 border border-red-500/20">
-                        [SYSTEM FAULT]: {error.message}
-                    </div>
-                </div>
-              )}
-              
               <div ref={chatEndRef} />
             </div>
 
-{/* UPGRADED FORM: Handles loading states and prevents double-submissions */}
-<form onSubmit={(e) => { e.preventDefault(); handleSubmit(e); }} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
-                <input 
-                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50 disabled:opacity-50" 
-                  value={input} 
-                  onChange={handleInputChange} 
-                  placeholder="Command Nexus..." 
-                  disabled={isLoading}
-              />
-              <button 
-                  type="submit" 
-                  disabled={isLoading}
-                  className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}
-              >
-                  {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
-              </button>
+            {/* THE ROLLBACK: Back to the original stable form that actually worked! */}
+            <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+              <input className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" value={input} onChange={handleInputChange} placeholder="Command Nexus..." />
+              <button type="submit" className="bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-xl px-4 py-3 hover:bg-indigo-500/30 transition-all"><Send size={16} /></button>
             </form>
           </div>
         </div>
