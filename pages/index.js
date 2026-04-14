@@ -27,7 +27,10 @@ export default function Dashboard() {
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  const { messages, input, handleInputChange, handleSubmit, append, error, isLoading } = useChat({
+  // THE JAILBREAK: We use our own local state so the SDK cannot freeze the text box!
+  const [localInput, setLocalInput] = useState('');
+
+  const { messages, append, error, isLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
@@ -102,9 +105,27 @@ export default function Dashboard() {
     fetchData(); 
   };
 
-  const handleStrategySelect = (stratId) => {
+  const handleManualSubmit = async (e) => {
+    e.preventDefault();
+    if (!localInput.trim()) return;
+    
+    const userMsg = localInput;
+    setLocalInput(''); // Instantly clears the box
+    
+    try {
+        await append({ role: 'user', content: userMsg });
+    } catch (err) {
+        console.error("[NEXUS APPEND FAULT]:", err);
+    }
+  };
+
+  const handleStrategySelect = async (stratId) => {
     setSelectedStrat(stratId);
-    append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
+    try {
+        await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
+    } catch (err) {
+        console.error("Append Error:", err);
+    }
   };
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
@@ -406,17 +427,17 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+            {/* THE JAILBREAK: Replaced internal input state with local state, removed all disabled tags! */}
+            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
                 <input 
-                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50 disabled:opacity-50" 
-                  value={input || ''} 
-                  onChange={handleInputChange} 
+                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
+                  value={localInput} 
+                  onChange={(e) => setLocalInput(e.target.value)} 
                   placeholder="Command Nexus..." 
-                  disabled={isLoading}
               />
               <button 
                   type="submit" 
-                  disabled={isLoading || !input?.trim()}
+                  disabled={!localInput.trim()}
                   className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}
               >
                   {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
