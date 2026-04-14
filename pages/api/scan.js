@@ -216,16 +216,11 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   try {
     const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
     
-    // --- THE PERPETUAL FUTURES FIX ---
-    // Safely parse Spot vs Perp symbols without destroying hyphens
     let coinbaseProduct = asset.toUpperCase().trim();
     if (!coinbaseProduct.includes('-')) {
         if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
         else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
-        else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP-INTX');
-    } 
-    if (coinbaseProduct.endsWith('-PERP')) {
-        coinbaseProduct = coinbaseProduct + '-INTX';
+        else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
     }
     
     const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;

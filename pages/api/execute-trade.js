@@ -26,19 +26,16 @@ export default async function handler(req, res) {
 
     const formattedSecret = apiSecret.replace(/\\n/g, '\n');
 
-    // --- THE PERPETUAL FUTURES FIX ---
-    let rawSymbol = data.symbol || 'DOGE-PERP-INTX';
-    rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '').toUpperCase().trim();
-    
-    let coinbaseProduct = rawSymbol;
-    if (!coinbaseProduct.includes('-')) {
-        if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
-        else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
-        else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP-INTX');
-    }
-    if (coinbaseProduct.endsWith('-PERP')) {
-        coinbaseProduct = coinbaseProduct + '-INTX';
-    }
+   // --- THE PERPETUAL FUTURES FIX ---
+   let rawSymbol = data.symbol || 'ETH-PERP';
+   rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '').toUpperCase().trim();
+   
+   let coinbaseProduct = rawSymbol;
+   if (!coinbaseProduct.includes('-')) {
+       if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+       else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+       else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
+   }
 
     const side = (data.side || 'BUY').toUpperCase() === 'LONG' || (data.side || 'BUY').toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
 
