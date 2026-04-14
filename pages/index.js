@@ -412,8 +412,8 @@ export default function Dashboard() {
             </div>
 
 {/* UPGRADED FORM: Handles loading states and prevents double-submissions */}
-<form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
-              <input 
+<form onSubmit={(e) => { e.preventDefault(); handleSubmit(e); }} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+                <input 
                   className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50 disabled:opacity-50" 
                   value={input} 
                   onChange={handleInputChange} 
