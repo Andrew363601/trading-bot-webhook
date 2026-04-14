@@ -14,18 +14,9 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
+    // 1. Ditch the manual message cleaning. 
+    // The @ai-sdk handles tool/assistant/user roles perfectly natively now.
     const { messages } = req.body;
-
-    const cleanMessages = messages.filter(msg => {
-      if (msg.role === 'tool') return false; 
-      if (msg.role === 'assistant' && msg.toolInvocations) return false; 
-      return true;
-    });
-
-    const safeMessages = cleanMessages.length > 6 ? cleanMessages.slice(-6) : cleanMessages;
-    while (safeMessages.length > 0 && safeMessages[0].role !== 'user') {
-      safeMessages.shift(); 
-    }
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -38,8 +29,6 @@ export default async function handler(req, res) {
 
     const { data: allConfigs } = await supabase.from('strategy_config').select('*');
     const { data: openTrades } = await supabase.from('trade_logs').select('*').is('exit_price', null);
-    
-    // Kept small just for immediate context so the AI knows what just finished
     const { data: recentClosedLogs } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5);
     
     let livePrices = {};
@@ -127,14 +116,13 @@ export default async function handler(req, res) {
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
 `;
 
+    // 2. Pass the RAW messages directly to the SDK
     const result = await streamText({
       model: google('models/gemini-2.5-pro'), 
       system: systemPrompt,
-      messages: safeMessages,
+      messages: messages, // <-- This is the critical fix. Let the SDK handle the array.
       maxSteps: 5,
       tools: {
-        
-        // --- NEW: THE COMPLETE LEDGER QUERY TOOL ---
         queryTradeLedger: tool({
           description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
           parameters: z.object({
@@ -160,7 +148,6 @@ export default async function handler(req, res) {
             const winningTrades = trades.filter(t => parseFloat(t.pnl) > 0).length;
             const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(2) + '%' : '0%';
 
-            // Group by strategy and asset for a clean breakdown
             const breakdown = trades.reduce((acc, t) => {
               const key = `${t.strategy_id} | ${t.symbol}`;
               if (!acc[key]) acc[key] = { pnl: 0, trades: 0 };
