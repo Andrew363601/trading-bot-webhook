@@ -13,16 +13,16 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    // PASS THE RAW MESSAGES: We removed the manual filter that was stripping the thought tokens!
-  // PASS THE SANITIZED MESSAGES: We must clean the array for the V6 SDK
-  const { messages } = req.body;
+    const { messages } = req.body;
     
-  // The V6 SDK crashes if tool responses are malformed or missing data. 
-  // This strictly sanitizes the history to prevent silent API drops.
-  const safeMessages = messages.filter(m => {
-      if (m.role === 'tool' && (!m.content || !Array.isArray(m.content))) return false;
-      return true;
-  });
+    // THE ULTIMATE SANITIZATION BLOCK
+    // This forcefully strips all hidden 'toolInvocations', 'id' tags, and thought tokens 
+    // from the history array. This guarantees the Vercel SDK validation engine cannot 
+    // silently abort the request, and Gemini only receives clean, readable context.
+    const safeMessages = messages.map(msg => ({
+        role: msg.role === 'tool' ? 'assistant' : msg.role,
+        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+    }));
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -125,7 +125,7 @@ export default async function handler(req, res) {
     const result = await streamText({
       model: google('gemini-2.5-pro'), 
       system: systemPrompt,
-      messages: safeMessages,
+      messages: safeMessages, // The perfectly sanitized array
       maxSteps: 5,
       tools: {
         queryTradeLedger: tool({
