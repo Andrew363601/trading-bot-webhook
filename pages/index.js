@@ -414,7 +414,6 @@ export default function Dashboard() {
                   placeholder="Command Nexus..." 
                   disabled={isLoading}
               />
-              {/* THE FIX: Safe optional chaining fallback for the render cycle bug */}
               <button 
                   type="submit" 
                   disabled={isLoading || !input?.trim()}
