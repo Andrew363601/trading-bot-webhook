@@ -344,7 +344,7 @@ export default async function handler(req, res) {
       },
     });
 
-    result.pipeDataStreamToResponse(res);
+    await result.pipeDataStreamToResponse(res);
 
   } catch (err) {
     console.error("====== FULL CHAT FAULT ENCOUNTERED ======");

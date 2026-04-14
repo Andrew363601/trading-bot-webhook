@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { useChat } from '@ai-sdk/react'; // Back to your modern SDK import!
+import { useChat } from '@ai-sdk/react'; 
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet 
@@ -27,7 +27,8 @@ export default function Dashboard() {
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  const { messages, input, handleInputChange, handleSubmit, append, error, isLoading } = useChat({
+  // Added 'stop' for the force-unlock kill switch
+  const { messages, input, handleInputChange, handleSubmit, append, error, isLoading, stop } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
@@ -102,8 +103,27 @@ export default function Dashboard() {
     fetchData(); 
   };
 
+  // NEW: Manual Submit Handler to intercept and force-unlock the chat
+  const handleManualSubmit = async (e) => {
+    e.preventDefault();
+    if (!input.trim()) return;
+    
+    if (isLoading) stop(); // Force unlock if the UI is frozen
+
+    const userMsg = input;
+    handleInputChange({ target: { value: '' } }); 
+    
+    try {
+        await append({ role: 'user', content: userMsg });
+    } catch (err) {
+        console.error("[NEXUS APPEND FAULT]:", err);
+    }
+  };
+
+  // UPDATED: Strategy button handler with force-unlock integration
   const handleStrategySelect = async (stratId) => {
     setSelectedStrat(stratId);
+    if (isLoading) stop(); // Force unlock if the UI is frozen
     try {
         await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
     } catch (err) {
@@ -220,7 +240,11 @@ export default function Dashboard() {
                          <div className="flex items-center justify-between mt-1 pt-1 border-t border-white/5">
                               <div className="flex flex-wrap gap-x-3 gap-y-1">
                                   {scan.telemetry && Object.entries(scan.telemetry).map(([key, val]) => (
-                                      <span key={key} className="text-[9px] text-slate-400 font-mono"><span className="text-slate-500 uppercase">{key}:</span> {typeof val === 'number' ? val.toFixed(2) : val}</span>
+                                      // THE FIX: Booleans now render properly as TRUE/FALSE strings instead of blank voids
+                                      <span key={key} className="text-[9px] text-slate-400 font-mono">
+                                        <span className="text-slate-500 uppercase">{key}:</span> 
+                                        {typeof val === 'boolean' ? (val ? 'TRUE' : 'FALSE') : (typeof val === 'number' ? val.toFixed(2) : val)}
+                                      </span>
                                   ))}
                               </div>
                               <span className={`text-[9px] font-black tracking-widest uppercase flex-shrink-0 ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`}>{scan.status}</span>
@@ -405,17 +429,15 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            <form onSubmit={(e) => { e.preventDefault(); handleSubmit(e); }} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
                 <input 
-                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50 disabled:opacity-50" 
+                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
                   value={input} 
                   onChange={handleInputChange} 
                   placeholder="Command Nexus..." 
-                  disabled={isLoading}
               />
               <button 
                   type="submit" 
-                  disabled={isLoading}
                   className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}
               >
                   {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
