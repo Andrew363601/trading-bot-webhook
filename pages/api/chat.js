@@ -1,6 +1,5 @@
 export const maxDuration = 300;
 
-// pages/api/chat.js
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText, tool } from 'ai';
 import { createClient } from '@supabase/supabase-js';
@@ -14,19 +13,8 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
+    // PASS THE RAW MESSAGES: We removed the manual filter that was stripping the thought tokens!
     const { messages } = req.body;
-
-    // THE ROLLBACK: Put the manual filtering back in
-    const cleanMessages = messages.filter(msg => {
-      if (msg.role === 'tool') return false; 
-      if (msg.role === 'assistant' && msg.toolInvocations) return false; 
-      return true;
-    });
-
-    const safeMessages = cleanMessages.length > 6 ? cleanMessages.slice(-6) : cleanMessages;
-    while (safeMessages.length > 0 && safeMessages[0].role !== 'user') {
-      safeMessages.shift(); 
-    }
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -126,20 +114,19 @@ export default async function handler(req, res) {
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
 `;
 
-const result = await streamText({
-  // THE FIX: Removed the "models/" prefix so the SDK routes the API correctly
-  model: google('gemini-2.5-flash'), 
-  system: systemPrompt,
-  messages: safeMessages, 
-  maxSteps: 5,
-  tools: {
-    queryTradeLedger: tool({
-      description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
-      parameters: z.object({
-        asset: z.string().optional().describe('Filter by asset symbol, e.g., DOGE-PERP-INTX. Leave undefined for all assets.'),
-        strategy_id: z.string().optional().describe('Filter by strategy, e.g., KELTNER_EXECUTION_V1. Leave undefined for all strategies.'),
-        days_back: z.number().optional().describe('Number of days back to search (e.g., 7 for this week). Leave undefined for all-time.')
-      }),
+    const result = await streamText({
+      model: google('gemini-2.5-pro'), 
+      system: systemPrompt,
+      messages: messages, // Passes the raw messages exactly as the SDK expects them
+      maxSteps: 5,
+      tools: {
+        queryTradeLedger: tool({
+          description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
+          parameters: z.object({
+            asset: z.string().optional().describe('Filter by asset symbol, e.g., DOGE-PERP-INTX. Leave undefined for all assets.'),
+            strategy_id: z.string().optional().describe('Filter by strategy, e.g., KELTNER_EXECUTION_V1. Leave undefined for all strategies.'),
+            days_back: z.number().optional().describe('Number of days back to search (e.g., 7 for this week). Leave undefined for all-time.')
+          }),
           execute: async ({ asset, strategy_id, days_back }) => {
             let query = supabase.from('trade_logs').select('*').not('exit_price', 'is', null);
 
