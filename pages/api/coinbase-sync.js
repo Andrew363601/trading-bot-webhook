@@ -14,8 +14,11 @@ export default async function handler(req, res) {
         const privateKey = crypto.createPrivateKey({ key: formattedSecret, format: 'pem' });
 
         const generateToken = (method, path) => {
+            // THE FIX: Coinbase requires the JWT URI claim to strictly EXCLUDE query parameters
+            const uriPath = path.split('?')[0]; 
+
             return jwt.sign(
-                { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${path}` },
+                { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${uriPath}` },
                 privateKey,
                 { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
             );
@@ -38,7 +41,8 @@ export default async function handler(req, res) {
         } catch (e) { console.error("Order fetch failed:", e.message); }
 
         // 2. Fetch Live US/CFM Positions
-        const posPath = '/api/v3/brokerage/positions'; 
+        // THE FIX: Added /cfm/ to correctly route to the US Derivatives book
+        const posPath = '/api/v3/brokerage/cfm/positions'; 
         let posData = { positions: [] };
         
         try {
@@ -53,7 +57,6 @@ export default async function handler(req, res) {
             }
         } catch (e) { console.error("Position fetch failed:", e.message); }
 
-        // Always return 200 to the frontend so the UI doesn't crash, even if empty
         return res.status(200).json({ 
             positions: posData.positions || [], 
             orders: orderData.orders || [] 
