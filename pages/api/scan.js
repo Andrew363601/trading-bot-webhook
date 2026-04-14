@@ -164,13 +164,6 @@ export default async function handler(req, res) {
     
     results.push(scanEntry);
     await supabase.from('scan_results').insert([scanEntry]);
-
-        const scanEntry = {
-          strategy: config.strategy,
-          asset,
-          telemetry: decision.telemetry || {},
-          status: decision.signal ? (forcedExit ? `HIT_${forcedExit}` : "RESONANT") : "STABLE"
-        };
         
         results.push(scanEntry);
         await supabase.from('scan_results').insert([scanEntry]);
