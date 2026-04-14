@@ -116,12 +116,12 @@ export default async function handler(req, res) {
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
 `;
 
-    // 2. Pass the RAW messages directly to the SDK
-    const result = await streamText({
-      model: google('models/gemini-2.5-pro'), 
-      system: systemPrompt,
-      messages: messages, // <-- This is the critical fix. Let the SDK handle the array.
-      maxSteps: 5,
+// 2. Pass the RAW messages directly to the SDK
+const result = await streamText({
+  model: google('gemini-2.5-pro'), // THE FIX: Removed "models/" prefix and upgraded to Pro!
+  system: systemPrompt,
+  messages: messages, 
+  maxSteps: 5,
       tools: {
         queryTradeLedger: tool({
           description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',

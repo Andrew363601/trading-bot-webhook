@@ -28,7 +28,7 @@ export default function Dashboard() {
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  const { messages, input, handleInputChange, handleSubmit, append, error } = useChat({
+  const { messages, input, handleInputChange, handleSubmit, append, error, isLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
 });
@@ -411,10 +411,22 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            {/* FORCE PREVENT DEFAULT ON SUBMISSION */}
-            <form onSubmit={(e) => { e.preventDefault(); handleSubmit(e); }} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
-              <input className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" value={input} onChange={handleInputChange} placeholder="Command Nexus..." />
-              <button type="submit" className="bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-xl px-4 py-3 hover:bg-indigo-500/30 transition-all"><Send size={16} /></button>
+{/* UPGRADED FORM: Handles loading states and prevents double-submissions */}
+<form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+              <input 
+                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50 disabled:opacity-50" 
+                  value={input} 
+                  onChange={handleInputChange} 
+                  placeholder="Command Nexus..." 
+                  disabled={isLoading}
+              />
+              <button 
+                  type="submit" 
+                  disabled={isLoading}
+                  className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}
+              >
+                  {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
+              </button>
             </form>
           </div>
         </div>
