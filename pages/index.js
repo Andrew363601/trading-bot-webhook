@@ -22,6 +22,9 @@ export default function Dashboard() {
   const [portfolio, setPortfolio] = useState({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 } });
   const [selectedStrat, setSelectedStrat] = useState(null);
   const [loading, setLoading] = useState(true);
+  
+  // NEW: Ledger Tab State
+  const [activeTab, setActiveTab] = useState('POSITIONS');
 
   const { messages, input, handleInputChange, handleSubmit, append } = useChat();
   const chatEndRef = useRef(null);
@@ -121,6 +124,19 @@ export default function Dashboard() {
     container.appendChild(script);
   }, [activeAsset, activeStudies]);
 
+  // --- LEDGER FILTERING LOGIC ---
+  const openPositions = tradeLogs.filter(log => !log.exit_price);
+  const tradeHistory = tradeLogs.filter(log => log.exit_price);
+  
+  // Note: Open Orders is currently an empty array. 
+  // In the future, we will populate this by checking Coinbase for unfilled LIMIT orders.
+  const openOrders = []; 
+
+  let displayLogs = [];
+  if (activeTab === 'POSITIONS') displayLogs = openPositions;
+  else if (activeTab === 'TRADE_HISTORY') displayLogs = tradeHistory;
+  else if (activeTab === 'OPEN_ORDERS') displayLogs = openOrders;
+
   if (loading) return <div className="min-h-screen bg-[#020617] flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">Establishing Nexus...</div>;
 
   return (
@@ -179,33 +195,27 @@ export default function Dashboard() {
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex flex-col p-4">
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
+            
+            {/* UPDATED HUD: Now strictly shows active openPositions instead of mixing in closed trades */}
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
-               {tradeLogs.slice(0, 3).map((log, i) => {
-                 let displayPnl = null;
-                 let isUnrealized = false;
-                 if (!log.exit_price && livePrice > 0) {
-                    displayPnl = (log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1);
-                    isUnrealized = true;
-                 } else if (log.exit_price) {
-                    displayPnl = log.pnl;
-                 }
+               {openPositions.slice(0, 3).map((log, i) => {
+                 const displayPnl = (log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1);
                  return (
                   <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-4 pointer-events-auto shadow-lg">
                      <div className="flex flex-col gap-0.5">
                        <div className="flex items-center gap-2">
                          <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400 animate-pulse' : 'text-amber-400 animate-pulse'}>●</span>
-                         {/* UPDATED HUD: Now shows the quantity size inside the HUD */}
                          <span className="text-slate-300 uppercase font-bold">{log.side} {log.qty ? `(${log.qty.toLocaleString()})` : ''} @ {log.entry_price}</span>
                        </div>
                        <div className="flex items-center gap-3">
                          <span className="text-[7px] text-slate-500 font-black tracking-widest uppercase pl-3">{log.strategy_id}</span>
-                         {!log.exit_price && log.tp_price && (
+                         {log.tp_price && (
                              <span className="text-[7px] text-emerald-500/80 font-bold uppercase tracking-tighter">Target: ${log.tp_price}</span>
                          )}
                        </div>
                      </div>
-                     {displayPnl !== null && (
-                         <span className={`font-black ${displayPnl >= 0 ? (isUnrealized ? 'text-cyan-400' : 'text-emerald-400') : (isUnrealized ? 'text-amber-400' : 'text-red-400')}`}>
+                     {livePrice > 0 && (
+                         <span className={`font-black ${displayPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>
                              {displayPnl >= 0 ? '+' : ''}{displayPnl.toFixed(4)}
                          </span>
                      )}
@@ -215,66 +225,100 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="flex-grow overflow-y-auto custom-scrollbar border border-white/5 rounded-[2rem] bg-slate-900/30">
-            <table className="w-full text-left table-fixed">
-                    <thead className="bg-slate-950/80 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
-                      <tr>
-                        <th className="px-4 py-3">Date / Time</th>
-                        <th className="px-4 py-3 text-center">Strategy</th>
-                        <th className="px-4 py-3 text-center">Vector</th>
-                        {/* NEW: Size Column */}
-                        <th className="px-4 py-3 text-center">Size</th>
-                        <th className="px-4 py-3">Entry</th>
-                        <th className="px-4 py-3 text-center">Target (TP / SL)</th>
-                        <th className="px-4 py-3">Status/Exit</th>
-                        <th className="px-4 py-3 text-right">PnL</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
-                      {tradeLogs.map((log, i) => {
-                        let pnlDisplay = log.exit_price ? <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span> : 
-                        (livePrice > 0 ? <span className={`animate-pulse ${(log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${((log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1)).toFixed(4)} (U)</span> : '--');
-                        
-                        const timestamp = log.created_at || log.exit_time;
-                        const formattedDate = timestamp ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }) : "Awaiting...";
-                        const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
-
-                        return (
-                        <tr key={i} className="hover:bg-white/[0.02] transition-colors">
-                          <td className="px-4 py-4 text-[9px] text-slate-500">
-                              <div className="flex flex-col">
-                                  <span className="font-bold text-slate-400">{formattedDate}</span>
-                                  <span className="text-[8px] opacity-60">{formattedTime}</span>
-                              </div>
-                          </td>
-                          <td className="px-4 py-4 text-center">
-                              <span className="text-[9px] font-black text-indigo-300/80 uppercase bg-indigo-500/5 px-2 py-1 rounded border border-indigo-500/10">
-                                  {log.strategy_id?.replace('_V1', '')}
-                              </span>
-                          </td>
-                          <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span></td>
-                          
-                          {/* NEW: Populating the Size Column */}
-                          <td className="px-4 py-4 text-center text-[10px] text-slate-300">
-                              {log.qty ? log.qty.toLocaleString() : '--'}
-                          </td>
-
-                          <td className="px-4 py-4 text-slate-300 text-[10px]">${log.entry_price}</td>
-                          <td className="px-4 py-4 text-center">
-                              {log.tp_price || log.sl_price ? (
-                                  <div className="flex flex-col text-[8px] tracking-tighter uppercase">
-                                      <span className="text-emerald-500/60">TP: ${log.tp_price}</span>
-                                      <span className="text-red-500/60">SL: ${log.sl_price}</span>
-                                  </div>
-                              ) : <span className="text-slate-700 italic text-[9px]">Dynamic</span>}
-                          </td>
-                          <td className="px-4 py-4 flex items-center gap-2">{log.exit_price ? `$${log.exit_price}` : <><span className="text-indigo-400 animate-pulse font-black text-[9px]">ACTIVE</span> <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}</td>
-                          <td className="px-4 py-4 text-right font-black text-[10px]">{pnlDisplay}</td>
-                        </tr>
-                      )})}
-                    </tbody>
-                  </table>
+          <div className="flex flex-col flex-grow overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30">
+            {/* --- NEW COINBASE-STYLE TABS --- */}
+            <div className="flex items-center gap-6 px-6 pt-5 border-b border-white/5 bg-slate-950/80 sticky top-0 z-20">
+               <button 
+                  onClick={() => setActiveTab('OPEN_ORDERS')} 
+                  className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'OPEN_ORDERS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+               >
+                  Open Orders
+               </button>
+               <button 
+                  onClick={() => setActiveTab('POSITIONS')} 
+                  className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'POSITIONS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+               >
+                  Positions {openPositions.length > 0 && <span className="ml-1 bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-full text-[8px]">{openPositions.length}</span>}
+               </button>
+               <button 
+                  onClick={() => setActiveTab('TRADE_HISTORY')} 
+                  className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'TRADE_HISTORY' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+               >
+                  Trade History
+               </button>
             </div>
+
+            <div className="overflow-y-auto custom-scrollbar flex-grow">
+              {displayLogs.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12">
+                  <Layers size={24} className="mb-2 opacity-50" />
+                  <p className="text-[11px] font-bold uppercase tracking-widest">No data available</p>
+                  <p className="text-[9px] font-mono mt-1 opacity-60">
+                    {activeTab === 'OPEN_ORDERS' ? "Your pending limit orders will appear here" : "Completed trades will appear here"}
+                  </p>
+                </div>
+              ) : (
+                <table className="w-full text-left table-fixed">
+                      <thead className="bg-slate-950/40 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
+                        <tr>
+                          <th className="px-4 py-3">Date / Time</th>
+                          <th className="px-4 py-3 text-center">Strategy</th>
+                          <th className="px-4 py-3 text-center">Vector</th>
+                          <th className="px-4 py-3 text-center">Size</th>
+                          <th className="px-4 py-3">Entry</th>
+                          <th className="px-4 py-3 text-center">Target (TP / SL)</th>
+                          <th className="px-4 py-3">Status/Exit</th>
+                          <th className="px-4 py-3 text-right">PnL</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
+                        {displayLogs.map((log, i) => {
+                          let pnlDisplay = log.exit_price ? <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span> : 
+                          (livePrice > 0 ? <span className={`animate-pulse ${(log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${((log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1)).toFixed(4)} (U)</span> : '--');
+                          
+                          const timestamp = log.created_at || log.exit_time;
+                          const formattedDate = timestamp ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }) : "Awaiting...";
+                          const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
+
+                          return (
+                          <tr key={i} className="hover:bg-white/[0.02] transition-colors">
+                            <td className="px-4 py-4 text-[9px] text-slate-500">
+                                <div className="flex flex-col">
+                                    <span className="font-bold text-slate-400">{formattedDate}</span>
+                                    <span className="text-[8px] opacity-60">{formattedTime}</span>
+                                </div>
+                            </td>
+                            <td className="px-4 py-4 text-center">
+                                <span className="text-[9px] font-black text-indigo-300/80 uppercase bg-indigo-500/5 px-2 py-1 rounded border border-indigo-500/10 flex flex-col items-center">
+                                    {log.strategy_id?.replace('_V1', '')}
+                                    {/* Display Oracle's specific reason if it exists */}
+                                    {log.reason && <span className="text-[7px] text-slate-500 tracking-tighter mt-1 block truncate max-w-[80px]" title={log.reason}>Oracle Auth</span>}
+                                </span>
+                            </td>
+                            <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span></td>
+                            
+                            <td className="px-4 py-4 text-center text-[10px] text-slate-300">
+                                {log.qty ? log.qty.toLocaleString() : '--'}
+                            </td>
+
+                            <td className="px-4 py-4 text-slate-300 text-[10px]">${log.entry_price}</td>
+                            <td className="px-4 py-4 text-center">
+                                {log.tp_price || log.sl_price ? (
+                                    <div className="flex flex-col text-[8px] tracking-tighter uppercase">
+                                        <span className="text-emerald-500/60">TP: ${log.tp_price}</span>
+                                        <span className="text-red-500/60">SL: ${log.sl_price}</span>
+                                    </div>
+                                ) : <span className="text-slate-700 italic text-[9px]">Dynamic</span>}
+                            </td>
+                            <td className="px-4 py-4 flex items-center gap-2">{log.exit_price ? `$${log.exit_price}` : <><span className="text-indigo-400 animate-pulse font-black text-[9px]">ACTIVE</span> <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}</td>
+                            <td className="px-4 py-4 text-right font-black text-[10px]">{pnlDisplay}</td>
+                          </tr>
+                        )})}
+                      </tbody>
+                    </table>
+              )}
+            </div>
+          </div>
         </div>
 
         <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden">
