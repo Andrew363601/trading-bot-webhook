@@ -15,12 +15,14 @@ const supabase = createClient(
 
 // Helper function for the Watchdog to sign Coinbase API requests
 function generateCoinbaseToken(method, path, apiKey, apiSecret) {
-    const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
-    return jwt.sign(
-        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `${method} api.coinbase.com${path}` },
-        privateKey,
-        { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
-    );
+  const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
+  // THE FIX: Strip query parameters out of the URI before signing
+  const uriPath = path.split('?')[0]; 
+  return jwt.sign(
+      { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `${method} api.coinbase.com${uriPath}` },
+      privateKey,
+      { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
+  );
 }
 
 export default async function handler(req, res) {
@@ -79,7 +81,7 @@ export default async function handler(req, res) {
                 }
 
                 // 1. Check if the Limit Order actually filled and became a live position
-                const posPath = '/api/v3/brokerage/positions';
+                const posPath = '/api/v3/brokerage/cfm/positions';
                 const posToken = generateCoinbaseToken('GET', posPath, apiKeyName, apiSecret);
                 const posResp = await fetch(`https://api.coinbase.com${posPath}`, { headers: { 'Authorization': `Bearer ${posToken}` } });
                 
