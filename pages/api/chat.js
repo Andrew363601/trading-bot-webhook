@@ -13,17 +13,26 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    // THE FIX: Directly extract messages natively so the SDK validates tool history perfectly.
-    const { messages } = req.body;
+    console.log("[CHAT API] Nexus Agent pinged. Extracting payload...");
 
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    );
+    // BULLETPROOF EXTRACTION: Prevents crashes if body is missing
+    const messages = req.body?.messages || [];
+    if (!Array.isArray(messages) || messages.length === 0) {
+        throw new Error("Invalid or empty message payload.");
+    }
+
+    // BULLETPROOF SUPABASE: Guarantees it uses the right key and doesn't crash on init
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!supabaseKey) throw new Error("Missing Supabase Keys in environment.");
+    
+    const supabase = createClient(supabaseUrl, supabaseKey);
 
     const google = createGoogleGenerativeAI({
       apiKey: process.env.GEMINI_API_KEY,
     });
+
+    console.log("[CHAT API] Fetching database telemetry...");
 
     const { data: allConfigs } = await supabase.from('strategy_config').select('*');
     const { data: openTrades } = await supabase.from('trade_logs').select('*').is('exit_price', null);
@@ -33,6 +42,8 @@ export default async function handler(req, res) {
     if (openTrades && openTrades.length > 0) {
       const uniqueAssets = [...new Set(openTrades.map(t => t.symbol))];
       for (const asset of uniqueAssets) {
+        // BULLETPROOF ASSET CHECK: Stops the split() function from crashing on null DB rows
+        if (!asset || typeof asset !== 'string') continue; 
         try {
           const baseCoin = asset.split('-')[0]; 
           const priceResp = await fetch(`https://api.exchange.coinbase.com/products/${baseCoin}-USD/ticker`);
@@ -114,8 +125,11 @@ export default async function handler(req, res) {
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
 `;
 
+    console.log("[CHAT API] Handing over to Gemini...");
+
     const result = await streamText({
-      model: google('gemini-2.5-pro'), 
+      // BACK TO THE STABLE 1.5 PRO TO GUARANTEE SDK COMPATIBILITY
+      model: google('gemini-1.5-pro'), 
       system: systemPrompt,
       messages: messages, 
       maxSteps: 5,
@@ -155,7 +169,6 @@ export default async function handler(req, res) {
 
             return {
               timeframe: days_back ? `Last ${days_back} days` : 'All-Time',
-              // THE FATAL BUG FIX: Removed the illegal || operator syntax!
               filters: { asset: asset || 'ALL', strategy: strategy_id || 'ALL' },
               summary: {
                 total_trades: totalTrades,
@@ -345,11 +358,11 @@ export default async function handler(req, res) {
       },
     });
 
+    console.log("[CHAT API] Streaming response to client...");
     await result.pipeDataStreamToResponse(res);
 
   } catch (err) {
     console.error("====== FULL CHAT FAULT ENCOUNTERED ======");
-    console.error("NAME:", err.name);
     console.error("MESSAGE:", err.message);
     
     return res.status(500).json({ 
