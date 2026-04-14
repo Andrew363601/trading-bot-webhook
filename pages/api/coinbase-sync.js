@@ -1,3 +1,4 @@
+// pages/api/coinbase-sync.js
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 
@@ -20,27 +21,46 @@ export default async function handler(req, res) {
             );
         };
 
-        // 1. Fetch Live Futures Positions
-        const posPath = '/api/v3/brokerage/intl/positions'; // Coinbase Derivatives Endpoint
-        const posResp = await fetch(`https://api.coinbase.com${posPath}`, {
-            headers: { 'Authorization': `Bearer ${generateToken('GET', posPath)}` }
-        });
-        const posData = await posResp.json();
-
-        // 2. Fetch Unfilled Orders (Limit Entries, TP/SL)
+        // 1. Fetch Unfilled Orders (Limit Entries, TP/SL)
         const orderPath = '/api/v3/brokerage/orders/historical/batch?order_status=OPEN';
-        const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, {
-            headers: { 'Authorization': `Bearer ${generateToken('GET', orderPath)}` }
-        });
-        const orderData = await orderResp.json();
+        let orderData = { orders: [] };
+        
+        try {
+            const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, {
+                headers: { 'Authorization': `Bearer ${generateToken('GET', orderPath)}` }
+            });
+            
+            if (orderResp.ok) {
+                orderData = await orderResp.json();
+            } else {
+                console.warn('[SYNC WARN] Orders endpoint rejected:', await orderResp.text());
+            }
+        } catch (e) { console.error("Order fetch failed:", e.message); }
 
+        // 2. Fetch Live US/CFM Positions
+        const posPath = '/api/v3/brokerage/positions'; 
+        let posData = { positions: [] };
+        
+        try {
+            const posResp = await fetch(`https://api.coinbase.com${posPath}`, {
+                headers: { 'Authorization': `Bearer ${generateToken('GET', posPath)}` }
+            });
+            
+            if (posResp.ok) {
+                posData = await posResp.json();
+            } else {
+                console.warn('[SYNC WARN] Positions endpoint rejected:', await posResp.text());
+            }
+        } catch (e) { console.error("Position fetch failed:", e.message); }
+
+        // Always return 200 to the frontend so the UI doesn't crash, even if empty
         return res.status(200).json({ 
             positions: posData.positions || [], 
             orders: orderData.orders || [] 
         });
 
     } catch (error) {
-        console.error('[SYNC FAULT]', error);
-        return res.status(500).json({ error: 'Failed to sync with Coinbase' });
+        console.error('[SYNC FATAL]', error);
+        return res.status(200).json({ positions: [], orders: [] }); // Graceful fallback
     }
 }

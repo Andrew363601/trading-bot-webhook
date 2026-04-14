@@ -126,10 +126,74 @@ export default async function handler(req, res) {
       // If it's a LIMIT order, it won't have an immediate fill average_price
       executionPrice = result.success_response?.average_price || executionPrice;
       executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
+
+      // --- NEW: THE TP/SL BRACKET ORDER DEPLOYMENT ---
+      // Only fire instantly to the exchange if the entry was a MARKET order and we have TP/SL targets
+      if (orderType === 'MARKET' && tpPrice && slPrice) {
+          console.log(`[BRACKET] Entry filled. Deploying Take Profit at $${tpPrice} and Stop Loss at $${slPrice}...`);
+          
+          // If we bought, the protection orders need to be sells (and vice versa)
+          const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
+          const stopDir = side === 'BUY' ? 'STOP_DIRECTION_STOP_DOWN' : 'STOP_DIRECTION_STOP_UP';
+
+          // 1. Fire Stop Loss (Critical Capital Protection - Sent as a Stop Limit)
+          try {
+              const slPayload = {
+                  client_order_id: `nx_sl_${Date.now()}`,
+                  product_id: coinbaseProduct,
+                  side: closingSide,
+                  order_configuration: {
+                      stop_limit_stop_limit_gtc: {
+                          stop_direction: stopDir,
+                          stop_price: slPrice.toString(),
+                          limit_price: slPrice.toString(),
+                          base_size: orderQty.toString()
+                      }
+                  }
+              };
+              const slToken = generateToken('POST', path);
+              const slResp = await fetch(`https://api.coinbase.com${path}`, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${slToken}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify(slPayload)
+              });
+              if (slResp.ok) console.log(`[BRACKET] Stop Loss successfully locked on exchange.`);
+              else console.error(`[BRACKET WARN] Stop Loss rejected:`, await slResp.text());
+          } catch (e) { console.error("[BRACKET ERROR] SL failed:", e.message); }
+
+          // 2. Fire Take Profit (Sent as a standard Limit order)
+          try {
+              const tpPayload = {
+                  client_order_id: `nx_tp_${Date.now()}`,
+                  product_id: coinbaseProduct,
+                  side: closingSide,
+                  order_configuration: {
+                      limit_limit_gtc: {
+                          limit_price: tpPrice.toString(),
+                          base_size: orderQty.toString()
+                      }
+                  }
+              };
+              const tpToken = generateToken('POST', path);
+              const tpResp = await fetch(`https://api.coinbase.com${path}`, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${tpToken}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify(tpPayload)
+              });
+              if (tpResp.ok) console.log(`[BRACKET] Take Profit successfully resting on exchange.`);
+              else console.error(`[BRACKET WARN] Take Profit rejected:`, await tpResp.text());
+          } catch (e) { console.error("[BRACKET ERROR] TP failed:", e.message); }
+      }
       
     } else {
       // 🟢 PAPER DRY-RUN
-      const path = `/api/v3/brokerage/products/${coinbaseProduct}`;
+      // THE FIX: Route paper price checks to the Spot market to bypass strict Futures API key checks
+      let paperProduct = coinbaseProduct;
+      if (paperProduct.includes('-PERP')) {
+          paperProduct = paperProduct.split('-')[0] + '-USD';
+      }
+
+      const path = `/api/v3/brokerage/products/${paperProduct}`;
       const token = generateToken('GET', path);
 
       const resp = await fetch(`https://api.coinbase.com${path}`, {
