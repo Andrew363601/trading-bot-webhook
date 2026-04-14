@@ -126,20 +126,20 @@ export default async function handler(req, res) {
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
 `;
 
-    const result = await streamText({
-      // THE ROLLBACK: Use the 2.5-flash model via the old models/ prefix method
-      model: google('models/gemini-2.5-flash'), 
-      system: systemPrompt,
-      messages: safeMessages, // THE ROLLBACK: Pass the manually cleaned messages
-      maxSteps: 5,
-      tools: {
-        queryTradeLedger: tool({
-          description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
-          parameters: z.object({
-            asset: z.string().optional().describe('Filter by asset symbol, e.g., DOGE-PERP-INTX. Leave undefined for all assets.'),
-            strategy_id: z.string().optional().describe('Filter by strategy, e.g., KELTNER_EXECUTION_V1. Leave undefined for all strategies.'),
-            days_back: z.number().optional().describe('Number of days back to search (e.g., 7 for this week). Leave undefined for all-time.')
-          }),
+const result = await streamText({
+  // THE FIX: Removed the "models/" prefix so the SDK routes the API correctly
+  model: google('gemini-2.5-flash'), 
+  system: systemPrompt,
+  messages: safeMessages, 
+  maxSteps: 5,
+  tools: {
+    queryTradeLedger: tool({
+      description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
+      parameters: z.object({
+        asset: z.string().optional().describe('Filter by asset symbol, e.g., DOGE-PERP-INTX. Leave undefined for all assets.'),
+        strategy_id: z.string().optional().describe('Filter by strategy, e.g., KELTNER_EXECUTION_V1. Leave undefined for all strategies.'),
+        days_back: z.number().optional().describe('Number of days back to search (e.g., 7 for this week). Leave undefined for all-time.')
+      }),
           execute: async ({ asset, strategy_id, days_back }) => {
             let query = supabase.from('trade_logs').select('*').not('exit_price', 'is', null);
 
