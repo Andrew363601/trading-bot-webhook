@@ -27,7 +27,7 @@ export default function Dashboard() {
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  // Added 'stop' for the force-unlock kill switch
+  // THE FIX: Removed `setInput` because the hook does not natively export it
   const { messages, input, handleInputChange, handleSubmit, append, error, isLoading, stop } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
@@ -103,14 +103,14 @@ export default function Dashboard() {
     fetchData(); 
   };
 
-  // NEW: Manual Submit Handler to intercept and force-unlock the chat
   const handleManualSubmit = async (e) => {
     e.preventDefault();
     if (!input.trim()) return;
     
-    if (isLoading) stop(); // Force unlock if the UI is frozen
+    if (isLoading) stop(); 
 
     const userMsg = input;
+    // THE FIX: Use a simulated event object to clear the input safely
     handleInputChange({ target: { value: '' } }); 
     
     try {
@@ -120,10 +120,9 @@ export default function Dashboard() {
     }
   };
 
-  // UPDATED: Strategy button handler with force-unlock integration
   const handleStrategySelect = async (stratId) => {
     setSelectedStrat(stratId);
-    if (isLoading) stop(); // Force unlock if the UI is frozen
+    if (isLoading) stop(); 
     try {
         await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
     } catch (err) {
@@ -240,7 +239,6 @@ export default function Dashboard() {
                          <div className="flex items-center justify-between mt-1 pt-1 border-t border-white/5">
                               <div className="flex flex-wrap gap-x-3 gap-y-1">
                                   {scan.telemetry && Object.entries(scan.telemetry).map(([key, val]) => (
-                                      // THE FIX: Booleans now render properly as TRUE/FALSE strings instead of blank voids
                                       <span key={key} className="text-[9px] text-slate-400 font-mono">
                                         <span className="text-slate-500 uppercase">{key}:</span> 
                                         {typeof val === 'boolean' ? (val ? 'TRUE' : 'FALSE') : (typeof val === 'number' ? val.toFixed(2) : val)}
@@ -335,7 +333,7 @@ export default function Dashboard() {
                           let pnlDisplay = '--';
                           if (log.exit_price) {
                               pnlDisplay = <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span>;
-                          } else if (log.execution_mode.includes('LIVE')) {
+                          } else if (log.execution_mode === 'LIVE (EXCHANGE)') {
                               pnlDisplay = <span className={log.pnl >= 0 ? 'text-cyan-400 animate-pulse' : 'text-amber-400 animate-pulse'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)} (U)</span>;
                           } else if (livePrice > 0 && activeTab === 'POSITIONS') {
                               const paperPnl = (log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1);
@@ -346,6 +344,9 @@ export default function Dashboard() {
                           const formattedDate = timestamp ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }) : "Awaiting...";
                           const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
 
+                          // THE FIX: Strict style matching based on if it's verified LIVE on the exchange vs a dead Supabase log
+                          const isLiveExchange = log.execution_mode === 'LIVE (EXCHANGE)';
+                          
                           return (
                           <tr key={i} className="hover:bg-white/[0.02] transition-colors">
                             <td className="px-4 py-4 text-[9px] text-slate-500">
@@ -355,7 +356,7 @@ export default function Dashboard() {
                                 </div>
                             </td>
                             <td className="px-4 py-4 text-center">
-                                <span className={`text-[9px] font-black uppercase px-2 py-1 rounded border flex flex-col items-center ${log.execution_mode.includes('LIVE') ? 'bg-cyan-500/5 text-cyan-300 border-cyan-500/10' : 'bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10'}`}>
+                                <span className={`text-[9px] font-black uppercase px-2 py-1 rounded border flex flex-col items-center ${isLiveExchange ? 'bg-cyan-500/5 text-cyan-300 border-cyan-500/10' : 'bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10'}`}>
                                     {log.strategy_id?.replace('_V1', '')}
                                     {log.reason && <span className="text-[7px] text-slate-500 tracking-tighter mt-1 block truncate max-w-[80px]" title={log.reason}>Oracle Auth</span>}
                                 </span>
