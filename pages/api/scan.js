@@ -119,9 +119,17 @@ export default async function handler(req, res) {
             marketType: config.parameters?.market_type || 'FUTURES' 
         });
 
+        // 1. THE FIX: Attach the Oracle's logic to the telemetry IMMEDIATELY, before the if/else block
+        decision.telemetry = { 
+            ...decision.telemetry, 
+            oracle_score: oracleVerdict.conviction_score, 
+            oracle_reasoning: oracleVerdict.reasoning 
+        };
+
         if (oracleVerdict.action === 'VETO') {
             console.log(`[ORACLE VETO] Signal rejected. Score: ${oracleVerdict.conviction_score}. Reasoning: ${oracleVerdict.reasoning}`);
-            decision.signal = null; // Kill the trade
+            decision.signal = null; // Kill the trade execution
+            decision.statusOverride = 'ORACLE VETO'; // Flag it for the UI dashboard
         } else {
             console.log(`[ORACLE APPROVED] Score: ${oracleVerdict.conviction_score}. Mutating to LIMIT order at $${oracleVerdict.limit_price}. Size Multiplier: ${oracleVerdict.size_multiplier}x`);
             
@@ -139,11 +147,23 @@ export default async function handler(req, res) {
             if (oracleVerdict.size_multiplier > 1.0 && config.parameters?.target_usd) {
                  config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
             }
-            
-            // Perfectly preserves the tagging configuration for the dashboard!
-            decision.telemetry = { ...decision.telemetry, oracle_score: oracleVerdict.conviction_score, oracle_reasoning: oracleVerdict.reasoning };
         }
     }
+
+    // 2. THE UI FLAG: We update how the scanEntry determines its status
+    const finalStatus = decision.statusOverride 
+        ? decision.statusOverride 
+        : (decision.signal ? (forcedExit ? `HIT_${forcedExit}` : "RESONANT") : "STABLE");
+
+    const scanEntry = {
+      strategy: config.strategy,
+      asset,
+      telemetry: decision.telemetry || {},
+      status: finalStatus
+    };
+    
+    results.push(scanEntry);
+    await supabase.from('scan_results').insert([scanEntry]);
 
         const scanEntry = {
           strategy: config.strategy,
