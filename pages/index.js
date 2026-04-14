@@ -27,8 +27,8 @@ export default function Dashboard() {
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  // THE FIX: Removed `setInput` because the hook does not natively export it
-  const { messages, input, handleInputChange, handleSubmit, append, error, isLoading, stop } = useChat({
+  // THE FIX: Pure, native useChat extraction. No hacky workarounds.
+  const { messages, input, handleInputChange, handleSubmit, append, error, isLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
@@ -103,31 +103,9 @@ export default function Dashboard() {
     fetchData(); 
   };
 
-  const handleManualSubmit = async (e) => {
-    e.preventDefault();
-    if (!input.trim()) return;
-    
-    if (isLoading) stop(); 
-
-    const userMsg = input;
-    // THE FIX: Use a simulated event object to clear the input safely
-    handleInputChange({ target: { value: '' } }); 
-    
-    try {
-        await append({ role: 'user', content: userMsg });
-    } catch (err) {
-        console.error("[NEXUS APPEND FAULT]:", err);
-    }
-  };
-
-  const handleStrategySelect = async (stratId) => {
+  const handleStrategySelect = (stratId) => {
     setSelectedStrat(stratId);
-    if (isLoading) stop(); 
-    try {
-        await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
-    } catch (err) {
-        console.error("Append Error:", err);
-    }
+    append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
   };
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
@@ -344,7 +322,7 @@ export default function Dashboard() {
                           const formattedDate = timestamp ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }) : "Awaiting...";
                           const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
 
-                          // THE FIX: Strict style matching based on if it's verified LIVE on the exchange vs a dead Supabase log
+                          // THE FIX: Strict style matching based on if it's verified LIVE on the exchange
                           const isLiveExchange = log.execution_mode === 'LIVE (EXCHANGE)';
                           
                           return (
@@ -430,15 +408,18 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+            {/* THE FIX: Pure native handleSubmit! */}
+            <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
                 <input 
-                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
+                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50 disabled:opacity-50" 
                   value={input} 
                   onChange={handleInputChange} 
                   placeholder="Command Nexus..." 
+                  disabled={isLoading}
               />
               <button 
                   type="submit" 
+                  disabled={isLoading || !input.trim()}
                   className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}
               >
                   {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}

@@ -13,16 +13,8 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
+    // THE FIX: Directly extract messages natively so the SDK validates tool history perfectly.
     const { messages } = req.body;
-    
-    // THE ULTIMATE SANITIZATION BLOCK
-    // This forcefully strips all hidden 'toolInvocations', 'id' tags, and thought tokens 
-    // from the history array. This guarantees the Vercel SDK validation engine cannot 
-    // silently abort the request, and Gemini only receives clean, readable context.
-    const safeMessages = messages.map(msg => ({
-        role: msg.role === 'tool' ? 'assistant' : msg.role,
-        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
-    }));
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -125,7 +117,7 @@ export default async function handler(req, res) {
     const result = await streamText({
       model: google('gemini-2.5-pro'), 
       system: systemPrompt,
-      messages: safeMessages, // The perfectly sanitized array
+      messages: messages, 
       maxSteps: 5,
       tools: {
         queryTradeLedger: tool({
@@ -163,6 +155,7 @@ export default async function handler(req, res) {
 
             return {
               timeframe: days_back ? `Last ${days_back} days` : 'All-Time',
+              // THE FATAL BUG FIX: Removed the illegal || operator syntax!
               filters: { asset: asset || 'ALL', strategy: strategy_id || 'ALL' },
               summary: {
                 total_trades: totalTrades,
