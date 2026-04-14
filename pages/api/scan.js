@@ -205,24 +205,24 @@ export default async function handler(req, res) {
             decision.entryPrice = oracleVerdict.limit_price; 
             decision.orderType = 'LIMIT';
             
-            // --- NEW: THE TP/SL PASS-THROUGH ---
+// --- NEW: THE TP/SL PASS-THROUGH ---
             // If the strategy calculated strict ATR targets, move them down/up to match the new limit entry
             if (decision.tpPrice && decision.slPrice) {
-                 const originalEntry = currentPrice;
-                 const tpDistance = decision.tpPrice - originalEntry;
-                 const slDistance = originalEntry - decision.slPrice;
-                 decision.tpPrice = decision.entryPrice + (decision.signal === 'BUY' ? Math.abs(tpDistance) : -Math.abs(tpDistance));
-                 decision.slPrice = decision.entryPrice - (decision.signal === 'BUY' ? Math.abs(slDistance) : -Math.abs(slDistance));
-            } else {
-                 const slP = config.parameters?.sl_percent || 0.01;
-                 const tpP = config.parameters?.tp_percent || 0.02;
-                 decision.tpPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
-                 decision.slPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
-            }
-            
-            // Format to 6 decimals to prevent API rejections
-            decision.tpPrice = parseFloat(decision.tpPrice.toFixed(6));
-            decision.slPrice = parseFloat(decision.slPrice.toFixed(6));
+              const originalEntry = currentPrice;
+              const tpDistance = decision.tpPrice - originalEntry;
+              const slDistance = originalEntry - decision.slPrice;
+              decision.tpPrice = decision.entryPrice + (decision.signal === 'BUY' ? Math.abs(tpDistance) : -Math.abs(tpDistance));
+              decision.slPrice = decision.entryPrice - (decision.signal === 'BUY' ? Math.abs(slDistance) : -Math.abs(slDistance));
+         } else {
+              const slP = config.parameters?.sl_percent || 0.01;
+              const tpP = config.parameters?.tp_percent || 0.02;
+              decision.tpPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
+              decision.slPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
+         }
+         
+         // THE FIX: Format to 2 decimals for proper Coinbase routing
+         decision.tpPrice = parseFloat(decision.tpPrice.toFixed(2));
+         decision.slPrice = parseFloat(decision.slPrice.toFixed(2));
             
             if (oracleVerdict.size_multiplier > 1.0 && config.parameters?.target_usd) {
                  config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
