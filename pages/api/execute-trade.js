@@ -71,12 +71,18 @@ export default async function handler(req, res) {
     console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Type: ${orderType} | Side: ${side} | Leverage: ${leverage}x | Qty: ${orderQty}`);
 
     const generateToken = (method, path) => {
+      // THE ES256 FIX: Convert the string into a strict PEM Private Key object
+      const privateKey = crypto.createPrivateKey({
+        key: formattedSecret,
+        format: 'pem'
+      });
+
       return jwt.sign(
         {
           iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
           sub: apiKeyName, uri: `${method} api.coinbase.com${path}`,
         },
-        formattedSecret,
+        privateKey, // Pass the object, not the string
         { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
       );
     };

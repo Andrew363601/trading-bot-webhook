@@ -13,7 +13,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const ASSETS = ['BTC-PERP-INTX', 'ETP-20DEC30-CDE', 'SOL-PERP-INTX', 'DOGE-USD', 'AVAX-PERP-INTX', 'WLD-PERP-INTX', 'XRP-PERP-INTX', 'ADA-PERP-INTX', 'BNB-PERP-INTX'];
 
 export default function Dashboard() {
-  const [activeAsset, setActiveAsset] = useState('DOGE-PERP-INTX');
+  const [activeAsset, setActiveAsset] = useState('ETP-20DEC30-CDE');
   const [livePrice, setLivePrice] = useState(0); 
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
@@ -23,7 +23,9 @@ export default function Dashboard() {
   const [selectedStrat, setSelectedStrat] = useState(null);
   const [loading, setLoading] = useState(true);
   
-  // NEW: Ledger Tab State
+  // NEW: Live Exchange State
+  const [livePositions, setLivePositions] = useState([]);
+  const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
   const { messages, input, handleInputChange, handleSubmit, append } = useChat();
@@ -31,18 +33,33 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
+      // Fetch Supabase Data
       const portResp = await fetch(`/api/portfolio?asset=${activeAsset}`);
       if (portResp.ok) {
         const portData = await portResp.json();
         setPortfolio(portData);
         if (portData.price > 0) setLivePrice(portData.price);
       }
+      
       const { data: logs } = await supabase.from('trade_logs').select('*').eq('symbol', activeAsset).order('id', { ascending: false });
       setTradeLogs(logs || []);
+      
       const { data: configs } = await supabase.from('strategy_config').select('*').eq('is_active', true);
       setActiveStrategies(configs || []);
+      
       const { data: scans } = await supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(15);
       if (scans) setScanStream(scans);
+
+      // NEW: Fetch Live Coinbase Data
+      try {
+        const syncResp = await fetch('/api/coinbase-sync');
+        if (syncResp.ok) {
+          const syncData = await syncResp.json();
+          setLivePositions(syncData.positions || []);
+          setLiveOrders(syncData.orders || []);
+        }
+      } catch (syncErr) { console.error("Coinbase Sync failed", syncErr); }
+
     } catch (e) { console.error(e); } finally { setLoading(false); }
   }, [activeAsset]);
 
@@ -71,15 +88,15 @@ export default function Dashboard() {
   }, [messages, activeAsset, activeStrategies, activeStudies]);
 
   const handleClosePosition = async (trade) => {
-    const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id}?`);
+    const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id || 'Exchange'}?`);
     if (!confirmClose) return;
     const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
     await fetch('/api/execute-trade', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        symbol: trade.symbol, strategy_id: trade.strategy_id, version: trade.version,
-        side: closingSide, execution_mode: trade.execution_mode, qty: trade.qty, price: livePrice 
+        symbol: trade.symbol, strategy_id: trade.strategy_id || 'MANUAL', version: trade.version || 'v1.0',
+        side: closingSide, execution_mode: trade.execution_mode.includes('LIVE') ? 'LIVE' : 'PAPER', qty: trade.qty, price: livePrice 
       })
     });
     fetchData(); 
@@ -124,13 +141,32 @@ export default function Dashboard() {
     container.appendChild(script);
   }, [activeAsset, activeStudies]);
 
-  // --- LEDGER FILTERING LOGIC ---
-  const openPositions = tradeLogs.filter(log => !log.exit_price);
+  // --- HYBRID LEDGER FILTERING LOGIC ---
+  const paperPositions = tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER');
+  
+  const formattedLivePositions = livePositions.map(pos => ({
+      side: pos.side === 'LONG' ? 'BUY' : 'SELL',
+      entry_price: parseFloat(pos.vwap || 0),
+      qty: parseFloat(pos.number_of_contracts || 0),
+      symbol: pos.product_id,
+      execution_mode: 'LIVE (EXCHANGE)',
+      strategy_id: 'ACTIVE_DERIVATIVE',
+      pnl: parseFloat(pos.unrealized_pnl || 0),
+      created_at: new Date().toISOString()
+  }));
+
+  const openPositions = [...formattedLivePositions, ...paperPositions];
   const tradeHistory = tradeLogs.filter(log => log.exit_price);
   
-  // Note: Open Orders is currently an empty array. 
-  // In the future, we will populate this by checking Coinbase for unfilled LIMIT orders.
-  const openOrders = []; 
+  const openOrders = liveOrders.map(ord => ({
+      side: ord.side,
+      entry_price: parseFloat(ord.order_configuration?.limit_limit_gtc?.limit_price || 0),
+      qty: parseFloat(ord.order_configuration?.limit_limit_gtc?.base_size || 0),
+      symbol: ord.product_id,
+      execution_mode: 'PENDING_LIMIT',
+      strategy_id: 'AWAITING_FILL',
+      created_at: ord.created_time || new Date().toISOString()
+  }));
 
   let displayLogs = [];
   if (activeTab === 'POSITIONS') displayLogs = openPositions;
@@ -196,10 +232,10 @@ export default function Dashboard() {
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex flex-col p-4">
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
             
-            {/* UPDATED HUD: Now strictly shows active openPositions instead of mixing in closed trades */}
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {openPositions.slice(0, 3).map((log, i) => {
-                 const displayPnl = (log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1);
+                 const displayPnl = log.execution_mode.includes('LIVE') ? log.pnl : 
+                 ((log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1));
                  return (
                   <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-4 pointer-events-auto shadow-lg">
                      <div className="flex flex-col gap-0.5">
@@ -209,14 +245,11 @@ export default function Dashboard() {
                        </div>
                        <div className="flex items-center gap-3">
                          <span className="text-[7px] text-slate-500 font-black tracking-widest uppercase pl-3">{log.strategy_id}</span>
-                         {log.tp_price && (
-                             <span className="text-[7px] text-emerald-500/80 font-bold uppercase tracking-tighter">Target: ${log.tp_price}</span>
-                         )}
                        </div>
                      </div>
                      {livePrice > 0 && (
                          <span className={`font-black ${displayPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>
-                             {displayPnl >= 0 ? '+' : ''}{displayPnl.toFixed(4)}
+                             {displayPnl >= 0 ? '+' : ''}{displayPnl?.toFixed(4)}
                          </span>
                      )}
                   </div>
@@ -226,13 +259,12 @@ export default function Dashboard() {
           </div>
 
           <div className="flex flex-col flex-grow overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30">
-            {/* --- NEW COINBASE-STYLE TABS --- */}
             <div className="flex items-center gap-6 px-6 pt-5 border-b border-white/5 bg-slate-950/80 sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
                   className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'OPEN_ORDERS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
                >
-                  Open Orders
+                  Open Orders {openOrders.length > 0 && <span className="ml-1 bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-full text-[8px]">{openOrders.length}</span>}
                </button>
                <button 
                   onClick={() => setActiveTab('POSITIONS')} 
@@ -265,7 +297,7 @@ export default function Dashboard() {
                           <th className="px-4 py-3 text-center">Strategy</th>
                           <th className="px-4 py-3 text-center">Vector</th>
                           <th className="px-4 py-3 text-center">Size</th>
-                          <th className="px-4 py-3">Entry</th>
+                          <th className="px-4 py-3">Entry/Price</th>
                           <th className="px-4 py-3 text-center">Target (TP / SL)</th>
                           <th className="px-4 py-3">Status/Exit</th>
                           <th className="px-4 py-3 text-right">PnL</th>
@@ -273,8 +305,15 @@ export default function Dashboard() {
                       </thead>
                       <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
                         {displayLogs.map((log, i) => {
-                          let pnlDisplay = log.exit_price ? <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span> : 
-                          (livePrice > 0 ? <span className={`animate-pulse ${(log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${((log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1)).toFixed(4)} (U)</span> : '--');
+                          let pnlDisplay = '--';
+                          if (log.exit_price) {
+                              pnlDisplay = <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span>;
+                          } else if (log.execution_mode.includes('LIVE')) {
+                              pnlDisplay = <span className={log.pnl >= 0 ? 'text-cyan-400 animate-pulse' : 'text-amber-400 animate-pulse'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)} (U)</span>;
+                          } else if (livePrice > 0 && activeTab === 'POSITIONS') {
+                              const paperPnl = (log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1);
+                              pnlDisplay = <span className={`animate-pulse ${paperPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${paperPnl.toFixed(4)} (U)</span>;
+                          }
                           
                           const timestamp = log.created_at || log.exit_time;
                           const formattedDate = timestamp ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }) : "Awaiting...";
@@ -289,13 +328,12 @@ export default function Dashboard() {
                                 </div>
                             </td>
                             <td className="px-4 py-4 text-center">
-                                <span className="text-[9px] font-black text-indigo-300/80 uppercase bg-indigo-500/5 px-2 py-1 rounded border border-indigo-500/10 flex flex-col items-center">
+                                <span className={`text-[9px] font-black uppercase px-2 py-1 rounded border flex flex-col items-center ${log.execution_mode.includes('LIVE') ? 'bg-cyan-500/5 text-cyan-300 border-cyan-500/10' : 'bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10'}`}>
                                     {log.strategy_id?.replace('_V1', '')}
-                                    {/* Display Oracle's specific reason if it exists */}
                                     {log.reason && <span className="text-[7px] text-slate-500 tracking-tighter mt-1 block truncate max-w-[80px]" title={log.reason}>Oracle Auth</span>}
                                 </span>
                             </td>
-                            <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side} {log.leverage}x</span></td>
+                            <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side}</span></td>
                             
                             <td className="px-4 py-4 text-center text-[10px] text-slate-300">
                                 {log.qty ? log.qty.toLocaleString() : '--'}
@@ -310,7 +348,11 @@ export default function Dashboard() {
                                     </div>
                                 ) : <span className="text-slate-700 italic text-[9px]">Dynamic</span>}
                             </td>
-                            <td className="px-4 py-4 flex items-center gap-2">{log.exit_price ? `$${log.exit_price}` : <><span className="text-indigo-400 animate-pulse font-black text-[9px]">ACTIVE</span> <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}</td>
+                            <td className="px-4 py-4 flex items-center gap-2">
+                                {log.exit_price ? `$${log.exit_price}` : 
+                                 <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
+                                 <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}
+                            </td>
                             <td className="px-4 py-4 text-right font-black text-[10px]">{pnlDisplay}</td>
                           </tr>
                         )})}
