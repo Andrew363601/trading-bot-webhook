@@ -14,7 +14,15 @@ export default async function handler(req, res) {
 
   try {
     // PASS THE RAW MESSAGES: We removed the manual filter that was stripping the thought tokens!
-    const { messages } = req.body;
+  // PASS THE SANITIZED MESSAGES: We must clean the array for the V6 SDK
+  const { messages } = req.body;
+    
+  // The V6 SDK crashes if tool responses are malformed or missing data. 
+  // This strictly sanitizes the history to prevent silent API drops.
+  const safeMessages = messages.filter(m => {
+      if (m.role === 'tool' && (!m.content || !Array.isArray(m.content))) return false;
+      return true;
+  });
 
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -117,7 +125,7 @@ export default async function handler(req, res) {
     const result = await streamText({
       model: google('gemini-2.5-pro'), 
       system: systemPrompt,
-      messages: messages, // Passes the raw messages exactly as the SDK expects them
+      messages: safeMessages,
       maxSteps: 5,
       tools: {
         queryTradeLedger: tool({
