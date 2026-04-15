@@ -44,8 +44,8 @@ export default async function handler(req, res) {
     const version = data.version || 'v1.0';
     const leverage = data.leverage || 1;
     const marketType = data.market_type || 'FUTURES'; 
-    const orderType = data.order_type || 'MARKET'; // Dynamic extraction
-    const tradeReason = data.reason || null; // Extracts the Oracle's reasoning
+    const orderType = data.order_type || 'MARKET'; 
+    const tradeReason = data.reason || null; 
     
     let tpPrice = data.tp_price || null;
     let slPrice = data.sl_price || null;
@@ -71,7 +71,6 @@ export default async function handler(req, res) {
     console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Type: ${orderType} | Side: ${side} | Leverage: ${leverage}x | Qty: ${orderQty}`);
 
     const generateToken = (method, path) => {
-      // THE ES256 FIX: Convert the string into a strict PEM Private Key object
       const privateKey = crypto.createPrivateKey({
         key: formattedSecret,
         format: 'pem'
@@ -82,7 +81,7 @@ export default async function handler(req, res) {
           iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
           sub: apiKeyName, uri: `${method} api.coinbase.com${path}`,
         },
-        privateKey, // Pass the object, not the string
+        privateKey, 
         { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
       );
     };
@@ -102,7 +101,6 @@ export default async function handler(req, res) {
         order_configuration: {}
       };
 
-      // --- NEW: DYNAMIC ORDER ROUTING ---
       if (orderType === 'LIMIT') {
           payload.order_configuration.limit_limit_gtc = {
               base_size: orderQty.toString(),
@@ -121,121 +119,100 @@ export default async function handler(req, res) {
       });
       
       const result = await resp.json();
-      if (!resp.ok) throw new Error(`Coinbase Reject: ${JSON.stringify(result)}`);
       
-      // If it's a LIMIT order, it won't have an immediate fill average_price
+      // THE FIX: Strict Payload Validation to catch "Fake 200 OK" rejection messages
+      if (!resp.ok) throw new Error(`Coinbase HTTP Reject: ${JSON.stringify(result)}`);
+      if (result.success === false || result.error_response) {
+          const errMsg = result.error_response?.message || result.failure_reason?.error_message || JSON.stringify(result);
+          throw new Error(`Coinbase Order Rejected: ${errMsg}`);
+      }
+      
       executionPrice = result.success_response?.average_price || executionPrice;
       executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
 
-      // --- NEW: THE TP/SL BRACKET ORDER DEPLOYMENT ---
-      // Only fire instantly to the exchange if the entry was a MARKET order and we have TP/SL targets
+      // --- THE TP/SL BRACKET ORDER DEPLOYMENT ---
       if (orderType === 'MARKET' && tpPrice && slPrice) {
           console.log(`[BRACKET] Entry filled. Deploying Take Profit at $${tpPrice} and Stop Loss at $${slPrice}...`);
-          
-          // If we bought, the protection orders need to be sells (and vice versa)
           const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
           const stopDir = side === 'BUY' ? 'STOP_DIRECTION_STOP_DOWN' : 'STOP_DIRECTION_STOP_UP';
 
-          // 1. Fire Stop Loss (Critical Capital Protection - Sent as a Stop Limit)
+          // 1. Fire Stop Loss 
           try {
               const slPayload = {
                   client_order_id: `nx_sl_${Date.now()}`,
                   product_id: coinbaseProduct,
                   side: closingSide,
                   order_configuration: {
-                      stop_limit_stop_limit_gtc: {
-                          stop_direction: stopDir,
-                          stop_price: slPrice.toString(),
-                          limit_price: slPrice.toString(),
-                          base_size: orderQty.toString()
-                      }
+                      stop_limit_stop_limit_gtc: { stop_direction: stopDir, stop_price: slPrice.toString(), limit_price: slPrice.toString(), base_size: orderQty.toString() }
                   }
               };
-              const slToken = generateToken('POST', path);
               const slResp = await fetch(`https://api.coinbase.com${path}`, {
-                  method: 'POST',
-                  headers: { 'Authorization': `Bearer ${slToken}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify(slPayload)
+                  method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload)
               });
-              if (slResp.ok) console.log(`[BRACKET] Stop Loss successfully locked on exchange.`);
-              else console.error(`[BRACKET WARN] Stop Loss rejected:`, await slResp.text());
+              if (slResp.ok) console.log(`[BRACKET] Stop Loss successfully locked.`);
           } catch (e) { console.error("[BRACKET ERROR] SL failed:", e.message); }
 
-          // 2. Fire Take Profit (Sent as a standard Limit order)
+          // 2. Fire Take Profit 
           try {
               const tpPayload = {
                   client_order_id: `nx_tp_${Date.now()}`,
                   product_id: coinbaseProduct,
                   side: closingSide,
                   order_configuration: {
-                      limit_limit_gtc: {
-                          limit_price: tpPrice.toString(),
-                          base_size: orderQty.toString()
-                      }
+                      limit_limit_gtc: { limit_price: tpPrice.toString(), base_size: orderQty.toString() }
                   }
               };
-              const tpToken = generateToken('POST', path);
               const tpResp = await fetch(`https://api.coinbase.com${path}`, {
-                  method: 'POST',
-                  headers: { 'Authorization': `Bearer ${tpToken}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify(tpPayload)
+                  method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload)
               });
-              if (tpResp.ok) console.log(`[BRACKET] Take Profit successfully resting on exchange.`);
-              else console.error(`[BRACKET WARN] Take Profit rejected:`, await tpResp.text());
+              if (tpResp.ok) console.log(`[BRACKET] Take Profit successfully locked.`);
           } catch (e) { console.error("[BRACKET ERROR] TP failed:", e.message); }
       }
       
     } else {
       // 🟢 PAPER DRY-RUN
-      // THE FIX: Route paper price checks to the Spot market to bypass strict Futures API key checks
       let paperProduct = coinbaseProduct;
-      if (paperProduct.includes('-PERP')) {
-          paperProduct = paperProduct.split('-')[0] + '-USD';
-      }
+      if (paperProduct.includes('-PERP')) paperProduct = paperProduct.split('-')[0] + '-USD';
 
       const path = `/api/v3/brokerage/products/${paperProduct}`;
-      const token = generateToken('GET', path);
-
       const resp = await fetch(`https://api.coinbase.com${path}`, {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${token}` }
+        method: 'GET', headers: { 'Authorization': `Bearer ${generateToken('GET', path)}` }
       });
       
       const result = await resp.json();
-      if (!resp.ok) throw new Error(`Coinbase Reject: ${JSON.stringify(result)}`);
+      if (!resp.ok) throw new Error(`Coinbase Paper Reject: ${JSON.stringify(result)}`);
       
-      // Only overwrite the price if it's a MARKET order. Limit orders stay at the requested price.
       if (orderType === 'MARKET') executionPrice = parseFloat(result.price || data.price);
-      
       console.log(`[PAPER] Verified ${orderType} price: $${executionPrice}`);
     }
 
     // 3. PROPER STATE MANAGEMENT 
     if (openTrade) {
       if (openTrade.side !== side) {
+        console.log(`[SUPABASE] Closing existing ${openTrade.side} position for ${rawSymbol}...`);
         const pnl = openTrade.side === 'BUY' 
           ? (executionPrice - openTrade.entry_price) * orderQty
           : (openTrade.entry_price - executionPrice) * orderQty;
 
-// Preserves the original Oracle entry critique and appends the exit reason to the bottom
-const updatedReason = openTrade.reason 
-? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${tradeReason || 'MANUAL_CLOSE'}` 
-: (tradeReason || 'MANUAL_CLOSE');
+        const updatedReason = openTrade.reason 
+            ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${tradeReason || 'MANUAL_CLOSE'}` 
+            : (tradeReason || 'MANUAL_CLOSE');
 
-const { error: updateError } = await supabase.from('trade_logs').update({
-exit_price: executionPrice,
-pnl: pnl,
-exit_time: new Date().toISOString(),
-reason: updatedReason // <--- Safe append!
-}).eq('id', openTrade.id);
+        const { error: updateError } = await supabase.from('trade_logs').update({
+            exit_price: executionPrice,
+            pnl: pnl,
+            exit_time: new Date().toISOString(),
+            reason: updatedReason 
+        }).eq('id', openTrade.id);
 
         if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
         executionStatus = 'closed_position';
       } else {
+        console.log(`[SUPABASE] Ignored duplicate ${side} order for ${rawSymbol}.`);
         return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
       }
     } else {
-      // BRAND NEW ISOLATED TRADE
+      console.log(`[SUPABASE] Inserting brand new ${side} position for ${rawSymbol}...`);
       const { error: insertError } = await supabase.from('trade_logs').insert([{
         symbol: rawSymbol,
         side: side,
@@ -249,18 +226,15 @@ reason: updatedReason // <--- Safe append!
         market_type: marketType,
         tp_price: tpPrice,
         sl_price: slPrice,
-        reason: tradeReason // <--- Logs the Oracle's Conviction logic
+        reason: tradeReason 
       }]);
 
       if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
       executionStatus = orderType === 'LIMIT' ? 'opened_limit_position' : 'opened_position';
     }
 
-    return res.status(200).json({ 
-      status: executionStatus, 
-      product: coinbaseProduct, 
-      price: executionPrice 
-    });
+    console.log(`[SUPABASE] Operation Complete: ${executionStatus}`);
+    return res.status(200).json({ status: executionStatus, product: coinbaseProduct, price: executionPrice });
 
   } catch (err) {
     console.error("[EXECUTE FAULT]:", err.message);

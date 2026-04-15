@@ -16,7 +16,6 @@ const supabase = createClient(
 // Helper function for the Watchdog to sign Coinbase API requests
 function generateCoinbaseToken(method, path, apiKey, apiSecret) {
   const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
-  // THE FIX: Strip query parameters out of the URI before signing
   const uriPath = path.split('?')[0]; 
   return jwt.sign(
       { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `${method} api.coinbase.com${uriPath}` },
@@ -70,73 +69,110 @@ export default async function handler(req, res) {
         const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
         let forcedExit = null;
 
-        // --- NEW: THE LIMIT ORDER WATCHDOG (EXCHANGE SYNC) ---
-        if (openTrade && config.execution_mode === 'LIVE' && openTrade.tp_price && openTrade.sl_price) {
-            try {
-                let coinbaseProduct = asset.toUpperCase().trim();
-                if (!coinbaseProduct.includes('-')) {
-                    if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
-                    else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
-                    else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
-                }
+        // --- NEW: THE LIMIT ORDER WATCHDOG & TIME-TO-LIVE SWEEPER ---
+        if (openTrade) {
+            let activePosition = null;
+            let openOrders = [];
+            
+            let coinbaseProduct = asset.toUpperCase().trim();
+            if (!coinbaseProduct.includes('-')) {
+                if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+                else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+                else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
+            }
 
-                // 1. Check if the Limit Order actually filled and became a live position
-                const posPath = '/api/v3/brokerage/cfm/positions';
-                const posToken = generateCoinbaseToken('GET', posPath, apiKeyName, apiSecret);
-                const posResp = await fetch(`https://api.coinbase.com${posPath}`, { headers: { 'Authorization': `Bearer ${posToken}` } });
-                
-                if (posResp.ok) {
-                    const posData = await posResp.json();
-                    const activePosition = posData.positions?.find(p => p.product_id === coinbaseProduct && parseFloat(p.number_of_contracts) > 0);
-
-                    if (activePosition) {
-                        // 2. Position is live. Check if TP/SL brackets are already deployed
-                        const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
-                        const orderToken = generateCoinbaseToken('GET', orderPath, apiKeyName, apiSecret);
-                        const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${orderToken}` } });
-                        
-                        if (orderResp.ok) {
-                            const orderData = await orderResp.json();
-                            
-                            // If no open orders exist, the limit filled but the brackets are missing. Deploy them!
-                            if (!orderData.orders || orderData.orders.length === 0) {
-                                console.log(`[WATCHDOG] Detected active position for ${coinbaseProduct} with missing brackets. Deploying TP/SL...`);
-                                
-                                const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
-                                const stopDir = openTrade.side === 'BUY' ? 'STOP_DIRECTION_STOP_DOWN' : 'STOP_DIRECTION_STOP_UP';
-                                const orderQty = activePosition.number_of_contracts;
-                                const executePath = '/api/v3/brokerage/orders';
-                                
-                                // Fire Stop Loss Bracket
-                                try {
-                                    const slPayload = {
-                                        client_order_id: `nx_sl_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
-                                        order_configuration: { stop_limit_stop_limit_gtc: { stop_direction: stopDir, stop_price: openTrade.sl_price.toString(), limit_price: openTrade.sl_price.toString(), base_size: orderQty.toString() } }
-                                    };
-                                    await fetch(`https://api.coinbase.com${executePath}`, {
-                                        method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload)
-                                    });
-                                } catch (e) { console.error("[WATCHDOG] SL Bracket failed:", e.message); }
-
-                                // Fire Take Profit Bracket
-                                try {
-                                    const tpPayload = {
-                                        client_order_id: `nx_tp_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
-                                        order_configuration: { limit_limit_gtc: { limit_price: openTrade.tp_price.toString(), base_size: orderQty.toString() } }
-                                    };
-                                    await fetch(`https://api.coinbase.com${executePath}`, {
-                                        method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload)
-                                    });
-                                } catch (e) { console.error("[WATCHDOG] TP Bracket failed:", e.message); }
-                            }
-                        }
+            if (config.execution_mode === 'LIVE') {
+                try {
+                    // 1. Fetch real positions and orders simultaneously from Coinbase
+                    const posPath = '/api/v3/brokerage/cfm/positions';
+                    const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
+                    
+                    const [posResp, orderResp] = await Promise.all([
+                        fetch(`https://api.coinbase.com${posPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', posPath, apiKeyName, apiSecret)}` } }),
+                        fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, apiKeyName, apiSecret)}` } })
+                    ]);
+                    
+                    if (posResp.ok) {
+                        const posData = await posResp.json();
+                        activePosition = posData.positions?.find(p => p.product_id === coinbaseProduct && parseFloat(p.number_of_contracts) > 0);
                     }
-                }
-            } catch (err) { console.error(`[WATCHDOG FAULT]`, err.message); }
+                    if (orderResp.ok) {
+                        const orderData = await orderResp.json();
+                        openOrders = orderData.orders || [];
+                    }
+
+                    // SCENARIO A: Limit Filled -> Position is active, but missing brackets
+                    if (activePosition && openOrders.length === 0 && openTrade.tp_price && openTrade.sl_price) {
+                        console.log(`[WATCHDOG] Detected active position for ${coinbaseProduct} with missing brackets. Deploying TP/SL...`);
+                        
+                        const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
+                        const stopDir = openTrade.side === 'BUY' ? 'STOP_DIRECTION_STOP_DOWN' : 'STOP_DIRECTION_STOP_UP';
+                        const orderQty = activePosition.number_of_contracts;
+                        const executePath = '/api/v3/brokerage/orders';
+                        
+                        try {
+                            const slPayload = {
+                                client_order_id: `nx_sl_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                                order_configuration: { stop_limit_stop_limit_gtc: { stop_direction: stopDir, stop_price: openTrade.sl_price.toString(), limit_price: openTrade.sl_price.toString(), base_size: orderQty.toString() } }
+                            };
+                            await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload) });
+                        } catch (e) { console.error("[WATCHDOG] SL Bracket failed:", e.message); }
+
+                        try {
+                            const tpPayload = {
+                                client_order_id: `nx_tp_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                                order_configuration: { limit_limit_gtc: { limit_price: openTrade.tp_price.toString(), base_size: orderQty.toString() } }
+                            };
+                            await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
+                        } catch (e) { console.error("[WATCHDOG] TP Bracket failed:", e.message); }
+                    }
+
+                } catch (err) { console.error(`[WATCHDOG FAULT]`, err.message); }
+            }
+
+// SCENARIO B: Stale Limit Sweeper (Applies to both LIVE and PAPER)
+            // If activePosition is null, it means the limit order is still sitting out there.
+            if (!activePosition) {
+              const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
+              
+              // If the limit order has been open for more than 15 minutes, sweep it!
+              if (minutesOpen > 15) {
+                  console.log(`[SWEEPER] Stale limit order detected for ${coinbaseProduct} (${minutesOpen.toFixed(1)} mins old). Canceling...`);
+                  
+                  if (config.execution_mode === 'LIVE' && openOrders.length > 0) {
+                      try {
+                          // THE FIX: Sniper Targeting. Only find the exact order that matches this strategy's entry price and side!
+                          const targetOrder = openOrders.find(o => 
+                              o.side === openTrade.side && 
+                              o.order_configuration?.limit_limit_gtc?.limit_price === openTrade.entry_price.toString()
+                          );
+
+                          if (targetOrder) {
+                              console.log(`[SWEEPER] Found exact match (Order ID: ${targetOrder.order_id}). Firing cancellation...`);
+                              const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                              await fetch(`https://api.coinbase.com${cancelPath}`, {
+                                  method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] })
+                              });
+                          }
+                      } catch (e) { console.error("[SWEEPER] Failed to cancel Coinbase order:", e.message); }
+                  }
+                  
+                  // Mark it expired in Supabase so the bot can trade again
+                  const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
+                  await supabase.from('trade_logs').update({
+                      exit_price: openTrade.entry_price, // Mark at entry to represent $0.00 PnL
+                      pnl: 0,
+                      exit_time: new Date().toISOString(),
+                      reason: updatedReason
+                  }).eq('id', openTrade.id);
+                  
+                  forcedExit = 'STALE_LIMIT_EXPIRED';
+              }
+          }
         }
 
         // --- THE ORACLE EMERGENCY CHECK (-8% Pain Threshold) ---
-        if (openTrade) {
+        if (openTrade && !forcedExit) {
             const entryPrice = parseFloat(openTrade.entry_price);
             const pnlPercent = (openTrade.side === 'BUY' || openTrade.side === 'LONG') 
                 ? (currentPrice - entryPrice) / entryPrice 
@@ -205,8 +241,7 @@ export default async function handler(req, res) {
             decision.entryPrice = oracleVerdict.limit_price; 
             decision.orderType = 'LIMIT';
             
-// --- NEW: THE TP/SL PASS-THROUGH ---
-            // If the strategy calculated strict ATR targets, move them down/up to match the new limit entry
+            // --- THE TP/SL PASS-THROUGH ---
             if (decision.tpPrice && decision.slPrice) {
               const originalEntry = currentPrice;
               const tpDistance = decision.tpPrice - originalEntry;
@@ -220,7 +255,7 @@ export default async function handler(req, res) {
               decision.slPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
          }
          
-         // THE FIX: Format to 2 decimals for proper Coinbase routing
+         // Format to 2 decimals for proper Coinbase routing
          decision.tpPrice = parseFloat(decision.tpPrice.toFixed(2));
          decision.slPrice = parseFloat(decision.slPrice.toFixed(2));
             
@@ -245,12 +280,15 @@ export default async function handler(req, res) {
     await supabase.from('scan_results').insert([scanEntry]);
 
         // THE EXECUTION TRIGGER
-        if (decision.signal) {
+        if (decision.signal && decision.signal !== null) {
           let finalQty = config.parameters?.qty || 10; 
           if (config.parameters?.target_usd && decision.entryPrice) {
               finalQty = config.parameters.target_usd / decision.entryPrice;
           }
 
+          // If the sweeper killed the trade, it's not actually an entry, we send the kill request.
+          // Wait, if forcedExit, the execution engine handles it automatically as a close because openTrade exists.
+          
           const tradePayload = {
               symbol: asset, 
               strategy_id: config.strategy, 
@@ -315,7 +353,6 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     const start = end - lookbackSeconds; 
     const query = `?start=${start}&end=${end}&granularity=${safeGranularity}`;
 
-    // --- NEW: THE ES256 SECURE CRYPTO FIX ---
     const privateKey = crypto.createPrivateKey({ key: secret, format: 'pem' });
     const token = jwt.sign({
       iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
