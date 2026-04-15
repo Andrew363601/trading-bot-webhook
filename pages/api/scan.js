@@ -69,11 +69,8 @@ export default async function handler(req, res) {
         const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
         let forcedExit = null;
 
-        // --- THE LIMIT ORDER WATCHDOG & TIME-TO-LIVE SWEEPER ---
+        // --- THE WATCHDOG, SWEEPER & NATIVE SYNC ---
         if (openTrade) {
-            let activePosition = null;
-            let openOrders = [];
-            
             let coinbaseProduct = asset.toUpperCase().trim();
             if (!coinbaseProduct.includes('-')) {
                 if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
@@ -81,9 +78,9 @@ export default async function handler(req, res) {
                 else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
             }
 
+            // Only ping Coinbase and manage state if the trade is actually LIVE
             if (config.execution_mode === 'LIVE') {
                 try {
-                    // 1. Fetch real positions and orders simultaneously from Coinbase
                     const posPath = '/api/v3/brokerage/cfm/positions';
                     const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
                     
@@ -92,6 +89,9 @@ export default async function handler(req, res) {
                         fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, apiKeyName, apiSecret)}` } })
                     ]);
                     
+                    let activePosition = null;
+                    let openOrders = [];
+
                     if (posResp.ok) {
                         const posData = await posResp.json();
                         activePosition = posData.positions?.find(p => p.product_id === coinbaseProduct && parseFloat(p.number_of_contracts) > 0);
@@ -101,12 +101,61 @@ export default async function handler(req, res) {
                         openOrders = orderData.orders || [];
                     }
 
-                    // SCENARIO A: Limit Filled -> Position is active. Check brackets independently.
-                    if (activePosition && openTrade.tp_price && openTrade.sl_price) {
+                    const entryOrderExists = openOrders.some(o => o.side === openTrade.side && o.order_configuration?.limit_limit_gtc?.limit_price === openTrade.entry_price.toString());
+
+                    // SCENARIO 0: Native Exchange Sync
+                    // If there is no position AND no entry limit order waiting, Coinbase natively closed the trade (TP/SL/Liquidation).
+                    if (!activePosition && !entryOrderExists) {
+                        const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
+                        if (minutesOpen > 2) {
+                            console.log(`[SYNC] Trade ${openTrade.id} missing from Coinbase. Syncing native close...`);
+                            const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: EXCHANGE_NATIVE_CLOSE` : 'EXCHANGE_NATIVE_CLOSE';
+                            await supabase.from('trade_logs').update({
+                                exit_price: currentPrice, // Approximate closing price fallback
+                                pnl: (openTrade.side === 'BUY' ? currentPrice - openTrade.entry_price : openTrade.entry_price - currentPrice) * openTrade.qty,
+                                exit_time: new Date().toISOString(),
+                                reason: updatedReason
+                            }).eq('id', openTrade.id);
+                            continue; // 🔴 CRITICAL: Skips the rest of the loop so it doesn't trigger execution engine
+                        }
+                    }
+
+                    // SCENARIO A: Stale Limit Sweeper
+                    // If there is no active position BUT the entry limit order is sitting there, it's pending.
+                    if (!activePosition && entryOrderExists) {
+                        const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         
-                        // Check specifically for existing TP and SL order types
+                        if (minutesOpen > 15) {
+                            console.log(`[SWEEPER] Stale limit order detected for ${coinbaseProduct} (${minutesOpen.toFixed(1)} mins old). Canceling...`);
+                            const targetOrder = openOrders.find(o => o.side === openTrade.side && o.order_configuration?.limit_limit_gtc?.limit_price === openTrade.entry_price.toString());
+                            
+                            if (targetOrder) {
+                                const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                await fetch(`https://api.coinbase.com${cancelPath}`, {
+                                    method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] })
+                                });
+                            }
+                            
+                            const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
+                            await supabase.from('trade_logs').update({
+                                exit_price: openTrade.entry_price, // Mark at entry to represent $0.00 PnL
+                                pnl: 0,
+                                exit_time: new Date().toISOString(),
+                                reason: updatedReason
+                            }).eq('id', openTrade.id);
+                            continue; // 🔴 CRITICAL: Skips loop. NO GHOST TRADES!
+                        }
+                    }
+
+                    // SCENARIO B: Bracket Deployment (Limit Filled)
+                    if (activePosition && openTrade.tp_price && openTrade.sl_price) {
                         const hasTP = openOrders.some(o => o.order_configuration?.limit_limit_gtc);
                         const hasSL = openOrders.some(o => o.order_configuration?.stop_limit_stop_limit_gtc);
+
+                        // If brackets are locked in on Coinbase, disable the Vercel virtual enforcer to prevent race conditions
+                        if (hasTP && hasSL) {
+                            openTrade.skipVirtualEnforcer = true;
+                        }
 
                         const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
                         const stopDir = openTrade.side === 'BUY' ? 'STOP_DIRECTION_STOP_DOWN' : 'STOP_DIRECTION_STOP_UP';
@@ -120,16 +169,12 @@ export default async function handler(req, res) {
                                     client_order_id: `nx_sl_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
                                     order_configuration: { 
                                         stop_limit_stop_limit_gtc: { 
-                                            stop_direction: stopDir, 
-                                            stop_price: openTrade.sl_price.toString(), 
-                                            limit_price: openTrade.sl_price.toString(), 
-                                            base_size: orderQty.toString(),
-                                            reduce_only: true // <--- THE SAFETY FIX
+                                            stop_direction: stopDir, stop_price: openTrade.sl_price.toString(), limit_price: openTrade.sl_price.toString(), base_size: orderQty.toString(), reduce_only: true 
                                         } 
                                     }
                                 };
                                 await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload) });
-                            } catch (e) { console.error("[WATCHDOG] SL Bracket failed:", e.message); }
+                            } catch (e) {}
                         }
 
                         if (!hasTP) {
@@ -138,56 +183,16 @@ export default async function handler(req, res) {
                                 const tpPayload = {
                                     client_order_id: `nx_tp_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
                                     order_configuration: { 
-                                        limit_limit_gtc: { 
-                                            limit_price: openTrade.tp_price.toString(), 
-                                            base_size: orderQty.toString(),
-                                            reduce_only: true // <--- THE SAFETY FIX
-                                        } 
+                                        limit_limit_gtc: { limit_price: openTrade.tp_price.toString(), base_size: orderQty.toString(), reduce_only: true } 
                                     }
                                 };
                                 await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
-                            } catch (e) { console.error("[WATCHDOG] TP Bracket failed:", e.message); }
+                            } catch (e) {}
                         }
                     }
 
                 } catch (err) { console.error(`[WATCHDOG FAULT]`, err.message); }
             }
-
-            // SCENARIO B: Stale Limit Sweeper (Applies to both LIVE and PAPER)
-            if (!activePosition) {
-              const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
-              
-              if (minutesOpen > 15) {
-                  console.log(`[SWEEPER] Stale limit order detected for ${coinbaseProduct} (${minutesOpen.toFixed(1)} mins old). Canceling...`);
-                  
-                  if (config.execution_mode === 'LIVE' && openOrders.length > 0) {
-                      try {
-                          const targetOrder = openOrders.find(o => 
-                              o.side === openTrade.side && 
-                              o.order_configuration?.limit_limit_gtc?.limit_price === openTrade.entry_price.toString()
-                          );
-
-                          if (targetOrder) {
-                              console.log(`[SWEEPER] Found exact match (Order ID: ${targetOrder.order_id}). Firing cancellation...`);
-                              const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                              await fetch(`https://api.coinbase.com${cancelPath}`, {
-                                  method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] })
-                              });
-                          }
-                      } catch (e) { console.error("[SWEEPER] Failed to cancel Coinbase order:", e.message); }
-                  }
-                  
-                  const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
-                  await supabase.from('trade_logs').update({
-                      exit_price: openTrade.entry_price, 
-                      pnl: 0,
-                      exit_time: new Date().toISOString(),
-                      reason: updatedReason
-                  }).eq('id', openTrade.id);
-                  
-                  forcedExit = 'STALE_LIMIT_EXPIRED';
-              }
-          }
         }
 
         // --- THE ORACLE EMERGENCY CHECK (-8% Pain Threshold) ---
@@ -215,14 +220,14 @@ export default async function handler(req, res) {
         let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
         if (decision.error) continue;
 
-        // VIRTUAL TP/SL ENFORCER (Fallback for Paper Trading or un-bracketed limits)
-        if (openTrade && openTrade.sl_price && openTrade.tp_price && !forcedExit) {
+        // VIRTUAL TP/SL ENFORCER (Now safely bypassed if LIVE brackets are active)
+        if (openTrade && openTrade.sl_price && openTrade.tp_price && !forcedExit && !openTrade.skipVirtualEnforcer) {
             if (openTrade.side === 'BUY' || openTrade.side === 'LONG') {
-                if (currentPrice <= openTrade.sl_price) forcedExit = 'STOP_LOSS';
-                else if (currentPrice >= openTrade.tp_price) forcedExit = 'TAKE_PROFIT';
+                if (currentPrice <= openTrade.sl_price) { forcedExit = 'STOP_LOSS'; console.log(`[VIRTUAL ENFORCER] BUY Stop Loss hit! Price: $${currentPrice} <= SL: $${openTrade.sl_price}`); }
+                else if (currentPrice >= openTrade.tp_price) { forcedExit = 'TAKE_PROFIT'; console.log(`[VIRTUAL ENFORCER] BUY Take Profit hit! Price: $${currentPrice} >= TP: $${openTrade.tp_price}`); }
             } else {
-                if (currentPrice >= openTrade.sl_price) forcedExit = 'STOP_LOSS';
-                else if (currentPrice <= openTrade.tp_price) forcedExit = 'TAKE_PROFIT';
+                if (currentPrice >= openTrade.sl_price) { forcedExit = 'STOP_LOSS'; console.log(`[VIRTUAL ENFORCER] SELL Stop Loss hit! Price: $${currentPrice} >= SL: $${openTrade.sl_price}`); }
+                else if (currentPrice <= openTrade.tp_price) { forcedExit = 'TAKE_PROFIT'; console.log(`[VIRTUAL ENFORCER] SELL Take Profit hit! Price: $${currentPrice} <= TP: $${openTrade.tp_price}`); }
             }
         }
 
@@ -243,39 +248,25 @@ export default async function handler(req, res) {
         const isDuplicate = openTrade && !isReversal;
 
         if (isDuplicate) {
-            // Silently ignore duplicate signals to prevent stacking limits
             decision.signal = null;
         } else {
             console.log(`[ORACLE INITIATED] Scoring ${isReversal ? 'REVERSAL' : 'ENTRY'} ${decision.signal} signal for ${asset}...`);
             
-            // Build the contextual PnL package for the Oracle if reversing
             let currentTradeContext = null;
             if (isReversal) {
                 const entry = parseFloat(openTrade.entry_price);
                 const pnl = openTrade.side === 'BUY' ? (currentPrice - entry) / entry : (entry - currentPrice) / entry;
                 currentTradeContext = {
-                    side: openTrade.side,
-                    entry_price: entry,
-                    pnl_percent: (pnl * 100).toFixed(2)
+                    side: openTrade.side, entry_price: entry, pnl_percent: (pnl * 100).toFixed(2)
                 };
             }
 
             const oracleVerdict = await evaluateTradeIdea({
-                mode: isReversal ? 'REVERSAL' : 'ENTRY', 
-                asset, 
-                strategy: config.strategy, 
-                signal: decision.signal, 
-                currentPrice, 
-                candles: triggerCandles, 
-                marketType: config.parameters?.market_type || 'FUTURES',
-                openTrade: currentTradeContext
+                mode: isReversal ? 'REVERSAL' : 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, 
+                currentPrice, candles: triggerCandles, marketType: config.parameters?.market_type || 'FUTURES', openTrade: currentTradeContext
             });
 
-            decision.telemetry = { 
-                ...decision.telemetry, 
-                oracle_score: oracleVerdict.conviction_score, 
-                oracle_reasoning: oracleVerdict.reasoning 
-            };
+            decision.telemetry = { ...decision.telemetry, oracle_score: oracleVerdict.conviction_score, oracle_reasoning: oracleVerdict.reasoning };
 
             if (oracleVerdict.action === 'VETO') {
                 console.log(`[ORACLE VETO] Signal rejected. Score: ${oracleVerdict.conviction_score}. Reasoning: ${oracleVerdict.reasoning}`);
@@ -283,11 +274,9 @@ export default async function handler(req, res) {
                 decision.statusOverride = 'ORACLE VETO'; 
             } else {
                 console.log(`[ORACLE APPROVED] Score: ${oracleVerdict.conviction_score}. Mutating to LIMIT order at $${oracleVerdict.limit_price}. Size Multiplier: ${oracleVerdict.size_multiplier}x`);
-                
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = 'LIMIT';
                 
-                // --- THE TP/SL PASS-THROUGH ---
                 if (decision.tpPrice && decision.slPrice) {
                   const originalEntry = currentPrice;
                   const tpDistance = decision.tpPrice - originalEntry;
@@ -311,19 +300,10 @@ export default async function handler(req, res) {
         }
     }
 
-    const finalStatus = decision.statusOverride 
-        ? decision.statusOverride 
-        : (decision.signal ? (forcedExit ? `HIT_${forcedExit}` : "RESONANT") : "STABLE");
+    const finalStatus = decision.statusOverride ? decision.statusOverride : (decision.signal ? (forcedExit ? `HIT_${forcedExit}` : "RESONANT") : "STABLE");
 
-    // Only log to Supabase if the signal wasn't suppressed by a duplicate check
     if (!openTrade || (openTrade && decision.signal !== null)) {
-        const scanEntry = {
-          strategy: config.strategy,
-          asset,
-          telemetry: decision.telemetry || {},
-          status: finalStatus
-        };
-        
+        const scanEntry = { strategy: config.strategy, asset, telemetry: decision.telemetry || {}, status: finalStatus };
         results.push(scanEntry);
         await supabase.from('scan_results').insert([scanEntry]);
     }
@@ -336,33 +316,21 @@ export default async function handler(req, res) {
           }
           
           const tradePayload = {
-              symbol: asset, 
-              strategy_id: config.strategy, 
-              version: config.version || 'v1.0',
-              side: decision.signal,
-              order_type: decision.orderType || 'MARKET',
-              price: decision.entryPrice,
-              tp_price: decision.tpPrice || null,
-              sl_price: decision.slPrice || null,
-              execution_mode: config.execution_mode || 'PAPER',
-              leverage: decision.leverage || 1,
-              market_type: decision.marketType || 'FUTURES',
-              qty: parseFloat(finalQty.toFixed(2)),
+              symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: decision.signal,
+              order_type: decision.orderType || 'MARKET', price: decision.entryPrice, tp_price: decision.tpPrice || null,
+              sl_price: decision.slPrice || null, execution_mode: config.execution_mode || 'PAPER', leverage: decision.leverage || 1,
+              market_type: decision.marketType || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)),
               reason: decision.telemetry?.oracle_reasoning || decision.telemetry?.exit_reason || null 
           };
           
           const protocol = req.headers['x-forwarded-proto'] || 'http';
           const host = req.headers.host;
           await fetch(`${protocol}://${host}/api/execute-trade`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(tradePayload)
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tradePayload)
           });
         }
 
-      } catch (assetErr) {
-        console.error(`[ASSET ERROR] ${asset}:`, assetErr.message);
-      }
+      } catch (assetErr) { console.error(`[ASSET ERROR] ${asset}:`, assetErr.message); }
     }
 
     return res.status(200).json({ status: "Dynamic Scan Complete", results });
@@ -408,25 +376,10 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     const resp = await fetch(`https://api.coinbase.com${path}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
     const data = await resp.json();
     
-    if (!resp.ok) {
-        console.error(`[COINBASE API REJECTED] ${coinbaseProduct} | ${safeGranularity} | Status: ${resp.status}`, data);
-        return null;
-    }
+    if (!resp.ok) { return null; }
+    if (!data.candles || data.candles.length === 0) { return null; }
 
-    if (!data.candles || data.candles.length === 0) {
-        console.error(`[COINBASE EMPTY CANDLES] ${coinbaseProduct} | ${safeGranularity} | Data:`, data);
-        return null;
-    }
+    return data.candles.map(c => ({ close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
 
-    return data.candles.map(c => ({ 
-        close: parseFloat(c.close), 
-        high: parseFloat(c.high), 
-        low: parseFloat(c.low),
-        volume: parseFloat(c.volume)
-    })).reverse();
-
-  } catch (err) {
-    console.error(`[FETCH FATAL ERROR] ${asset}:`, err.message);
-    return null;
-  }
+  } catch (err) { return null; }
 }
