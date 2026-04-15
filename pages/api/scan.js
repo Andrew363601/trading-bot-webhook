@@ -69,7 +69,7 @@ export default async function handler(req, res) {
         const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
         let forcedExit = null;
 
-        // --- NEW: THE LIMIT ORDER WATCHDOG & TIME-TO-LIVE SWEEPER ---
+        // --- THE LIMIT ORDER WATCHDOG & TIME-TO-LIVE SWEEPER ---
         if (openTrade) {
             let activePosition = null;
             let openOrders = [];
@@ -130,18 +130,15 @@ export default async function handler(req, res) {
                 } catch (err) { console.error(`[WATCHDOG FAULT]`, err.message); }
             }
 
-// SCENARIO B: Stale Limit Sweeper (Applies to both LIVE and PAPER)
-            // If activePosition is null, it means the limit order is still sitting out there.
+            // SCENARIO B: Stale Limit Sweeper (Applies to both LIVE and PAPER)
             if (!activePosition) {
               const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
               
-              // If the limit order has been open for more than 15 minutes, sweep it!
               if (minutesOpen > 15) {
                   console.log(`[SWEEPER] Stale limit order detected for ${coinbaseProduct} (${minutesOpen.toFixed(1)} mins old). Canceling...`);
                   
                   if (config.execution_mode === 'LIVE' && openOrders.length > 0) {
                       try {
-                          // THE FIX: Sniper Targeting. Only find the exact order that matches this strategy's entry price and side!
                           const targetOrder = openOrders.find(o => 
                               o.side === openTrade.side && 
                               o.order_configuration?.limit_limit_gtc?.limit_price === openTrade.entry_price.toString()
@@ -157,10 +154,9 @@ export default async function handler(req, res) {
                       } catch (e) { console.error("[SWEEPER] Failed to cancel Coinbase order:", e.message); }
                   }
                   
-                  // Mark it expired in Supabase so the bot can trade again
                   const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                   await supabase.from('trade_logs').update({
-                      exit_price: openTrade.entry_price, // Mark at entry to represent $0.00 PnL
+                      exit_price: openTrade.entry_price, 
                       pnl: 0,
                       exit_time: new Date().toISOString(),
                       reason: updatedReason
@@ -217,50 +213,77 @@ export default async function handler(req, res) {
             decision.telemetry = { ...decision.telemetry, exit_reason: forcedExit };
         } 
         
-       // --- THE ORACLE LIMIT ORDER INTERCEPTOR ---
-       else if (decision.signal && !openTrade) {
-        console.log(`[ORACLE INITIATED] Scoring ${decision.signal} signal for ${asset}...`);
-        
-        const oracleVerdict = await evaluateTradeIdea({
-            mode: 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, currentPrice, candles: triggerCandles, marketType: config.parameters?.market_type || 'FUTURES' 
-        });
+       // --- THE ORACLE CONTEXT AWARE INTERCEPTOR ---
+       else if (decision.signal) {
+        const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
+        const isReversal = openTrade && openTrade.side !== normalizedSignal;
+        const isDuplicate = openTrade && !isReversal;
 
-        decision.telemetry = { 
-            ...decision.telemetry, 
-            oracle_score: oracleVerdict.conviction_score, 
-            oracle_reasoning: oracleVerdict.reasoning 
-        };
-
-        if (oracleVerdict.action === 'VETO') {
-            console.log(`[ORACLE VETO] Signal rejected. Score: ${oracleVerdict.conviction_score}. Reasoning: ${oracleVerdict.reasoning}`);
-            decision.signal = null; 
-            decision.statusOverride = 'ORACLE VETO'; 
+        if (isDuplicate) {
+            // Silently ignore duplicate signals to prevent stacking limits
+            decision.signal = null;
         } else {
-            console.log(`[ORACLE APPROVED] Score: ${oracleVerdict.conviction_score}. Mutating to LIMIT order at $${oracleVerdict.limit_price}. Size Multiplier: ${oracleVerdict.size_multiplier}x`);
+            console.log(`[ORACLE INITIATED] Scoring ${isReversal ? 'REVERSAL' : 'ENTRY'} ${decision.signal} signal for ${asset}...`);
             
-            decision.entryPrice = oracleVerdict.limit_price; 
-            decision.orderType = 'LIMIT';
-            
-            // --- THE TP/SL PASS-THROUGH ---
-            if (decision.tpPrice && decision.slPrice) {
-              const originalEntry = currentPrice;
-              const tpDistance = decision.tpPrice - originalEntry;
-              const slDistance = originalEntry - decision.slPrice;
-              decision.tpPrice = decision.entryPrice + (decision.signal === 'BUY' ? Math.abs(tpDistance) : -Math.abs(tpDistance));
-              decision.slPrice = decision.entryPrice - (decision.signal === 'BUY' ? Math.abs(slDistance) : -Math.abs(slDistance));
-         } else {
-              const slP = config.parameters?.sl_percent || 0.01;
-              const tpP = config.parameters?.tp_percent || 0.02;
-              decision.tpPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
-              decision.slPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
-         }
-         
-         // Format to 2 decimals for proper Coinbase routing
-         decision.tpPrice = parseFloat(decision.tpPrice.toFixed(2));
-         decision.slPrice = parseFloat(decision.slPrice.toFixed(2));
-            
-            if (oracleVerdict.size_multiplier > 1.0 && config.parameters?.target_usd) {
-                 config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
+            // Build the contextual PnL package for the Oracle if reversing
+            let currentTradeContext = null;
+            if (isReversal) {
+                const entry = parseFloat(openTrade.entry_price);
+                const pnl = openTrade.side === 'BUY' ? (currentPrice - entry) / entry : (entry - currentPrice) / entry;
+                currentTradeContext = {
+                    side: openTrade.side,
+                    entry_price: entry,
+                    pnl_percent: (pnl * 100).toFixed(2)
+                };
+            }
+
+            const oracleVerdict = await evaluateTradeIdea({
+                mode: isReversal ? 'REVERSAL' : 'ENTRY', 
+                asset, 
+                strategy: config.strategy, 
+                signal: decision.signal, 
+                currentPrice, 
+                candles: triggerCandles, 
+                marketType: config.parameters?.market_type || 'FUTURES',
+                openTrade: currentTradeContext
+            });
+
+            decision.telemetry = { 
+                ...decision.telemetry, 
+                oracle_score: oracleVerdict.conviction_score, 
+                oracle_reasoning: oracleVerdict.reasoning 
+            };
+
+            if (oracleVerdict.action === 'VETO') {
+                console.log(`[ORACLE VETO] Signal rejected. Score: ${oracleVerdict.conviction_score}. Reasoning: ${oracleVerdict.reasoning}`);
+                decision.signal = null; 
+                decision.statusOverride = 'ORACLE VETO'; 
+            } else {
+                console.log(`[ORACLE APPROVED] Score: ${oracleVerdict.conviction_score}. Mutating to LIMIT order at $${oracleVerdict.limit_price}. Size Multiplier: ${oracleVerdict.size_multiplier}x`);
+                
+                decision.entryPrice = oracleVerdict.limit_price; 
+                decision.orderType = 'LIMIT';
+                
+                // --- THE TP/SL PASS-THROUGH ---
+                if (decision.tpPrice && decision.slPrice) {
+                  const originalEntry = currentPrice;
+                  const tpDistance = decision.tpPrice - originalEntry;
+                  const slDistance = originalEntry - decision.slPrice;
+                  decision.tpPrice = decision.entryPrice + (decision.signal === 'BUY' ? Math.abs(tpDistance) : -Math.abs(tpDistance));
+                  decision.slPrice = decision.entryPrice - (decision.signal === 'BUY' ? Math.abs(slDistance) : -Math.abs(slDistance));
+                } else {
+                  const slP = config.parameters?.sl_percent || 0.01;
+                  const tpP = config.parameters?.tp_percent || 0.02;
+                  decision.tpPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
+                  decision.slPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
+                }
+             
+                decision.tpPrice = parseFloat(decision.tpPrice.toFixed(2));
+                decision.slPrice = parseFloat(decision.slPrice.toFixed(2));
+                
+                if (oracleVerdict.size_multiplier > 1.0 && config.parameters?.target_usd) {
+                     config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
+                }
             }
         }
     }
@@ -269,15 +292,18 @@ export default async function handler(req, res) {
         ? decision.statusOverride 
         : (decision.signal ? (forcedExit ? `HIT_${forcedExit}` : "RESONANT") : "STABLE");
 
-    const scanEntry = {
-      strategy: config.strategy,
-      asset,
-      telemetry: decision.telemetry || {},
-      status: finalStatus
-    };
-    
-    results.push(scanEntry);
-    await supabase.from('scan_results').insert([scanEntry]);
+    // Only log to Supabase if the signal wasn't suppressed by a duplicate check
+    if (!openTrade || (openTrade && decision.signal !== null)) {
+        const scanEntry = {
+          strategy: config.strategy,
+          asset,
+          telemetry: decision.telemetry || {},
+          status: finalStatus
+        };
+        
+        results.push(scanEntry);
+        await supabase.from('scan_results').insert([scanEntry]);
+    }
 
         // THE EXECUTION TRIGGER
         if (decision.signal && decision.signal !== null) {
@@ -285,9 +311,6 @@ export default async function handler(req, res) {
           if (config.parameters?.target_usd && decision.entryPrice) {
               finalQty = config.parameters.target_usd / decision.entryPrice;
           }
-
-          // If the sweeper killed the trade, it's not actually an entry, we send the kill request.
-          // Wait, if forcedExit, the execution engine handles it automatically as a close because openTrade exists.
           
           const tradePayload = {
               symbol: asset, 
