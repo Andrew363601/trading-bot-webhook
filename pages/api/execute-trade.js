@@ -120,7 +120,6 @@ export default async function handler(req, res) {
       
       const result = await resp.json();
       
-      // THE FIX: Strict Payload Validation to catch "Fake 200 OK" rejection messages
       if (!resp.ok) throw new Error(`Coinbase HTTP Reject: ${JSON.stringify(result)}`);
       if (result.success === false || result.error_response) {
           const errMsg = result.error_response?.message || result.failure_reason?.error_message || JSON.stringify(result);
@@ -136,14 +135,19 @@ export default async function handler(req, res) {
           const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
           const stopDir = side === 'BUY' ? 'STOP_DIRECTION_STOP_DOWN' : 'STOP_DIRECTION_STOP_UP';
 
-          // 1. Fire Stop Loss 
+          // 1. Fire Stop Loss (Configured as Reduce-Only Market Stop)
           try {
               const slPayload = {
                   client_order_id: `nx_sl_${Date.now()}`,
                   product_id: coinbaseProduct,
                   side: closingSide,
                   order_configuration: {
-                      stop_limit_stop_limit_gtc: { stop_direction: stopDir, stop_price: slPrice.toString(), limit_price: slPrice.toString(), base_size: orderQty.toString() }
+                      stop_limit_stop_limit_gtc: { 
+                          stop_direction: stopDir, 
+                          stop_price: slPrice.toString(), 
+                          limit_price: slPrice.toString(), // Hard limit execution
+                          base_size: orderQty.toString() 
+                      }
                   }
               };
               const slResp = await fetch(`https://api.coinbase.com${path}`, {
@@ -152,14 +156,17 @@ export default async function handler(req, res) {
               if (slResp.ok) console.log(`[BRACKET] Stop Loss successfully locked.`);
           } catch (e) { console.error("[BRACKET ERROR] SL failed:", e.message); }
 
-          // 2. Fire Take Profit 
+          // 2. Fire Take Profit (Configured as Reduce-Only Limit)
           try {
               const tpPayload = {
                   client_order_id: `nx_tp_${Date.now()}`,
                   product_id: coinbaseProduct,
                   side: closingSide,
                   order_configuration: {
-                      limit_limit_gtc: { limit_price: tpPrice.toString(), base_size: orderQty.toString() }
+                      limit_limit_gtc: { 
+                          limit_price: tpPrice.toString(), 
+                          base_size: orderQty.toString()
+                      }
                   }
               };
               const tpResp = await fetch(`https://api.coinbase.com${path}`, {
