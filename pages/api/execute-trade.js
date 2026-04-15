@@ -135,7 +135,7 @@ export default async function handler(req, res) {
           const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
           const stopDir = side === 'BUY' ? 'STOP_DIRECTION_STOP_DOWN' : 'STOP_DIRECTION_STOP_UP';
 
-          // 1. Fire Stop Loss (Configured as Reduce-Only Market Stop)
+          // 1. Fire Stop Loss 
           try {
               const slPayload = {
                   client_order_id: `nx_sl_${Date.now()}`,
@@ -145,18 +145,26 @@ export default async function handler(req, res) {
                       stop_limit_stop_limit_gtc: { 
                           stop_direction: stopDir, 
                           stop_price: slPrice.toString(), 
-                          limit_price: slPrice.toString(), // Hard limit execution
-                          base_size: orderQty.toString() 
+                          limit_price: slPrice.toString(), 
+                          base_size: orderQty.toString(),
+                          // THE FIX: reduce_only MUST be nested inside the order_configuration
+                          reduce_only: true
                       }
                   }
               };
               const slResp = await fetch(`https://api.coinbase.com${path}`, {
                   method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload)
               });
-              if (slResp.ok) console.log(`[BRACKET] Stop Loss successfully locked.`);
-          } catch (e) { console.error("[BRACKET ERROR] SL failed:", e.message); }
+              
+              const slResult = await slResp.json();
+              if (slResp.ok && slResult.success !== false) {
+                  console.log(`[BRACKET] Stop Loss successfully locked.`);
+              } else {
+                  console.error(`[BRACKET WARN] Stop Loss rejected by Coinbase:`, JSON.stringify(slResult));
+              }
+          } catch (e) { console.error("[BRACKET ERROR] SL failed to send:", e.message); }
 
-          // 2. Fire Take Profit (Configured as Reduce-Only Limit)
+          // 2. Fire Take Profit 
           try {
               const tpPayload = {
                   client_order_id: `nx_tp_${Date.now()}`,
@@ -165,15 +173,23 @@ export default async function handler(req, res) {
                   order_configuration: {
                       limit_limit_gtc: { 
                           limit_price: tpPrice.toString(), 
-                          base_size: orderQty.toString()
+                          base_size: orderQty.toString(),
+                          // THE FIX: reduce_only MUST be nested inside the order_configuration
+                          reduce_only: true
                       }
                   }
               };
               const tpResp = await fetch(`https://api.coinbase.com${path}`, {
                   method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload)
               });
-              if (tpResp.ok) console.log(`[BRACKET] Take Profit successfully locked.`);
-          } catch (e) { console.error("[BRACKET ERROR] TP failed:", e.message); }
+              
+              const tpResult = await tpResp.json();
+              if (tpResp.ok && tpResult.success !== false) {
+                  console.log(`[BRACKET] Take Profit successfully locked.`);
+              } else {
+                  console.error(`[BRACKET WARN] Take Profit rejected by Coinbase:`, JSON.stringify(tpResult));
+              }
+          } catch (e) { console.error("[BRACKET ERROR] TP failed to send:", e.message); }
       }
       
     } else {

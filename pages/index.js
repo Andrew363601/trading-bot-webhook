@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { useChat } from '@ai-sdk/react'; 
+import Link from 'next/link'; // <--- THE FIX: Next.js secure routing component
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet 
@@ -27,7 +28,6 @@ export default function Dashboard() {
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  // THE JAILBREAK: We use our own local state so the SDK cannot freeze the text box!
   const [localInput, setLocalInput] = useState('');
 
   const { messages, append, error, isLoading } = useChat({
@@ -110,7 +110,7 @@ export default function Dashboard() {
     if (!localInput.trim()) return;
     
     const userMsg = localInput;
-    setLocalInput(''); // Instantly clears the box
+    setLocalInput(''); 
     
     try {
         await append({ role: 'user', content: userMsg });
@@ -195,14 +195,20 @@ export default function Dashboard() {
 
   if (loading) return <div className="min-h-screen bg-[#020617] flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">Establishing Nexus...</div>;
 
+  // VISUALIZER STATE LOGIC
+  const latestScan = scanStream[0];
+  const isOracleActive = latestScan?.status === 'RESONANT' || latestScan?.status?.includes('HIT_');
+  const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
+
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4">
-     <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
+      <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
         <div className="flex items-center gap-4">
             <h1 className="text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Command</h1>
-            <a href="/audit" className="text-[10px] font-black uppercase tracking-widest bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+            {/* THE LINK FIX */}
+            <Link href="/audit" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                <Activity size={12} /> Audit Log
-            </a>
+            </Link>
         </div>
         <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2"><Database size={12} /> Sync: wsrioyxzhxxrtzjncfvn</div>
       </header>
@@ -257,7 +263,43 @@ export default function Dashboard() {
         </div>
 
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
-          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[450px] h-[55%] relative shadow-2xl flex flex-col p-4">
+          
+          {/* THE NEW SHINY PIPELINE VISUALIZER */}
+          <div className="bg-slate-900/50 border border-white/10 rounded-3xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden flex-shrink-0">
+            <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/5 via-cyan-500/5 to-emerald-500/5 animate-pulse" />
+            <div className="relative z-10 flex items-center gap-2 w-full px-6">
+               <div className="flex flex-col items-center gap-2 w-16">
+                  <div className="w-8 h-8 rounded-full bg-indigo-500/20 border border-indigo-500/50 flex items-center justify-center text-indigo-400 shadow-[0_0_15px_-3px_rgba(99,102,241,0.4)]">
+                      <Target size={14} className="animate-spin-slow" />
+                  </div>
+                  <span className="text-[8px] font-black uppercase tracking-widest text-indigo-300">Scanner</span>
+               </div>
+               
+               <div className="flex-1 h-[2px] bg-indigo-500/20 relative overflow-hidden rounded-full">
+                  <div className="absolute inset-0 bg-indigo-500/50 w-full animate-pulse" />
+               </div>
+               
+               <div className="flex flex-col items-center gap-2 w-16">
+                  <div className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all duration-500 ${isOracleActive ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400 shadow-[0_0_15px_-3px_rgba(6,182,212,0.4)]' : 'bg-slate-900 border-white/10 text-slate-600'}`}>
+                      <Cpu size={14} className={isOracleActive ? 'animate-pulse' : ''} />
+                  </div>
+                  <span className={`text-[8px] font-black uppercase tracking-widest ${isOracleActive ? 'text-cyan-300' : 'text-slate-500'}`}>Oracle</span>
+               </div>
+               
+               <div className="flex-1 h-[2px] bg-slate-800 relative overflow-hidden rounded-full">
+                  <div className={`absolute inset-0 transition-all duration-1000 ${isOracleActive ? 'bg-cyan-500/50 w-full animate-pulse' : 'w-0'}`} />
+               </div>
+               
+               <div className="flex flex-col items-center gap-2 w-16">
+                  <div className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all duration-500 ${isExchangeActive ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_-3px_rgba(16,185,129,0.4)]' : 'bg-slate-900 border-white/10 text-slate-600'}`}>
+                      <Activity size={14} className={isExchangeActive ? 'animate-pulse' : ''} />
+                  </div>
+                  <span className={`text-[8px] font-black uppercase tracking-widest ${isExchangeActive ? 'text-emerald-300' : 'text-slate-500'}`}>Exchange</span>
+               </div>
+            </div>
+          </div>
+
+          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[350px] flex-grow relative shadow-2xl flex flex-col p-4">
             <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
             
             <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
@@ -286,7 +328,7 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="flex flex-col flex-grow overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30">
+          <div className="flex flex-col h-[30%] overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30">
             <div className="flex items-center gap-6 px-6 pt-5 border-b border-white/5 bg-slate-950/80 sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
@@ -432,7 +474,6 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            {/* THE JAILBREAK: Replaced internal input state with local state, removed all disabled tags! */}
             <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
                 <input 
                   className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
