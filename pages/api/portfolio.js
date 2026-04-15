@@ -12,16 +12,12 @@ export default async function handler(req, res) {
   try {
     const { asset } = req.query; 
     const apiKeyName = process.env.COINBASE_API_KEY;
-    
-    // --- THE CLEAN, PROVEN PARSER (Mirrors scan.js) ---
     let apiSecret = process.env.COINBASE_API_SECRET || "";
     
-    // 1. Safely strip outer quotes if Vercel/StackBlitz added them
+    // 1. Clean the secret
+    apiSecret = apiSecret.replace(/\\n/g, '\n');
     if (apiSecret.startsWith('"') && apiSecret.endsWith('"')) apiSecret = apiSecret.slice(1, -1);
-    if (apiSecret.startsWith("'") && apiSecret.endsWith("'")) apiSecret = apiSecret.slice(1, -1);
-    
-    // 2. Convert literal "\n" text to system newlines
-    apiSecret = apiSecret.replace(/\\n/g, '\n').trim();
+    apiSecret = apiSecret.trim();
     
     let liveBalance = 0;
     const initialPaperFunds = 5000;
@@ -47,6 +43,9 @@ export default async function handler(req, res) {
         if (apiKeyName && apiSecret) {
           const path = '/api/v3/brokerage/accounts';
           
+          // THE FIX: Convert string to proper Asymmetric Private Key Object
+          const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
+
           const token = jwt.sign(
             {
               iss: 'cdp',
@@ -55,7 +54,7 @@ export default async function handler(req, res) {
               sub: apiKeyName,
               uri: `GET api.coinbase.com${path}`
             }, 
-            apiSecret, // Passing the raw, clean string directly!
+            privateKey, 
             { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
           );
 
@@ -65,15 +64,13 @@ export default async function handler(req, res) {
               const data = await resp.json();
               const fiatAccounts = data.accounts?.filter(a => a.currency === 'USD' || a.currency === 'USDC') || [];
               liveBalance = fiatAccounts.reduce((sum, acc) => sum + parseFloat(acc.available_balance.value), 0);
-          } else {
-              console.warn("[COINBASE BALANCE ERR]:", await resp.text());
           }
         }
     } catch (cryptoErr) {
-        console.warn(`[PORTFOLIO CRYPTO WARN]: ${cryptoErr.message}`);
+        // If StackBlitz blocks createPrivateKey, we log it but don't crash
+        console.warn(`[PORTFOLIO CRYPTO REJECT]: Likely environment restriction.`, cryptoErr.message);
     }
 
-    // Fetch PAPER Balance from Database
     const { data: paperLogs } = await supabase
       .from('trade_logs')
       .select('pnl')

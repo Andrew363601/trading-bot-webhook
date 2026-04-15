@@ -10,13 +10,19 @@ export default async function handler(req, res) {
         const apiSecret = process.env.COINBASE_API_SECRET;
         if (!apiKeyName || !apiSecret) return res.status(401).json({ error: 'Missing API Keys' });
 
-        const formattedSecret = apiSecret.replace(/\\n/g, '\n');
-        const privateKey = crypto.createPrivateKey({ key: formattedSecret, format: 'pem' });
+        const formattedSecret = apiSecret.replace(/\\n/g, '\n').trim();
+        
+        let privateKey;
+        try {
+            // StackBlitz might throw "Unsupported" here
+            privateKey = crypto.createPrivateKey({ key: formattedSecret, format: 'pem' });
+        } catch (e) {
+            console.warn("[SYNC CRYPTO WARN]: Private key creation unsupported in this environment.");
+            return res.status(200).json({ positions: [], orders: [], warning: "Environment restriction" });
+        }
 
         const generateToken = (method, path) => {
-            // THE FIX: Coinbase requires the JWT URI claim to strictly EXCLUDE query parameters
             const uriPath = path.split('?')[0]; 
-
             return jwt.sign(
                 { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${uriPath}` },
                 privateKey,
@@ -24,37 +30,24 @@ export default async function handler(req, res) {
             );
         };
 
-        // 1. Fetch Unfilled Orders (Limit Entries, TP/SL)
+        // 1. Fetch Unfilled Orders
         const orderPath = '/api/v3/brokerage/orders/historical/batch?order_status=OPEN';
         let orderData = { orders: [] };
-        
         try {
             const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, {
                 headers: { 'Authorization': `Bearer ${generateToken('GET', orderPath)}` }
             });
-            
-            if (orderResp.ok) {
-                orderData = await orderResp.json();
-            } else {
-                console.warn('[SYNC WARN] Orders endpoint rejected:', await orderResp.text());
-            }
+            if (orderResp.ok) orderData = await orderResp.json();
         } catch (e) { console.error("Order fetch failed:", e.message); }
 
-        // 2. Fetch Live US/CFM Positions
-        // THE FIX: Added /cfm/ to correctly route to the US Derivatives book
+        // 2. Fetch Live Positions
         const posPath = '/api/v3/brokerage/cfm/positions'; 
         let posData = { positions: [] };
-        
         try {
             const posResp = await fetch(`https://api.coinbase.com${posPath}`, {
                 headers: { 'Authorization': `Bearer ${generateToken('GET', posPath)}` }
             });
-            
-            if (posResp.ok) {
-                posData = await posResp.json();
-            } else {
-                console.warn('[SYNC WARN] Positions endpoint rejected:', await posResp.text());
-            }
+            if (posResp.ok) posData = await posResp.json();
         } catch (e) { console.error("Position fetch failed:", e.message); }
 
         return res.status(200).json({ 
@@ -63,7 +56,7 @@ export default async function handler(req, res) {
         });
 
     } catch (error) {
-        console.error('[SYNC FATAL]', error);
-        return res.status(200).json({ positions: [], orders: [] }); // Graceful fallback
+        console.error('[SYNC ERROR]', error.message);
+        return res.status(200).json({ positions: [], orders: [] }); 
     }
 }
