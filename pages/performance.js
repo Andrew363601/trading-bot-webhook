@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { 
-  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, Server, Crosshair, Zap
+  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit
 } from 'lucide-react';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
@@ -9,10 +9,20 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publi
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export default function PerformanceLog() {
-  const [dailyStats, setDailyStats] = useState([]);
+  const [dailyStats, setDailyStats] = useState({});
   const [selectedDate, setSelectedDate] = useState(null);
   const [detailedPipelines, setDetailedPipelines] = useState([]);
   const [loading, setLoading] = useState(true);
+  
+  // Execution Log Filters
+  const [logFilter, setLogFilter] = useState('ALL'); // ALL, WIN, LOSS, LONG, SHORT
+
+  // Generate last 28 days for Calendar Grid
+  const calendarDays = [...Array(28)].map((_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (27 - i));
+    return d.toISOString().split('T')[0];
+  });
 
   const fetchPerformance = useCallback(async () => {
     setLoading(true);
@@ -22,44 +32,33 @@ export default function PerformanceLog() {
         supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(500)
       ]);
 
-      // 1. Group by Day for the Chart
-      const groupedByDay = {};
+      const statsMap = {};
+      calendarDays.forEach(day => statsMap[day] = { date: day, pnl: 0, trades: 0 });
+
       (trades || []).forEach(trade => {
         const dateStr = new Date(trade.exit_time).toISOString().split('T')[0];
-        if (!groupedByDay[dateStr]) groupedByDay[dateStr] = { date: dateStr, pnl: 0, trades: [] };
-        groupedByDay[dateStr].pnl += parseFloat(trade.pnl || 0);
-        groupedByDay[dateStr].trades.push(trade);
+        if (statsMap[dateStr]) {
+            statsMap[dateStr].pnl += parseFloat(trade.pnl || 0);
+            statsMap[dateStr].trades += 1;
+        }
       });
 
-      const chartData = Object.values(groupedByDay).sort((a, b) => new Date(a.date) - new Date(b.date));
-      setDailyStats(chartData);
+      setDailyStats(statsMap);
+      if (!selectedDate) setSelectedDate(calendarDays[calendarDays.length - 1]);
 
-      // Select the most recent day by default if exists
-      if (chartData.length > 0 && !selectedDate) {
-        setSelectedDate(chartData[chartData.length - 1].date);
-      }
-
-      // 2. Stitch Pipelines for the detailed view
       const stitched = (trades || []).map(trade => {
-        const tradeTime = new Date(trade.created_at).getTime();
-        const relatedScan = (scans || []).find(s => {
-          const scanTime = new Date(s.created_at).getTime();
-          const timeDiff = tradeTime - scanTime;
-          return s.asset === trade.symbol && s.strategy === trade.strategy_id && timeDiff >= 0 && timeDiff < 300000;
-        });
-
+        const originalReason = trade.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
         return {
           dateStr: new Date(trade.exit_time).toISOString().split('T')[0],
-          timestamp: tradeTime,
+          timeStr: new Date(trade.exit_time).toLocaleTimeString(),
           asset: trade.symbol,
           strategy: trade.strategy_id,
           trade: trade,
-          scan: relatedScan || null
+          reasoning: originalReason
         };
       });
 
       setDetailedPipelines(stitched);
-
     } catch (err) {
       console.error("Performance Fetch Error:", err);
     } finally {
@@ -67,16 +66,20 @@ export default function PerformanceLog() {
     }
   }, [selectedDate]);
 
-  useEffect(() => {
-    fetchPerformance();
-  }, [fetchPerformance]);
+  useEffect(() => { fetchPerformance(); }, [fetchPerformance]);
 
-  const maxPnl = Math.max(...dailyStats.map(d => Math.abs(d.pnl)), 1); // Avoid division by zero
-  const filteredPipelines = detailedPipelines.filter(p => p.dateStr === selectedDate);
+  const rawFilteredPipelines = detailedPipelines.filter(p => p.dateStr === selectedDate);
+  const filteredPipelines = rawFilteredPipelines.filter(p => {
+      if (logFilter === 'WIN') return p.trade.pnl > 0;
+      if (logFilter === 'LOSS') return p.trade.pnl <= 0;
+      if (logFilter === 'LONG') return p.trade.side === 'BUY' || p.trade.side === 'LONG';
+      if (logFilter === 'SHORT') return p.trade.side === 'SELL' || p.trade.side === 'SHORT';
+      return true;
+  });
 
-  const totalSelectedPnL = filteredPipelines.reduce((sum, p) => sum + parseFloat(p.trade.pnl || 0), 0);
-  const winRate = filteredPipelines.length > 0 
-    ? ((filteredPipelines.filter(p => p.trade.pnl > 0).length / filteredPipelines.length) * 100).toFixed(1) 
+  const totalSelectedPnL = rawFilteredPipelines.reduce((sum, p) => sum + parseFloat(p.trade.pnl || 0), 0);
+  const winRate = rawFilteredPipelines.length > 0 
+    ? ((rawFilteredPipelines.filter(p => p.trade.pnl > 0).length / rawFilteredPipelines.length) * 100).toFixed(1) 
     : 0;
 
   return (
@@ -89,44 +92,43 @@ export default function PerformanceLog() {
           </div>
           <div>
             <h1 className="text-2xl font-black italic tracking-tighter bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent uppercase">Performance Analytics</h1>
-            <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-1">Daily PnL & Trade Reports</p>
+            <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-1">Daily ROI & Execution Ledger</p>
           </div>
         </div>
       </header>
 
-      {/* PNL HISTOGRAM CHART */}
+      {/* NEW CALENDAR GRID */}
       <div className="max-w-[1400px] w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl">
-        <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-6 flex items-center gap-2"><Calendar size={14}/> 30-Day PnL Distribution</h3>
+        <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center gap-2"><Calendar size={14}/> 4-Week Rolling Calendar</h3>
         
-        <div className="h-64 flex items-end gap-2 border-b border-white/10 pb-2 relative">
-           {dailyStats.length === 0 ? (
-               <div className="absolute inset-0 flex items-center justify-center text-slate-600 text-xs font-mono">Awaiting closed trades...</div>
-           ) : dailyStats.map((stat, i) => {
-              const heightPercent = (Math.abs(stat.pnl) / maxPnl) * 100;
-              const isPositive = stat.pnl >= 0;
-              const isSelected = selectedDate === stat.date;
-              
-              return (
-                <div 
-                  key={i} 
-                  onClick={() => setSelectedDate(stat.date)}
-                  className={`flex-1 flex flex-col items-center justify-end cursor-pointer group relative h-full`}
-                >
-                  <div className="absolute -top-8 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-mono font-black bg-black/80 px-2 py-1 rounded">
-                     ${stat.pnl.toFixed(2)}
-                  </div>
-                  
-                  <div 
-                    style={{ height: `${heightPercent}%`, minHeight: '4px' }} 
-                    className={`w-full max-w-[40px] rounded-t-sm transition-all duration-300 ${
-                      isSelected ? (isPositive ? 'bg-emerald-400 shadow-[0_0_15px_-3px_rgba(52,211,153,0.5)]' : 'bg-red-400 shadow-[0_0_15px_-3px_rgba(248,113,113,0.5)]') 
-                                 : (isPositive ? 'bg-emerald-500/40 hover:bg-emerald-400/80' : 'bg-red-500/40 hover:bg-red-400/80')
-                    }`}
-                  />
-                  {isSelected && <div className="absolute -bottom-6 text-[9px] font-mono text-white">{stat.date.substring(5)}</div>}
-                </div>
-              );
-           })}
+        <div className="grid grid-cols-7 gap-2">
+            {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(day => (
+                <div key={day} className="text-center text-[9px] font-black uppercase tracking-widest text-slate-600 mb-2">{day}</div>
+            ))}
+            {calendarDays.map((day, i) => {
+                const stat = dailyStats[day];
+                const pnl = stat?.pnl || 0;
+                const isSelected = selectedDate === day;
+                const hasTrades = stat?.trades > 0;
+                
+                return (
+                    <button 
+                        key={day} 
+                        onClick={() => setSelectedDate(day)}
+                        className={`h-20 rounded-xl p-2 flex flex-col justify-between items-start transition-all border ${
+                            isSelected ? 'bg-slate-800 border-indigo-500 shadow-[0_0_15px_-3px_rgba(99,102,241,0.4)]' : 
+                            hasTrades ? 'bg-slate-900 border-white/5 hover:bg-slate-800' : 'bg-black/20 border-transparent opacity-50 hover:bg-white/5'
+                        }`}
+                    >
+                        <span className={`text-[10px] font-mono font-bold ${isSelected ? 'text-indigo-400' : 'text-slate-500'}`}>{day.substring(5)}</span>
+                        {hasTrades && (
+                            <span className={`text-[12px] font-black font-mono w-full text-right ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                            </span>
+                        )}
+                    </button>
+                )
+            })}
         </div>
       </div>
 
@@ -134,7 +136,6 @@ export default function PerformanceLog() {
       {selectedDate && (
         <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 lg:grid-cols-4 gap-6">
           
-          {/* STATS SIDEBAR */}
           <div className="lg:col-span-1 flex flex-col gap-4">
             <div className="bg-slate-900/40 border border-white/10 p-5 rounded-3xl">
                <div className="text-[10px] text-slate-500 font-black tracking-widest uppercase mb-4">Date: {selectedDate}</div>
@@ -149,23 +150,34 @@ export default function PerformanceLog() {
                   </div>
                   <div className="flex justify-between items-center border-b border-white/5 pb-2">
                      <span className="text-[10px] text-slate-400 uppercase tracking-widest flex items-center gap-1"><TrendingUp size={12}/> Winners</span>
-                     <span className="font-mono text-sm text-emerald-400">{filteredPipelines.filter(p => p.trade.pnl > 0).length}</span>
+                     <span className="font-mono text-sm text-emerald-400">{rawFilteredPipelines.filter(p => p.trade.pnl > 0).length}</span>
                   </div>
                   <div className="flex justify-between items-center pb-2">
                      <span className="text-[10px] text-slate-400 uppercase tracking-widest flex items-center gap-1"><TrendingDown size={12}/> Losers</span>
-                     <span className="font-mono text-sm text-red-400">{filteredPipelines.filter(p => p.trade.pnl <= 0).length}</span>
+                     <span className="font-mono text-sm text-red-400">{rawFilteredPipelines.filter(p => p.trade.pnl <= 0).length}</span>
                   </div>
                </div>
             </div>
           </div>
 
-          {/* PIPELINE LIST */}
           <div className="lg:col-span-3 space-y-4">
-             <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2 pl-2"><Clock size={14}/> Execution Logs</h3>
+             <div className="flex items-center justify-between pl-2">
+                 <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2"><Clock size={14}/> Execution Logs</h3>
+                 <div className="flex gap-2">
+                     {['ALL', 'WIN', 'LOSS', 'LONG', 'SHORT'].map(f => (
+                         <button 
+                            key={f} 
+                            onClick={() => setLogFilter(f)} 
+                            className={`text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border ${logFilter === f ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}
+                         >
+                            {f}
+                         </button>
+                     ))}
+                 </div>
+             </div>
              
              {filteredPipelines.map((pipeline, i) => {
                 const t = pipeline.trade;
-                const s = pipeline.scan;
                 const isWin = t.pnl > 0;
 
                 return (
@@ -179,21 +191,19 @@ export default function PerformanceLog() {
                             <span className="text-[10px] text-slate-500 font-mono border-l border-white/10 pl-3">{pipeline.strategy}</span>
                         </div>
                         <div className="flex items-center gap-4">
+                            <span className="text-[10px] text-slate-500 font-mono">{pipeline.timeStr}</span>
                             <span className={`font-black font-mono text-sm ${isWin ? 'text-emerald-400' : 'text-red-400'}`}>{isWin ? '+' : ''}${t.pnl}</span>
                         </div>
                      </div>
 
                      <div className="flex flex-col gap-3 pl-2">
-                        {/* Oracle Section */}
-                        {s && s.telemetry?.oracle_reasoning && (
+                        {pipeline.reasoning && (
                           <div className="border-l-2 border-amber-500/30 pl-4 py-1">
                              <h4 className="text-[9px] font-black uppercase tracking-widest text-amber-400 flex items-center gap-2 mb-1"><BrainCircuit size={10}/> Oracle Rationale</h4>
-                             {/* THE FIX HERE AS WELL FOR SAFE MEASURE */}
-                             <p className="text-[11px] text-slate-400 italic">&quot;{s.telemetry.oracle_reasoning}&quot;</p>
+                             <p className="text-[11px] text-slate-400 italic">&quot;{pipeline.reasoning}&quot;</p>
                           </div>
                         )}
                         
-                        {/* Trade Details */}
                         <div className="border-l-2 border-slate-500/30 pl-4 py-1 flex flex-wrap gap-x-6 gap-y-2">
                            <div className="flex items-center gap-2">
                               <span className="text-[9px] text-slate-500 uppercase tracking-widest">Entry:</span>
@@ -220,6 +230,8 @@ export default function PerformanceLog() {
                   </div>
                 );
              })}
+             
+             {filteredPipelines.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
           </div>
         </div>
       )}
