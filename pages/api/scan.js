@@ -101,30 +101,53 @@ export default async function handler(req, res) {
                         openOrders = orderData.orders || [];
                     }
 
-                    // SCENARIO A: Limit Filled -> Position is active, but missing brackets
-                    if (activePosition && openOrders.length === 0 && openTrade.tp_price && openTrade.sl_price) {
-                        console.log(`[WATCHDOG] Detected active position for ${coinbaseProduct} with missing brackets. Deploying TP/SL...`);
+                    // SCENARIO A: Limit Filled -> Position is active. Check brackets independently.
+                    if (activePosition && openTrade.tp_price && openTrade.sl_price) {
                         
+                        // Check specifically for existing TP and SL order types
+                        const hasTP = openOrders.some(o => o.order_configuration?.limit_limit_gtc);
+                        const hasSL = openOrders.some(o => o.order_configuration?.stop_limit_stop_limit_gtc);
+
                         const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
                         const stopDir = openTrade.side === 'BUY' ? 'STOP_DIRECTION_STOP_DOWN' : 'STOP_DIRECTION_STOP_UP';
                         const orderQty = activePosition.number_of_contracts;
                         const executePath = '/api/v3/brokerage/orders';
-                        
-                        try {
-                            const slPayload = {
-                                client_order_id: `nx_sl_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
-                                order_configuration: { stop_limit_stop_limit_gtc: { stop_direction: stopDir, stop_price: openTrade.sl_price.toString(), limit_price: openTrade.sl_price.toString(), base_size: orderQty.toString() } }
-                            };
-                            await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload) });
-                        } catch (e) { console.error("[WATCHDOG] SL Bracket failed:", e.message); }
 
-                        try {
-                            const tpPayload = {
-                                client_order_id: `nx_tp_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
-                                order_configuration: { limit_limit_gtc: { limit_price: openTrade.tp_price.toString(), base_size: orderQty.toString() } }
-                            };
-                            await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
-                        } catch (e) { console.error("[WATCHDOG] TP Bracket failed:", e.message); }
+                        if (!hasSL) {
+                            console.log(`[WATCHDOG] Missing Stop Loss detected for ${coinbaseProduct}. Deploying...`);
+                            try {
+                                const slPayload = {
+                                    client_order_id: `nx_sl_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                                    order_configuration: { 
+                                        stop_limit_stop_limit_gtc: { 
+                                            stop_direction: stopDir, 
+                                            stop_price: openTrade.sl_price.toString(), 
+                                            limit_price: openTrade.sl_price.toString(), 
+                                            base_size: orderQty.toString(),
+                                            reduce_only: true // <--- THE SAFETY FIX
+                                        } 
+                                    }
+                                };
+                                await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload) });
+                            } catch (e) { console.error("[WATCHDOG] SL Bracket failed:", e.message); }
+                        }
+
+                        if (!hasTP) {
+                            console.log(`[WATCHDOG] Missing Take Profit detected for ${coinbaseProduct}. Deploying...`);
+                            try {
+                                const tpPayload = {
+                                    client_order_id: `nx_tp_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                                    order_configuration: { 
+                                        limit_limit_gtc: { 
+                                            limit_price: openTrade.tp_price.toString(), 
+                                            base_size: orderQty.toString(),
+                                            reduce_only: true // <--- THE SAFETY FIX
+                                        } 
+                                    }
+                                };
+                                await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
+                            } catch (e) { console.error("[WATCHDOG] TP Bracket failed:", e.message); }
+                        }
                     }
 
                 } catch (err) { console.error(`[WATCHDOG FAULT]`, err.message); }
