@@ -62,9 +62,12 @@ export default async function handler(req, res) {
     
     const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
 
+    // --- NEW: THE CLOSING DETECTOR ---
+    const isClosing = openTrade && openTrade.side !== side;
+
     // THE LIQUIDATION LOCK: Ensure closure quantity perfectly matches open quantity
     let orderQty = parseFloat(data.qty || 10);
-    if (openTrade && openTrade.side !== side) {
+    if (isClosing) {
         orderQty = parseFloat(openTrade.qty || orderQty);
     }
 
@@ -106,6 +109,12 @@ export default async function handler(req, res) {
               base_size: orderQty.toString(),
               limit_price: executionPrice.toString()
           };
+          
+          // --- THE SAFETY FIX: Dynamic Margin Override ---
+          if (isClosing) {
+              payload.order_configuration.limit_limit_gtc.reduce_only = true;
+          }
+
       } else {
           payload.order_configuration.market_market_ioc = { 
               base_size: orderQty.toString() 
@@ -130,7 +139,8 @@ export default async function handler(req, res) {
       executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
 
       // --- THE TP/SL BRACKET ORDER DEPLOYMENT ---
-      if (orderType === 'MARKET' && tpPrice && slPrice) {
+      // Fix: We ONLY deploy brackets if this is a new entry, not a closing reversal!
+      if (!isClosing && orderType === 'MARKET' && tpPrice && slPrice) {
           console.log(`[BRACKET] Entry filled. Deploying Take Profit at $${tpPrice} and Stop Loss at $${slPrice}...`);
           const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
           const stopDir = side === 'BUY' ? 'STOP_DIRECTION_STOP_DOWN' : 'STOP_DIRECTION_STOP_UP';
@@ -147,7 +157,6 @@ export default async function handler(req, res) {
                           stop_price: slPrice.toString(), 
                           limit_price: slPrice.toString(), 
                           base_size: orderQty.toString(),
-                          // THE FIX: reduce_only MUST be nested inside the order_configuration
                           reduce_only: true
                       }
                   }
@@ -174,7 +183,6 @@ export default async function handler(req, res) {
                       limit_limit_gtc: { 
                           limit_price: tpPrice.toString(), 
                           base_size: orderQty.toString(),
-                          // THE FIX: reduce_only MUST be nested inside the order_configuration
                           reduce_only: true
                       }
                   }
@@ -211,7 +219,7 @@ export default async function handler(req, res) {
 
     // 3. PROPER STATE MANAGEMENT 
     if (openTrade) {
-      if (openTrade.side !== side) {
+      if (isClosing) {
         console.log(`[SUPABASE] Closing existing ${openTrade.side} position for ${rawSymbol}...`);
         const pnl = openTrade.side === 'BUY' 
           ? (executionPrice - openTrade.entry_price) * orderQty
