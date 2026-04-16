@@ -204,8 +204,7 @@ export default async function handler(req, res) {
                         const safeSlPrice = openTrade.sl_price ? (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(2) : null;
                         const safeTpPrice = openTrade.tp_price ? (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(2) : null;
 
-                        const isCDE = coinbaseProduct.endsWith('-CDE');
-
+                        // --- THE FIX: Unconditionally apply reduce_only to bypass margin errors ---
                         if (!hasSL && safeSlPrice) {
                             console.log(`[WATCHDOG] Missing Stop Loss detected for ${coinbaseProduct}. Deploying at $${safeSlPrice}...`);
                             try {
@@ -213,14 +212,14 @@ export default async function handler(req, res) {
                                     client_order_id: `nx_sl_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
                                     order_configuration: { 
                                         stop_limit_stop_limit_gtc: { 
-                                            stop_direction: stopDir, stop_price: safeSlPrice.toString(), limit_price: safeSlPrice.toString(), base_size: orderQty.toString() 
+                                            stop_direction: stopDir, 
+                                            stop_price: safeSlPrice.toString(), 
+                                            limit_price: safeSlPrice.toString(), 
+                                            base_size: orderQty.toString(),
+                                            reduce_only: true // Bypasses INSUFFICIENT_FUNDS checks
                                         } 
                                     }
                                 };
-                                
-                                if (!isCDE) {
-                                    slPayload.order_configuration.stop_limit_stop_limit_gtc.reduce_only = true;
-                                }
 
                                 const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload) });
                                 const result = await resp.json();
@@ -234,13 +233,13 @@ export default async function handler(req, res) {
                                 const tpPayload = {
                                     client_order_id: `nx_tp_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
                                     order_configuration: { 
-                                        limit_limit_gtc: { limit_price: safeTpPrice.toString(), base_size: orderQty.toString() } 
+                                        limit_limit_gtc: { 
+                                            limit_price: safeTpPrice.toString(), 
+                                            base_size: orderQty.toString(),
+                                            reduce_only: true // Bypasses INSUFFICIENT_FUNDS checks
+                                        } 
                                     }
                                 };
-
-                                if (!isCDE) {
-                                    tpPayload.order_configuration.limit_limit_gtc.reduce_only = true;
-                                }
 
                                 const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
                                 const result = await resp.json();
