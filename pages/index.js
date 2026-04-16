@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { useChat } from '@ai-sdk/react'; 
-import Link from 'next/link'; // <--- THE FIX: Next.js secure routing component
+import { useChat } from 'ai/react'; // <--- THE FIX: Correct, bulletproof import path
+import Link from 'next/link'; 
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet 
@@ -28,12 +28,12 @@ export default function Dashboard() {
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  const [localInput, setLocalInput] = useState('');
-
-  const { messages, append, error, isLoading } = useChat({
+  // THE FIX: Utilizing Vercel's native state bindings (input, handleInputChange, handleSubmit, append)
+  const { messages, input, handleInputChange, handleSubmit, append, error, isLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
+  
   const chatEndRef = useRef(null);
 
   const fetchData = useCallback(async () => {
@@ -105,23 +105,10 @@ export default function Dashboard() {
     fetchData(); 
   };
 
-  const handleManualSubmit = async (e) => {
-    e.preventDefault();
-    if (!localInput.trim()) return;
-    
-    const userMsg = localInput;
-    setLocalInput(''); 
-    
-    try {
-        await append({ role: 'user', content: userMsg });
-    } catch (err) {
-        console.error("[NEXUS APPEND FAULT]:", err);
-    }
-  };
-
   const handleStrategySelect = async (stratId) => {
     setSelectedStrat(stratId);
     try {
+        // 'append' is now guaranteed to exist because of the corrected import path
         await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
     } catch (err) {
         console.error("Append Error:", err);
@@ -195,14 +182,13 @@ export default function Dashboard() {
 
   if (loading) return <div className="min-h-screen bg-[#020617] flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">Establishing Nexus...</div>;
 
-  // VISUALIZER STATE LOGIC
   const latestScan = scanStream[0];
   const isOracleActive = latestScan?.status === 'RESONANT' || latestScan?.status?.includes('HIT_');
   const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4">
-<header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
+      <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
         <div className="flex items-center gap-4">
             <h1 className="text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Command</h1>
             
@@ -210,7 +196,6 @@ export default function Dashboard() {
                <Activity size={12} /> Audit Log
             </Link>
             
-            {/* NEW: THE PERFORMANCE LINK */}
             <Link href="/performance" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                <BarChart3 size={12} /> Performance
             </Link>
@@ -270,7 +255,6 @@ export default function Dashboard() {
 
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
           
-          {/* THE NEW SHINY PIPELINE VISUALIZER */}
           <div className="bg-slate-900/50 border border-white/10 rounded-3xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden flex-shrink-0">
             <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/5 via-cyan-500/5 to-emerald-500/5 animate-pulse" />
             <div className="relative z-10 flex items-center gap-2 w-full px-6">
@@ -480,16 +464,16 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+            <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
                 <input 
                   className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
-                  value={localInput} 
-                  onChange={(e) => setLocalInput(e.target.value)} 
+                  value={input} 
+                  onChange={handleInputChange} 
                   placeholder="Command Nexus..." 
               />
               <button 
                   type="submit" 
-                  disabled={!localInput.trim()}
+                  disabled={!input.trim()}
                   className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}
               >
                   {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
