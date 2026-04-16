@@ -14,6 +14,12 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
+  // CORS Headers to prevent silent frontend blocking
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
@@ -29,7 +35,7 @@ export default async function handler(req, res) {
         throw new Error("Invalid or empty message payload.");
     }
 
-    // --- THE PROVEN FIX: The Message Sanitizer from 4 Days Ago ---
+    // --- THE PROVEN FIX: The Message Sanitizer from 2 Days Ago ---
     const cleanMessages = messages.filter(msg => {
       if (msg.role === 'tool') return false; 
       if (msg.role === 'assistant' && msg.toolInvocations) return false; 
@@ -53,7 +59,6 @@ export default async function handler(req, res) {
 
     console.log("[CHAT API] Fetching database telemetry in parallel...");
 
-    // SPEED OPTIMIZATION: Fetch all Supabase data simultaneously
     const [
       { data: allConfigs },
       { data: openTrades },
@@ -151,12 +156,10 @@ export default async function handler(req, res) {
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
     `;
 
-    console.log("[CHAT API] Handing over to Gemini 2.5 Pro...");
-
     const result = await streamText({
       model: google('models/gemini-2.5-pro'), 
       system: systemPrompt,
-      messages: safeMessages, 
+      messages: safeMessages,
       maxSteps: 5,
       tools: {
         queryTradeLedger: tool({
@@ -179,7 +182,7 @@ export default async function handler(req, res) {
             const { data: trades, error } = await query;
             if (error) return { error: error.message };
 
-            // SAFTEY FIX: Array checking prevents crashes if table is empty
+            // SAFETY FIX: Array checking prevents crashes if table is empty
             const tradesList = trades || [];
             const totalTrades = tradesList.length;
             const totalPnL = tradesList.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
