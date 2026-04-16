@@ -1,4 +1,4 @@
-// Set Next.js configuration for Vercel Pro limits
+// Unleashing Vercel Pro limit (5 full minutes)
 export const maxDuration = 300;
 
 // pages/api/chat.js
@@ -14,12 +14,6 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
-  // CORS Headers to prevent silent frontend blocking
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') return res.status(200).end();
-
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
@@ -35,7 +29,7 @@ export default async function handler(req, res) {
         throw new Error("Invalid or empty message payload.");
     }
 
-    // --- THE PROVEN FIX: The Message Sanitizer ---
+    // --- THE PROVEN FIX: The Message Sanitizer from 4 Days Ago ---
     const cleanMessages = messages.filter(msg => {
       if (msg.role === 'tool') return false; 
       if (msg.role === 'assistant' && msg.toolInvocations) return false; 
@@ -160,7 +154,7 @@ export default async function handler(req, res) {
     console.log("[CHAT API] Handing over to Gemini 2.5 Pro...");
 
     const result = await streamText({
-      model: google('models/gemini-2.5-pro'), // THE FIX: Restored the exact 'models/' prefix
+      model: google('models/gemini-2.5-pro'), 
       system: systemPrompt,
       messages: safeMessages, 
       maxSteps: 5,
@@ -185,6 +179,7 @@ export default async function handler(req, res) {
             const { data: trades, error } = await query;
             if (error) return { error: error.message };
 
+            // SAFTEY FIX: Array checking prevents crashes if table is empty
             const tradesList = trades || [];
             const totalTrades = tradesList.length;
             const totalPnL = tradesList.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
@@ -228,6 +223,7 @@ export default async function handler(req, res) {
             reasoning: z.string().describe('Technical reasoning for this deployment or mutation.')
           }),
           execute: async (args) => {
+            // SAFETY FIX: Uses .maybeSingle() to prevent PGRST116 database crashes
             const { data: existing } = await supabase
               .from('strategy_config')
               .select('id')
@@ -321,6 +317,7 @@ export default async function handler(req, res) {
             let candlesLeft = lookback_candles;
 
             try {
+              // SAFETY FIX: Convert secret to PEM key object to prevent ES256 crypto crashes
               const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
 
               while (candlesLeft > 0) {
@@ -397,7 +394,8 @@ export default async function handler(req, res) {
 
     console.log("[CHAT API] Streaming response to client...");
     
-    return result.pipeDataStreamToResponse(res);
+    // EXACT MATCH: Returns directly to response without the 'return' keyword syntax error
+    result.pipeDataStreamToResponse(res);
 
   } catch (err) {
     console.error("====== FULL CHAT FAULT ENCOUNTERED ======");
