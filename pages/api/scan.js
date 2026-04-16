@@ -150,7 +150,6 @@ export default async function handler(req, res) {
                         const physicalTP = openOrders.find(o => o.order_configuration?.limit_limit_gtc);
                         const physicalSL = openOrders.find(o => o.order_configuration?.stop_limit_stop_limit_gtc);
 
-                        // --- THE FIX: Sync Manual Brackets to Database ---
                         // If the database is missing TP/SL but physical orders exist on Coinbase, update the database!
                         if ((physicalTP && !openTrade.tp_price) || (physicalSL && !openTrade.sl_price)) {
                              console.log(`[SYNC] Manual brackets detected on Coinbase for ${asset}. Updating database...`);
@@ -160,7 +159,6 @@ export default async function handler(req, res) {
                              
                              await supabase.from('trade_logs').update(updates).eq('id', openTrade.id);
                              
-                             // Update local state so Watchdog doesn't try to deploy them
                              openTrade.tp_price = updates.tp_price || openTrade.tp_price;
                              openTrade.sl_price = updates.sl_price || openTrade.sl_price;
                         }
@@ -174,15 +172,22 @@ export default async function handler(req, res) {
                         const orderQty = activePosition.number_of_contracts;
                         const executePath = '/api/v3/brokerage/orders';
 
-                        // Only deploy if we have the prices and the physical orders are MISSING
-                        if (!physicalSL && openTrade.sl_price) {
-                            console.log(`[WATCHDOG] Missing Stop Loss detected for ${coinbaseProduct}. Deploying...`);
+                        // --- THE FIX: Universal Tick Size Rounder for the Watchdog ---
+                        let tickSize = 0.01;
+                        if (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) tickSize = 0.50;
+                        if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
+
+                        const safeSlPrice = openTrade.sl_price ? (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(2) : null;
+                        const safeTpPrice = openTrade.tp_price ? (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(2) : null;
+
+                        if (!physicalSL && safeSlPrice) {
+                            console.log(`[WATCHDOG] Missing Stop Loss detected for ${coinbaseProduct}. Deploying at $${safeSlPrice}...`);
                             try {
                                 const slPayload = {
                                     client_order_id: `nx_sl_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
                                     order_configuration: { 
                                         stop_limit_stop_limit_gtc: { 
-                                            stop_direction: stopDir, stop_price: openTrade.sl_price.toString(), limit_price: openTrade.sl_price.toString(), base_size: orderQty.toString(), reduce_only: true 
+                                            stop_direction: stopDir, stop_price: safeSlPrice.toString(), limit_price: safeSlPrice.toString(), base_size: orderQty.toString(), reduce_only: true 
                                         } 
                                     }
                                 };
@@ -190,13 +195,13 @@ export default async function handler(req, res) {
                             } catch (e) {}
                         }
 
-                        if (!physicalTP && openTrade.tp_price) {
-                            console.log(`[WATCHDOG] Missing Take Profit detected for ${coinbaseProduct}. Deploying...`);
+                        if (!physicalTP && safeTpPrice) {
+                            console.log(`[WATCHDOG] Missing Take Profit detected for ${coinbaseProduct}. Deploying at $${safeTpPrice}...`);
                             try {
                                 const tpPayload = {
                                     client_order_id: `nx_tp_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
                                     order_configuration: { 
-                                        limit_limit_gtc: { limit_price: openTrade.tp_price.toString(), base_size: orderQty.toString(), reduce_only: true } 
+                                        limit_limit_gtc: { limit_price: safeTpPrice.toString(), base_size: orderQty.toString(), reduce_only: true } 
                                     }
                                 };
                                 await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
@@ -312,8 +317,13 @@ export default async function handler(req, res) {
                   decision.slPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
                 }
              
-                decision.tpPrice = parseFloat(decision.tpPrice.toFixed(2));
-                decision.slPrice = parseFloat(decision.slPrice.toFixed(2));
+                // --- THE FIX: Universal Tick Size Rounder for Oracle Generation ---
+                let tickSize = 0.01;
+                if (asset.includes('ETP') || asset.includes('ETH')) tickSize = 0.50;
+                if (asset.includes('BIT') || asset.includes('BTC')) tickSize = 1.00;
+
+                decision.tpPrice = Math.round(decision.tpPrice / tickSize) * tickSize;
+                decision.slPrice = Math.round(decision.slPrice / tickSize) * tickSize;
                 
                 if (oracleVerdict.size_multiplier > 1.0 && config.parameters?.target_usd) {
                      config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
@@ -324,11 +334,10 @@ export default async function handler(req, res) {
 
     const finalStatus = decision.statusOverride ? decision.statusOverride : (decision.signal ? (forcedExit ? `HIT_${forcedExit}` : "RESONANT") : "STABLE");
 
-    if (!openTrade || (openTrade && decision.signal !== null)) {
-        const scanEntry = { strategy: config.strategy, asset, telemetry: decision.telemetry || {}, status: finalStatus };
-        results.push(scanEntry);
-        await supabase.from('scan_results').insert([scanEntry]);
-    }
+    // THE FIX: Unlocked Database Logging so STABLE scans show up in the Audit Trail
+    const scanEntry = { strategy: config.strategy, asset, telemetry: decision.telemetry || {}, status: finalStatus };
+    results.push(scanEntry);
+    await supabase.from('scan_results').insert([scanEntry]);
 
         // THE EXECUTION TRIGGER
         if (decision.signal && decision.signal !== null) {
