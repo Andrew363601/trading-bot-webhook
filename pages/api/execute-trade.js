@@ -214,9 +214,15 @@ export default async function handler(req, res) {
     if (openTrade) {
       if (isClosing) {
         console.log(`[SUPABASE] Closing existing ${openTrade.side} position for ${rawSymbol}...`);
+        
+        // --- THE MULTIPLIER FIX ---
+        let multiplier = 1.0;
+        if (coinbaseProduct.includes('ETP')) multiplier = 0.1;  // Nano ETH is 1/10th
+        if (coinbaseProduct.includes('BIT')) multiplier = 0.01; // Nano BTC is 1/100th
+
         const pnl = openTrade.side === 'BUY' 
-          ? (executionPrice - openTrade.entry_price) * orderQty
-          : (openTrade.entry_price - executionPrice) * orderQty;
+          ? (executionPrice - openTrade.entry_price) * orderQty * multiplier
+          : (openTrade.entry_price - executionPrice) * orderQty * multiplier;
 
         const updatedReason = openTrade.reason 
             ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${tradeReason || 'MANUAL_CLOSE'}` 
