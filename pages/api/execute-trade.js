@@ -92,6 +92,9 @@ export default async function handler(req, res) {
     let executionPrice = data.price || 0;
     let executionStatus = 'simulated';
 
+    // Helper: CDE Venue restriction check
+    const isCDE = coinbaseProduct.endsWith('-CDE');
+
     if (!isPaper) {
       // 🔴 LIVE TRADE EXECUTION
       const path = '/api/v3/brokerage/orders';
@@ -107,9 +110,13 @@ export default async function handler(req, res) {
       if (orderType === 'LIMIT') {
           payload.order_configuration.limit_limit_gtc = {
               base_size: orderQty.toString(),
-              limit_price: executionPrice.toString(),
-              reduce_only: isClosing 
+              limit_price: executionPrice.toString()
           };
+          
+          // THE FIX: Only append reduce_only if it is NOT a CDE derivative
+          if (isClosing && !isCDE) {
+              payload.order_configuration.limit_limit_gtc.reduce_only = true;
+          }
       } else {
           payload.order_configuration.market_market_ioc = { 
               base_size: orderQty.toString() 
@@ -131,7 +138,7 @@ export default async function handler(req, res) {
           if (failReason === 'PREVIEW_ORDER_SIZE_EXCEEDS_BRACKETED_POSITION' || failReason === 'PREVIEW_INSUFFICIENT_FUNDS_FOR_FUTURES') {
               console.log(`[EXECUTE RECOVERY] Coinbase physical bracket conflict detected. Auto-retrying as reduce_only...`);
               
-              if (payload.order_configuration.limit_limit_gtc) {
+              if (payload.order_configuration.limit_limit_gtc && !isCDE) {
                   payload.order_configuration.limit_limit_gtc.reduce_only = true;
                   payload.client_order_id = `nexus_retry_${Date.now()}`; // Refresh ID
 
@@ -163,8 +170,16 @@ export default async function handler(req, res) {
           try {
               const slPayload = {
                   client_order_id: `nx_sl_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
-                  order_configuration: { stop_limit_stop_limit_gtc: { stop_direction: stopDir, stop_price: slPrice.toString(), limit_price: slPrice.toString(), base_size: orderQty.toString(), reduce_only: true } }
+                  order_configuration: { 
+                      stop_limit_stop_limit_gtc: { 
+                          stop_direction: stopDir, stop_price: slPrice.toString(), limit_price: slPrice.toString(), base_size: orderQty.toString() 
+                      } 
+                  }
               };
+              
+              // THE FIX: Append reduce_only ONLY if it's not a CDE derivative
+              if (!isCDE) slPayload.order_configuration.stop_limit_stop_limit_gtc.reduce_only = true;
+
               await fetch(`https://api.coinbase.com${path}`, {
                   method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload)
               });
@@ -174,8 +189,16 @@ export default async function handler(req, res) {
           try {
               const tpPayload = {
                   client_order_id: `nx_tp_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
-                  order_configuration: { limit_limit_gtc: { limit_price: tpPrice.toString(), base_size: orderQty.toString(), reduce_only: true } }
+                  order_configuration: { 
+                      limit_limit_gtc: { 
+                          limit_price: tpPrice.toString(), base_size: orderQty.toString() 
+                      } 
+                  }
               };
+
+              // THE FIX: Append reduce_only ONLY if it's not a CDE derivative
+              if (!isCDE) tpPayload.order_configuration.limit_limit_gtc.reduce_only = true;
+
               await fetch(`https://api.coinbase.com${path}`, {
                   method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload)
               });
@@ -218,7 +241,6 @@ export default async function handler(req, res) {
       }
     } else {
       
-      // THE FIX: If there is no open trade, but the signal was a forced exit, DO NOT open a new trade!
       if (isForcedExit) {
           console.log(`[SUPABASE] Ignored phantom ${side} order. Trade already closed natively.`);
           return res.status(200).json({ status: "already_closed_natively", product: coinbaseProduct });

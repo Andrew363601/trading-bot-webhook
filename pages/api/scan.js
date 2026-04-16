@@ -149,8 +149,6 @@ export default async function handler(req, res) {
                         const physicalTP = openOrders.find(o => o.order_configuration?.limit_limit_gtc);
                         const physicalSL = openOrders.find(o => o.order_configuration?.stop_limit_stop_limit_gtc);
                         
-                        // --- THE OCO BRACKET FIX ---
-                        // Coinbase UI generates 'trigger_bracket_gtc' instead of individual limits!
                         const physicalBracket = openOrders.find(o => o.order_configuration?.trigger_bracket_gtc);
 
                         if (physicalBracket && (!openTrade.tp_price || !openTrade.sl_price)) {
@@ -174,7 +172,6 @@ export default async function handler(req, res) {
                              openTrade.sl_price = updates.sl_price || openTrade.sl_price;
                         }
 
-                        // Check if we have either the manual UI bracket or individual bot brackets
                         const hasTP = physicalBracket || physicalTP;
                         const hasSL = physicalBracket || physicalSL;
 
@@ -194,6 +191,8 @@ export default async function handler(req, res) {
                         const safeSlPrice = openTrade.sl_price ? (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(2) : null;
                         const safeTpPrice = openTrade.tp_price ? (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(2) : null;
 
+                        const isCDE = coinbaseProduct.endsWith('-CDE');
+
                         if (!hasSL && safeSlPrice) {
                             console.log(`[WATCHDOG] Missing Stop Loss detected for ${coinbaseProduct}. Deploying at $${safeSlPrice}...`);
                             try {
@@ -201,10 +200,16 @@ export default async function handler(req, res) {
                                     client_order_id: `nx_sl_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
                                     order_configuration: { 
                                         stop_limit_stop_limit_gtc: { 
-                                            stop_direction: stopDir, stop_price: safeSlPrice.toString(), limit_price: safeSlPrice.toString(), base_size: orderQty.toString(), reduce_only: true 
+                                            stop_direction: stopDir, stop_price: safeSlPrice.toString(), limit_price: safeSlPrice.toString(), base_size: orderQty.toString() 
                                         } 
                                     }
                                 };
+                                
+                                // THE FIX: Only add reduce_only if it is NOT a CDE derivative
+                                if (!isCDE) {
+                                    slPayload.order_configuration.stop_limit_stop_limit_gtc.reduce_only = true;
+                                }
+
                                 const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload) });
                                 const result = await resp.json();
                                 if (!resp.ok || result.success === false) console.error(`[WATCHDOG REJECT] SL Failed:`, JSON.stringify(result));
@@ -217,9 +222,15 @@ export default async function handler(req, res) {
                                 const tpPayload = {
                                     client_order_id: `nx_tp_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
                                     order_configuration: { 
-                                        limit_limit_gtc: { limit_price: safeTpPrice.toString(), base_size: orderQty.toString(), reduce_only: true } 
+                                        limit_limit_gtc: { limit_price: safeTpPrice.toString(), base_size: orderQty.toString() } 
                                     }
                                 };
+
+                                // THE FIX: Only add reduce_only if it is NOT a CDE derivative
+                                if (!isCDE) {
+                                    tpPayload.order_configuration.limit_limit_gtc.reduce_only = true;
+                                }
+
                                 const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
                                 const result = await resp.json();
                                 if (!resp.ok || result.success === false) console.error(`[WATCHDOG REJECT] TP Failed:`, JSON.stringify(result));
