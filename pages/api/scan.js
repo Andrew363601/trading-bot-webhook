@@ -100,7 +100,8 @@ export default async function handler(req, res) {
                         openOrders = orderData.orders || [];
                     }
 
-                    const entryOrderExists = openOrders.some(o => o.side === openTrade.side && o.order_configuration?.limit_limit_gtc?.limit_price === openTrade.entry_price.toString());
+                    // THE FIX: Wrapped in parseFloat to prevent string mismatch bugs with trailing decimal zeros
+                    const entryOrderExists = openOrders.some(o => o.side === openTrade.side && parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price) === parseFloat(openTrade.entry_price));
 
                     // SCENARIO 0: Native Exchange Sync
                     if (!activePosition && !entryOrderExists) {
@@ -124,7 +125,9 @@ export default async function handler(req, res) {
                         
                         if (minutesOpen > 15) {
                             console.log(`[SWEEPER] Stale limit order detected for ${coinbaseProduct} (${minutesOpen.toFixed(1)} mins old). Canceling...`);
-                            const targetOrder = openOrders.find(o => o.side === openTrade.side && o.order_configuration?.limit_limit_gtc?.limit_price === openTrade.entry_price.toString());
+                            
+                            // THE FIX: Wrapped in parseFloat to safely target the exact order
+                            const targetOrder = openOrders.find(o => o.side === openTrade.side && parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price) === parseFloat(openTrade.entry_price));
                             
                             if (targetOrder) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
