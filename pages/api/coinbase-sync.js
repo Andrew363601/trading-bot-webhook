@@ -14,7 +14,6 @@ export default async function handler(req, res) {
         
         let privateKey;
         try {
-            // StackBlitz might throw "Unsupported" here
             privateKey = crypto.createPrivateKey({ key: formattedSecret, format: 'pem' });
         } catch (e) {
             console.warn("[SYNC CRYPTO WARN]: Private key creation unsupported in this environment.");
@@ -47,7 +46,17 @@ export default async function handler(req, res) {
             const posResp = await fetch(`https://api.coinbase.com${posPath}`, {
                 headers: { 'Authorization': `Bearer ${generateToken('GET', posPath)}` }
             });
-            if (posResp.ok) posData = await posResp.json();
+            
+            if (posResp.ok) {
+                const rawData = await posResp.json();
+                
+                // THE FIX: Normalize the Futures variables so Nexus can read them correctly!
+                posData.positions = (rawData.positions || []).map(p => ({
+                    ...p,
+                    entry_price: p.average_entry_price || p.vwap || 0,
+                    size: p.number_of_contracts || p.size || 0
+                }));
+            }
         } catch (e) { console.error("Position fetch failed:", e.message); }
 
         return res.status(200).json({ 

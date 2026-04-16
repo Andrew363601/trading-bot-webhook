@@ -1,3 +1,4 @@
+// Unleashing Vercel Pro limit (5 full minutes)
 export const maxDuration = 300;
 
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -15,13 +16,17 @@ export default async function handler(req, res) {
   try {
     console.log("[CHAT API] Nexus Agent pinged. Extracting payload...");
 
-    // BULLETPROOF EXTRACTION: Prevents crashes if body is missing
-    const messages = req.body?.messages || [];
+    // BULLETPROOF EXTRACTION: Handles both stringified and parsed JSON payloads
+    let data = req.body;
+    if (typeof data === 'string') {
+      try { data = JSON.parse(data); } catch (e) {}
+    }
+
+    const messages = data?.messages || [];
     if (!Array.isArray(messages) || messages.length === 0) {
         throw new Error("Invalid or empty message payload.");
     }
 
-    // BULLETPROOF SUPABASE: Guarantees it uses the right key and doesn't crash on init
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     if (!supabaseKey) throw new Error("Missing Supabase Keys in environment.");
@@ -32,18 +37,26 @@ export default async function handler(req, res) {
       apiKey: process.env.GEMINI_API_KEY,
     });
 
-    console.log("[CHAT API] Fetching database telemetry...");
+    console.log("[CHAT API] Fetching database telemetry in parallel...");
 
-    const { data: allConfigs } = await supabase.from('strategy_config').select('*');
-    const { data: openTrades } = await supabase.from('trade_logs').select('*').is('exit_price', null);
-    const { data: recentClosedLogs } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5);
+    // SPEED OPTIMIZATION: Fetch all Supabase data simultaneously
+    const [
+      { data: allConfigs },
+      { data: openTrades },
+      { data: recentClosedLogs }
+    ] = await Promise.all([
+      supabase.from('strategy_config').select('*'),
+      supabase.from('trade_logs').select('*').is('exit_price', null),
+      supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5)
+    ]);
     
     let livePrices = {};
     if (openTrades && openTrades.length > 0) {
       const uniqueAssets = [...new Set(openTrades.map(t => t.symbol))];
-      for (const asset of uniqueAssets) {
-        // BULLETPROOF ASSET CHECK: Stops the split() function from crashing on null DB rows
-        if (!asset || typeof asset !== 'string') continue; 
+      
+      // SPEED OPTIMIZATION: Fetch all Coinbase prices simultaneously
+      await Promise.all(uniqueAssets.map(async (asset) => {
+        if (!asset || typeof asset !== 'string') return; 
         try {
           const baseCoin = asset.split('-')[0]; 
           const priceResp = await fetch(`https://api.exchange.coinbase.com/products/${baseCoin}-USD/ticker`);
@@ -54,7 +67,7 @@ export default async function handler(req, res) {
         } catch (err) {
           console.warn(`[NEXUS RADAR WARN] Could not fetch live price for ${asset}`);
         }
-      }
+      }));
     }
     
     const systemPrompt = `
@@ -123,12 +136,11 @@ export default async function handler(req, res) {
 
     --- PROTOCOL 4: OPERATIONAL AWARENESS ---
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
-`;
+    `;
 
     console.log("[CHAT API] Handing over to Gemini...");
 
     const result = await streamText({
-      // BACK TO THE STABLE 1.5 PRO TO GUARANTEE SDK COMPATIBILITY
       model: google('gemini-1.5-pro'), 
       system: systemPrompt,
       messages: messages, 
@@ -255,9 +267,9 @@ export default async function handler(req, res) {
           parameters: z.object({
             asset: z.string().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
             granularity: z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']),
-            lookback_candles: z.number().max(5000).default(150).describe('Total number of candles to fetch')
+            lookback_candles: z.number().max(5000).describe('Total number of candles to fetch')
           }),
-          execute: async ({ asset, granularity, lookback_candles }) => {
+          execute: async ({ asset, granularity, lookback_candles = 150 }) => {
             const apiKeyName = process.env.COINBASE_API_KEY;
             const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
             if (!apiKeyName || !apiSecret) return { error: "Missing Coinbase Credentials" };
@@ -341,7 +353,11 @@ export default async function handler(req, res) {
           description: 'Triggers the genetic optimizer.',
           parameters: z.object({}),
           execute: async () => {
-            const url = `https://trading-bot-webhook.vercel.app/api/genetic-optimizer`;
+            // THE FIX: Dynamic URL routing so it works locally and on Vercel without 404ing
+            const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
+            const protocol = host.includes('localhost') ? 'http' : 'https';
+            const url = `${protocol}://${host}/api/genetic-optimizer`;
+            
             try {
               const resp = await fetch(url);
               if (!resp.ok) {
@@ -359,7 +375,30 @@ export default async function handler(req, res) {
     });
 
     console.log("[CHAT API] Streaming response to client...");
-    await result.pipeDataStreamToResponse(res);
+    
+    // BULLETPROOF STREAMING: Dynamically adapts to any Vercel AI SDK version
+    if (typeof result.pipeDataStreamToResponse === 'function') {
+      return result.pipeDataStreamToResponse(res);
+    } else {
+      console.log("[CHAT API] Native pipe deprecated in this SDK. Activating stream pumper...");
+      const streamResponse = result.toDataStreamResponse();
+      
+      res.status(streamResponse.status);
+      streamResponse.headers.forEach((val, key) => res.setHeader(key, val));
+      
+      const reader = streamResponse.body.getReader();
+      const pump = async () => {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            res.end();
+            break;
+          }
+          res.write(Buffer.from(value));
+        }
+      };
+      await pump();
+    }
 
   } catch (err) {
     console.error("====== FULL CHAT FAULT ENCOUNTERED ======");

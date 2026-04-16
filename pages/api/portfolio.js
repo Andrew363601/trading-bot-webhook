@@ -38,36 +38,41 @@ export default async function handler(req, res) {
         console.warn("[PRICE PROXY WARN]: Could not fetch live price.");
     }
 
-    // Fetch LIVE Balance from Coinbase
+    // Fetch LIVE Balance from Coinbase (Spot + CFM Futures)
     try {
         if (apiKeyName && apiSecret) {
-          const path = '/api/v3/brokerage/accounts';
-          
-          // THE FIX: Convert string to proper Asymmetric Private Key Object
           const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
 
-          const token = jwt.sign(
-            {
-              iss: 'cdp',
-              nbf: Math.floor(Date.now() / 1000),
-              exp: Math.floor(Date.now() / 1000) + 120,
-              sub: apiKeyName,
-              uri: `GET api.coinbase.com${path}`
-            }, 
-            privateKey, 
-            { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
-          );
+          const generateToken = (method, path) => {
+              return jwt.sign(
+                { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${path}` }, 
+                privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
+              );
+          };
 
-          const resp = await fetch(`https://api.coinbase.com${path}`, { headers: { 'Authorization': `Bearer ${token}` } });
+          // A. Fetch Spot USD/USDC Balance
+          const spotPath = '/api/v3/brokerage/accounts';
+          const spotResp = await fetch(`https://api.coinbase.com${spotPath}`, { headers: { 'Authorization': `Bearer ${generateToken('GET', spotPath)}` } });
           
-          if (resp.ok) {
-              const data = await resp.json();
+          if (spotResp.ok) {
+              const data = await spotResp.json();
               const fiatAccounts = data.accounts?.filter(a => a.currency === 'USD' || a.currency === 'USDC') || [];
-              liveBalance = fiatAccounts.reduce((sum, acc) => sum + parseFloat(acc.available_balance.value), 0);
+              liveBalance += fiatAccounts.reduce((sum, acc) => sum + parseFloat(acc.available_balance.value), 0);
+          }
+
+          // B. THE FIX: Fetch CFM (Futures) Vault Balance
+          const cfmPath = '/api/v3/brokerage/cfm/balance_summary';
+          const cfmResp = await fetch(`https://api.coinbase.com${cfmPath}`, { headers: { 'Authorization': `Bearer ${generateToken('GET', cfmPath)}` } });
+          
+          if (cfmResp.ok) {
+              const cfmData = await cfmResp.json();
+              const cfmEquity = cfmData.balance_summary?.total_balance?.value || 
+                                cfmData.balance_summary?.total_usd_balance?.value || 
+                                cfmData.balance_summary?.futures_margin_balance?.value || 0;
+              liveBalance += parseFloat(cfmEquity);
           }
         }
     } catch (cryptoErr) {
-        // If StackBlitz blocks createPrivateKey, we log it but don't crash
         console.warn(`[PORTFOLIO CRYPTO REJECT]: Likely environment restriction.`, cryptoErr.message);
     }
 
