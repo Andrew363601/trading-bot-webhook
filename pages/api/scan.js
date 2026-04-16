@@ -240,7 +240,10 @@ export default async function handler(req, res) {
         
        // --- THE ORACLE CONTEXT AWARE INTERCEPTOR ---
        else if (decision.signal) {
+        // THE FIX: Permanently normalize the signal so math calculations never invert
         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
+        decision.signal = normalizedSignal; 
+        
         const isReversal = openTrade && openTrade.side !== normalizedSignal;
         const isDuplicate = openTrade && !isReversal;
 
@@ -274,17 +277,18 @@ export default async function handler(req, res) {
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = 'LIMIT';
                 
+                // THE MATH IS NOW SAFE DUE TO NORMALIZED SIGNAL
                 if (decision.tpPrice && decision.slPrice) {
                   const originalEntry = currentPrice;
                   const tpDistance = decision.tpPrice - originalEntry;
                   const slDistance = originalEntry - decision.slPrice;
-                  decision.tpPrice = decision.entryPrice + (decision.signal === 'BUY' ? Math.abs(tpDistance) : -Math.abs(tpDistance));
-                  decision.slPrice = decision.entryPrice - (decision.signal === 'BUY' ? Math.abs(slDistance) : -Math.abs(slDistance));
+                  decision.tpPrice = decision.entryPrice + (normalizedSignal === 'BUY' ? Math.abs(tpDistance) : -Math.abs(tpDistance));
+                  decision.slPrice = decision.entryPrice - (normalizedSignal === 'BUY' ? Math.abs(slDistance) : -Math.abs(slDistance));
                 } else {
                   const slP = config.parameters?.sl_percent || 0.01;
                   const tpP = config.parameters?.tp_percent || 0.02;
-                  decision.tpPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
-                  decision.slPrice = decision.signal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
+                  decision.tpPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
+                  decision.slPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
                 }
              
                 decision.tpPrice = parseFloat(decision.tpPrice.toFixed(2));
