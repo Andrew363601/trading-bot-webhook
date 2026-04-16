@@ -108,6 +108,19 @@ export default async function handler(req, res) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         if (minutesOpen > 2) {
                             console.log(`[SYNC] Trade ${openTrade.id} missing from Coinbase. Syncing native close...`);
+                            
+                            // --- THE ORPHAN SWEEPER FIX ---
+                            // If the position is gone, instantly nuke the surviving bracket so it doesn't flip us short!
+                            if (openOrders.length > 0) {
+                                console.log(`[SWEEPER] Nuking ${openOrders.length} orphaned brackets for ${coinbaseProduct} to prevent Phantom Flips...`);
+                                const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                await fetch(`https://api.coinbase.com${cancelPath}`, {
+                                    method: 'POST', 
+                                    headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, 
+                                    body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) })
+                                });
+                            }
+
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: EXCHANGE_NATIVE_CLOSE` : 'EXCHANGE_NATIVE_CLOSE';
                             await supabase.from('trade_logs').update({
                                 exit_price: currentPrice, 
