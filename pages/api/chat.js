@@ -396,28 +396,38 @@ export default async function handler(req, res) {
 
     console.log("[CHAT API] Streaming response to client...");
     
-    // --- THE UNIVERSAL STREAM POLYFILL ---
+    // --- THE INVINCIBLE BARE-METAL PUMPER ---
+    // If the official modern pipeline exists, use it.
     if (typeof result.pipeDataStreamToResponse === 'function') {
         console.log("[CHAT API] Native pipeline detected. Routing...");
         return result.pipeDataStreamToResponse(res);
     } 
-
-    console.log("[CHAT API] Native pipeline missing. Engaging standard Node.js Data Stream conversion...");
-    const streamResponse = result.toDataStreamResponse();
     
-    res.status(streamResponse.status);
-    streamResponse.headers.forEach((val, key) => {
-      res.setHeader(key, val);
-    });
-    
-    if (streamResponse.body) {
-      const reader = streamResponse.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        res.write(Buffer.from(value));
-      }
+    // If the official legacy pipeline exists, use it.
+    if (typeof result.toAIStreamResponse === 'function') {
+        console.log("[CHAT API] Legacy pipeline detected. Routing...");
+        const streamResponse = result.toAIStreamResponse();
+        res.status(streamResponse.status);
+        streamResponse.headers.forEach((val, key) => res.setHeader(key, val));
+        const reader = streamResponse.body.getReader();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            res.write(Buffer.from(value));
+        }
+        return res.end();
     }
+
+    // If both fail, manually extract the textStream and format it as Vercel DSP string chunks.
+    console.log("[CHAT API] Engaging Bare-Metal DSP Pumper...");
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('x-vercel-ai-data-stream', 'v1');
+    
+    for await (const chunk of result.textStream) {
+        // Formats raw text chunks into DSP format: 0:"text"
+        res.write(`0:${JSON.stringify(chunk)}\n`);
+    }
+    
     return res.end();
 
   } catch (err) {
