@@ -78,7 +78,6 @@ export default async function handler(req, res) {
                 else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
             }
 
-            // Only ping Coinbase and manage state if the trade is actually LIVE
             if (config.execution_mode === 'LIVE') {
                 try {
                     const posPath = '/api/v3/brokerage/cfm/positions';
@@ -149,21 +148,37 @@ export default async function handler(req, res) {
                     if (activePosition) {
                         const physicalTP = openOrders.find(o => o.order_configuration?.limit_limit_gtc);
                         const physicalSL = openOrders.find(o => o.order_configuration?.stop_limit_stop_limit_gtc);
+                        
+                        // --- THE OCO BRACKET FIX ---
+                        // Coinbase UI generates 'trigger_bracket_gtc' instead of individual limits!
+                        const physicalBracket = openOrders.find(o => o.order_configuration?.trigger_bracket_gtc);
 
-                        // If the database is missing TP/SL but physical orders exist on Coinbase, update the database!
-                        if ((physicalTP && !openTrade.tp_price) || (physicalSL && !openTrade.sl_price)) {
-                             console.log(`[SYNC] Manual brackets detected on Coinbase for ${asset}. Updating database...`);
+                        if (physicalBracket && (!openTrade.tp_price || !openTrade.sl_price)) {
+                             console.log(`[SYNC] Manual OCO Bracket detected on Coinbase UI for ${asset}. Updating database...`);
+                             const updates = {
+                                 tp_price: parseFloat(physicalBracket.order_configuration.trigger_bracket_gtc.limit_price),
+                                 sl_price: parseFloat(physicalBracket.order_configuration.trigger_bracket_gtc.stop_trigger_price)
+                             };
+                             await supabase.from('trade_logs').update(updates).eq('id', openTrade.id);
+                             openTrade.tp_price = updates.tp_price;
+                             openTrade.sl_price = updates.sl_price;
+                        } 
+                        else if ((physicalTP && !openTrade.tp_price) || (physicalSL && !openTrade.sl_price)) {
+                             console.log(`[SYNC] Manual individual brackets detected on Coinbase for ${asset}. Updating database...`);
                              const updates = {};
                              if (physicalTP) updates.tp_price = parseFloat(physicalTP.order_configuration.limit_limit_gtc.limit_price);
                              if (physicalSL) updates.sl_price = parseFloat(physicalSL.order_configuration.stop_limit_stop_limit_gtc.stop_price);
                              
                              await supabase.from('trade_logs').update(updates).eq('id', openTrade.id);
-                             
                              openTrade.tp_price = updates.tp_price || openTrade.tp_price;
                              openTrade.sl_price = updates.sl_price || openTrade.sl_price;
                         }
 
-                        if (physicalTP && physicalSL) {
+                        // Check if we have either the manual UI bracket or individual bot brackets
+                        const hasTP = physicalBracket || physicalTP;
+                        const hasSL = physicalBracket || physicalSL;
+
+                        if (hasTP && hasSL) {
                             openTrade.skipVirtualEnforcer = true;
                         }
 
@@ -172,7 +187,6 @@ export default async function handler(req, res) {
                         const orderQty = activePosition.number_of_contracts;
                         const executePath = '/api/v3/brokerage/orders';
 
-                        // --- THE FIX: Universal Tick Size Rounder for the Watchdog ---
                         let tickSize = 0.01;
                         if (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) tickSize = 0.50;
                         if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
@@ -180,7 +194,7 @@ export default async function handler(req, res) {
                         const safeSlPrice = openTrade.sl_price ? (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(2) : null;
                         const safeTpPrice = openTrade.tp_price ? (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(2) : null;
 
-                        if (!physicalSL && safeSlPrice) {
+                        if (!hasSL && safeSlPrice) {
                             console.log(`[WATCHDOG] Missing Stop Loss detected for ${coinbaseProduct}. Deploying at $${safeSlPrice}...`);
                             try {
                                 const slPayload = {
@@ -191,11 +205,13 @@ export default async function handler(req, res) {
                                         } 
                                     }
                                 };
-                                await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload) });
-                            } catch (e) {}
+                                const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload) });
+                                const result = await resp.json();
+                                if (!resp.ok || result.success === false) console.error(`[WATCHDOG REJECT] SL Failed:`, JSON.stringify(result));
+                            } catch (e) { console.error(`[WATCHDOG FATAL] SL:`, e.message); }
                         }
 
-                        if (!physicalTP && safeTpPrice) {
+                        if (!hasTP && safeTpPrice) {
                             console.log(`[WATCHDOG] Missing Take Profit detected for ${coinbaseProduct}. Deploying at $${safeTpPrice}...`);
                             try {
                                 const tpPayload = {
@@ -204,8 +220,10 @@ export default async function handler(req, res) {
                                         limit_limit_gtc: { limit_price: safeTpPrice.toString(), base_size: orderQty.toString(), reduce_only: true } 
                                     }
                                 };
-                                await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
-                            } catch (e) {}
+                                const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
+                                const result = await resp.json();
+                                if (!resp.ok || result.success === false) console.error(`[WATCHDOG REJECT] TP Failed:`, JSON.stringify(result));
+                            } catch (e) { console.error(`[WATCHDOG FATAL] TP:`, e.message); }
                         }
                     }
 
@@ -258,16 +276,12 @@ export default async function handler(req, res) {
             decision.slPrice = null;
             decision.telemetry = { ...decision.telemetry, exit_reason: forcedExit };
         } 
-        
-       // --- THE ORACLE CONTEXT AWARE INTERCEPTOR ---
        else if (decision.signal) {
-        // Permanently normalize the signal so math calculations never invert
         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
         decision.signal = normalizedSignal; 
         
         const isReversal = openTrade && openTrade.side !== normalizedSignal;
         const isDuplicate = openTrade && !isReversal;
-        
         const hasRestingOrders = openTrade && config.execution_mode === 'LIVE';
 
         if (isDuplicate) {
@@ -303,7 +317,6 @@ export default async function handler(req, res) {
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = 'LIMIT';
                 
-                // MATH IS NOW SAFE DUE TO NORMALIZED SIGNAL
                 if (decision.tpPrice && decision.slPrice) {
                   const originalEntry = currentPrice;
                   const tpDistance = decision.tpPrice - originalEntry;
@@ -317,7 +330,6 @@ export default async function handler(req, res) {
                   decision.slPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
                 }
              
-                // --- THE FIX: Universal Tick Size Rounder for Oracle Generation ---
                 let tickSize = 0.01;
                 if (asset.includes('ETP') || asset.includes('ETH')) tickSize = 0.50;
                 if (asset.includes('BIT') || asset.includes('BTC')) tickSize = 1.00;
@@ -334,12 +346,10 @@ export default async function handler(req, res) {
 
     const finalStatus = decision.statusOverride ? decision.statusOverride : (decision.signal ? (forcedExit ? `HIT_${forcedExit}` : "RESONANT") : "STABLE");
 
-    // THE FIX: Unlocked Database Logging so STABLE scans show up in the Audit Trail
     const scanEntry = { strategy: config.strategy, asset, telemetry: decision.telemetry || {}, status: finalStatus };
     results.push(scanEntry);
     await supabase.from('scan_results').insert([scanEntry]);
 
-        // THE EXECUTION TRIGGER
         if (decision.signal && decision.signal !== null) {
           let finalQty = config.parameters?.qty || 10; 
           if (config.parameters?.target_usd && decision.entryPrice) {
@@ -354,7 +364,6 @@ export default async function handler(req, res) {
               reason: decision.telemetry?.oracle_reasoning || decision.telemetry?.exit_reason || null 
           };
           
-          // Falls back to the absolute Vercel URL environment variable to prevent Cron Job 404s
           const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
           const protocol = host.includes('localhost') ? 'http' : 'https';
           
