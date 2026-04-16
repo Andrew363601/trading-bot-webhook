@@ -35,7 +35,7 @@ export default async function handler(req, res) {
         throw new Error("Invalid or empty message payload.");
     }
 
-    // --- THE PROVEN FIX: The Message Sanitizer from 4 Days Ago ---
+    // --- THE PROVEN FIX: The Message Sanitizer ---
     const cleanMessages = messages.filter(msg => {
       if (msg.role === 'tool') return false; 
       if (msg.role === 'assistant' && msg.toolInvocations) return false; 
@@ -160,9 +160,9 @@ export default async function handler(req, res) {
     console.log("[CHAT API] Handing over to Gemini 2.5 Pro...");
 
     const result = await streamText({
-      model: google('models/gemini-2.5-pro'), 
+      model: google('models/gemini-2.5-pro'), // THE FIX: Restored the exact 'models/' prefix
       system: systemPrompt,
-      messages: safeMessages, // THE FIX: Passing the sanitized message array
+      messages: safeMessages, 
       maxSteps: 5,
       tools: {
         queryTradeLedger: tool({
