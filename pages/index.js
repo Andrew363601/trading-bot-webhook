@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { useChat } from '@ai-sdk/react'; // <--- THE FIX: Restored the modern, correct SDK import
+import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
@@ -28,7 +28,6 @@ export default function Dashboard() {
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  // THE FIX: Utilizing Vercel's native state bindings so 'append' and 'submit' never crash
   const { messages, input, handleInputChange, handleSubmit, append, error, isLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
@@ -464,15 +463,16 @@ export default function Dashboard() {
             </div>
 
             <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+                {/* THE FIX: Added optional chaining and fallback empty string to prevent the React trim() crash */}
                 <input 
                   className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
-                  value={input} 
+                  value={input || ''} 
                   onChange={handleInputChange} 
                   placeholder="Command Nexus..." 
               />
               <button 
                   type="submit" 
-                  disabled={!input.trim()}
+                  disabled={!input?.trim()}
                   className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}
               >
                   {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
