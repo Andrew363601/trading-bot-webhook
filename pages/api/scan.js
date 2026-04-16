@@ -100,7 +100,6 @@ export default async function handler(req, res) {
                         openOrders = orderData.orders || [];
                     }
 
-                    // THE FIX: Wrapped in parseFloat to prevent string mismatch bugs with trailing decimal zeros
                     const entryOrderExists = openOrders.some(o => o.side === openTrade.side && parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price) === parseFloat(openTrade.entry_price));
 
                     // SCENARIO 0: Native Exchange Sync
@@ -109,8 +108,6 @@ export default async function handler(req, res) {
                         if (minutesOpen > 2) {
                             console.log(`[SYNC] Trade ${openTrade.id} missing from Coinbase. Syncing native close...`);
                             
-                            // --- THE ORPHAN SWEEPER FIX ---
-                            // If the position is gone, instantly nuke the surviving bracket so it doesn't flip us short!
                             if (openOrders.length > 0) {
                                 console.log(`[SWEEPER] Nuking ${openOrders.length} orphaned brackets for ${coinbaseProduct} to prevent Phantom Flips...`);
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
@@ -139,7 +136,6 @@ export default async function handler(req, res) {
                         if (minutesOpen > 15) {
                             console.log(`[SWEEPER] Stale limit order detected for ${coinbaseProduct} (${minutesOpen.toFixed(1)} mins old). Canceling...`);
                             
-                            // THE FIX: Wrapped in parseFloat to safely target the exact order
                             const targetOrder = openOrders.find(o => o.side === openTrade.side && parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price) === parseFloat(openTrade.entry_price));
                             
                             if (targetOrder) {
@@ -221,7 +217,6 @@ export default async function handler(req, res) {
                                     }
                                 };
                                 
-                                // THE FIX: Only add reduce_only if it is NOT a CDE derivative
                                 if (!isCDE) {
                                     slPayload.order_configuration.stop_limit_stop_limit_gtc.reduce_only = true;
                                 }
@@ -242,7 +237,6 @@ export default async function handler(req, res) {
                                     }
                                 };
 
-                                // THE FIX: Only add reduce_only if it is NOT a CDE derivative
                                 if (!isCDE) {
                                     tpPayload.order_configuration.limit_limit_gtc.reduce_only = true;
                                 }
@@ -344,7 +338,11 @@ export default async function handler(req, res) {
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = 'LIMIT';
                 
-                if (decision.tpPrice && decision.slPrice) {
+                // --- THE FIX: Using Oracle's Dynamic TP/SL first, falling back to Strategy defaults if missing ---
+                if (oracleVerdict.tp_price && oracleVerdict.sl_price) {
+                    decision.tpPrice = oracleVerdict.tp_price;
+                    decision.slPrice = oracleVerdict.sl_price;
+                } else if (decision.tpPrice && decision.slPrice) {
                   const originalEntry = currentPrice;
                   const tpDistance = decision.tpPrice - originalEntry;
                   const slDistance = originalEntry - decision.slPrice;
