@@ -240,14 +240,20 @@ export default async function handler(req, res) {
         
        // --- THE ORACLE CONTEXT AWARE INTERCEPTOR ---
        else if (decision.signal) {
-        // THE FIX: Permanently normalize the signal so math calculations never invert
+        // Permanently normalize the signal so math calculations never invert
         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
         decision.signal = normalizedSignal; 
         
         const isReversal = openTrade && openTrade.side !== normalizedSignal;
         const isDuplicate = openTrade && !isReversal;
+        
+        // THE NEW FIX: If the trade is LIVE and already resting on Coinbase, we do not try to override the native brackets!
+        const hasRestingOrders = openTrade && config.execution_mode === 'LIVE';
 
         if (isDuplicate) {
+            decision.signal = null;
+        } else if (isReversal && hasRestingOrders) {
+            console.log(`[ORACLE BYPASS] Ignoring ${normalizedSignal} reversal signal for ${asset}. LIVE trade is resting on the exchange. Letting native limits handle the exit.`);
             decision.signal = null;
         } else {
             console.log(`[ORACLE INITIATED] Scoring ${isReversal ? 'REVERSAL' : 'ENTRY'} ${decision.signal} signal for ${asset}...`);
@@ -277,7 +283,7 @@ export default async function handler(req, res) {
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = 'LIMIT';
                 
-                // THE MATH IS NOW SAFE DUE TO NORMALIZED SIGNAL
+                // MATH IS NOW SAFE DUE TO NORMALIZED SIGNAL
                 if (decision.tpPrice && decision.slPrice) {
                   const originalEntry = currentPrice;
                   const tpDistance = decision.tpPrice - originalEntry;
@@ -324,7 +330,6 @@ export default async function handler(req, res) {
               reason: decision.telemetry?.oracle_reasoning || decision.telemetry?.exit_reason || null 
           };
           
-          // --- THE INTERNAL URL FIX ---
           // Falls back to the absolute Vercel URL environment variable to prevent Cron Job 404s
           const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
           const protocol = host.includes('localhost') ? 'http' : 'https';

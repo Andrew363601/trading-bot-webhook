@@ -62,7 +62,7 @@ export default async function handler(req, res) {
     
     const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
 
-    // --- VERIFIED: THE CLOSING DETECTOR ---
+    // --- THE CLOSING DETECTOR ---
     const isClosing = openTrade && openTrade.side !== side;
 
     // THE LIQUIDATION LOCK: Ensure closure quantity perfectly matches open quantity
@@ -107,27 +107,42 @@ export default async function handler(req, res) {
       if (orderType === 'LIMIT') {
           payload.order_configuration.limit_limit_gtc = {
               base_size: orderQty.toString(),
-              limit_price: executionPrice.toString()
+              limit_price: executionPrice.toString(),
+              reduce_only: isClosing 
           };
-          
-          // --- VERIFIED: Dynamic Margin Override (Costs $0 Margin) ---
-          if (isClosing) {
-              payload.order_configuration.limit_limit_gtc.reduce_only = true;
-          }
-
       } else {
           payload.order_configuration.market_market_ioc = { 
               base_size: orderQty.toString() 
           };
       }
 
-      const resp = await fetch(`https://api.coinbase.com${path}`, {
+      let resp = await fetch(`https://api.coinbase.com${path}`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       
-      const result = await resp.json();
+      let result = await resp.json();
+
+      // --- THE AUTO-RECOVERY MATRIX ---
+      if (!resp.ok || result.success === false) {
+          const failReason = result.error_response?.preview_failure_reason || result.error_response?.error;
+          
+          if (failReason === 'PREVIEW_ORDER_SIZE_EXCEEDS_BRACKETED_POSITION' || failReason === 'PREVIEW_INSUFFICIENT_FUNDS_FOR_FUTURES') {
+              console.log(`[EXECUTE RECOVERY] Coinbase physical bracket conflict detected. Auto-retrying as reduce_only...`);
+              
+              if (payload.order_configuration.limit_limit_gtc) {
+                  payload.order_configuration.limit_limit_gtc.reduce_only = true;
+                  payload.client_order_id = `nexus_retry_${Date.now()}`; // Refresh ID
+
+                  const retryToken = generateToken('POST', path);
+                  resp = await fetch(`https://api.coinbase.com${path}`, {
+                      method: 'POST', headers: { 'Authorization': `Bearer ${retryToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+                  });
+                  result = await resp.json();
+              }
+          }
+      }
       
       if (!resp.ok) throw new Error(`Coinbase HTTP Reject: ${JSON.stringify(result)}`);
       if (result.success === false || result.error_response) {
@@ -139,7 +154,6 @@ export default async function handler(req, res) {
       executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
 
       // --- THE TP/SL BRACKET ORDER DEPLOYMENT ---
-      // We ONLY deploy brackets if this is a new entry, not a closing reversal!
       if (!isClosing && orderType === 'MARKET' && tpPrice && slPrice) {
           console.log(`[BRACKET] Entry filled. Deploying Take Profit at $${tpPrice} and Stop Loss at $${slPrice}...`);
           const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
@@ -148,76 +162,36 @@ export default async function handler(req, res) {
           // 1. Fire Stop Loss 
           try {
               const slPayload = {
-                  client_order_id: `nx_sl_${Date.now()}`,
-                  product_id: coinbaseProduct,
-                  side: closingSide,
-                  order_configuration: {
-                      stop_limit_stop_limit_gtc: { 
-                          stop_direction: stopDir, 
-                          stop_price: slPrice.toString(), 
-                          limit_price: slPrice.toString(), 
-                          base_size: orderQty.toString(),
-                          reduce_only: true
-                      }
-                  }
+                  client_order_id: `nx_sl_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                  order_configuration: { stop_limit_stop_limit_gtc: { stop_direction: stopDir, stop_price: slPrice.toString(), limit_price: slPrice.toString(), base_size: orderQty.toString(), reduce_only: true } }
               };
-              const slResp = await fetch(`https://api.coinbase.com${path}`, {
+              await fetch(`https://api.coinbase.com${path}`, {
                   method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload)
               });
-              
-              const slResult = await slResp.json();
-              if (slResp.ok && slResult.success !== false) {
-                  console.log(`[BRACKET] Stop Loss successfully locked.`);
-              } else {
-                  console.error(`[BRACKET WARN] Stop Loss rejected by Coinbase:`, JSON.stringify(slResult));
-              }
-          } catch (e) { console.error("[BRACKET ERROR] SL failed to send:", e.message); }
+          } catch (e) { console.error("[BRACKET ERROR] SL failed"); }
 
           // 2. Fire Take Profit 
           try {
               const tpPayload = {
-                  client_order_id: `nx_tp_${Date.now()}`,
-                  product_id: coinbaseProduct,
-                  side: closingSide,
-                  order_configuration: {
-                      limit_limit_gtc: { 
-                          limit_price: tpPrice.toString(), 
-                          base_size: orderQty.toString(),
-                          reduce_only: true
-                      }
-                  }
+                  client_order_id: `nx_tp_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                  order_configuration: { limit_limit_gtc: { limit_price: tpPrice.toString(), base_size: orderQty.toString(), reduce_only: true } }
               };
-              const tpResp = await fetch(`https://api.coinbase.com${path}`, {
+              await fetch(`https://api.coinbase.com${path}`, {
                   method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload)
               });
-              
-              const tpResult = await tpResp.json();
-              if (tpResp.ok && tpResult.success !== false) {
-                  console.log(`[BRACKET] Take Profit successfully locked.`);
-              } else {
-                  console.error(`[BRACKET WARN] Take Profit rejected by Coinbase:`, JSON.stringify(tpResult));
-              }
-          } catch (e) { console.error("[BRACKET ERROR] TP failed to send:", e.message); }
+          } catch (e) { console.error("[BRACKET ERROR] TP failed"); }
       }
       
     } else {
       // 🟢 PAPER DRY-RUN
-      let paperProduct = coinbaseProduct;
-      if (paperProduct.includes('-PERP')) paperProduct = paperProduct.split('-')[0] + '-USD';
-
-      const path = `/api/v3/brokerage/products/${paperProduct}`;
-      const resp = await fetch(`https://api.coinbase.com${path}`, {
-        method: 'GET', headers: { 'Authorization': `Bearer ${generateToken('GET', path)}` }
-      });
-      
-      const result = await resp.json();
-      if (!resp.ok) throw new Error(`Coinbase Paper Reject: ${JSON.stringify(result)}`);
-      
-      if (orderType === 'MARKET') executionPrice = parseFloat(result.price || data.price);
-      console.log(`[PAPER] Verified ${orderType} price: $${executionPrice}`);
+      executionStatus = 'simulated';
+      console.log(`[PAPER] Simulated ${side} for ${rawSymbol} at $${executionPrice}`);
     }
 
-    // 3. PROPER STATE MANAGEMENT 
+    // 3. DATABASE STATE MANAGEMENT 
+    // The Phantom Blocker: Prevents ghost trades if Watchdog already closed it natively
+    const isForcedExit = tradeReason && (tradeReason.includes('STOP_LOSS') || tradeReason.includes('TAKE_PROFIT') || tradeReason.includes('STALE_LIMIT') || tradeReason.includes('EMERGENCY_CLOSE'));
+
     if (openTrade) {
       if (isClosing) {
         console.log(`[SUPABASE] Closing existing ${openTrade.side} position for ${rawSymbol}...`);
@@ -243,13 +217,19 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
       }
     } else {
+      
+      // THE FIX: If there is no open trade, but the signal was a forced exit, DO NOT open a new trade!
+      if (isForcedExit) {
+          console.log(`[SUPABASE] Ignored phantom ${side} order. Trade already closed natively.`);
+          return res.status(200).json({ status: "already_closed_natively", product: coinbaseProduct });
+      }
+
       console.log(`[SUPABASE] Inserting brand new ${side} position for ${rawSymbol}...`);
       const { error: insertError } = await supabase.from('trade_logs').insert([{
         symbol: rawSymbol,
         side: side,
         entry_price: executionPrice,
         execution_mode: mode,
-        mci_at_entry: data.mci || 0,
         strategy_id: strategyId,
         version: version,
         qty: orderQty, 
@@ -264,7 +244,6 @@ export default async function handler(req, res) {
       executionStatus = orderType === 'LIMIT' ? 'opened_limit_position' : 'opened_position';
     }
 
-    console.log(`[SUPABASE] Operation Complete: ${executionStatus}`);
     return res.status(200).json({ status: executionStatus, product: coinbaseProduct, price: executionPrice });
 
   } catch (err) {

@@ -106,12 +106,27 @@ export default function AuditLog() {
 
   const uniqueAssets = [...new Set(pipelines.map(p => p.asset).filter(Boolean))];
   
-  const filteredPipelines = pipelines.filter(p => {
-    if (assetFilter !== 'ALL' && p.asset !== assetFilter) return false;
-    if (statusFilter === 'EXECUTED' && p.type !== 'FULL_TRADE') return false;
-    if (statusFilter === 'VETOED' && (!p.scan?.status?.includes('VETO'))) return false;
-    return true;
-  });
+  // THE FIX: Filter first, then dynamically sort to pin active positions to the top
+  const sortedAndFilteredPipelines = [...pipelines]
+    .filter(p => {
+      if (assetFilter !== 'ALL' && p.asset !== assetFilter) return false;
+      if (statusFilter === 'EXECUTED' && p.type !== 'FULL_TRADE') return false;
+      if (statusFilter === 'VETOED' && (!p.scan?.status?.includes('VETO'))) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      // If we are looking at the 'ALL' or 'EXECUTED' feed, float open positions to the absolute top
+      if (statusFilter === 'ALL' || statusFilter === 'EXECUTED') {
+        const isOpenA = a.type === 'FULL_TRADE' && a.trade && !a.trade.exit_price;
+        const isOpenB = b.type === 'FULL_TRADE' && b.trade && !b.trade.exit_price;
+        
+        if (isOpenA && !isOpenB) return -1; // A moves up
+        if (!isOpenA && isOpenB) return 1;  // B moves up
+      }
+      
+      // Default: sort chronologically (newest first)
+      return b.timestamp - a.timestamp;
+    });
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-6 font-sans flex flex-col gap-6">
@@ -206,29 +221,35 @@ export default function AuditLog() {
       </div>
 
       <main className="max-w-[1400px] w-full mx-auto space-y-6">
-        {filteredPipelines.map((pipeline, i) => {
+        {sortedAndFilteredPipelines.map((pipeline, i) => {
           const isVeto = pipeline.type === 'ORPHAN_SCAN' && pipeline.scan?.status?.includes('VETO');
           const isFullTrade = pipeline.type === 'FULL_TRADE';
           const t = pipeline.trade;
           const s = pipeline.scan;
+          
+          // Identify if this specific card is the live, floating position
+          const isOpenTrade = isFullTrade && !t?.exit_price;
 
-          // THE REASONING FIX: Extract original reason from trade.reason if the scan was lost
           const originalTradeReason = t?.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
           const displayReasoning = s?.telemetry?.oracle_reasoning || originalTradeReason;
 
           return (
             <div key={i} className={`p-5 rounded-3xl border transition-all duration-300 ${
-              isFullTrade 
-                ? 'bg-slate-900/60 border-indigo-500/20 shadow-[0_0_30px_-10px_rgba(99,102,241,0.1)]' 
-                : (isVeto ? 'bg-slate-950 border-white/5 opacity-70' : 'bg-slate-900/30 border-white/10')
+              isOpenTrade
+                ? 'bg-emerald-950/40 border-emerald-500/40 shadow-[0_0_40px_-10px_rgba(16,185,129,0.15)]' // Highlight live trades
+                : isFullTrade 
+                  ? 'bg-slate-900/60 border-indigo-500/20 shadow-[0_0_30px_-10px_rgba(99,102,241,0.1)]' 
+                  : (isVeto ? 'bg-slate-950 border-white/5 opacity-70' : 'bg-slate-900/30 border-white/10')
             }`}>
               
               <div className="flex justify-between items-center mb-4 border-b border-white/5 pb-4">
                  <div className="flex items-center gap-4">
-                    <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
+                    <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2 ${
+                      isOpenTrade ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' :
                       isFullTrade ? 'bg-indigo-500/20 text-indigo-300' : (isVeto ? 'bg-red-500/10 text-red-400' : 'bg-slate-800 text-slate-400')
                     }`}>
-                      {isFullTrade ? 'Pipeline Executed' : (isVeto ? 'Oracle Veto' : 'Scan Log')}
+                      {isOpenTrade && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />}
+                      {isOpenTrade ? 'Active Position' : isFullTrade ? 'Pipeline Executed' : (isVeto ? 'Oracle Veto' : 'Scan Log')}
                     </span>
                     <span className="text-sm font-bold text-white">{pipeline.asset}</span>
                     <span className="text-xs text-slate-500 font-mono">{pipeline.strategy}</span>
@@ -252,7 +273,6 @@ export default function AuditLog() {
                   </div>
                 )}
 
-                {/* UPDATED REASONING DISPLAY */}
                 {displayReasoning && (
                   <div className={`border-l-2 pl-4 py-1 ${isVeto ? 'border-red-500/30' : 'border-amber-500/30'}`}>
                      <h4 className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-2 mb-2 ${isVeto ? 'text-red-400' : 'text-amber-400'}`}>
@@ -306,7 +326,7 @@ export default function AuditLog() {
           );
         })}
 
-        {filteredPipelines.length === 0 && (
+        {sortedAndFilteredPipelines.length === 0 && (
           <div className="text-center py-20 text-slate-500 flex flex-col items-center">
             <CheckCircle2 size={32} className="opacity-20 mb-3" />
             <p className="text-xs uppercase tracking-widest font-black">Pipeline Clear</p>

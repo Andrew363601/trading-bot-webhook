@@ -1,5 +1,7 @@
-// Unleashing Vercel Pro limit (5 full minutes)
-export const maxDuration = 300;
+// Set Next.js configuration for Vercel Pro limits
+export const config = {
+  maxDuration: 300,
+};
 
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText, tool } from 'ai';
@@ -11,12 +13,17 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
+  // CORS Headers to prevent silent frontend blocking
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
     console.log("[CHAT API] Nexus Agent pinged. Extracting payload...");
 
-    // BULLETPROOF EXTRACTION: Handles both stringified and parsed JSON payloads
     let data = req.body;
     if (typeof data === 'string') {
       try { data = JSON.parse(data); } catch (e) {}
@@ -39,7 +46,6 @@ export default async function handler(req, res) {
 
     console.log("[CHAT API] Fetching database telemetry in parallel...");
 
-    // SPEED OPTIMIZATION: Fetch all Supabase data simultaneously
     const [
       { data: allConfigs },
       { data: openTrades },
@@ -54,7 +60,6 @@ export default async function handler(req, res) {
     if (openTrades && openTrades.length > 0) {
       const uniqueAssets = [...new Set(openTrades.map(t => t.symbol))];
       
-      // SPEED OPTIMIZATION: Fetch all Coinbase prices simultaneously
       await Promise.all(uniqueAssets.map(async (asset) => {
         if (!asset || typeof asset !== 'string') return; 
         try {
@@ -138,10 +143,10 @@ export default async function handler(req, res) {
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
     `;
 
-    console.log("[CHAT API] Handing over to Gemini...");
+    console.log("[CHAT API] Handing over to Gemini 2.5 Pro...");
 
     const result = await streamText({
-      model: google('gemini-1.5-pro'), 
+      model: google('gemini-2.5-pro'), 
       system: systemPrompt,
       messages: messages, 
       maxSteps: 5,
@@ -166,12 +171,14 @@ export default async function handler(req, res) {
             const { data: trades, error } = await query;
             if (error) return { error: error.message };
 
-            const totalTrades = trades.length;
-            const totalPnL = trades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
-            const winningTrades = trades.filter(t => parseFloat(t.pnl) > 0).length;
+            // THE FIX: Safe array checking to prevent crashes if table is empty
+            const tradesList = trades || [];
+            const totalTrades = tradesList.length;
+            const totalPnL = tradesList.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+            const winningTrades = tradesList.filter(t => parseFloat(t.pnl) > 0).length;
             const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(2) + '%' : '0%';
 
-            const breakdown = trades.reduce((acc, t) => {
+            const breakdown = tradesList.reduce((acc, t) => {
               const key = `${t.strategy_id} | ${t.symbol}`;
               if (!acc[key]) acc[key] = { pnl: 0, trades: 0 };
               acc[key].pnl += (parseFloat(t.pnl) || 0);
@@ -208,12 +215,13 @@ export default async function handler(req, res) {
             reasoning: z.string().describe('Technical reasoning for this deployment or mutation.')
           }),
           execute: async (args) => {
+            // THE FIX: Uses .maybeSingle() so Supabase doesn't throw a fatal PGRST116 error if strategy is missing
             const { data: existing } = await supabase
               .from('strategy_config')
               .select('id')
               .eq('asset', args.asset)
               .eq('strategy', args.strategy_id)
-              .single();
+              .maybeSingle();
 
             const payload = {
               asset: args.asset,
@@ -301,6 +309,9 @@ export default async function handler(req, res) {
             let candlesLeft = lookback_candles;
 
             try {
+              // THE FIX: Convert to correct Elliptic Curve key to prevent the ES256 crash inside the tool!
+              const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
+
               while (candlesLeft > 0) {
                 const batchSize = Math.min(candlesLeft, 300);
                 const currentStart = currentEnd - (batchSize * lookbackSeconds);
@@ -309,7 +320,7 @@ export default async function handler(req, res) {
                 const token = jwt.sign({
                   iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
                   sub: apiKeyName, uri: `GET api.coinbase.com${apiPath}`,
-                }, apiSecret, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
+                }, privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
 
                 const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
                 const data = await resp.json();
@@ -353,7 +364,6 @@ export default async function handler(req, res) {
           description: 'Triggers the genetic optimizer.',
           parameters: z.object({}),
           execute: async () => {
-            // THE FIX: Dynamic URL routing so it works locally and on Vercel without 404ing
             const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
             const protocol = host.includes('localhost') ? 'http' : 'https';
             const url = `${protocol}://${host}/api/genetic-optimizer`;
@@ -376,29 +386,8 @@ export default async function handler(req, res) {
 
     console.log("[CHAT API] Streaming response to client...");
     
-    // BULLETPROOF STREAMING: Dynamically adapts to any Vercel AI SDK version
-    if (typeof result.pipeDataStreamToResponse === 'function') {
-      return result.pipeDataStreamToResponse(res);
-    } else {
-      console.log("[CHAT API] Native pipe deprecated in this SDK. Activating stream pumper...");
-      const streamResponse = result.toDataStreamResponse();
-      
-      res.status(streamResponse.status);
-      streamResponse.headers.forEach((val, key) => res.setHeader(key, val));
-      
-      const reader = streamResponse.body.getReader();
-      const pump = async () => {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            res.end();
-            break;
-          }
-          res.write(Buffer.from(value));
-        }
-      };
-      await pump();
-    }
+    // THE FIX: Rely exclusively on the native Next.js native response pipe so it perfectly adheres to the Data Stream Protocol
+    return result.pipeDataStreamToResponse(res);
 
   } catch (err) {
     console.error("====== FULL CHAT FAULT ENCOUNTERED ======");
