@@ -104,24 +104,22 @@ export default async function handler(req, res) {
                     const entryOrderExists = openOrders.some(o => o.side === openTrade.side && o.order_configuration?.limit_limit_gtc?.limit_price === openTrade.entry_price.toString());
 
                     // SCENARIO 0: Native Exchange Sync
-                    // If there is no position AND no entry limit order waiting, Coinbase natively closed the trade (TP/SL/Liquidation).
                     if (!activePosition && !entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         if (minutesOpen > 2) {
                             console.log(`[SYNC] Trade ${openTrade.id} missing from Coinbase. Syncing native close...`);
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: EXCHANGE_NATIVE_CLOSE` : 'EXCHANGE_NATIVE_CLOSE';
                             await supabase.from('trade_logs').update({
-                                exit_price: currentPrice, // Approximate closing price fallback
+                                exit_price: currentPrice, 
                                 pnl: (openTrade.side === 'BUY' ? currentPrice - openTrade.entry_price : openTrade.entry_price - currentPrice) * openTrade.qty,
                                 exit_time: new Date().toISOString(),
                                 reason: updatedReason
                             }).eq('id', openTrade.id);
-                            continue; // 🔴 CRITICAL: Skips the rest of the loop so it doesn't trigger execution engine
+                            continue; 
                         }
                     }
 
                     // SCENARIO A: Stale Limit Sweeper
-                    // If there is no active position BUT the entry limit order is sitting there, it's pending.
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         
@@ -138,12 +136,12 @@ export default async function handler(req, res) {
                             
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                             await supabase.from('trade_logs').update({
-                                exit_price: openTrade.entry_price, // Mark at entry to represent $0.00 PnL
+                                exit_price: openTrade.entry_price, 
                                 pnl: 0,
                                 exit_time: new Date().toISOString(),
                                 reason: updatedReason
                             }).eq('id', openTrade.id);
-                            continue; // 🔴 CRITICAL: Skips loop. NO GHOST TRADES!
+                            continue; 
                         }
                     }
 
@@ -152,7 +150,6 @@ export default async function handler(req, res) {
                         const hasTP = openOrders.some(o => o.order_configuration?.limit_limit_gtc);
                         const hasSL = openOrders.some(o => o.order_configuration?.stop_limit_stop_limit_gtc);
 
-                        // If brackets are locked in on Coinbase, disable the Vercel virtual enforcer to prevent race conditions
                         if (hasTP && hasSL) {
                             openTrade.skipVirtualEnforcer = true;
                         }
@@ -220,7 +217,7 @@ export default async function handler(req, res) {
         let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
         if (decision.error) continue;
 
-        // VIRTUAL TP/SL ENFORCER (Now safely bypassed if LIVE brackets are active)
+        // VIRTUAL TP/SL ENFORCER
         if (openTrade && openTrade.sl_price && openTrade.tp_price && !forcedExit && !openTrade.skipVirtualEnforcer) {
             if (openTrade.side === 'BUY' || openTrade.side === 'LONG') {
                 if (currentPrice <= openTrade.sl_price) { forcedExit = 'STOP_LOSS'; console.log(`[VIRTUAL ENFORCER] BUY Stop Loss hit! Price: $${currentPrice} <= SL: $${openTrade.sl_price}`); }
@@ -323,8 +320,11 @@ export default async function handler(req, res) {
               reason: decision.telemetry?.oracle_reasoning || decision.telemetry?.exit_reason || null 
           };
           
-          const protocol = req.headers['x-forwarded-proto'] || 'http';
-          const host = req.headers.host;
+          // --- THE INTERNAL URL FIX ---
+          // Falls back to the absolute Vercel URL environment variable to prevent Cron Job 404s
+          const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
+          const protocol = host.includes('localhost') ? 'http' : 'https';
+          
           await fetch(`${protocol}://${host}/api/execute-trade`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tradePayload)
           });

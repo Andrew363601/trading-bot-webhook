@@ -62,7 +62,7 @@ export default async function handler(req, res) {
     
     const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
 
-    // --- NEW: THE CLOSING DETECTOR ---
+    // --- VERIFIED: THE CLOSING DETECTOR ---
     const isClosing = openTrade && openTrade.side !== side;
 
     // THE LIQUIDATION LOCK: Ensure closure quantity perfectly matches open quantity
@@ -110,7 +110,7 @@ export default async function handler(req, res) {
               limit_price: executionPrice.toString()
           };
           
-          // --- THE SAFETY FIX: Dynamic Margin Override ---
+          // --- VERIFIED: Dynamic Margin Override (Costs $0 Margin) ---
           if (isClosing) {
               payload.order_configuration.limit_limit_gtc.reduce_only = true;
           }
@@ -139,7 +139,7 @@ export default async function handler(req, res) {
       executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
 
       // --- THE TP/SL BRACKET ORDER DEPLOYMENT ---
-      // Fix: We ONLY deploy brackets if this is a new entry, not a closing reversal!
+      // We ONLY deploy brackets if this is a new entry, not a closing reversal!
       if (!isClosing && orderType === 'MARKET' && tpPrice && slPrice) {
           console.log(`[BRACKET] Entry filled. Deploying Take Profit at $${tpPrice} and Stop Loss at $${slPrice}...`);
           const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
