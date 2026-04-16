@@ -270,7 +270,7 @@ export default async function handler(req, res) {
             if (pnlPercent <= -0.08) { 
                 console.log(`[ORACLE INITIATED] Emergency scan for ${asset}. Down ${(pnlPercent * 100).toFixed(2)}%`);
                 const oracleVerdict = await evaluateTradeIdea({
-                    mode: 'EMERGENCY', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, pnlPercent
+                    mode: 'EMERGENCY', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, pnlPercent
                 });
 
                 if (oracleVerdict.action === 'MARKET_CLOSE') {
@@ -326,10 +326,10 @@ export default async function handler(req, res) {
                 };
             }
 
-            const oracleVerdict = await evaluateTradeIdea({
-                mode: isReversal ? 'REVERSAL' : 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, 
-                currentPrice, candles: triggerCandles, marketType: config.parameters?.market_type || 'FUTURES', openTrade: currentTradeContext
-            });
+                const oracleVerdict = await evaluateTradeIdea({
+                    mode: isReversal ? 'REVERSAL' : 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, 
+                    currentPrice, candles: triggerCandles, macroCandles: macroCandles, marketType: config.parameters?.market_type || 'FUTURES', openTrade: currentTradeContext
+                });
 
             decision.telemetry = { ...decision.telemetry, oracle_score: oracleVerdict.conviction_score, oracle_reasoning: oracleVerdict.reasoning };
 
