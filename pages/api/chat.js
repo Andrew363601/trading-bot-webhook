@@ -35,7 +35,7 @@ export default async function handler(req, res) {
         throw new Error("Invalid or empty message payload.");
     }
 
-    // --- THE PROVEN FIX: The Message Sanitizer from 2 Days Ago ---
+    // --- THE PROVEN FIX: The Message Sanitizer ---
     const cleanMessages = messages.filter(msg => {
       if (msg.role === 'tool') return false; 
       if (msg.role === 'assistant' && msg.toolInvocations) return false; 
@@ -156,10 +156,12 @@ export default async function handler(req, res) {
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
     `;
 
+    console.log("[CHAT API] Handing over to Gemini 2.5 Pro...");
+
     const result = await streamText({
       model: google('models/gemini-2.5-pro'), 
       system: systemPrompt,
-      messages: safeMessages,
+      messages: safeMessages, 
       maxSteps: 5,
       tools: {
         queryTradeLedger: tool({
@@ -182,7 +184,6 @@ export default async function handler(req, res) {
             const { data: trades, error } = await query;
             if (error) return { error: error.message };
 
-            // SAFETY FIX: Array checking prevents crashes if table is empty
             const tradesList = trades || [];
             const totalTrades = tradesList.length;
             const totalPnL = tradesList.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
@@ -226,7 +227,6 @@ export default async function handler(req, res) {
             reasoning: z.string().describe('Technical reasoning for this deployment or mutation.')
           }),
           execute: async (args) => {
-            // SAFETY FIX: Uses .maybeSingle() to prevent PGRST116 database crashes
             const { data: existing } = await supabase
               .from('strategy_config')
               .select('id')
@@ -320,7 +320,6 @@ export default async function handler(req, res) {
             let candlesLeft = lookback_candles;
 
             try {
-              // SAFETY FIX: Convert secret to PEM key object to prevent ES256 crypto crashes
               const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
 
               while (candlesLeft > 0) {
@@ -397,8 +396,29 @@ export default async function handler(req, res) {
 
     console.log("[CHAT API] Streaming response to client...");
     
-    // EXACT MATCH: Returns directly to response without the 'return' keyword syntax error
-    result.pipeDataStreamToResponse(res);
+    // --- THE UNIVERSAL STREAM POLYFILL ---
+    if (typeof result.pipeDataStreamToResponse === 'function') {
+        console.log("[CHAT API] Native pipeline detected. Routing...");
+        return result.pipeDataStreamToResponse(res);
+    } 
+
+    console.log("[CHAT API] Native pipeline missing. Engaging standard Node.js Data Stream conversion...");
+    const streamResponse = result.toDataStreamResponse();
+    
+    res.status(streamResponse.status);
+    streamResponse.headers.forEach((val, key) => {
+      res.setHeader(key, val);
+    });
+    
+    if (streamResponse.body) {
+      const reader = streamResponse.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(Buffer.from(value));
+      }
+    }
+    return res.end();
 
   } catch (err) {
     console.error("====== FULL CHAT FAULT ENCOUNTERED ======");

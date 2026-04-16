@@ -1,432 +1,549 @@
-// Unleashing Vercel Pro limit (5 full minutes)
-export const maxDuration = 300;
-
-// pages/api/chat.js
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { streamText, tool } from 'ai';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { z } from 'zod';
-import fs from 'fs';
-import path from 'path';
+import { useChat } from '@ai-sdk/react'; 
+import Link from 'next/link'; 
+import { 
+  Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
+  Send, Activity, Layers, TrendingUp, Target, Shield, Wallet 
+} from 'lucide-react';
 
-// Loaded at the top to prevent Vercel memory leaks
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-export default async function handler(req, res) {
-  // CORS Headers to prevent silent frontend blocking
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') return res.status(200).end();
+const ASSETS = ['BTC-PERP-INTX', 'ETP-20DEC30-CDE', 'SOL-PERP-INTX', 'DOGE-USD', 'AVAX-PERP-INTX', 'WLD-PERP-INTX', 'XRP-PERP-INTX', 'ADA-PERP-INTX', 'BNB-PERP-INTX'];
 
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
+export default function Dashboard() {
+  const [activeAsset, setActiveAsset] = useState('ETP-20DEC30-CDE');
+  const [livePrice, setLivePrice] = useState(0); 
+  const [tradeLogs, setTradeLogs] = useState([]);
+  const [activeStrategies, setActiveStrategies] = useState([]);
+  const [scanStream, setScanStream] = useState([]); 
+  const [activeStudies, setActiveStudies] = useState([]);
+  const [portfolio, setPortfolio] = useState({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 } });
+  const [selectedStrat, setSelectedStrat] = useState(null);
+  const [loading, setLoading] = useState(true);
+  
+  const [livePositions, setLivePositions] = useState([]);
+  const [liveOrders, setLiveOrders] = useState([]);
+  const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  try {
-    console.log("[CHAT API] Nexus Agent pinged. Extracting payload...");
+  // --- THE FIX: Restored independent local input so typing never locks up ---
+  const [localInput, setLocalInput] = useState('');
+  const [localMessages, setLocalMessages] = useState([]);
+  const [isManualLoading, setIsManualLoading] = useState(false);
 
-    let data = req.body;
-    if (typeof data === 'string') {
-      try { data = JSON.parse(data); } catch (e) {}
-    }
+  const { messages: sdkMessages, append: sdkAppend, error: sdkError, isLoading: sdkIsLoading } = useChat({
+    api: '/api/chat',
+    onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
+  });
+  
+  const chatEndRef = useRef(null);
 
-    const messages = data?.messages || [];
-    if (!Array.isArray(messages) || messages.length === 0) {
-        throw new Error("Invalid or empty message payload.");
-    }
-
-    // --- THE PROVEN FIX: The Message Sanitizer ---
-    const cleanMessages = messages.filter(msg => {
-      if (msg.role === 'tool') return false; 
-      if (msg.role === 'assistant' && msg.toolInvocations) return false; 
-      return true;
-    });
-
-    const safeMessages = cleanMessages.length > 6 ? cleanMessages.slice(-6) : cleanMessages;
-    while (safeMessages.length > 0 && safeMessages[0].role !== 'user') {
-      safeMessages.shift(); 
-    }
-
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!supabaseKey) throw new Error("Missing Supabase Keys in environment.");
-    
-    const supabase = createClient(supabaseUrl, supabaseKey);
-
-    const google = createGoogleGenerativeAI({
-      apiKey: process.env.GEMINI_API_KEY,
-    });
-
-    console.log("[CHAT API] Fetching database telemetry in parallel...");
-
-    const [
-      { data: allConfigs },
-      { data: openTrades },
-      { data: recentClosedLogs }
-    ] = await Promise.all([
-      supabase.from('strategy_config').select('*'),
-      supabase.from('trade_logs').select('*').is('exit_price', null),
-      supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5)
-    ]);
-    
-    let livePrices = {};
-    if (openTrades && openTrades.length > 0) {
-      const uniqueAssets = [...new Set(openTrades.map(t => t.symbol))];
+  const fetchData = useCallback(async () => {
+    try {
+      const portResp = await fetch(`/api/portfolio?asset=${activeAsset}`);
+      if (portResp.ok) {
+        const portData = await portResp.json();
+        setPortfolio(portData);
+        if (portData.price > 0) setLivePrice(portData.price);
+      }
       
-      await Promise.all(uniqueAssets.map(async (asset) => {
-        if (!asset || typeof asset !== 'string') return; 
-        try {
-          const baseCoin = asset.split('-')[0]; 
-          const priceResp = await fetch(`https://api.exchange.coinbase.com/products/${baseCoin}-USD/ticker`);
-          if (priceResp.ok) {
-            const priceData = await priceResp.json();
-            livePrices[asset] = parseFloat(priceData.price || 0);
-          }
-        } catch (err) {
-          console.warn(`[NEXUS RADAR WARN] Could not fetch live price for ${asset}`);
+      const { data: logs } = await supabase.from('trade_logs').select('*').eq('symbol', activeAsset).order('id', { ascending: false });
+      setTradeLogs(logs || []);
+      
+      const { data: configs } = await supabase.from('strategy_config').select('*').eq('is_active', true);
+      setActiveStrategies(configs || []);
+      
+      const { data: scans } = await supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(15);
+      if (scans) setScanStream(scans);
+
+      try {
+        const syncResp = await fetch('/api/coinbase-sync');
+        if (syncResp.ok) {
+          const syncData = await syncResp.json();
+          setLivePositions(syncData.positions || []);
+          setLiveOrders(syncData.orders || []);
         }
-      }));
-    }
-    
-    const systemPrompt = `
-    You are Nexus, the elite Portfolio Architect. You manage an autonomous fleet of quantitative strategies for Andrew.
-    
-    --- YOUR IDENTITY & CAPABILITIES ---
-    1. PERSONA: Sleek, technical, calculated, and high-efficiency. You communicate like a quant-trader.
-    2. AUTHORITY: Full CRUD access to the strategy matrix via the manageStrategy tool.
-    3. CAPABILITY: You design and evaluate algorithmic trading logic using diverse technical indicators.
-    4. GOAL: Maximize ROI using Perpetual Futures leverage while maintaining strict risk management.
-  
-    --- CURRENT TELEMETRY ---
-    Strategy Matrix (All Active & Paused): ${JSON.stringify(allConfigs || [])}
-    Current Open Trades: ${JSON.stringify(openTrades || [])}
-    Live Market Prices for Open Trades: ${JSON.stringify(livePrices)}
-    Recently Closed Trades (Last 5): ${JSON.stringify(recentClosedLogs || [])}
-  
-    --- PROTOCOL 1: MARKET ANALYSIS & EXECUTION ---
-    - Andrew exclusively trades Perpetual Futures for leverage. The standard format for assets on this exchange is [COIN]-PERP-INTX (e.g., BTC-PERP-INTX, DOGE-PERP-INTX).
-    - If asked for the PnL of active trades, use the 'Live Market Prices' and 'Current Open Trades' data to mathematically calculate and report the Unrealized PnL.
-    - If asked for historical PnL, win rates, or performance over a specific timeframe (e.g., "this week", "to date", "on DOGE"), ALWAYS use the \`queryTradeLedger\` tool to fetch the exact data. Format the results as a Markdown table.
-    - ALWAYS use the \`fetchHistoricalData\` tool with the -PERP-INTX symbol to analyze market context before deploying a new strategy or answering queries.
-    - If asked to run the genetic optimizer, use the runOptimizer tool.
+      } catch (syncErr) { console.error("Coinbase Sync failed", syncErr); }
 
-    --- PROTOCOL 2: NEW STRATEGY CREATION (HUMAN HANDOFF) ---
-    If Andrew asks to "Start a new strategy" or design a new algorithm:
-    1. Use \`fetchHistoricalData\` to backtest your thesis and find the optimal timeframe/parameters.
-    2. Generate the COMPLETE JavaScript code for the new strategy. You MUST strictly adhere to the following architectural template:
+    } catch (e) { console.error(e); } finally { setLoading(false); }
+  }, [activeAsset]);
 
-    \`\`\`javascript
-    import { /* YOUR INDICATORS */ } from 'technicalindicators';
+  useEffect(() => {
+    fetchData();
+    const int = setInterval(fetchData, 8000);
+    return () => clearInterval(int);
+  }, [fetchData]);
 
-    export async function run(macroCandles, triggerCandles, parameters) {
-        const { leverage = 10, market_type = 'FUTURES', tp_percent = 0.02, sl_percent = 0.01 } = parameters;
-        if (!macroCandles || !triggerCandles || triggerCandles.length < 50) return { signal: null };
+  // Determine active message stream
+  const displayMessages = sdkMessages?.length > 0 ? sdkMessages : localMessages;
+  const isChatActive = sdkIsLoading || isManualLoading;
 
-        let signal = null;
-        let entryPrice = triggerCandles[triggerCandles.length - 1].close;
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [displayMessages]);
 
-        // ... logic ...
-
-        const currentTelemetry = { metric_1: calculatedValue1 };
-        if (!signal) return { signal: null, telemetry: currentTelemetry };
-
-        const tpPrice = signal === 'LONG' ? entryPrice * (1 + tp_percent) : entryPrice * (1 - tp_percent);
-        const slPrice = signal === 'LONG' ? entryPrice * (1 - sl_percent) : entryPrice * (1 + sl_percent);
-
-        return {
-            signal: signal,
-            entryPrice: entryPrice,
-            leverage: leverage,
-            marketType: market_type,
-            tpPrice: parseFloat(tpPrice.toFixed(6)),
-            slPrice: parseFloat(slPrice.toFixed(6)),
-            telemetry: currentTelemetry 
-        };
-    }
-    \`\`\`
-    
-    3. Use the \`manageStrategy\` tool to stage the database row. You MUST set \`is_active: false\` and \`version: "v1.0"\`.
-    4. Inform Andrew exactly like this: "I have designed the [STRATEGY_NAME] architecture and staged it in the database. Please create the file \`lib/strategies/[strategy_name].js\`, paste the code below, add the explicit import to \`strategy-router.js\`, and push the deployment."
-
-    --- PROTOCOL 3: VERSION CONTROL & OPTIMIZATION ---
-    If modifying an EXISTING strategy via \`manageStrategy\`:
-    1. You MUST increment the version number (e.g., v1.0 to v1.1).
-
-    --- PROTOCOL 4: OPERATIONAL AWARENESS ---
-    - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
-    `;
-
-    console.log("[CHAT API] Handing over to Gemini 2.5 Pro...");
-
-    const result = await streamText({
-      model: google('models/gemini-2.5-pro'), 
-      system: systemPrompt,
-      messages: safeMessages, 
-      maxSteps: 5,
-      tools: {
-        queryTradeLedger: tool({
-          description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
-          parameters: z.object({
-            asset: z.string().optional().describe('Filter by asset symbol, e.g., DOGE-PERP-INTX. Leave undefined for all assets.'),
-            strategy_id: z.string().optional().describe('Filter by strategy, e.g., KELTNER_EXECUTION_V1. Leave undefined for all strategies.'),
-            days_back: z.number().optional().describe('Number of days back to search (e.g., 7 for this week). Leave undefined for all-time.')
-          }),
-          execute: async ({ asset, strategy_id, days_back }) => {
-            let query = supabase.from('trade_logs').select('*').not('exit_price', 'is', null);
-
-            if (asset) query = query.eq('symbol', asset);
-            if (strategy_id) query = query.eq('strategy_id', strategy_id);
-            if (days_back) {
-              const dateLimit = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
-              query = query.gte('exit_time', dateLimit);
-            }
-
-            const { data: trades, error } = await query;
-            if (error) return { error: error.message };
-
-            const tradesList = trades || [];
-            const totalTrades = tradesList.length;
-            const totalPnL = tradesList.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
-            const winningTrades = tradesList.filter(t => parseFloat(t.pnl) > 0).length;
-            const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(2) + '%' : '0%';
-
-            const breakdown = tradesList.reduce((acc, t) => {
-              const key = `${t.strategy_id} | ${t.symbol}`;
-              if (!acc[key]) acc[key] = { pnl: 0, trades: 0 };
-              acc[key].pnl += (parseFloat(t.pnl) || 0);
-              acc[key].trades += 1;
-              return acc;
-            }, {});
-
-            return {
-              timeframe: days_back ? `Last ${days_back} days` : 'All-Time',
-              filters: { asset: asset || 'ALL', strategy: strategy_id || 'ALL' },
-              summary: {
-                total_trades: totalTrades,
-                total_pnl: parseFloat(totalPnL.toFixed(4)),
-                win_rate: winRate
-              },
-              breakdown: Object.entries(breakdown).map(([key, data]) => ({
-                segment: key,
-                pnl: parseFloat(data.pnl.toFixed(4)),
-                trade_count: data.trades
-              }))
-            };
-          }
-        }),
-
-        manageStrategy: tool({
-          description: 'Creates or updates a strategy config.',
-          parameters: z.object({
-            asset: z.string().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
-            strategy_id: z.string().describe('The name of the logic, e.g., LTC_4x4_STF'),
-            version: z.string().describe('The version number, e.g., v1.0 or v1.1'), 
-            execution_mode: z.enum(['LIVE', 'PAPER']).optional(),
-            is_active: z.boolean().optional(),
-            parameters: z.record(z.any()).optional(),
-            reasoning: z.string().describe('Technical reasoning for this deployment or mutation.')
-          }),
-          execute: async (args) => {
-            const { data: existing } = await supabase
-              .from('strategy_config')
-              .select('id')
-              .eq('asset', args.asset)
-              .eq('strategy', args.strategy_id)
-              .maybeSingle();
-
-            const payload = {
-              asset: args.asset,
-              strategy: args.strategy_id,
-              execution_mode: args.execution_mode || 'PAPER',
-              is_active: args.is_active ?? false, 
-              version: args.version || "v1.0", 
-              parameters: args.parameters || {},
-              last_updated: new Date().toISOString(),
-              reasoning: args.reasoning
-            };
-            
-            let result;
-            if (existing) {
-              result = await supabase.from('strategy_config').update(payload).eq('id', existing.id);
-            } else {
-              result = await supabase.from('strategy_config').insert([payload]);
-            }
-      
-            if (result.error) return { success: false, error: result.error.message };
-            return { success: true, message: `Strategy ${args.strategy_id} updated to ${payload.version}.` };
-          },
-        }), 
-
-        readStrategyLogic: tool({
-          description: 'Reads the raw JavaScript source code of a specific strategy file.',
-          parameters: z.object({
-            fileName: z.string().describe('The name of the strategy file to read, e.g., "doge_hf_scalper_v1.js"')
-          }),
-          execute: async ({ fileName }) => {
-            try {
-              const safeFileName = path.basename(fileName);
-              const cleanName = safeFileName.toLowerCase().replace('.js', '').trim();
-              const finalFileName = `${cleanName}.js`;
-              const filePath = path.join(process.cwd(), 'lib', 'strategies', finalFileName);
-              
-              if (!fs.existsSync(filePath)) {
-                return { error: `Strategy file not found: ${finalFileName}. Ensure you are using the exact filename in lowercase.` };
-              }
-              
-              const code = fs.readFileSync(filePath, 'utf8');
-              return { success: true, fileName: finalFileName, architecture: code };
-            } catch (err) {
-              return { error: `Failed to read file: ${err.message}` };
-            }
-          }
-        }),
-
-        fetchHistoricalData: tool({
-          description: 'Fetches historical OHLC candles from Coinbase.',
-          parameters: z.object({
-            asset: z.string().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
-            granularity: z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']),
-            lookback_candles: z.number().max(5000).describe('Total number of candles to fetch')
-          }),
-          execute: async ({ asset, granularity, lookback_candles = 150 }) => {
-            const apiKeyName = process.env.COINBASE_API_KEY;
-            const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
-            if (!apiKeyName || !apiSecret) return { error: "Missing Coinbase Credentials" };
-
-            let coinbaseProduct = asset.toUpperCase().trim();
-            if (!coinbaseProduct.includes('-')) {
-                if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
-                else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
-                else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP-INTX');
-            } 
-            if (coinbaseProduct.endsWith('-PERP')) {
-                coinbaseProduct = coinbaseProduct + '-INTX';
-            }
-
-            const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
-            
-            let lookbackSeconds;
-            switch (granularity) {
-                case 'ONE_MINUTE': lookbackSeconds = 60; break;
-                case 'FIVE_MINUTE': lookbackSeconds = 300; break;
-                case 'FIFTEEN_MINUTE': lookbackSeconds = 900; break;
-                case 'ONE_HOUR': lookbackSeconds = 3600; break;
-                case 'ONE_DAY': lookbackSeconds = 86400; break;
-                default: lookbackSeconds = 3600;
-            }
-            
-            let allCandles = [];
-            let currentEnd = Math.floor(Date.now() / 1000);
-            let candlesLeft = lookback_candles;
-
-            try {
-              const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
-
-              while (candlesLeft > 0) {
-                const batchSize = Math.min(candlesLeft, 300);
-                const currentStart = currentEnd - (batchSize * lookbackSeconds);
-                const query = `?start=${currentStart}&end=${currentEnd}&granularity=${granularity}`;
-
-                const token = jwt.sign({
-                  iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
-                  sub: apiKeyName, uri: `GET api.coinbase.com${apiPath}`,
-                }, privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
-
-                const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
-                const data = await resp.json();
-                
-                if (!resp.ok) {
-                    return { error: `Coinbase API Error ${resp.status}: ${data.message || data.error_details || JSON.stringify(data)}` };
-                }
-                
-                if (!data.candles || data.candles.length === 0) break;
-                
-                allCandles = allCandles.concat(data.candles);
-                currentEnd = currentStart;
-                candlesLeft -= batchSize;
-                
-                await new Promise(resolve => setTimeout(resolve, 100));
-              }
-              
-              const formattedCandles = allCandles.map(c => ({ 
-                  close: parseFloat(c.close), 
-                  high: parseFloat(c.high), 
-                  low: parseFloat(c.low), 
-                  volume: parseFloat(c.volume) 
-              })).reverse();
-
-              const safeData = formattedCandles.slice(-500);
-
-              return { 
-                asset: coinbaseProduct, 
-                granularity, 
-                total_fetched_from_api: allCandles.length,
-                candles_returned_to_ai: safeData.length,
-                data: safeData
-              };
-            } catch (err) {
-              return { error: err.message };
-            }
-          }
-        }),
-
-        runOptimizer: tool({
-          description: 'Triggers the genetic optimizer.',
-          parameters: z.object({}),
-          execute: async () => {
-            const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
-            const protocol = host.includes('localhost') ? 'http' : 'https';
-            const url = `${protocol}://${host}/api/genetic-optimizer`;
-            
-            try {
-              const resp = await fetch(url);
-              if (!resp.ok) {
-                  const errorText = await resp.text();
-                  throw new Error(`Server returned ${resp.status}: ${errorText}`);
-              }
-              const result = await resp.json();
-              return { success: true, data: result };
-            } catch (e) {
-              return { success: false, error: e.message };
-            }
-          },
-        }),
-      },
-    });
-
-    console.log("[CHAT API] Streaming response to client...");
-    
-    // --- THE UNIVERSAL STREAM POLYFILL ---
-    if (typeof result.pipeDataStreamToResponse === 'function') {
-        console.log("[CHAT API] Native pipeline detected. Routing...");
-        return result.pipeDataStreamToResponse(res);
-    } 
-
-    console.log("[CHAT API] Native pipeline missing. Engaging standard Node.js Data Stream conversion...");
-    const streamResponse = result.toDataStreamResponse();
-    
-    res.status(streamResponse.status);
-    streamResponse.headers.forEach((val, key) => {
-      res.setHeader(key, val);
-    });
-    
-    if (streamResponse.body) {
-      const reader = streamResponse.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        res.write(Buffer.from(value));
+  useEffect(() => {
+    if (displayMessages.length > 0) {
+      const lastUserMsg = displayMessages.slice().reverse().find(m => m.role === 'user');
+      if (lastUserMsg) {
+        const content = lastUserMsg.content.toUpperCase();
+        const mentionedAsset = ASSETS.find(asset => content.includes(asset));
+        if (mentionedAsset && mentionedAsset !== activeAsset) setActiveAsset(mentionedAsset);
+        const mentionedStrat = activeStrategies.find(s => content.includes(s.strategy));
+        if (mentionedStrat) {
+           const targetStudies = getStudiesForStrategy(mentionedStrat.strategy);
+           if (JSON.stringify(targetStudies) !== JSON.stringify(activeStudies)) setActiveStudies(targetStudies);
+        }
       }
     }
-    return res.end();
+  }, [displayMessages, activeAsset, activeStrategies, activeStudies]);
 
-  } catch (err) {
-    console.error("====== FULL CHAT FAULT ENCOUNTERED ======");
-    console.error("MESSAGE:", err.message);
-    
-    return res.status(500).json({ 
-      error: err.message, 
-      details: err.cause ? String(err.cause) : "No underlying cause provided by SDK" 
+  const handleClosePosition = async (trade) => {
+    const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id || 'Exchange'}?`);
+    if (!confirmClose) return;
+    const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
+    await fetch('/api/execute-trade', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol: trade.symbol, strategy_id: trade.strategy_id || 'MANUAL', version: trade.version || 'v1.0',
+        side: closingSide, execution_mode: trade.execution_mode.includes('LIVE') ? 'LIVE' : 'PAPER', qty: trade.qty, price: livePrice 
+      })
     });
-  }
+    fetchData(); 
+  };
+
+  // --- THE INVINCIBLE CHAT ENGINE ---
+  const executeNexusChat = async (contentStr) => {
+      const userMsg = { id: Date.now().toString(), role: 'user', content: contentStr };
+      
+      if (!sdkAppend) setLocalMessages(prev => [...prev, userMsg]);
+      setIsManualLoading(true);
+
+      try {
+          if (typeof sdkAppend === 'function') {
+              // 1. Try official SDK first
+              await sdkAppend({ role: 'user', content: contentStr });
+          } else {
+              // 2. The Polyfill: If SDK is dead, decode the stream manually
+              console.warn("[NEXUS RADAR] Vercel SDK hook detached. Engaging manual stream polyfill...");
+              const res = await fetch('/api/chat', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ messages: [...localMessages, userMsg] })
+              });
+              
+              if (!res.ok) throw new Error(`Backend Error ${res.status}`);
+              
+              const reader = res.body.getReader();
+              const decoder = new TextDecoder();
+              let botMsg = { id: (Date.now() + 1).toString(), role: 'assistant', content: '' };
+              setLocalMessages(prev => [...prev, botMsg]);
+              
+              while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  
+                  const chunk = decoder.decode(value, { stream: true });
+                  const lines = chunk.split('\n');
+                  for (const line of lines) {
+                      if (line.startsWith('0:')) {
+                          try {
+                              const text = JSON.parse(line.substring(2));
+                              botMsg.content += text;
+                              setLocalMessages(prev => [...prev.slice(0, -1), { ...botMsg }]);
+                          } catch(e) {}
+                      }
+                  }
+              }
+          }
+      } catch (err) {
+          console.error("[NEXUS APPEND FAULT]:", err);
+      } finally {
+          setIsManualLoading(false);
+      }
+  };
+
+  const handleManualSubmit = async (e) => {
+    e.preventDefault();
+    if (!localInput.trim()) return;
+    const content = localInput;
+    setLocalInput('');
+    await executeNexusChat(content);
+  };
+
+  const handleStrategySelect = async (stratId) => {
+    setSelectedStrat(stratId);
+    await executeNexusChat(`Brief me on the ${stratId} strategy currently running on ${activeAsset}.`);
+  };
+
+  const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
+
+  const getStudiesForStrategy = (stratName) => {
+    if (!stratName) return [];
+    const name = stratName.toUpperCase();
+    if (name.includes('KELTNER')) return ["KeltnerChannels@tv-basicstudies"];
+    if (name.includes('WLD_TREND')) return ["MAExp@tv-basicstudies", "MACD@tv-basicstudies"];
+    if (name.includes('SOL_RANGE_REVERSION')) return ["BB@tv-basicstudies", "RSI@tv-basicstudies"];
+    if (name.includes('HF_SCALPER')) return ["MASimple@tv-basicstudies", "RSI@tv-basicstudies"];
+    if (name.includes('BREAKOUT_SCALPER') || name.includes('BTC_BREAKOUT')) return ["MASimple@tv-basicstudies"];
+    if (name.includes('SCALPER')) return ["VWAP@tv-basicstudies", "MASimple@tv-basicstudies"];
+    if (name.includes('COHERENCE')) return ["MASimple@tv-basicstudies"]; 
+    return [];
+  };
+
+  useEffect(() => {
+    const container = document.getElementById('tv_chart_container');
+    if (!container) return;
+    container.innerHTML = '';
+    const script = document.createElement('script');
+    script.src = 'https://s3.tradingview.com/tv.js';
+    script.async = true;
+    script.onload = () => {
+      if (window.TradingView) {
+        new window.TradingView.widget({
+          "autosize": true, "symbol": `BINANCE:${activeAsset.split('-')[0]}USDT.P`,
+          "interval": "1", "theme": "dark", "style": "1", "backgroundColor": "#020617",
+          "container_id": "tv_chart_container", "studies": activeStudies 
+        });
+      }
+    };
+    container.appendChild(script);
+  }, [activeAsset, activeStudies]);
+
+  const paperPositions = tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER');
+  
+  const formattedLivePositions = livePositions.map(pos => ({
+      side: pos.side === 'LONG' ? 'BUY' : 'SELL',
+      entry_price: parseFloat(pos.vwap || 0),
+      qty: parseFloat(pos.number_of_contracts || 0),
+      symbol: pos.product_id,
+      execution_mode: 'LIVE (EXCHANGE)',
+      strategy_id: 'ACTIVE_DERIVATIVE',
+      pnl: parseFloat(pos.unrealized_pnl || 0),
+      created_at: new Date().toISOString()
+  }));
+
+  const openPositions = [...formattedLivePositions, ...paperPositions];
+  const tradeHistory = tradeLogs.filter(log => log.exit_price);
+  
+  const openOrders = liveOrders.map(ord => ({
+      side: ord.side,
+      entry_price: parseFloat(ord.order_configuration?.limit_limit_gtc?.limit_price || 0),
+      qty: parseFloat(ord.order_configuration?.limit_limit_gtc?.base_size || 0),
+      symbol: ord.product_id,
+      execution_mode: 'PENDING_LIMIT',
+      strategy_id: 'AWAITING_FILL',
+      created_at: ord.created_time || new Date().toISOString()
+  }));
+
+  let displayLogs = [];
+  if (activeTab === 'POSITIONS') displayLogs = openPositions;
+  else if (activeTab === 'TRADE_HISTORY') displayLogs = tradeHistory;
+  else if (activeTab === 'OPEN_ORDERS') displayLogs = openOrders;
+
+  if (loading) return <div className="min-h-screen bg-[#020617] flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">Establishing Nexus...</div>;
+
+  const latestScan = scanStream[0];
+  const isOracleActive = latestScan?.status === 'RESONANT' || latestScan?.status?.includes('HIT_');
+  const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
+
+  return (
+    <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4">
+      <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
+        <div className="flex items-center gap-4">
+            <h1 className="text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Command</h1>
+            
+            <Link href="/audit" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+               <Activity size={12} /> Audit Log
+            </Link>
+            
+            <Link href="/performance" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+               <BarChart3 size={12} /> Performance
+            </Link>
+
+        </div>
+        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2"><Database size={12} /> Sync: wsrioyxzhxxrtzjncfvn</div>
+      </header>
+
+      <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
+        
+        <div className="lg:col-span-2 flex flex-col h-[calc(100vh-100px)] min-h-0 gap-6">
+          <div className="bg-slate-900/50 p-5 rounded-[2rem] border border-white/10 flex-shrink-0 shadow-xl">
+            <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">Capital Allocation <span className="text-cyan-400 animate-pulse">● LIVE</span></div>
+            <div className="space-y-4">
+              <div><div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Shield size={10} className="text-emerald-400 inline mr-1"/> Live Equity</div><div className="text-xl font-black font-mono text-white">${portfolio.live?.balance?.toFixed(2) || '0.00'}</div></div>
+              <div><div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Cpu size={10} className="text-indigo-400 inline mr-1"/> Nexus Paper</div><div className="text-lg font-black font-mono text-slate-300">${portfolio.paper?.balance?.toFixed(2) || '5000.00'}</div></div>
+            </div>
+          </div>
+
+          <div className="flex flex-col flex-shrink-0">
+            <div className="text-[10px] font-black uppercase text-slate-500 mb-3 px-2 tracking-widest flex items-center gap-2"><Target size={12}/> Market Scanners</div>
+            <div className="space-y-1 overflow-y-auto max-h-[250px] custom-scrollbar">
+              {ASSETS.map(asset => (
+                  <button key={asset} onClick={() => setActiveAsset(asset)} className={`w-full text-left px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest border transition-all ${activeAsset === asset ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30' : 'bg-transparent text-slate-500 border-transparent hover:bg-white/5'}`}>{asset}</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-2 pt-4 border-t border-white/5 flex flex-col min-h-0 flex-grow">
+              <h3 className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-black mb-3">Live Sonar Stream</h3>
+              <div className="space-y-2 overflow-y-auto pr-2 custom-scrollbar flex-grow">
+              {scanStream.map((scan, i) => (
+                      <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 hover:bg-white/[0.02] transition-colors gap-1.5">
+                          <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                  <span className="text-[9px] text-slate-500 font-mono">{new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+                                  <span className="text-[10px] font-bold text-slate-300">{scan.asset}</span>
+                              </div>
+                              <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">{scan.strategy}</span>
+                          </div>
+                         <div className="flex items-center justify-between mt-1 pt-1 border-t border-white/5">
+                              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                                  {scan.telemetry && Object.entries(scan.telemetry).map(([key, val]) => (
+                                      <span key={key} className="text-[9px] text-slate-400 font-mono">
+                                        <span className="text-slate-500 uppercase">{key}:</span> 
+                                        {typeof val === 'boolean' ? (val ? 'TRUE' : 'FALSE') : (typeof val === 'number' ? val.toFixed(2) : val)}
+                                      </span>
+                                  ))}
+                              </div>
+                              <span className={`text-[9px] font-black tracking-widest uppercase flex-shrink-0 ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : 'text-slate-600'}`}>{scan.status}</span>
+                          </div>
+                      </div>
+                  ))}
+              </div>
+          </div>
+        </div>
+
+        <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
+          
+          <div className="bg-slate-900/50 border border-white/10 rounded-3xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden flex-shrink-0">
+            <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/5 via-cyan-500/5 to-emerald-500/5 animate-pulse" />
+            <div className="relative z-10 flex items-center gap-2 w-full px-6">
+               <div className="flex flex-col items-center gap-2 w-16">
+                  <div className="w-8 h-8 rounded-full bg-indigo-500/20 border border-indigo-500/50 flex items-center justify-center text-indigo-400 shadow-[0_0_15px_-3px_rgba(99,102,241,0.4)]">
+                      <Target size={14} className="animate-spin-slow" />
+                  </div>
+                  <span className="text-[8px] font-black uppercase tracking-widest text-indigo-300">Scanner</span>
+               </div>
+               
+               <div className="flex-1 h-[2px] bg-indigo-500/20 relative overflow-hidden rounded-full">
+                  <div className="absolute inset-0 bg-indigo-500/50 w-full animate-pulse" />
+               </div>
+               
+               <div className="flex flex-col items-center gap-2 w-16">
+                  <div className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all duration-500 ${isOracleActive ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400 shadow-[0_0_15px_-3px_rgba(6,182,212,0.4)]' : 'bg-slate-900 border-white/10 text-slate-600'}`}>
+                      <Cpu size={14} className={isOracleActive ? 'animate-pulse' : ''} />
+                  </div>
+                  <span className={`text-[8px] font-black uppercase tracking-widest ${isOracleActive ? 'text-cyan-300' : 'text-slate-500'}`}>Oracle</span>
+               </div>
+               
+               <div className="flex-1 h-[2px] bg-slate-800 relative overflow-hidden rounded-full">
+                  <div className={`absolute inset-0 transition-all duration-1000 ${isOracleActive ? 'bg-cyan-500/50 w-full animate-pulse' : 'w-0'}`} />
+               </div>
+               
+               <div className="flex flex-col items-center gap-2 w-16">
+                  <div className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all duration-500 ${isExchangeActive ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_-3px_rgba(16,185,129,0.4)]' : 'bg-slate-900 border-white/10 text-slate-600'}`}>
+                      <Activity size={14} className={isExchangeActive ? 'animate-pulse' : ''} />
+                  </div>
+                  <span className={`text-[8px] font-black uppercase tracking-widest ${isExchangeActive ? 'text-emerald-300' : 'text-slate-500'}`}>Exchange</span>
+               </div>
+            </div>
+          </div>
+
+          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[350px] flex-grow relative shadow-2xl flex flex-col p-4">
+            <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
+            
+            <div className="absolute top-6 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
+               {openPositions.slice(0, 3).map((log, i) => {
+                 const displayPnl = log.execution_mode.includes('LIVE') ? log.pnl : 
+                 ((log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1));
+                 return (
+                  <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-4 pointer-events-auto shadow-lg">
+                     <div className="flex flex-col gap-0.5">
+                       <div className="flex items-center gap-2">
+                         <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400 animate-pulse' : 'text-amber-400 animate-pulse'}>●</span>
+                         <span className="text-slate-300 uppercase font-bold">{log.side} {log.qty ? `(${log.qty.toLocaleString()})` : ''} @ {log.entry_price}</span>
+                       </div>
+                       <div className="flex items-center gap-3">
+                         <span className="text-[7px] text-slate-500 font-black tracking-widest uppercase pl-3">{log.strategy_id}</span>
+                       </div>
+                     </div>
+                     {livePrice > 0 && (
+                         <span className={`font-black ${displayPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>
+                             {displayPnl >= 0 ? '+' : ''}{displayPnl?.toFixed(4)}
+                         </span>
+                     )}
+                  </div>
+                 )
+               })}
+            </div>
+          </div>
+
+          <div className="flex flex-col h-[30%] overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30">
+            <div className="flex items-center gap-6 px-6 pt-5 border-b border-white/5 bg-slate-950/80 sticky top-0 z-20">
+               <button 
+                  onClick={() => setActiveTab('OPEN_ORDERS')} 
+                  className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'OPEN_ORDERS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+               >
+                  Open Orders {openOrders.length > 0 && <span className="ml-1 bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-full text-[8px]">{openOrders.length}</span>}
+               </button>
+               <button 
+                  onClick={() => setActiveTab('POSITIONS')} 
+                  className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'POSITIONS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+               >
+                  Positions {openPositions.length > 0 && <span className="ml-1 bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-full text-[8px]">{openPositions.length}</span>}
+               </button>
+               <button 
+                  onClick={() => setActiveTab('TRADE_HISTORY')} 
+                  className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'TRADE_HISTORY' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+               >
+                  Trade History
+               </button>
+            </div>
+
+            <div className="overflow-y-auto custom-scrollbar flex-grow">
+              {displayLogs.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12">
+                  <Layers size={24} className="mb-2 opacity-50" />
+                  <p className="text-[11px] font-bold uppercase tracking-widest">No data available</p>
+                  <p className="text-[9px] font-mono mt-1 opacity-60">
+                    {activeTab === 'OPEN_ORDERS' ? "Your pending limit orders will appear here" : "Completed trades will appear here"}
+                  </p>
+                </div>
+              ) : (
+                <table className="w-full text-left table-fixed">
+                      <thead className="bg-slate-950/40 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
+                        <tr>
+                          <th className="px-4 py-3">Date / Time</th>
+                          <th className="px-4 py-3 text-center">Strategy</th>
+                          <th className="px-4 py-3 text-center">Vector</th>
+                          <th className="px-4 py-3 text-center">Size</th>
+                          <th className="px-4 py-3">Entry/Price</th>
+                          <th className="px-4 py-3 text-center">Target (TP / SL)</th>
+                          <th className="px-4 py-3">Status/Exit</th>
+                          <th className="px-4 py-3 text-right">PnL</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
+                        {displayLogs.map((log, i) => {
+                          let pnlDisplay = '--';
+                          if (log.exit_price) {
+                              pnlDisplay = <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span>;
+                          } else if (log.execution_mode === 'LIVE (EXCHANGE)') {
+                              pnlDisplay = <span className={log.pnl >= 0 ? 'text-cyan-400 animate-pulse' : 'text-amber-400 animate-pulse'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)} (U)</span>;
+                          } else if (livePrice > 0 && activeTab === 'POSITIONS') {
+                              const paperPnl = (log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1);
+                              pnlDisplay = <span className={`animate-pulse ${paperPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${paperPnl.toFixed(4)} (U)</span>;
+                          }
+                          
+                          const timestamp = log.created_at || log.exit_time;
+                          const formattedDate = timestamp ? new Date(timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' }) : "Awaiting...";
+                          const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
+
+                          const isLiveExchange = log.execution_mode && log.execution_mode.includes('LIVE');
+                          
+                          return (
+                          <tr key={i} className="hover:bg-white/[0.02] transition-colors">
+                            <td className="px-4 py-4 text-[9px] text-slate-500">
+                                <div className="flex flex-col">
+                                    <span className="font-bold text-slate-400">{formattedDate}</span>
+                                    <span className="text-[8px] opacity-60">{formattedTime}</span>
+                                </div>
+                            </td>
+                            <td className="px-4 py-4 text-center">
+                                <span className={`text-[9px] font-black uppercase px-2 py-1 rounded border flex flex-col items-center ${isLiveExchange ? 'bg-cyan-500/5 text-cyan-300 border-cyan-500/10' : 'bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10'}`}>
+                                    {log.strategy_id?.replace('_V1', '')}
+                                    {log.reason && <span className="text-[7px] text-slate-500 tracking-tighter mt-1 block truncate max-w-[80px]" title={log.reason}>Oracle Auth</span>}
+                                </span>
+                            </td>
+                            <td className="px-4 py-4 text-center"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>{log.side}</span></td>
+                            
+                            <td className="px-4 py-4 text-center text-[10px] text-slate-300">
+                                {log.qty ? log.qty.toLocaleString() : '--'}
+                            </td>
+
+                            <td className="px-4 py-4 text-slate-300 text-[10px]">${log.entry_price}</td>
+                            <td className="px-4 py-4 text-center">
+                                {log.tp_price || log.sl_price ? (
+                                    <div className="flex flex-col text-[8px] tracking-tighter uppercase">
+                                        <span className="text-emerald-500/60">TP: ${log.tp_price}</span>
+                                        <span className="text-red-500/60">SL: ${log.sl_price}</span>
+                                    </div>
+                                ) : <span className="text-slate-700 italic text-[9px]">Dynamic</span>}
+                            </td>
+                            <td className="px-4 py-4 flex items-center gap-2">
+                                {log.exit_price ? `$${log.exit_price}` : 
+                                 <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
+                                 <button onClick={() => handleClosePosition(log)} className="bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">CLOSE</button></>}
+                            </td>
+                            <td className="px-4 py-4 text-right font-black text-[10px]">{pnlDisplay}</td>
+                          </tr>
+                        )})}
+                      </tbody>
+                    </table>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden">
+          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
+            <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between"><span>Active Matrix</span><span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span></h3>
+            <div className="flex flex-col gap-3">
+              {currentAssetStrategies.map(strat => {
+                const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy);
+                const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
+                return (
+                  <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5">
+                    <div className="flex justify-between items-center mb-1"><span className="text-xs font-black text-white uppercase">{strat.strategy}</span><button onClick={(e) => { e.stopPropagation(); setActiveStudies(getStudiesForStrategy(strat.strategy)); }} className="text-[8px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded">+ CHART</button></div>
+                    <div className="text-[10px] text-slate-500 font-mono">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
+          <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
+            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
+              
+              {displayMessages.map(m => (
+                <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>
+                        {m.content}
+                    </div>
+                </div>
+              ))}
+              
+              {sdkError && (
+                <div className="flex justify-start">
+                    <div className="max-w-[90%] rounded-2xl px-4 py-3 bg-red-500/10 text-red-400 border border-red-500/20">
+                        [SYSTEM FAULT]: {sdkError.message}
+                    </div>
+                </div>
+              )}
+              
+              <div ref={chatEndRef} />
+            </div>
+
+            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+                <input 
+                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
+                  value={localInput} 
+                  onChange={(e) => setLocalInput(e.target.value)} 
+                  placeholder="Command Nexus..." 
+              />
+              <button 
+                  type="submit" 
+                  disabled={!localInput.trim()}
+                  className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isChatActive ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}
+              >
+                  {isChatActive ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
+              </button>
+            </form>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
 }
