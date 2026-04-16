@@ -145,12 +145,27 @@ export default async function handler(req, res) {
                         }
                     }
 
-                    // SCENARIO B: Bracket Deployment (Limit Filled)
-                    if (activePosition && openTrade.tp_price && openTrade.sl_price) {
-                        const hasTP = openOrders.some(o => o.order_configuration?.limit_limit_gtc);
-                        const hasSL = openOrders.some(o => o.order_configuration?.stop_limit_stop_limit_gtc);
+                    // SCENARIO B: Bracket Deployment & Manual Sync
+                    if (activePosition) {
+                        const physicalTP = openOrders.find(o => o.order_configuration?.limit_limit_gtc);
+                        const physicalSL = openOrders.find(o => o.order_configuration?.stop_limit_stop_limit_gtc);
 
-                        if (hasTP && hasSL) {
+                        // --- THE FIX: Sync Manual Brackets to Database ---
+                        // If the database is missing TP/SL but physical orders exist on Coinbase, update the database!
+                        if ((physicalTP && !openTrade.tp_price) || (physicalSL && !openTrade.sl_price)) {
+                             console.log(`[SYNC] Manual brackets detected on Coinbase for ${asset}. Updating database...`);
+                             const updates = {};
+                             if (physicalTP) updates.tp_price = parseFloat(physicalTP.order_configuration.limit_limit_gtc.limit_price);
+                             if (physicalSL) updates.sl_price = parseFloat(physicalSL.order_configuration.stop_limit_stop_limit_gtc.stop_price);
+                             
+                             await supabase.from('trade_logs').update(updates).eq('id', openTrade.id);
+                             
+                             // Update local state so Watchdog doesn't try to deploy them
+                             openTrade.tp_price = updates.tp_price || openTrade.tp_price;
+                             openTrade.sl_price = updates.sl_price || openTrade.sl_price;
+                        }
+
+                        if (physicalTP && physicalSL) {
                             openTrade.skipVirtualEnforcer = true;
                         }
 
@@ -159,7 +174,8 @@ export default async function handler(req, res) {
                         const orderQty = activePosition.number_of_contracts;
                         const executePath = '/api/v3/brokerage/orders';
 
-                        if (!hasSL) {
+                        // Only deploy if we have the prices and the physical orders are MISSING
+                        if (!physicalSL && openTrade.sl_price) {
                             console.log(`[WATCHDOG] Missing Stop Loss detected for ${coinbaseProduct}. Deploying...`);
                             try {
                                 const slPayload = {
@@ -174,7 +190,7 @@ export default async function handler(req, res) {
                             } catch (e) {}
                         }
 
-                        if (!hasTP) {
+                        if (!physicalTP && openTrade.tp_price) {
                             console.log(`[WATCHDOG] Missing Take Profit detected for ${coinbaseProduct}. Deploying...`);
                             try {
                                 const tpPayload = {
@@ -247,7 +263,6 @@ export default async function handler(req, res) {
         const isReversal = openTrade && openTrade.side !== normalizedSignal;
         const isDuplicate = openTrade && !isReversal;
         
-        // THE NEW FIX: If the trade is LIVE and already resting on Coinbase, we do not try to override the native brackets!
         const hasRestingOrders = openTrade && config.execution_mode === 'LIVE';
 
         if (isDuplicate) {
