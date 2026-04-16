@@ -69,6 +69,10 @@ export default async function handler(req, res) {
         const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
         let forcedExit = null;
 
+        // --- SCOPE LIFT FOR PRE-EMPTIVE SWEEP ---
+        let activePosition = null;
+        let openOrders = [];
+
         // --- THE WATCHDOG, SWEEPER & NATIVE SYNC ---
         if (openTrade) {
             let coinbaseProduct = asset.toUpperCase().trim();
@@ -87,9 +91,6 @@ export default async function handler(req, res) {
                         fetch(`https://api.coinbase.com${posPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', posPath, apiKeyName, apiSecret)}` } }),
                         fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, apiKeyName, apiSecret)}` } })
                     ]);
-                    
-                    let activePosition = null;
-                    let openOrders = [];
 
                     if (posResp.ok) {
                         const posData = await posResp.json();
@@ -303,12 +304,8 @@ export default async function handler(req, res) {
         
         const isReversal = openTrade && openTrade.side !== normalizedSignal;
         const isDuplicate = openTrade && !isReversal;
-        const hasRestingOrders = openTrade && config.execution_mode === 'LIVE';
 
         if (isDuplicate) {
-            decision.signal = null;
-        } else if (isReversal && hasRestingOrders) {
-            console.log(`[ORACLE BYPASS] Ignoring ${normalizedSignal} reversal signal for ${asset}. LIVE trade is resting on the exchange. Letting native limits handle the exit.`);
             decision.signal = null;
         } else {
             console.log(`[ORACLE INITIATED] Scoring ${isReversal ? 'REVERSAL' : 'ENTRY'} ${decision.signal} signal for ${asset}...`);
@@ -338,7 +335,6 @@ export default async function handler(req, res) {
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = 'LIMIT';
                 
-                // --- THE FIX: Using Oracle's Dynamic TP/SL first, falling back to Strategy defaults if missing ---
                 if (oracleVerdict.tp_price && oracleVerdict.sl_price) {
                     decision.tpPrice = oracleVerdict.tp_price;
                     decision.slPrice = oracleVerdict.sl_price;
@@ -376,6 +372,28 @@ export default async function handler(req, res) {
     await supabase.from('scan_results').insert([scanEntry]);
 
         if (decision.signal && decision.signal !== null) {
+          
+          // --- THE PRE-EMPTIVE CLEARING SWEEP ---
+          const isExecutingReversal = openTrade && openTrade.side !== decision.signal;
+          
+          if (isExecutingReversal && config.execution_mode === 'LIVE' && openOrders.length > 0) {
+              console.log(`[PRE-EMPTIVE SWEEP] Clearing ${openOrders.length} resting brackets before executing AI reversal...`);
+              
+              let coinbaseProduct = asset.toUpperCase().trim();
+              if (!coinbaseProduct.includes('-')) {
+                  if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+                  else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+                  else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
+              }
+              
+              const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+              await fetch(`https://api.coinbase.com${cancelPath}`, {
+                  method: 'POST', 
+                  headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, 
+                  body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) })
+              });
+          }
+          
           let finalQty = config.parameters?.qty || 10; 
           if (config.parameters?.target_usd && decision.entryPrice) {
               finalQty = config.parameters.target_usd / decision.entryPrice;
