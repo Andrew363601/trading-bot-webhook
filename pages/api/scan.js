@@ -204,47 +204,55 @@ export default async function handler(req, res) {
                         const safeSlPrice = openTrade.sl_price ? (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(2) : null;
                         const safeTpPrice = openTrade.tp_price ? (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(2) : null;
 
-                        // --- THE FIX: Unconditionally apply reduce_only to bypass margin errors ---
-                        if (!hasSL && safeSlPrice) {
-                            console.log(`[WATCHDOG] Missing Stop Loss detected for ${coinbaseProduct}. Deploying at $${safeSlPrice}...`);
+                        // --- THE ULTIMATE FIX: OCO BRACKET DEPLOYMENT ---
+                        if (!hasTP && !hasSL && safeTpPrice && safeSlPrice) {
+                            console.log(`[WATCHDOG] Missing Brackets detected for ${coinbaseProduct}. Deploying Unified OCO (TP: $${safeTpPrice}, SL: $${safeSlPrice})...`);
                             try {
-                                const slPayload = {
-                                    client_order_id: `nx_sl_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                                const ocoPayload = {
+                                    client_order_id: `nx_oco_wd_${Date.now()}`,
+                                    product_id: coinbaseProduct,
+                                    side: closingSide,
                                     order_configuration: { 
-                                        stop_limit_stop_limit_gtc: { 
-                                            stop_direction: stopDir, 
-                                            stop_price: safeSlPrice.toString(), 
-                                            limit_price: safeSlPrice.toString(), 
-                                            base_size: orderQty.toString(),
-                                            reduce_only: true // Bypasses INSUFFICIENT_FUNDS checks
-                                        } 
-                                    }
-                                };
-
-                                const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload) });
-                                const result = await resp.json();
-                                if (!resp.ok || result.success === false) console.error(`[WATCHDOG REJECT] SL Failed:`, JSON.stringify(result));
-                            } catch (e) { console.error(`[WATCHDOG FATAL] SL:`, e.message); }
-                        }
-
-                        if (!hasTP && safeTpPrice) {
-                            console.log(`[WATCHDOG] Missing Take Profit detected for ${coinbaseProduct}. Deploying at $${safeTpPrice}...`);
-                            try {
-                                const tpPayload = {
-                                    client_order_id: `nx_tp_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
-                                    order_configuration: { 
-                                        limit_limit_gtc: { 
+                                        trigger_bracket_gtc: { 
                                             limit_price: safeTpPrice.toString(), 
-                                            base_size: orderQty.toString(),
-                                            reduce_only: true // Bypasses INSUFFICIENT_FUNDS checks
+                                            stop_trigger_price: safeSlPrice.toString(), 
+                                            base_size: orderQty.toString() 
                                         } 
                                     }
                                 };
 
-                                const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
+                                const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
                                 const result = await resp.json();
-                                if (!resp.ok || result.success === false) console.error(`[WATCHDOG REJECT] TP Failed:`, JSON.stringify(result));
-                            } catch (e) { console.error(`[WATCHDOG FATAL] TP:`, e.message); }
+                                if (!resp.ok || result.success === false) console.error(`[WATCHDOG REJECT] OCO Failed:`, JSON.stringify(result));
+                            } catch (e) { console.error(`[WATCHDOG FATAL] OCO:`, e.message); }
+                        } 
+                        else {
+                            // FALLBACK: INDIVIDUAL LEGS
+                            if (!hasSL && safeSlPrice) {
+                                console.log(`[WATCHDOG] Missing Stop Loss detected for ${coinbaseProduct}. Deploying at $${safeSlPrice}...`);
+                                try {
+                                    const slPayload = {
+                                        client_order_id: `nx_sl_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                                        order_configuration: { 
+                                            stop_limit_stop_limit_gtc: { stop_direction: stopDir, stop_price: safeSlPrice.toString(), limit_price: safeSlPrice.toString(), base_size: orderQty.toString(), reduce_only: true } 
+                                        }
+                                    };
+                                    const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload) });
+                                } catch (e) { console.error(`[WATCHDOG FATAL] SL:`, e.message); }
+                            }
+
+                            if (!hasTP && safeTpPrice) {
+                                console.log(`[WATCHDOG] Missing Take Profit detected for ${coinbaseProduct}. Deploying at $${safeTpPrice}...`);
+                                try {
+                                    const tpPayload = {
+                                        client_order_id: `nx_tp_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                                        order_configuration: { 
+                                            limit_limit_gtc: { limit_price: safeTpPrice.toString(), base_size: orderQty.toString(), reduce_only: true } 
+                                        }
+                                    };
+                                    const resp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload) });
+                                } catch (e) { console.error(`[WATCHDOG FATAL] TP:`, e.message); }
+                            }
                         }
                     }
 
