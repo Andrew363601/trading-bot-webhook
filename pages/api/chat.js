@@ -1,14 +1,15 @@
 // Set Next.js configuration for Vercel Pro limits
-export const config = {
-  maxDuration: 300,
-};
+export const maxDuration = 300;
 
+// pages/api/chat.js
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { streamText, tool } from 'ai';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
+
+// Loaded at the top to prevent Vercel memory leaks
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
@@ -34,6 +35,18 @@ export default async function handler(req, res) {
         throw new Error("Invalid or empty message payload.");
     }
 
+    // --- THE PROVEN FIX: The Message Sanitizer from 4 Days Ago ---
+    const cleanMessages = messages.filter(msg => {
+      if (msg.role === 'tool') return false; 
+      if (msg.role === 'assistant' && msg.toolInvocations) return false; 
+      return true;
+    });
+
+    const safeMessages = cleanMessages.length > 6 ? cleanMessages.slice(-6) : cleanMessages;
+    while (safeMessages.length > 0 && safeMessages[0].role !== 'user') {
+      safeMessages.shift(); 
+    }
+
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     if (!supabaseKey) throw new Error("Missing Supabase Keys in environment.");
@@ -46,6 +59,7 @@ export default async function handler(req, res) {
 
     console.log("[CHAT API] Fetching database telemetry in parallel...");
 
+    // SPEED OPTIMIZATION: Fetch all Supabase data simultaneously
     const [
       { data: allConfigs },
       { data: openTrades },
@@ -146,9 +160,9 @@ export default async function handler(req, res) {
     console.log("[CHAT API] Handing over to Gemini 2.5 Pro...");
 
     const result = await streamText({
-      model: google('gemini-2.5-pro'), 
+      model: google('models/gemini-2.5-pro'), 
       system: systemPrompt,
-      messages: messages, 
+      messages: safeMessages, // THE FIX: Passing the sanitized message array
       maxSteps: 5,
       tools: {
         queryTradeLedger: tool({
@@ -171,7 +185,6 @@ export default async function handler(req, res) {
             const { data: trades, error } = await query;
             if (error) return { error: error.message };
 
-            // THE FIX: Safe array checking to prevent crashes if table is empty
             const tradesList = trades || [];
             const totalTrades = tradesList.length;
             const totalPnL = tradesList.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
@@ -215,7 +228,6 @@ export default async function handler(req, res) {
             reasoning: z.string().describe('Technical reasoning for this deployment or mutation.')
           }),
           execute: async (args) => {
-            // THE FIX: Uses .maybeSingle() so Supabase doesn't throw a fatal PGRST116 error if strategy is missing
             const { data: existing } = await supabase
               .from('strategy_config')
               .select('id')
@@ -309,7 +321,6 @@ export default async function handler(req, res) {
             let candlesLeft = lookback_candles;
 
             try {
-              // THE FIX: Convert to correct Elliptic Curve key to prevent the ES256 crash inside the tool!
               const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
 
               while (candlesLeft > 0) {
@@ -386,7 +397,6 @@ export default async function handler(req, res) {
 
     console.log("[CHAT API] Streaming response to client...");
     
-    // THE FIX: Rely exclusively on the native Next.js native response pipe so it perfectly adheres to the Data Stream Protocol
     return result.pipeDataStreamToResponse(res);
 
   } catch (err) {
