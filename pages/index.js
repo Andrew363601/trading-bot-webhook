@@ -28,7 +28,12 @@ export default function Dashboard() {
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  const { messages, input, handleInputChange, handleSubmit, append, error, isLoading } = useChat({
+  // --- THE FIX: Restored independent local input so typing never locks up ---
+  const [localInput, setLocalInput] = useState('');
+  const [localMessages, setLocalMessages] = useState([]);
+  const [isManualLoading, setIsManualLoading] = useState(false);
+
+  const { messages: sdkMessages, append: sdkAppend, error: sdkError, isLoading: sdkIsLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
@@ -71,11 +76,15 @@ export default function Dashboard() {
     return () => clearInterval(int);
   }, [fetchData]);
 
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  // Determine active message stream
+  const displayMessages = sdkMessages?.length > 0 ? sdkMessages : localMessages;
+  const isChatActive = sdkIsLoading || isManualLoading;
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [displayMessages]);
 
   useEffect(() => {
-    if (messages.length > 0) {
-      const lastUserMsg = messages.slice().reverse().find(m => m.role === 'user');
+    if (displayMessages.length > 0) {
+      const lastUserMsg = displayMessages.slice().reverse().find(m => m.role === 'user');
       if (lastUserMsg) {
         const content = lastUserMsg.content.toUpperCase();
         const mentionedAsset = ASSETS.find(asset => content.includes(asset));
@@ -87,7 +96,7 @@ export default function Dashboard() {
         }
       }
     }
-  }, [messages, activeAsset, activeStrategies, activeStudies]);
+  }, [displayMessages, activeAsset, activeStrategies, activeStudies]);
 
   const handleClosePosition = async (trade) => {
     const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id || 'Exchange'}?`);
@@ -104,13 +113,68 @@ export default function Dashboard() {
     fetchData(); 
   };
 
+  // --- THE INVINCIBLE CHAT ENGINE ---
+  const executeNexusChat = async (contentStr) => {
+      const userMsg = { id: Date.now().toString(), role: 'user', content: contentStr };
+      
+      if (!sdkAppend) setLocalMessages(prev => [...prev, userMsg]);
+      setIsManualLoading(true);
+
+      try {
+          if (typeof sdkAppend === 'function') {
+              // 1. Try official SDK first
+              await sdkAppend({ role: 'user', content: contentStr });
+          } else {
+              // 2. The Polyfill: If SDK is dead, decode the stream manually
+              console.warn("[NEXUS RADAR] Vercel SDK hook detached. Engaging manual stream polyfill...");
+              const res = await fetch('/api/chat', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ messages: [...localMessages, userMsg] })
+              });
+              
+              if (!res.ok) throw new Error(`Backend Error ${res.status}`);
+              
+              const reader = res.body.getReader();
+              const decoder = new TextDecoder();
+              let botMsg = { id: (Date.now() + 1).toString(), role: 'assistant', content: '' };
+              setLocalMessages(prev => [...prev, botMsg]);
+              
+              while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  
+                  const chunk = decoder.decode(value, { stream: true });
+                  const lines = chunk.split('\n');
+                  for (const line of lines) {
+                      if (line.startsWith('0:')) {
+                          try {
+                              const text = JSON.parse(line.substring(2));
+                              botMsg.content += text;
+                              setLocalMessages(prev => [...prev.slice(0, -1), { ...botMsg }]);
+                          } catch(e) {}
+                      }
+                  }
+              }
+          }
+      } catch (err) {
+          console.error("[NEXUS APPEND FAULT]:", err);
+      } finally {
+          setIsManualLoading(false);
+      }
+  };
+
+  const handleManualSubmit = async (e) => {
+    e.preventDefault();
+    if (!localInput.trim()) return;
+    const content = localInput;
+    setLocalInput('');
+    await executeNexusChat(content);
+  };
+
   const handleStrategySelect = async (stratId) => {
     setSelectedStrat(stratId);
-    try {
-        await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
-    } catch (err) {
-        console.error("Append Error:", err);
-    }
+    await executeNexusChat(`Brief me on the ${stratId} strategy currently running on ${activeAsset}.`);
   };
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
@@ -443,7 +507,7 @@ export default function Dashboard() {
           <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
               
-              {messages.map(m => (
+              {displayMessages.map(m => (
                 <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>
                         {m.content}
@@ -451,10 +515,10 @@ export default function Dashboard() {
                 </div>
               ))}
               
-              {error && (
+              {sdkError && (
                 <div className="flex justify-start">
                     <div className="max-w-[90%] rounded-2xl px-4 py-3 bg-red-500/10 text-red-400 border border-red-500/20">
-                        [SYSTEM FAULT]: {error.message}
+                        [SYSTEM FAULT]: {sdkError.message}
                     </div>
                 </div>
               )}
@@ -462,20 +526,19 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
-                {/* THE FIX: Added optional chaining and fallback empty string to prevent the React trim() crash */}
+            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
                 <input 
                   className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
-                  value={input || ''} 
-                  onChange={handleInputChange} 
+                  value={localInput} 
+                  onChange={(e) => setLocalInput(e.target.value)} 
                   placeholder="Command Nexus..." 
               />
               <button 
                   type="submit" 
-                  disabled={!input?.trim()}
-                  className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}
+                  disabled={!localInput.trim()}
+                  className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isChatActive ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}
               >
-                  {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
+                  {isChatActive ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
               </button>
             </form>
           </div>
