@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { useChat } from 'ai/react'; // <--- THE FIX: Correct, bulletproof import path
+import { useChat } from '@ai-sdk/react'; // <--- THE FIX: Restored the modern, correct SDK import
 import Link from 'next/link'; 
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
@@ -28,7 +28,7 @@ export default function Dashboard() {
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
 
-  // THE FIX: Utilizing Vercel's native state bindings (input, handleInputChange, handleSubmit, append)
+  // THE FIX: Utilizing Vercel's native state bindings so 'append' and 'submit' never crash
   const { messages, input, handleInputChange, handleSubmit, append, error, isLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
@@ -108,7 +108,6 @@ export default function Dashboard() {
   const handleStrategySelect = async (stratId) => {
     setSelectedStrat(stratId);
     try {
-        // 'append' is now guaranteed to exist because of the corrected import path
         await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
     } catch (err) {
         console.error("Append Error:", err);
