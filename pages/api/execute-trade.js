@@ -157,49 +157,35 @@ export default async function handler(req, res) {
       executionPrice = result.success_response?.average_price || executionPrice;
       executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
 
-      // --- THE TP/SL BRACKET ORDER DEPLOYMENT ---
+      // --- THE TP/SL BRACKET ORDER DEPLOYMENT (UPGRADED TO OCO) ---
       if (!isClosing && orderType === 'MARKET' && tpPrice && slPrice) {
-          console.log(`[BRACKET] Entry filled. Deploying Take Profit at $${tpPrice} and Stop Loss at $${slPrice}...`);
+          console.log(`[BRACKET] Entry filled. Deploying Unified OCO (TP: $${tpPrice}, SL: $${slPrice})...`);
           const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
-          const stopDir = side === 'BUY' ? 'STOP_DIRECTION_STOP_DOWN' : 'STOP_DIRECTION_STOP_UP';
 
-          // 1. Fire Stop Loss 
           try {
-              const slPayload = {
-                  client_order_id: `nx_sl_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+              const ocoPayload = {
+                  client_order_id: `nx_oco_exec_${Date.now()}`,
+                  product_id: coinbaseProduct,
+                  side: closingSide,
                   order_configuration: { 
-                      stop_limit_stop_limit_gtc: { 
-                          stop_direction: stopDir, 
-                          stop_price: slPrice.toString(), 
-                          limit_price: slPrice.toString(), 
-                          base_size: orderQty.toString(),
-                          reduce_only: true // THE FIX: Unconditionally apply reduce_only
-                      } 
-                  }
-              };
-              
-              await fetch(`https://api.coinbase.com${path}`, {
-                  method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(slPayload)
-              });
-          } catch (e) { console.error("[BRACKET ERROR] SL failed"); }
-
-          // 2. Fire Take Profit 
-          try {
-              const tpPayload = {
-                  client_order_id: `nx_tp_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
-                  order_configuration: { 
-                      limit_limit_gtc: { 
+                      trigger_bracket_gtc: { 
                           limit_price: tpPrice.toString(), 
-                          base_size: orderQty.toString(),
-                          reduce_only: true // THE FIX: Unconditionally apply reduce_only
+                          stop_trigger_price: slPrice.toString(), 
+                          base_size: orderQty.toString() 
                       } 
                   }
               };
 
-              await fetch(`https://api.coinbase.com${path}`, {
-                  method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpPayload)
+              const ocoResp = await fetch(`https://api.coinbase.com${path}`, {
+                  method: 'POST', 
+                  headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, 
+                  body: JSON.stringify(ocoPayload)
               });
-          } catch (e) { console.error("[BRACKET ERROR] TP failed"); }
+              
+              const ocoResult = await ocoResp.json();
+              if (!ocoResp.ok || ocoResult.success === false) console.error(`[BRACKET REJECT] OCO Failed:`, JSON.stringify(ocoResult));
+              
+          } catch (e) { console.error("[BRACKET FATAL] OCO failed:", e.message); }
       }
       
     } else {
