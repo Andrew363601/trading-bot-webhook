@@ -109,11 +109,7 @@ export default async function handler(req, res) {
               base_size: orderQty.toString(),
               limit_price: executionPrice.toString()
           };
-          
-          // THE FIX: Unconditionally apply reduce_only for closing orders
-          if (isClosing) {
-              payload.order_configuration.limit_limit_gtc.reduce_only = true;
-          }
+          // reduce_only flag successfully removed to comply with CDE venue rules.
       } else {
           payload.order_configuration.market_market_ioc = { 
               base_size: orderQty.toString() 
@@ -127,26 +123,6 @@ export default async function handler(req, res) {
       });
       
       let result = await resp.json();
-
-      // --- THE AUTO-RECOVERY MATRIX ---
-      if (!resp.ok || result.success === false) {
-          const failReason = result.error_response?.preview_failure_reason || result.error_response?.error;
-          
-          if (failReason === 'PREVIEW_ORDER_SIZE_EXCEEDS_BRACKETED_POSITION' || failReason === 'PREVIEW_INSUFFICIENT_FUNDS_FOR_FUTURES') {
-              console.log(`[EXECUTE RECOVERY] Coinbase physical bracket conflict detected. Auto-retrying as reduce_only...`);
-              
-              if (payload.order_configuration.limit_limit_gtc) {
-                  payload.order_configuration.limit_limit_gtc.reduce_only = true;
-                  payload.client_order_id = `nexus_retry_${Date.now()}`; // Refresh ID
-
-                  const retryToken = generateToken('POST', path);
-                  resp = await fetch(`https://api.coinbase.com${path}`, {
-                      method: 'POST', headers: { 'Authorization': `Bearer ${retryToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-                  });
-                  result = await resp.json();
-              }
-          }
-      }
       
       if (!resp.ok) throw new Error(`Coinbase HTTP Reject: ${JSON.stringify(result)}`);
       if (result.success === false || result.error_response) {
