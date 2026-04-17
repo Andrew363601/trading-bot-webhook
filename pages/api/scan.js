@@ -489,14 +489,7 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
 
 async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
     try {
-        let coinbaseProduct = asset.toUpperCase().trim();
-        if (!coinbaseProduct.includes('-')) {
-            if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
-            else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
-            else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
-        }
-
-        // 1. Calculate VWAP and ATR from the trigger candles
+        // 1. Calculate VWAP and ATR locally from the trigger candles (No API calls required!)
         let typicalPriceVolume = 0;
         let totalVolume = 0;
         let trueRanges = [];
@@ -518,38 +511,10 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
         const vwap = totalVolume > 0 ? typicalPriceVolume / totalVolume : triggerCandles[triggerCandles.length - 1].close;
         const atr = trueRanges.length > 0 ? trueRanges.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, trueRanges.length) : 0;
 
-        // 2. Fetch Level 2 Order Book from Coinbase
-        const path = `/api/v3/brokerage/product_book?product_id=${coinbaseProduct}&limit=50`;
-        
-        // THE FIX: Use our battle-tested helper function that correctly strips query parameters from the signature!
-        const token = generateCoinbaseToken('GET', path, apiKey, secret);
-
-        const resp = await fetch(`https://api.coinbase.com${path}`, { headers: { 'Authorization': `Bearer ${token}` } });
-        
-        // THE FIX 2: Safety net. If Coinbase rejects the request, don't try to parse it as JSON.
-        if (!resp.ok) {
-            const errText = await resp.text();
-            throw new Error(`Coinbase API rejected Order Book request: ${errText}`);
-        }
-        
-        const bookData = await resp.json();
-
-        // 3. Find the biggest liquidity walls in the top 50 bids/asks
-        let heaviestBid = { price: 0, size: 0 };
-        let heaviestAsk = { price: 0, size: 0 };
-
-        if (bookData.pricebook) {
-            bookData.pricebook.bids.forEach(b => { if (parseFloat(b.size) > heaviestBid.size) heaviestBid = { price: parseFloat(b.price), size: parseFloat(b.size) }; });
-            bookData.pricebook.asks.forEach(a => { if (parseFloat(a.size) > heaviestAsk.size) heaviestAsk = { price: parseFloat(a.price), size: parseFloat(a.size) }; });
-        }
-
         return {
             indicators: { current_vwap: vwap.toFixed(2), current_atr: atr.toFixed(2) },
-            orderBook: {
-                heaviest_support_wall: heaviestBid.size > 0 ? `$${heaviestBid.price} (${heaviestBid.size} contracts)` : "Unknown",
-                heaviest_resistance_wall: heaviestAsk.size > 0 ? `$${heaviestAsk.price} (${heaviestAsk.size} contracts)` : "Unknown"
-            },
-            derivativesData: { status: "Active (Data inferred from Order Book depth)" }
+            orderBook: { status: "REST Level 2 Restricted for CDE Futures. Using VWAP/ATR routing." },
+            derivativesData: { status: "Active" }
         };
     } catch (e) {
         console.error("[MICROSTRUCTURE FAULT]:", e.message);
