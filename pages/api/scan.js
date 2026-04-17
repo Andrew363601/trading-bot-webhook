@@ -122,10 +122,36 @@ export default async function handler(req, res) {
                                 });
                             }
 
-                            const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: EXCHANGE_NATIVE_CLOSE` : 'EXCHANGE_NATIVE_CLOSE';
+                            // --- THE NATIVE SYNC MATH FIX ---
+                            let multiplier = 1.0;
+                            if (coinbaseProduct.includes('ETP')) multiplier = 0.1;
+                            if (coinbaseProduct.includes('BIT')) multiplier = 0.01;
+
+                            let exactExitPrice = currentPrice;
+                            let assumedReason = 'EXCHANGE_NATIVE_CLOSE';
+
+                            if (openTrade.tp_price && openTrade.sl_price) {
+                                const distToTp = Math.abs(currentPrice - openTrade.tp_price);
+                                const distToSl = Math.abs(currentPrice - openTrade.sl_price);
+                                
+                                if (distToTp < distToSl) {
+                                    exactExitPrice = openTrade.tp_price;
+                                    assumedReason = 'TAKE_PROFIT (NATIVE_SYNC)';
+                                } else {
+                                    exactExitPrice = openTrade.sl_price;
+                                    assumedReason = 'STOP_LOSS (NATIVE_SYNC)';
+                                }
+                            }
+
+                            const rawPnl = openTrade.side === 'BUY' 
+                                ? (exactExitPrice - openTrade.entry_price) * openTrade.qty * multiplier
+                                : (openTrade.entry_price - exactExitPrice) * openTrade.qty * multiplier;
+
+                            const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
+                            
                             await supabase.from('trade_logs').update({
-                                exit_price: currentPrice, 
-                                pnl: (openTrade.side === 'BUY' ? currentPrice - openTrade.entry_price : openTrade.entry_price - currentPrice) * openTrade.qty,
+                                exit_price: exactExitPrice, 
+                                pnl: parseFloat(rawPnl.toFixed(4)),
                                 exit_time: new Date().toISOString(),
                                 reason: updatedReason
                             }).eq('id', openTrade.id);
