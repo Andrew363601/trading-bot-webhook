@@ -182,8 +182,9 @@ export default function AuditLog() {
           const s = pipeline.scan;
           const isOpenTrade = isFullTrade && !t?.exit_price;
 
-          const originalTradeReason = t?.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
-          const displayReasoning = s?.telemetry?.oracle_reasoning || originalTradeReason;
+// THE FIX: Prioritize the live trade log reason (which contains our appended Manual Reviews) over the old static scan reason!
+const originalTradeReason = t?.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
+const displayReasoning = originalTradeReason || s?.telemetry?.oracle_reasoning;
 
           return (
             <div key={i} className={`p-5 rounded-3xl border transition-all duration-300 ${
