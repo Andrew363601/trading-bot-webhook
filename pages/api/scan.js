@@ -520,20 +520,25 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
 
         // 2. Fetch Level 2 Order Book from Coinbase
         const path = `/api/v3/brokerage/product_book?product_id=${coinbaseProduct}&limit=50`;
-        const privateKey = crypto.createPrivateKey({ key: secret, format: 'pem' });
-        const token = jwt.sign(
-            { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `GET api.coinbase.com${path}` },
-            privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
-        );
+        
+        // THE FIX: Use our battle-tested helper function that correctly strips query parameters from the signature!
+        const token = generateCoinbaseToken('GET', path, apiKey, secret);
 
         const resp = await fetch(`https://api.coinbase.com${path}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        
+        // THE FIX 2: Safety net. If Coinbase rejects the request, don't try to parse it as JSON.
+        if (!resp.ok) {
+            const errText = await resp.text();
+            throw new Error(`Coinbase API rejected Order Book request: ${errText}`);
+        }
+        
         const bookData = await resp.json();
 
         // 3. Find the biggest liquidity walls in the top 50 bids/asks
         let heaviestBid = { price: 0, size: 0 };
         let heaviestAsk = { price: 0, size: 0 };
 
-        if (resp.ok && bookData.pricebook) {
+        if (bookData.pricebook) {
             bookData.pricebook.bids.forEach(b => { if (parseFloat(b.size) > heaviestBid.size) heaviestBid = { price: parseFloat(b.price), size: parseFloat(b.size) }; });
             bookData.pricebook.asks.forEach(a => { if (parseFloat(a.size) > heaviestAsk.size) heaviestAsk = { price: parseFloat(a.price), size: parseFloat(a.size) }; });
         }
