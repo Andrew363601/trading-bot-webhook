@@ -11,6 +11,18 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// --- 📱 DISCORD MESSENGER ---
+async function sendDiscordAlert(title, description, color) {
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    if (!webhookUrl) return;
+    try {
+        await fetch(webhookUrl, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ embeds: [{ title, description, color, timestamp: new Date().toISOString() }] })
+        });
+    } catch (e) { console.error("Discord Alert Failed:", e.message); }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
@@ -26,7 +38,6 @@ export default async function handler(req, res) {
 
     const formattedSecret = apiSecret.replace(/\\n/g, '\n');
 
-   // --- THE PERPETUAL FUTURES FIX ---
    let rawSymbol = data.symbol || 'ETH-PERP';
    rawSymbol = rawSymbol.replace('BYBIT:', '').replace('.P', '').toUpperCase().trim();
    
@@ -39,7 +50,6 @@ export default async function handler(req, res) {
 
     const side = (data.side || 'BUY').toUpperCase() === 'LONG' || (data.side || 'BUY').toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
 
-    // 1. EXTRACT ADVANCED TRACKING VARIABLES
     const strategyId = data.strategy_id || 'MANUAL';
     const version = data.version || 'v1.0';
     const leverage = data.leverage || 1;
@@ -50,48 +60,24 @@ export default async function handler(req, res) {
     let tpPrice = data.tp_price || null;
     let slPrice = data.sl_price || null;
 
-    // 2. ISOLATE OPEN TRADES 
-    const { data: openTrades } = await supabase
-      .from('trade_logs')
-      .select('*')
-      .eq('symbol', rawSymbol)
-      .eq('strategy_id', strategyId) 
-      .is('exit_price', null)
-      .order('id', { ascending: false })
-      .limit(1);
-    
+    const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', rawSymbol).eq('strategy_id', strategyId).is('exit_price', null).order('id', { ascending: false }).limit(1);
     const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
 
-    // --- THE CLOSING DETECTOR ---
     const isClosing = openTrade && openTrade.side !== side;
 
-    // THE LIQUIDATION LOCK: Ensure closure quantity perfectly matches open quantity
     let orderQty = parseFloat(data.qty || 10);
     if (isClosing) {
         orderQty = parseFloat(openTrade.qty || orderQty);
     }
 
-    console.log(`[COINBASE ENGINE] Mode: ${mode} | Product: ${coinbaseProduct} | Type: ${orderType} | Side: ${side} | Leverage: ${leverage}x | Qty: ${orderQty}`);
-
     const generateToken = (method, path) => {
-      const privateKey = crypto.createPrivateKey({
-        key: formattedSecret,
-        format: 'pem'
-      });
-
+      const privateKey = crypto.createPrivateKey({ key: formattedSecret, format: 'pem' });
       return jwt.sign(
-        {
-          iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
-          sub: apiKeyName, uri: `${method} api.coinbase.com${path}`,
-        },
-        privateKey, 
-        { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
+        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${path}` },
+        privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
       );
     };
 
-    // --- 🛡️ THE TICK SIZE STERILIZER ---
-    // Coinbase strictly rejects limit prices that have too many decimals.
-    // We force all prices into perfect, exchange-compliant increments before they touch the payload.
     let tickSize = 0.01;
     if (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) tickSize = 0.50;
     if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
@@ -99,40 +85,24 @@ export default async function handler(req, res) {
     let executionPrice = data.price ? parseFloat((Math.round(parseFloat(data.price) / tickSize) * tickSize).toFixed(2)) : 0;
     if (tpPrice) tpPrice = parseFloat((Math.round(parseFloat(tpPrice) / tickSize) * tickSize).toFixed(2));
     if (slPrice) slPrice = parseFloat((Math.round(parseFloat(slPrice) / tickSize) * tickSize).toFixed(2));
-    // ------------------------------------
 
     let executionStatus = 'simulated';
 
     if (!isPaper) {
-      // 🔴 LIVE TRADE EXECUTION
       const path = '/api/v3/brokerage/orders';
       const token = generateToken('POST', path);
       
       const payload = {
-        client_order_id: `nexus_${Date.now()}`,
-        product_id: coinbaseProduct,
-        side: side,
-        order_configuration: {}
+        client_order_id: `nexus_${Date.now()}`, product_id: coinbaseProduct, side: side, order_configuration: {}
       };
 
       if (orderType === 'LIMIT') {
-          payload.order_configuration.limit_limit_gtc = {
-              base_size: orderQty.toString(),
-              limit_price: executionPrice.toString()
-          };
-          // reduce_only flag successfully removed to comply with CDE venue rules.
+          payload.order_configuration.limit_limit_gtc = { base_size: orderQty.toString(), limit_price: executionPrice.toString() };
       } else {
-          payload.order_configuration.market_market_ioc = { 
-              base_size: orderQty.toString() 
-          };
+          payload.order_configuration.market_market_ioc = { base_size: orderQty.toString() };
       }
 
-      let resp = await fetch(`https://api.coinbase.com${path}`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      
+      let resp = await fetch(`https://api.coinbase.com${path}`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       let result = await resp.json();
       
       if (!resp.ok) throw new Error(`Coinbase HTTP Reject: ${JSON.stringify(result)}`);
@@ -144,107 +114,62 @@ export default async function handler(req, res) {
       executionPrice = result.success_response?.average_price ? parseFloat(result.success_response.average_price) : executionPrice;
       executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
 
-      // --- THE TP/SL BRACKET ORDER DEPLOYMENT (UPGRADED TO OCO) ---
       if (!isClosing && orderType === 'MARKET' && tpPrice && slPrice) {
-          console.log(`[BRACKET] Entry filled. Deploying Unified OCO (TP: $${tpPrice}, SL: $${slPrice})...`);
           const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
-
           try {
               const ocoPayload = {
-                  client_order_id: `nx_oco_exec_${Date.now()}`,
-                  product_id: coinbaseProduct,
-                  side: closingSide,
-                  order_configuration: { 
-                      trigger_bracket_gtc: { 
-                          limit_price: tpPrice.toString(), 
-                          stop_trigger_price: slPrice.toString(), 
-                          base_size: orderQty.toString() 
-                      } 
-                  }
+                  client_order_id: `nx_oco_exec_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                  order_configuration: { trigger_bracket_gtc: { limit_price: tpPrice.toString(), stop_trigger_price: slPrice.toString(), base_size: orderQty.toString() } }
               };
-
-              const ocoResp = await fetch(`https://api.coinbase.com${path}`, {
-                  method: 'POST', 
-                  headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, 
-                  body: JSON.stringify(ocoPayload)
-              });
-              
+              const ocoResp = await fetch(`https://api.coinbase.com${path}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
               const ocoResult = await ocoResp.json();
               if (!ocoResp.ok || ocoResult.success === false) console.error(`[BRACKET REJECT] OCO Failed:`, JSON.stringify(ocoResult));
-              
           } catch (e) { console.error("[BRACKET FATAL] OCO failed:", e.message); }
       }
       
-    } else {
-      // 🟢 PAPER DRY-RUN
-      executionStatus = 'simulated';
-      console.log(`[PAPER] Simulated ${side} for ${rawSymbol} at $${executionPrice}`);
     }
 
-    // 3. DATABASE STATE MANAGEMENT 
     const isForcedExit = tradeReason && (tradeReason.includes('STOP_LOSS') || tradeReason.includes('TAKE_PROFIT') || tradeReason.includes('STALE_LIMIT') || tradeReason.includes('EMERGENCY_CLOSE'));
 
     if (openTrade) {
       if (isClosing) {
-        console.log(`[SUPABASE] Closing existing ${openTrade.side} position for ${rawSymbol}...`);
-        
-        // --- THE MULTIPLIER FIX ---
         let multiplier = 1.0;
-        if (coinbaseProduct.includes('ETP')) multiplier = 0.1;  // Nano ETH is 1/10th
-        if (coinbaseProduct.includes('BIT')) multiplier = 0.01; // Nano BTC is 1/100th
+        if (coinbaseProduct.includes('ETP')) multiplier = 0.1; 
+        if (coinbaseProduct.includes('BIT')) multiplier = 0.01;
 
-        const pnl = openTrade.side === 'BUY' 
-          ? (executionPrice - openTrade.entry_price) * orderQty * multiplier
-          : (openTrade.entry_price - executionPrice) * orderQty * multiplier;
+        const pnl = openTrade.side === 'BUY' ? (executionPrice - openTrade.entry_price) * orderQty * multiplier : (openTrade.entry_price - executionPrice) * orderQty * multiplier;
+        const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${tradeReason || 'MANUAL_CLOSE'}` : (tradeReason || 'MANUAL_CLOSE');
 
-        const updatedReason = openTrade.reason 
-            ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${tradeReason || 'MANUAL_CLOSE'}` 
-            : (tradeReason || 'MANUAL_CLOSE');
-
-        const { error: updateError } = await supabase.from('trade_logs').update({
-            exit_price: executionPrice,
-            pnl: parseFloat(pnl.toFixed(4)), 
-            exit_time: new Date().toISOString(),
-            reason: updatedReason 
-        }).eq('id', openTrade.id);
-
+        const { error: updateError } = await supabase.from('trade_logs').update({ exit_price: executionPrice, pnl: parseFloat(pnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
         if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
         executionStatus = 'closed_position';
+        
+        // 📱 ALERT: TRADE CLOSED
+        await sendDiscordAlert(`🏁 Position Closed: ${rawSymbol}`, `**Exit Price:** $${executionPrice}\n**Realized PnL:** $${pnl.toFixed(4)}\n**Trigger:** ${tradeReason || 'Signal Reversal'}`, pnl >= 0 ? 5763719 : 15548997);
+
       } else {
-        console.log(`[SUPABASE] Ignored duplicate ${side} order for ${rawSymbol}.`);
         return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
       }
     } else {
-      
-      if (isForcedExit) {
-          console.log(`[SUPABASE] Ignored phantom ${side} order. Trade already closed natively.`);
-          return res.status(200).json({ status: "already_closed_natively", product: coinbaseProduct });
-      }
+      if (isForcedExit) return res.status(200).json({ status: "already_closed_natively", product: coinbaseProduct });
 
-      console.log(`[SUPABASE] Inserting brand new ${side} position for ${rawSymbol}...`);
       const { error: insertError } = await supabase.from('trade_logs').insert([{
-        symbol: rawSymbol,
-        side: side,
-        entry_price: executionPrice,
-        execution_mode: mode,
-        strategy_id: strategyId,
-        version: version,
-        qty: orderQty, 
-        leverage: leverage,
-        market_type: marketType,
-        tp_price: tpPrice,
-        sl_price: slPrice,
-        reason: tradeReason 
+        symbol: rawSymbol, side: side, entry_price: executionPrice, execution_mode: mode, strategy_id: strategyId, version: version, qty: orderQty, leverage: leverage, market_type: marketType, tp_price: tpPrice, sl_price: slPrice, reason: tradeReason 
       }]);
 
       if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
       executionStatus = orderType === 'LIMIT' ? 'opened_limit_position' : 'opened_position';
+      
+      // 📱 ALERT: TRADE OPENED
+      await sendDiscordAlert(`🚀 New Position Opened: ${rawSymbol}`, `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}`, 3447003);
     }
 
     return res.status(200).json({ status: executionStatus, product: coinbaseProduct, price: executionPrice });
 
   } catch (err) {
     console.error("[EXECUTE FAULT]:", err.message);
+    // 📱 ALERT: EXECUTION ERROR
+    await sendDiscordAlert("❌ Execution Fault", `**Error:** ${err.message}`, 15548997);
     return res.status(500).json({ error: err.message });
   }
 }

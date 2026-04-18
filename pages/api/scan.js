@@ -13,6 +13,18 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// --- 📱 DISCORD MESSENGER ---
+async function sendDiscordAlert(title, description, color) {
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    if (!webhookUrl) return;
+    try {
+        await fetch(webhookUrl, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ embeds: [{ title, description, color, timestamp: new Date().toISOString() }] })
+        });
+    } catch (e) { console.error("Discord Alert Failed:", e.message); }
+}
+
 function generateCoinbaseToken(method, path, apiKey, apiSecret) {
   const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
   const uriPath = path.split('?')[0]; 
@@ -38,13 +50,11 @@ export default async function handler(req, res) {
       const asset = config.asset;
       if (!asset) continue;
 
-      // --- 🛡️ DEFENSE 1: MUTEX LOCK (Race Condition Prevention) ---
       if (config.is_processing) {
           console.log(`[MUTEX LOCK] ${config.strategy} on ${asset} is currently processing a previous ping. Aborting to prevent double-fire.`);
           continue;
       }
 
-      // Lock the strategy
       await supabase.from('strategy_config').update({ is_processing: true }).eq('strategy', config.strategy);
 
       try {
@@ -69,7 +79,6 @@ export default async function handler(req, res) {
         let activePosition = null;
         let openOrders = [];
 
-        // --- THE WATCHDOG, SWEEPER & NATIVE SYNC ---
         if (openTrade) {
             let coinbaseProduct = asset.toUpperCase().trim();
             if (!coinbaseProduct.includes('-')) {
@@ -99,20 +108,15 @@ export default async function handler(req, res) {
 
                     const entryOrderExists = openOrders.some(o => o.side === openTrade.side && parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price) === parseFloat(openTrade.entry_price));
 
-                    // SCENARIO 0: Native Exchange Sync
                     if (!activePosition && !entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         if (minutesOpen > 2) {
-                            console.log(`[SYNC] Trade ${openTrade.id} missing from Coinbase. Syncing native close...`);
-                            
                             if (openOrders.length > 0) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                 await fetch(`https://api.coinbase.com${cancelPath}`, {
-                                    method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, 
-                                    body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) })
+                                    method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) })
                                 });
                             }
-
                             let multiplier = 1.0;
                             if (coinbaseProduct.includes('ETP')) multiplier = 0.1;
                             if (coinbaseProduct.includes('BIT')) multiplier = 0.01;
@@ -135,7 +139,6 @@ export default async function handler(req, res) {
                         }
                     }
 
-                    // SCENARIO A: Stale Limit Sweeper
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         if (minutesOpen > 15) {
@@ -150,7 +153,6 @@ export default async function handler(req, res) {
                         }
                     }
 
-                    // SCENARIO B: Bracket Deployment & Manual Sync
                     if (activePosition) {
                         const physicalTP = openOrders.find(o => o.order_configuration?.limit_limit_gtc);
                         const physicalSL = openOrders.find(o => o.order_configuration?.stop_limit_stop_limit_gtc);
@@ -170,7 +172,6 @@ export default async function handler(req, res) {
 
                         const hasTP = physicalBracket || physicalTP;
                         const hasSL = physicalBracket || physicalSL;
-
                         if (hasTP && hasSL) openTrade.skipVirtualEnforcer = true;
 
                         const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
@@ -183,17 +184,14 @@ export default async function handler(req, res) {
                         const safeSlPrice = openTrade.sl_price ? (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(2) : null;
                         const safeTpPrice = openTrade.tp_price ? (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(2) : null;
 
-                        // --- OCO BRACKET SANITY CHECK ---
                         if (!hasTP && !hasSL && safeTpPrice && safeSlPrice) {
                             let priceCrossed = false;
                             if (openTrade.side === 'BUY' && (currentPrice >= parseFloat(safeTpPrice) || currentPrice <= parseFloat(safeSlPrice))) priceCrossed = true;
                             if (openTrade.side === 'SELL' && (currentPrice <= parseFloat(safeTpPrice) || currentPrice >= parseFloat(safeSlPrice))) priceCrossed = true;
 
                             if (priceCrossed) {
-                                console.log(`[WATCHDOG VETO] Price $${currentPrice} already crossed target bounds. Firing Market Close to prevent bracket rejection!`);
                                 forcedExit = 'MISSED_BRACKET_MARKET_CLOSE';
                             } else {
-                                console.log(`[WATCHDOG] Missing Brackets detected for ${coinbaseProduct}. Deploying Unified OCO (TP: $${safeTpPrice}, SL: $${safeSlPrice})...`);
                                 try {
                                     const ocoPayload = {
                                         client_order_id: `nx_oco_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
@@ -208,14 +206,17 @@ export default async function handler(req, res) {
             }
         }
 
-        // --- THE ORACLE EMERGENCY CHECK (-8% Pain Threshold) ---
         if (openTrade && !forcedExit) {
             const entryPrice = parseFloat(openTrade.entry_price);
             const pnlPercent = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? (currentPrice - entryPrice) / entryPrice : (entryPrice - currentPrice) / entryPrice;
 
             if (pnlPercent <= -0.08) { 
                 const oracleVerdict = await evaluateTradeIdea({ mode: 'EMERGENCY', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent });
-                if (oracleVerdict.action === 'MARKET_CLOSE') forcedExit = 'ORACLE_EMERGENCY_CLOSE';
+                if (oracleVerdict.action === 'MARKET_CLOSE') {
+                    forcedExit = 'ORACLE_EMERGENCY_CLOSE';
+                    // 📱 ALERT: EMERGENCY
+                    await sendDiscordAlert("🚨 Emergency Override", `**Asset:** ${asset}\n**Action:** Forcing Market Close\n**Reason:** Down 8% - Structure Invalidated`, 15548997);
+                }
             }
         }
 
@@ -247,15 +248,11 @@ export default async function handler(req, res) {
         const isReversal = openTrade && openTrade.side !== normalizedSignal;
         const isDuplicate = openTrade && !isReversal;
 
-        // --- 🛡️ DEFENSE 2: DYNAMIC ORACLE COOLDOWN (Chop Prevention) ---
-        const cooldownMinutes = config.parameters?.veto_cooldown_minutes || 15; // Dynamic default to 15 mins
+        const cooldownMinutes = config.parameters?.veto_cooldown_minutes || 15; 
         const lastVetoTime = config.last_veto_time ? new Date(config.last_veto_time).getTime() : 0;
         const isCooldownActive = (Date.now() - lastVetoTime) < (cooldownMinutes * 60000);
 
-        // We ONLY apply the cooldown if you have NO open trades. 
-        // Reversals and emergencies always bypass this to protect your capital.
         if (isCooldownActive && !openTrade && !isReversal && !isDuplicate) {
-            console.log(`[API DEFENSE] Skipping new entry ping for ${asset}. Oracle Veto cooldown active for ${cooldownMinutes} minutes.`);
             decision.signal = null;
             decision.statusOverride = `COOLDOWN (${cooldownMinutes}M)`;
         }
@@ -279,13 +276,19 @@ export default async function handler(req, res) {
             decision.telemetry = { ...decision.telemetry, oracle_score: oracleVerdict.conviction_score, oracle_reasoning: oracleVerdict.reasoning };
 
             if (oracleVerdict.action === 'VETO') {
-                // Log the Veto time in Supabase to trigger the cooldown
                 await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('strategy', config.strategy);
                 decision.signal = null; decision.statusOverride = 'ORACLE VETO'; 
             } else {
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = 'LIMIT';
                 
+                // 📱 ALERT: APPROVAL
+                await sendDiscordAlert(
+                    `🟢 Oracle Approved: ${decision.signal} ${asset}`,
+                    `**Target Entry:** $${decision.entryPrice}\n**Conviction:** ${oracleVerdict.conviction_score}/100\n\n_${oracleVerdict.reasoning}_`,
+                    5763719 // Green
+                );
+
                 if (oracleVerdict.tp_price && oracleVerdict.sl_price) {
                     decision.tpPrice = oracleVerdict.tp_price; decision.slPrice = oracleVerdict.sl_price;
                 } else if (decision.tpPrice && decision.slPrice) {
@@ -300,7 +303,6 @@ export default async function handler(req, res) {
              
                 let tickSize = (asset.includes('ETP') || asset.includes('ETH')) ? 0.50 : 0.01;
                 if (asset.includes('BIT') || asset.includes('BTC')) tickSize = 1.00;
-
                 decision.tpPrice = Math.round(decision.tpPrice / tickSize) * tickSize;
                 decision.slPrice = Math.round(decision.slPrice / tickSize) * tickSize;
                 
@@ -314,7 +316,6 @@ export default async function handler(req, res) {
     results.push(scanEntry);
     await supabase.from('scan_results').insert([scanEntry]);
 
-    // --- RESTORED EXECUTION WRAPPER ---
     if (decision.signal && decision.signal !== null) {
         const isExecutingReversal = openTrade && openTrade.side !== decision.signal;
         let coinbaseProduct = asset.toUpperCase().trim();
@@ -325,12 +326,8 @@ export default async function handler(req, res) {
         }
 
         if (isExecutingReversal && config.execution_mode === 'LIVE' && openOrders.length > 0) {
-            console.log(`[PRE-EMPTIVE SWEEP] Clearing ${openOrders.length} resting brackets before executing AI reversal...`);
             const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
             await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
-            
-            // 🛡️ THE BREATHER FIX: Force the bot to pause for 2.5 seconds to let the Coinbase Clearinghouse actually delete the brackets and release your margin.
-            console.log(`[REVERSAL ENGINE] Pausing for 2.5 seconds for Coinbase margin clearing...`);
             await new Promise(resolve => setTimeout(resolve, 2500));
         }
           
@@ -341,7 +338,6 @@ export default async function handler(req, res) {
         const protocol = host.includes('localhost') ? 'http' : 'https';
 
         if (isExecutingReversal) {
-            console.log(`[REVERSAL ENGINE] Step 1: Closing existing ${openTrade.side} position...`);
             const closePayload = {
                 symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: decision.signal,
                 order_type: 'MARKET', price: currentPrice, tp_price: null, sl_price: null,
@@ -352,7 +348,6 @@ export default async function handler(req, res) {
 
             await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(closePayload) });
             await new Promise(resolve => setTimeout(resolve, 2000));
-            console.log(`[REVERSAL ENGINE] Step 2: Opening new ${decision.signal} position...`);
         }
         
         const tradePayload = {
@@ -369,7 +364,6 @@ export default async function handler(req, res) {
       } catch (assetErr) { 
           console.error(`[ASSET ERROR] ${asset}:`, assetErr.message); 
       } finally {
-          // --- 🛡️ DEFENSE 1: MUTEX UNLOCK (Ensures the strategy is freed up even if an error occurs) ---
           await supabase.from('strategy_config').update({ is_processing: false }).eq('strategy', config.strategy);
       }
     }
@@ -380,7 +374,6 @@ export default async function handler(req, res) {
   }
 }
 
-// ... [fetchCoinbaseData and fetchMicrostructure helpers remain identical] ...
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   try {
     const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
