@@ -11,16 +11,17 @@ export default async function handler(req, res) {
   const timestamp = req.headers['x-signature-timestamp'];
 
   if (!signature || !timestamp) {
-    return res.status(401).end('Unauthorized');
+    return res.status(401).json({ error: 'Missing signatures' });
   }
 
+  // Safely read the raw body stream
   const chunks = [];
   for await (const chunk of req) {
     chunks.push(chunk);
   }
-  // Keep as raw binary buffer for bulletproof crypto verification
-  const rawBody = Buffer.concat(chunks);
+  const rawBody = Buffer.concat(chunks).toString('utf-8');
 
+  // Verify the cryptographic signature
   const isValidRequest = verifyKey(
     rawBody,
     signature,
@@ -28,31 +29,31 @@ export default async function handler(req, res) {
     process.env.DISCORD_PUBLIC_KEY
   );
 
+  // If Discord sends a fake signature test, bounce it
   if (!isValidRequest) {
-    return res.status(401).end('Bad request signature');
+    return res.status(401).json({ error: 'Bad request signature' });
   }
 
-  const message = JSON.parse(rawBody.toString('utf-8'));
+  const message = JSON.parse(rawBody);
 
-  // Use raw res.end() instead of Next.js res.json() to prevent formatting interference
+  // Respond to the PING with native Next.js JSON formatting
   if (message.type === 1) {
     console.log('✅ Valid PING received. Sending ACK.');
-    res.setHeader('Content-Type', 'application/json');
-    return res.status(200).end(JSON.stringify({ type: 1 }));
+    return res.status(200).json({ type: 1 });
   }
 
+  // Handle the /nexus command
   if (message.type === 2 && message.data.name === 'nexus') {
     const userPrompt = message.data.options[0].value;
     console.log(`🤖 Command trigger: ${userPrompt}`);
     
-    res.setHeader('Content-Type', 'application/json');
-    return res.status(200).end(JSON.stringify({
+    return res.status(200).json({
       type: 4, 
       data: {
         content: `🤖 **Nexus Agent Received:** "${userPrompt}"\n\n*(AI integration pending!)*`
       }
-    }));
+    });
   }
 
-  return res.status(400).end();
+  return res.status(400).json({ error: 'Unknown Type' });
 }
