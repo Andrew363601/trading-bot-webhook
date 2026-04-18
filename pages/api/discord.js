@@ -1,8 +1,5 @@
-// FORCING VERCEL UPDATE
-
 import { verifyKey } from 'discord-interactions';
 
-// This single line migrates the route from Node.js to Vercel's instant CDN
 export const config = {
   runtime: 'edge',
 };
@@ -19,7 +16,7 @@ export default async function handler(req) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  // Edge native text reading - instant and extremely clean
+  // Edge native text reading
   const rawBody = await req.text();
 
   const isValidRequest = verifyKey(
@@ -30,21 +27,22 @@ export default async function handler(req) {
   );
 
   if (!isValidRequest) {
+    console.log('❌ Signature rejected');
     return new Response('Bad request signature', { status: 401 });
   }
 
   const message = JSON.parse(rawBody);
 
-  // Respond to the PING instantly
+  // 1. Respond to Discord's PING
   if (message.type === 1) {
-    console.log('✅ Valid PING received on Edge. Sending ACK.');
+    console.log('✅ EDGE RUNTIME PING SUCCESSFUL');
     return new Response(JSON.stringify({ type: 1 }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
   }
 
-  // Handle the /nexus command
+  // 2. Handle the /nexus command
   if (message.type === 2 && message.data.name === 'nexus') {
     const userPrompt = message.data.options[0].value;
     console.log(`🤖 Command trigger: ${userPrompt}`);
@@ -53,7 +51,7 @@ export default async function handler(req) {
       JSON.stringify({
         type: 4, 
         data: {
-          content: `🤖 **Nexus Agent Received:** "${userPrompt}"\n\n*(AI integration pending!)*`
+          content: `🤖 **Nexus Agent Received:** "${userPrompt}"\n\n*(System is listening!)*`
         }
       }),
       {
