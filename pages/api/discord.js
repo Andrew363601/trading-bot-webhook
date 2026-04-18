@@ -16,24 +16,29 @@ export default async function handler(req) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  // Edge native text reading
   const rawBody = await req.text();
+  let isValidRequest = false;
 
-  const isValidRequest = verifyKey(
-    rawBody,
-    signature,
-    timestamp,
-    process.env.DISCORD_PUBLIC_KEY
-  );
+  // Catch the malformed fake ping that Discord sends!
+  try {
+    isValidRequest = verifyKey(
+      rawBody,
+      signature,
+      timestamp,
+      process.env.DISCORD_PUBLIC_KEY
+    );
+  } catch (error) {
+    console.log('⚠️ Fake ping caught by try/catch! Bouncing with 401.');
+    return new Response('Bad request signature', { status: 401 });
+  }
 
   if (!isValidRequest) {
-    console.log('❌ Signature rejected');
+    console.log('❌ Signature rejected cleanly');
     return new Response('Bad request signature', { status: 401 });
   }
 
   const message = JSON.parse(rawBody);
 
-  // 1. Respond to Discord's PING
   if (message.type === 1) {
     console.log('✅ EDGE RUNTIME PING SUCCESSFUL');
     return new Response(JSON.stringify({ type: 1 }), {
@@ -42,7 +47,6 @@ export default async function handler(req) {
     });
   }
 
-  // 2. Handle the /nexus command
   if (message.type === 2 && message.data.name === 'nexus') {
     const userPrompt = message.data.options[0].value;
     console.log(`🤖 Command trigger: ${userPrompt}`);
