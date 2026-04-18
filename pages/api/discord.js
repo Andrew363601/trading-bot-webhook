@@ -46,7 +46,7 @@ export default async function handler(req, res) {
     console.log(`🤖 Command trigger: ${userPrompt}`);
     
     res.setHeader('Content-Type', 'application/json');
-    return res.status(200).end(JSON.stringifgy({
+    return res.status(200).end(JSON.stringify({
       type: 4, 
       data: {
         content: `🤖 **Nexus Agent Received:** "${userPrompt}"\n\n*(AI integration pending!)*`
