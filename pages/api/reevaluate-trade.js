@@ -37,9 +37,15 @@ export default async function handler(req, res) {
 
         if (trade.exit_price) return res.status(400).json({ error: "Trade is already closed." });
 
-        // 2. Get Strategy Config for Timeframes
+        // 2. Get Strategy Config for Timeframes & MUTEX LOCK
         const { data: configs } = await supabase.from('strategy_config').select('*').eq('strategy', trade.strategy_id).limit(1);
         const config = configs?.[0] || {};
+
+        // --- 🛡️ DEFENSE: MUTEX LOCK CHECK FOR MANUAL REVIEWS ---
+        if (config.is_processing) {
+            return res.status(429).json({ error: "The automated background Watchdog is currently scanning this asset. Please wait 5 seconds and try again to prevent conflicts." });
+        }
+
         const macroTf = config.parameters?.macro_tf || 'ONE_HOUR';
         const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
 
@@ -65,7 +71,6 @@ export default async function handler(req, res) {
         let coinbaseProduct = trade.symbol.toUpperCase().trim();
         if (!coinbaseProduct.includes('-')) {
             if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
-            // Add other formats if needed
         }
 
         const appendReason = (msg) => `${trade.reason || ''}\n\n[MANUAL REVIEW - ${new Date().toISOString().split('T')[1].split('.')[0]}]: ${msg}`;
