@@ -314,19 +314,15 @@ export default async function handler(req, res) {
     results.push(scanEntry);
     await supabase.from('scan_results').insert([scanEntry]);
 
-        if (decision.signal && decision.signal !== null) {
-          const isExecutingReversal = openTrade && openTrade.side !== decision.signal;
-          let coinbaseProduct = asset.toUpperCase().trim();
-          if (!coinbaseProduct.includes('-')) {
-              if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
-              else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
-              else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
-          }
-          
-          if (isExecutingReversal && config.execution_mode === 'LIVE' && openOrders.length > 0) {
-              const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-              await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
-          }
+    if (isExecutingReversal && config.execution_mode === 'LIVE' && openOrders.length > 0) {
+        console.log(`[PRE-EMPTIVE SWEEP] Clearing ${openOrders.length} resting brackets before executing AI reversal...`);
+        const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+        await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+        
+        // 🛡️ THE BREATHER FIX: Force the bot to pause for 2.5 seconds to let the Coinbase Clearinghouse actually delete the brackets and release your margin.
+        console.log(`[REVERSAL ENGINE] Pausing for 2.5 seconds for Coinbase margin clearing...`);
+        await new Promise(resolve => setTimeout(resolve, 2500));
+    }
           
           let finalQty = config.parameters?.qty || 10; 
           if (config.parameters?.target_usd && decision.entryPrice) finalQty = config.parameters.target_usd / decision.entryPrice;
