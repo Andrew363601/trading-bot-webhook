@@ -1,27 +1,25 @@
 import { verifyKey } from 'discord-interactions';
 
+// This single line migrates the route from Node.js to Vercel's instant CDN
 export const config = {
-  api: { bodyParser: false },
+  runtime: 'edge',
 };
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).end();
+export default async function handler(req) {
+  if (req.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405 });
+  }
 
-  const signature = req.headers['x-signature-ed25519'];
-  const timestamp = req.headers['x-signature-timestamp'];
+  const signature = req.headers.get('x-signature-ed25519');
+  const timestamp = req.headers.get('x-signature-timestamp');
 
   if (!signature || !timestamp) {
-    return res.status(401).json({ error: 'Missing signatures' });
+    return new Response('Unauthorized', { status: 401 });
   }
 
-  // Safely read the raw body stream
-  const chunks = [];
-  for await (const chunk of req) {
-    chunks.push(chunk);
-  }
-  const rawBody = Buffer.concat(chunks).toString('utf-8');
+  // Edge native text reading - instant and extremely clean
+  const rawBody = await req.text();
 
-  // Verify the cryptographic signature
   const isValidRequest = verifyKey(
     rawBody,
     signature,
@@ -29,17 +27,19 @@ export default async function handler(req, res) {
     process.env.DISCORD_PUBLIC_KEY
   );
 
-  // If Discord sends a fake signature test, bounce it
   if (!isValidRequest) {
-    return res.status(401).json({ error: 'Bad request signature' });
+    return new Response('Bad request signature', { status: 401 });
   }
 
   const message = JSON.parse(rawBody);
 
-  // Respond to the PING with native Next.js JSON formatting
+  // Respond to the PING instantly
   if (message.type === 1) {
-    console.log('✅ Valid PING received. Sending ACK.');
-    return res.status(200).json({ type: 1 });
+    console.log('✅ Valid PING received on Edge. Sending ACK.');
+    return new Response(JSON.stringify({ type: 1 }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   // Handle the /nexus command
@@ -47,13 +47,19 @@ export default async function handler(req, res) {
     const userPrompt = message.data.options[0].value;
     console.log(`🤖 Command trigger: ${userPrompt}`);
     
-    return res.status(200).json({
-      type: 4, 
-      data: {
-        content: `🤖 **Nexus Agent Received:** "${userPrompt}"\n\n*(AI integration pending!)*`
+    return new Response(
+      JSON.stringify({
+        type: 4, 
+        data: {
+          content: `🤖 **Nexus Agent Received:** "${userPrompt}"\n\n*(AI integration pending!)*`
+        }
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
       }
-    });
+    );
   }
 
-  return res.status(400).json({ error: 'Unknown Type' });
+  return new Response('Unknown Type', { status: 400 });
 }
