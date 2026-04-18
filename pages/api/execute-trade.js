@@ -89,7 +89,18 @@ export default async function handler(req, res) {
       );
     };
 
-    let executionPrice = data.price || 0;
+    // --- 🛡️ THE TICK SIZE STERILIZER ---
+    // Coinbase strictly rejects limit prices that have too many decimals.
+    // We force all prices into perfect, exchange-compliant increments before they touch the payload.
+    let tickSize = 0.01;
+    if (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) tickSize = 0.50;
+    if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
+
+    let executionPrice = data.price ? parseFloat((Math.round(parseFloat(data.price) / tickSize) * tickSize).toFixed(2)) : 0;
+    if (tpPrice) tpPrice = parseFloat((Math.round(parseFloat(tpPrice) / tickSize) * tickSize).toFixed(2));
+    if (slPrice) slPrice = parseFloat((Math.round(parseFloat(slPrice) / tickSize) * tickSize).toFixed(2));
+    // ------------------------------------
+
     let executionStatus = 'simulated';
 
     if (!isPaper) {
@@ -130,7 +141,7 @@ export default async function handler(req, res) {
           throw new Error(`Coinbase Order Rejected: ${errMsg}`);
       }
       
-      executionPrice = result.success_response?.average_price || executionPrice;
+      executionPrice = result.success_response?.average_price ? parseFloat(result.success_response.average_price) : executionPrice;
       executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
 
       // --- THE TP/SL BRACKET ORDER DEPLOYMENT (UPGRADED TO OCO) ---
@@ -192,7 +203,7 @@ export default async function handler(req, res) {
 
         const { error: updateError } = await supabase.from('trade_logs').update({
             exit_price: executionPrice,
-            pnl: pnl,
+            pnl: parseFloat(pnl.toFixed(4)), 
             exit_time: new Date().toISOString(),
             reason: updatedReason 
         }).eq('id', openTrade.id);
