@@ -1,3 +1,5 @@
+// FORCING VERCEL UPDATE
+
 import { verifyKey } from 'discord-interactions';
 
 // This single line migrates the route from Node.js to Vercel's instant CDN
