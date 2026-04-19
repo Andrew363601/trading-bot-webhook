@@ -214,7 +214,6 @@ export default async function handler(req, res) {
                 const oracleVerdict = await evaluateTradeIdea({ mode: 'EMERGENCY', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent });
                 if (oracleVerdict.action === 'MARKET_CLOSE') {
                     forcedExit = 'ORACLE_EMERGENCY_CLOSE';
-                    // 📱 ALERT: EMERGENCY
                     await sendDiscordAlert("🚨 Emergency Override", `**Asset:** ${asset}\n**Action:** Forcing Market Close\n**Reason:** Down 8% - Structure Invalidated`, 15548997);
                 }
             }
@@ -282,7 +281,6 @@ export default async function handler(req, res) {
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = 'LIMIT';
                 
-                // 📱 ALERT: APPROVAL
                 await sendDiscordAlert(
                     `🟢 Oracle Approved: ${decision.signal} ${asset}`,
                     `**Target Entry:** $${decision.entryPrice}\n**Conviction:** ${oracleVerdict.conviction_score}/100\n\n_${oracleVerdict.reasoning}_`,
@@ -385,8 +383,23 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     }
     const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
     const end = Math.floor(Date.now() / 1000);
-    let lookbackSeconds = safeGranularity === 'FIVE_MINUTE' ? 300 * 300 : 3600 * 300;
+    
+    // --- 🛡️ THE UNIVERSAL TIMEFRAME FIX ---
+    // Calculate exact seconds based on the requested granularity string
+    let secondsPerCandle = 3600; // Default 1 Hour
+    if (safeGranularity === 'ONE_MINUTE') secondsPerCandle = 60;
+    else if (safeGranularity === 'FIVE_MINUTE') secondsPerCandle = 300;
+    else if (safeGranularity === 'FIFTEEN_MINUTE') secondsPerCandle = 900;
+    else if (safeGranularity === 'THIRTY_MINUTE') secondsPerCandle = 1800;
+    else if (safeGranularity === 'ONE_HOUR') secondsPerCandle = 3600;
+    else if (safeGranularity === 'TWO_HOUR') secondsPerCandle = 7200;
+    else if (safeGranularity === 'SIX_HOUR') secondsPerCandle = 21600;
+    else if (safeGranularity === 'ONE_DAY') secondsPerCandle = 86400;
+
+    // Force exactly 300 candles (Coinbase's strict API maximum)
+    let lookbackSeconds = secondsPerCandle * 300; 
     const start = end - lookbackSeconds; 
+    // ----------------------------------------
     
     const privateKey = crypto.createPrivateKey({ key: secret, format: 'pem' });
     const token = jwt.sign({ iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `GET api.coinbase.com${path}` }, privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
