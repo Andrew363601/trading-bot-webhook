@@ -135,6 +135,9 @@ export default async function handler(req, res) {
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                             
                             await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            
+                            // 📱 ALERT: NATIVE SYNC CLOSE
+                            await sendDiscordAlert(`🔄 Native Sync Close: ${asset}`, `**Exit Price:** $${exactExitPrice}\n**Realized PnL:** $${rawPnl.toFixed(4)}\n**Trigger:** ${assumedReason}`, rawPnl >= 0 ? 5763719 : 15548997);
                             continue; 
                         }
                     }
@@ -149,6 +152,9 @@ export default async function handler(req, res) {
                             }
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                             await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            
+                            // 📱 ALERT: STALE LIMIT SWEPT
+                            await sendDiscordAlert(`🧹 Stale Limit Swept: ${asset}`, `**Action:** Canceled un-filled entry limit order at $${openTrade.entry_price} after 15 minutes.`, 9807270); // Grey
                             continue; 
                         }
                     }
@@ -198,11 +204,22 @@ export default async function handler(req, res) {
                                         order_configuration: { trigger_bracket_gtc: { limit_price: safeTpPrice.toString(), stop_trigger_price: safeSlPrice.toString(), base_size: orderQty.toString() } }
                                     };
                                     await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
-                                } catch (e) { console.error(`[WATCHDOG FATAL] OCO:`, e.message); }
+                                    
+                                    // 📱 ALERT: WATCHDOG DEPLOYED MISSING BRACKETS
+                                    await sendDiscordAlert(`🛠️ Watchdog Deployed Brackets`, `**Asset:** ${asset}\n**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}`, 10181046); // Purple
+                                } catch (e) { 
+                                    console.error(`[WATCHDOG FATAL] OCO:`, e.message); 
+                                    // 📱 ALERT: WATCHDOG OCO ERROR
+                                    await sendDiscordAlert(`❌ Watchdog Bracket Fault: ${asset}`, `**Error:** Failed to deploy backup brackets.\n**Details:** ${e.message}`, 15548997);
+                                }
                             }
                         } 
                     }
-                } catch (err) { console.error(`[WATCHDOG FAULT]`, err.message); }
+                } catch (err) { 
+                    console.error(`[WATCHDOG FAULT]`, err.message); 
+                    // 📱 ALERT: WATCHDOG SYNC ERROR
+                    await sendDiscordAlert(`⚠️ Watchdog Sync Error: ${asset}`, `**Details:** Failed to query Coinbase API.\n**Error:** ${err.message}`, 15548997);
+                }
             }
         }
 
@@ -361,6 +378,8 @@ export default async function handler(req, res) {
 
       } catch (assetErr) { 
           console.error(`[ASSET ERROR] ${asset}:`, assetErr.message); 
+          // 📱 ALERT: ASSET LEVEL ERROR
+          await sendDiscordAlert(`⚠️ Asset Scan Failed: ${asset}`, `**Details:** Strategy loop crashed during evaluation.\n**Error:** ${assetErr.message}`, 15548997);
       } finally {
           await supabase.from('strategy_config').update({ is_processing: false }).eq('strategy', config.strategy);
       }
@@ -368,6 +387,8 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ status: "Dynamic Scan Complete", results });
   } catch (err) { 
+      // 📱 ALERT: CRITICAL GLOBAL ERROR
+      await sendDiscordAlert("🚨 CRITICAL SYSTEM FAULT", `**Component:** scan.js (Global Handler)\n**Error:** ${err.message}`, 15548997);
       return res.status(500).json({ error: err.message }); 
   }
 }
@@ -384,8 +405,6 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
     const end = Math.floor(Date.now() / 1000);
     
-    // --- 🛡️ THE UNIVERSAL TIMEFRAME FIX ---
-    // Calculate exact seconds based on the requested granularity string
     let secondsPerCandle = 3600; // Default 1 Hour
     if (safeGranularity === 'ONE_MINUTE') secondsPerCandle = 60;
     else if (safeGranularity === 'FIVE_MINUTE') secondsPerCandle = 300;
@@ -396,18 +415,17 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     else if (safeGranularity === 'SIX_HOUR') secondsPerCandle = 21600;
     else if (safeGranularity === 'ONE_DAY') secondsPerCandle = 86400;
 
-    // Force exactly 300 candles (Coinbase's strict API maximum)
     let lookbackSeconds = secondsPerCandle * 300; 
     const start = end - lookbackSeconds; 
-    // ----------------------------------------
     
     const privateKey = crypto.createPrivateKey({ key: secret, format: 'pem' });
     const token = jwt.sign({ iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `GET api.coinbase.com${path}` }, privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
 
     const resp = await fetch(`https://api.coinbase.com${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, { headers: { 'Authorization': `Bearer ${token}` } });
-    if (!resp.ok) return null; const data = await resp.json();
+    if (!resp.ok) throw new Error(`Coinbase HTTP ${resp.status}`); 
+    const data = await resp.json();
     return data.candles?.map(c => ({ close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
-  } catch (err) { return null; }
+  } catch (err) { throw err; } // Let the asset loop catch and report this to Discord
 }
 
 async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {

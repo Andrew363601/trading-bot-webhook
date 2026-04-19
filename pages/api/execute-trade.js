@@ -123,7 +123,13 @@ export default async function handler(req, res) {
               };
               const ocoResp = await fetch(`https://api.coinbase.com${path}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateToken('POST', path)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
               const ocoResult = await ocoResp.json();
-              if (!ocoResp.ok || ocoResult.success === false) console.error(`[BRACKET REJECT] OCO Failed:`, JSON.stringify(ocoResult));
+              if (!ocoResp.ok || ocoResult.success === false) {
+                  console.error(`[BRACKET REJECT] OCO Failed:`, JSON.stringify(ocoResult));
+                  await sendDiscordAlert(`⚠️ Bracket Failed: ${rawSymbol}`, `**Action:** Missing TP/SL protection!\n**Details:** Exchange rejected the OCO order.`, 15548997);
+              } else {
+                  // 📱 ALERT: BRACKETS DEPLOYED SUCCESSFULLY
+                  await sendDiscordAlert(`🎯 Brackets Deployed: ${rawSymbol}`, `**Take Profit:** $${tpPrice}\n**Stop Loss:** $${slPrice}\n**Status:** Active on Exchange`, 10181046); // Purple
+              }
           } catch (e) { console.error("[BRACKET FATAL] OCO failed:", e.message); }
       }
       
@@ -144,7 +150,7 @@ export default async function handler(req, res) {
         if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
         executionStatus = 'closed_position';
         
-        // 📱 ALERT: TRADE CLOSED
+        // 📱 ALERT: TRADE CLOSED (AI Reversal)
         await sendDiscordAlert(`🏁 Position Closed: ${rawSymbol}`, `**Exit Price:** $${executionPrice}\n**Realized PnL:** $${pnl.toFixed(4)}\n**Trigger:** ${tradeReason || 'Signal Reversal'}`, pnl >= 0 ? 5763719 : 15548997);
 
       } else {
@@ -161,7 +167,7 @@ export default async function handler(req, res) {
       executionStatus = orderType === 'LIMIT' ? 'opened_limit_position' : 'opened_position';
       
       // 📱 ALERT: TRADE OPENED
-      await sendDiscordAlert(`🚀 New Position Opened: ${rawSymbol}`, `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}`, 3447003);
+      await sendDiscordAlert(`🚀 New Position Opened: ${rawSymbol}`, `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}`, 3447003); // Blue
     }
 
     return res.status(200).json({ status: executionStatus, product: coinbaseProduct, price: executionPrice });
