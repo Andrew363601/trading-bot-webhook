@@ -11,6 +11,18 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// --- 📱 DISCORD MESSENGER ---
+async function sendDiscordAlert(title, description, color) {
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    if (!webhookUrl) return;
+    try {
+        await fetch(webhookUrl, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ embeds: [{ title, description, color, timestamp: new Date().toISOString() }] })
+        });
+    } catch (e) { console.error("Discord Alert Failed:", e.message); }
+}
+
 function generateCoinbaseToken(method, path, apiKey, apiSecret) {
     const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
     const uriPath = path.split('?')[0]; 
@@ -55,7 +67,7 @@ export default async function handler(req, res) {
             fetchCoinbaseData(trade.symbol, triggerTf, apiKeyName, apiSecret)
         ]);
         
-        if (!macroCandles || !triggerCandles) throw new Error("Failed to fetch market data");
+        if (!macroCandles || !triggerCandles) throw new Error("Failed to fetch market data from Coinbase");
         const currentPrice = triggerCandles[triggerCandles.length - 1].close;
         const pnlPercent = trade.side === 'BUY' ? (currentPrice - trade.entry_price) / trade.entry_price : (trade.entry_price - currentPrice) / trade.entry_price;
 
@@ -70,7 +82,9 @@ export default async function handler(req, res) {
 
         let coinbaseProduct = trade.symbol.toUpperCase().trim();
         if (!coinbaseProduct.includes('-')) {
-            if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
+            if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+            else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+            else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
         }
 
         const appendReason = (msg) => `${trade.reason || ''}\n\n[MANUAL REVIEW - ${new Date().toISOString().split('T')[1].split('.')[0]}]: ${msg}`;
@@ -78,11 +92,13 @@ export default async function handler(req, res) {
         // 5. EXECUTE THE VERDICT
         if (verdict.action === 'HOLD') {
             await supabase.from('trade_logs').update({ reason: appendReason(verdict.reasoning) }).eq('id', trade.id);
+            
+            // 📱 ALERT: HOLD
+            await sendDiscordAlert(`🛡️ Sniper Review: HOLD ${trade.symbol}`, `**Action:** Maintaining current position.\n**Oracle:** ${verdict.reasoning}`, 10181046); 
             return res.status(200).json({ status: "HOLD", reasoning: verdict.reasoning });
         } 
         
         else if (verdict.action === 'MARKET_CLOSE') {
-            // Forward to execution engine to handle full cleanup
             const payload = {
                 symbol: trade.symbol, strategy_id: trade.strategy_id, side: trade.side === 'BUY' ? 'SELL' : 'BUY',
                 order_type: 'MARKET', qty: trade.qty, reason: `[ORACLE MANUAL REVIEW CLOSE]: ${verdict.reasoning}`
@@ -91,11 +107,12 @@ export default async function handler(req, res) {
             const protocol = host.includes('localhost') ? 'http' : 'https';
             await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             
+            // 📱 ALERT: FORCE CLOSE
+            await sendDiscordAlert(`🎯 Sniper Review: CLOSE ${trade.symbol}`, `**Action:** Force closing position.\n**Oracle:** ${verdict.reasoning}`, 15548997);
             return res.status(200).json({ status: "CLOSED", reasoning: verdict.reasoning });
         } 
         
         else if (verdict.action === 'ADJUST_LIMITS') {
-            // Nuke existing orders and redeploy OCO
             if (trade.execution_mode === 'LIVE') {
                 const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
                 const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, apiKeyName, apiSecret)}` } });
@@ -111,8 +128,10 @@ export default async function handler(req, res) {
                     }
                 }
 
-                // Place new OCO
-                let tickSize = coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH') ? 0.50 : 0.01;
+                let tickSize = 0.01;
+                if (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) tickSize = 0.50;
+                if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
+
                 const safeTp = verdict.tp_price ? (Math.round(verdict.tp_price / tickSize) * tickSize).toFixed(2) : null;
                 const safeSl = verdict.sl_price ? (Math.round(verdict.sl_price / tickSize) * tickSize).toFixed(2) : null;
 
@@ -122,40 +141,70 @@ export default async function handler(req, res) {
                         client_order_id: `nx_adj_${Date.now()}`, product_id: coinbaseProduct, side: trade.side === 'BUY' ? 'SELL' : 'BUY',
                         order_configuration: { trigger_bracket_gtc: { limit_price: safeTp.toString(), stop_trigger_price: safeSl.toString(), base_size: trade.qty.toString() } }
                     };
-                    await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
+                    const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
+                    const ocoResult = await ocoResp.json();
+                    if (!ocoResp.ok || ocoResult.success === false) {
+                        console.error(`[BRACKET REJECT] OCO Failed:`, JSON.stringify(ocoResult));
+                        await sendDiscordAlert(`⚠️ Sniper Bracket Failed: ${trade.symbol}`, `**Action:** Failed to update TP/SL!\n**Details:** Exchange rejected the OCO order.`, 15548997);
+                    }
                 }
+                
+                await supabase.from('trade_logs').update({ 
+                    tp_price: safeTp || verdict.tp_price, sl_price: safeSl || verdict.sl_price, 
+                    reason: appendReason(`ADJUSTED LIMITS. ${verdict.reasoning}`) 
+                }).eq('id', trade.id);
+
+                // 📱 ALERT: ADJUST LIMITS
+                await sendDiscordAlert(`🛠️ Sniper Review: ADJUSTED ${trade.symbol}`, `**New Take Profit:** $${safeTp}\n**New Stop Loss:** $${safeSl}\n**Oracle:** ${verdict.reasoning}`, 3447003);
             }
-            
-            await supabase.from('trade_logs').update({ 
-                tp_price: verdict.tp_price, sl_price: verdict.sl_price, 
-                reason: appendReason(`ADJUSTED LIMITS. ${verdict.reasoning}`) 
-            }).eq('id', trade.id);
 
             return res.status(200).json({ status: "ADJUSTED", reasoning: verdict.reasoning });
         }
 
     } catch (err) {
+        console.error("[SNIPER FAULT]:", err.message);
+        // 📱 ALERT: SNIPER FAULT
+        await sendDiscordAlert("❌ Sniper Review Fault", `**Error:** ${err.message}`, 15548997);
         return res.status(500).json({ error: err.message });
     }
 }
 
 // Data Helpers
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
-    const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
-    let coinbaseProduct = asset.toUpperCase().trim();
-    if (!coinbaseProduct.includes('-')) {
-        if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
-    }
-    const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
-    const end = Math.floor(Date.now() / 1000);
-    const lookback = safeGranularity === 'FIVE_MINUTE' ? 300 * 300 : 3600 * 300;
-    const start = end - lookback; 
-    
-    const token = generateCoinbaseToken('GET', `${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, apiKey, secret);
-    const resp = await fetch(`https://api.coinbase.com${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, { headers: { 'Authorization': `Bearer ${token}` } });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data.candles?.map(c => ({ close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse() || null;
+    try {
+        const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
+        let coinbaseProduct = asset.toUpperCase().trim();
+        if (!coinbaseProduct.includes('-')) {
+            if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+            else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+            else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
+        }
+        const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+        const end = Math.floor(Date.now() / 1000);
+        
+        // --- 🛡️ THE UNIVERSAL TIMEFRAME FIX ---
+        let secondsPerCandle = 3600; // Default 1 Hour
+        if (safeGranularity === 'ONE_MINUTE') secondsPerCandle = 60;
+        else if (safeGranularity === 'FIVE_MINUTE') secondsPerCandle = 300;
+        else if (safeGranularity === 'FIFTEEN_MINUTE') secondsPerCandle = 900;
+        else if (safeGranularity === 'THIRTY_MINUTE') secondsPerCandle = 1800;
+        else if (safeGranularity === 'ONE_HOUR') secondsPerCandle = 3600;
+        else if (safeGranularity === 'TWO_HOUR') secondsPerCandle = 7200;
+        else if (safeGranularity === 'SIX_HOUR') secondsPerCandle = 21600;
+        else if (safeGranularity === 'ONE_DAY') secondsPerCandle = 86400;
+
+        let lookbackSeconds = secondsPerCandle * 300; 
+        const start = end - lookbackSeconds; 
+        // ----------------------------------------
+        
+        const privateKey = crypto.createPrivateKey({ key: secret, format: 'pem' });
+        const token = jwt.sign({ iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `GET api.coinbase.com${path}` }, privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
+
+        const resp = await fetch(`https://api.coinbase.com${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!resp.ok) throw new Error(`Coinbase HTTP ${resp.status}`);
+        const data = await resp.json();
+        return data.candles?.map(c => ({ close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
+    } catch (err) { throw err; }
 }
 
 async function fetchMicrostructure(triggerCandles) {
