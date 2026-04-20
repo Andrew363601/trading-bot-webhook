@@ -143,7 +143,7 @@ export default async function handler(req, res) {
 
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
-                        if (minutesOpen > 15) {
+                        if (minutesOpen > 25) {
                             const targetOrder = openOrders.find(o => o.side === openTrade.side && parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price) === parseFloat(openTrade.entry_price));
                             if (targetOrder) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
