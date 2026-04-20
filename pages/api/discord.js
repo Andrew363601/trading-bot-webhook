@@ -1,3 +1,4 @@
+// force import
 import { verifyKey } from 'discord-interactions';
 
 export const config = {
