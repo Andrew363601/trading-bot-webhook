@@ -1,5 +1,3 @@
-// force discord save
-
 import { verifyKey } from 'discord-interactions';
 
 export const config = {
@@ -14,7 +12,7 @@ export default async function handler(req, res) {
 
   if (!signature || !timestamp) return res.status(401).end('Missing headers');
 
-  // 🛡️ Safely parse the raw body into a Buffer first to preserve exact bytes for the crypto signature
+  // 🛡️ Safely parse the raw body
   const chunks = [];
   for await (const chunk of req) {
     chunks.push(chunk);
@@ -42,8 +40,14 @@ export default async function handler(req, res) {
   // 1. Respond to Discord's PING
   if (message.type === 1) {
     console.log('✅ NODE RUNTIME PING SUCCESSFUL');
-    // 🚨 THE FIX: Use native Next.js JSON handling. Vercel requires this to set the Content-Length header correctly!
-    return res.status(200).json({ type: 1 });
+    
+    // 🚨 THE ULTIMATE FIX: Discord rejects chunked encoding. 
+    // We explicitly calculate the exact byte length and force the Content-Length header.
+    const pingPayload = JSON.stringify({ type: 1 });
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Length', Buffer.byteLength(pingPayload));
+    
+    return res.status(200).send(pingPayload);
   }
 
   // 2. Handle the /nexus command
@@ -51,11 +55,15 @@ export default async function handler(req, res) {
     const userPrompt = message.data.options?.[0]?.value || "Empty command";
     console.log(`🤖 Command trigger: ${userPrompt}`);
     
-    // 🚨 THE FIX: Native Next.js response handling
-    return res.status(200).json({
+    const commandPayload = JSON.stringify({
       type: 4, 
       data: { content: `🤖 **Nexus Agent Received:** "${userPrompt}"\n\n*(System is listening!)*` }
     });
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Length', Buffer.byteLength(commandPayload));
+    
+    return res.status(200).send(commandPayload);
   }
 
   return res.status(400).end();
