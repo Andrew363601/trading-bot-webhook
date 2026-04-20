@@ -113,6 +113,12 @@ export default async function handler(req, res) {
         } 
         
         else if (verdict.action === 'ADJUST_LIMITS') {
+            const oldTp = trade.tp_price || 'None';
+            const oldSl = trade.sl_price || 'None';
+            
+            let safeTp = null;
+            let safeSl = null;
+
             if (trade.execution_mode === 'LIVE') {
                 const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
                 const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, apiKeyName, apiSecret)}` } });
@@ -132,8 +138,8 @@ export default async function handler(req, res) {
                 if (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) tickSize = 0.50;
                 if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
 
-                const safeTp = verdict.tp_price ? (Math.round(verdict.tp_price / tickSize) * tickSize).toFixed(2) : null;
-                const safeSl = verdict.sl_price ? (Math.round(verdict.sl_price / tickSize) * tickSize).toFixed(2) : null;
+                safeTp = verdict.tp_price ? (Math.round(verdict.tp_price / tickSize) * tickSize).toFixed(2) : null;
+                safeSl = verdict.sl_price ? (Math.round(verdict.sl_price / tickSize) * tickSize).toFixed(2) : null;
 
                 if (safeTp && safeSl) {
                     const executePath = '/api/v3/brokerage/orders';
@@ -148,15 +154,18 @@ export default async function handler(req, res) {
                         await sendDiscordAlert(`⚠️ Sniper Bracket Failed: ${trade.symbol}`, `**Action:** Failed to update TP/SL!\n**Details:** Exchange rejected the OCO order.`, 15548997);
                     }
                 }
-                
-                await supabase.from('trade_logs').update({ 
-                    tp_price: safeTp || verdict.tp_price, sl_price: safeSl || verdict.sl_price, 
-                    reason: appendReason(`ADJUSTED LIMITS. ${verdict.reasoning}`) 
-                }).eq('id', trade.id);
-
-                // 📱 ALERT: ADJUST LIMITS
-                await sendDiscordAlert(`🛠️ Sniper Review: ADJUSTED ${trade.symbol}`, `**New Take Profit:** $${safeTp}\n**New Stop Loss:** $${safeSl}\n**Oracle:** ${verdict.reasoning}`, 3447003);
+            } else {
+                safeTp = verdict.tp_price;
+                safeSl = verdict.sl_price;
             }
+            
+            await supabase.from('trade_logs').update({ 
+                tp_price: safeTp || verdict.tp_price, sl_price: safeSl || verdict.sl_price, 
+                reason: appendReason(`ADJUSTED LIMITS. ${verdict.reasoning}`) 
+            }).eq('id', trade.id);
+
+            // 📱 ALERT: ADJUST LIMITS WITH OLD VS NEW
+            await sendDiscordAlert(`🛠️ Sniper Review: ADJUSTED ${trade.symbol}`, `**Old Brackets:** TP $${oldTp} | SL $${oldSl}\n**New Brackets:** TP $${safeTp || 'N/A'} | SL $${safeSl || 'N/A'}\n**Oracle:** ${verdict.reasoning}`, 3447003);
 
             return res.status(200).json({ status: "ADJUSTED", reasoning: verdict.reasoning });
         }
@@ -182,8 +191,7 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
         const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
         const end = Math.floor(Date.now() / 1000);
         
-        // --- 🛡️ THE UNIVERSAL TIMEFRAME FIX ---
-        let secondsPerCandle = 3600; // Default 1 Hour
+        let secondsPerCandle = 3600; 
         if (safeGranularity === 'ONE_MINUTE') secondsPerCandle = 60;
         else if (safeGranularity === 'FIVE_MINUTE') secondsPerCandle = 300;
         else if (safeGranularity === 'FIFTEEN_MINUTE') secondsPerCandle = 900;
@@ -195,7 +203,6 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
 
         let lookbackSeconds = secondsPerCandle * 300; 
         const start = end - lookbackSeconds; 
-        // ----------------------------------------
         
         const privateKey = crypto.createPrivateKey({ key: secret, format: 'pem' });
         const token = jwt.sign({ iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `GET api.coinbase.com${path}` }, privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
