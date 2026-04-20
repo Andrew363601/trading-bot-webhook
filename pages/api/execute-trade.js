@@ -89,6 +89,32 @@ export default async function handler(req, res) {
     let executionStatus = 'simulated';
 
     if (!isPaper) {
+
+      // 🧹 NEW: THE FLOOR SWEEPER (2-SECOND RULE)
+      if (isClosing) {
+          try {
+              const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
+              const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateToken('GET', orderPath)}` } });
+              
+              if (orderResp.ok) {
+                  const orderData = await orderResp.json();
+                  if (orderData.orders && orderData.orders.length > 0) {
+                      const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                      await fetch(`https://api.coinbase.com${cancelPath}`, {
+                          method: 'POST', 
+                          headers: { 'Authorization': `Bearer ${generateToken('POST', cancelPath)}`, 'Content-Type': 'application/json' }, 
+                          body: JSON.stringify({ order_ids: orderData.orders.map(o => o.order_id) })
+                      });
+                      
+                      console.log(`[FLOOR SWEEPER] Nuked ${orderData.orders.length} orphaned brackets. Pausing 2s for exchange clearing...`);
+                      await new Promise(resolve => setTimeout(resolve, 2000));
+                  }
+              }
+          } catch (sweepErr) {
+              console.error("[SWEEP FAULT]:", sweepErr.message);
+          }
+      }
+
       const path = '/api/v3/brokerage/orders';
       const token = generateToken('POST', path);
       
@@ -146,36 +172,4 @@ export default async function handler(req, res) {
         const pnl = openTrade.side === 'BUY' ? (executionPrice - openTrade.entry_price) * orderQty * multiplier : (openTrade.entry_price - executionPrice) * orderQty * multiplier;
         const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${tradeReason || 'MANUAL_CLOSE'}` : (tradeReason || 'MANUAL_CLOSE');
 
-        const { error: updateError } = await supabase.from('trade_logs').update({ exit_price: executionPrice, pnl: parseFloat(pnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
-        if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
-        executionStatus = 'closed_position';
-        
-        // 📱 ALERT: TRADE CLOSED (AI Reversal)
-        await sendDiscordAlert(`🏁 Position Closed: ${rawSymbol}`, `**Exit Price:** $${executionPrice}\n**Realized PnL:** $${pnl.toFixed(4)}\n**Trigger:** ${tradeReason || 'Signal Reversal'}`, pnl >= 0 ? 5763719 : 15548997);
-
-      } else {
-        return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
-      }
-    } else {
-      if (isForcedExit) return res.status(200).json({ status: "already_closed_natively", product: coinbaseProduct });
-
-      const { error: insertError } = await supabase.from('trade_logs').insert([{
-        symbol: rawSymbol, side: side, entry_price: executionPrice, execution_mode: mode, strategy_id: strategyId, version: version, qty: orderQty, leverage: leverage, market_type: marketType, tp_price: tpPrice, sl_price: slPrice, reason: tradeReason 
-      }]);
-
-      if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
-      executionStatus = orderType === 'LIMIT' ? 'opened_limit_position' : 'opened_position';
-      
-      // 📱 ALERT: TRADE OPENED
-      await sendDiscordAlert(`🚀 New Position Opened: ${rawSymbol}`, `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}`, 3447003); // Blue
-    }
-
-    return res.status(200).json({ status: executionStatus, product: coinbaseProduct, price: executionPrice });
-
-  } catch (err) {
-    console.error("[EXECUTE FAULT]:", err.message);
-    // 📱 ALERT: EXECUTION ERROR
-    await sendDiscordAlert("❌ Execution Fault", `**Error:** ${err.message}`, 15548997);
-    return res.status(500).json({ error: err.message });
-  }
-}
+        const { error: updateError } = await supabase.from('trade_logs').update({ exit_price: executionPrice, pnl: parseFloat(pnl.toFixed(4)), exit_time: new Date().toISOString
