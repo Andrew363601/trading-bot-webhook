@@ -131,10 +131,61 @@ export default async function handler(req, res) {
       let resp = await fetch(`https://api.coinbase.com${path}`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       let result = await resp.json();
       
-      if (!resp.ok) throw new Error(`Coinbase HTTP Reject: ${JSON.stringify(result)}`);
-      if (result.success === false || result.error_response) {
-          const errMsg = result.error_response?.message || result.failure_reason?.error_message || JSON.stringify(result);
-          throw new Error(`Coinbase Order Rejected: ${errMsg}`);
+      // 💰 NEW: THE AUTO-FUNDING ENGINE
+      if (!resp.ok || result.success === false || result.error_response) {
+          const errMsg = result.error_response?.preview_failure_reason || result.error_response?.error || result.failure_reason?.error_message || JSON.stringify(result);
+          
+          if (errMsg.includes('INSUFFICIENT_FUNDS_FOR_FUTURES') || errMsg.includes('INSUFFICIENT_FUNDS')) {
+              console.log("[AUTO-FUNDING] Margin wall hit. Attempting to siphon funds from Spot...");
+              try {
+                  // 1. Fetch exact Portfolio UUIDs
+                  const portPath = '/api/v3/brokerage/portfolios';
+                  const portResp = await fetch(`https://api.coinbase.com${portPath}`, { headers: { 'Authorization': `Bearer ${generateToken('GET', portPath)}` } });
+                  const portData = await portResp.json();
+
+                  const spotWallet = portData.portfolios?.find(p => p.type === 'DEFAULT' || p.name === 'Primary');
+                  const futuresWallet = portData.portfolios?.find(p => p.type === 'FUTURES' || p.name.includes('Derivatives') || p.name.includes('Futures'));
+
+                  if (spotWallet && futuresWallet) {
+                      // 2. Execute the Internal Transfer
+                      const transferPath = '/api/v3/brokerage/portfolios/transfer';
+                      const transferPayload = {
+                          source_portfolio_uuid: spotWallet.uuid,
+                          target_portfolio_uuid: futuresWallet.uuid,
+                          funds: { value: "60.00", currency: "USD" } // Move $60 to cover margin
+                      };
+
+                      const transferResp = await fetch(`https://api.coinbase.com${transferPath}`, {
+                          method: 'POST',
+                          headers: { 'Authorization': `Bearer ${generateToken('POST', transferPath)}`, 'Content-Type': 'application/json' },
+                          body: JSON.stringify(transferPayload)
+                      });
+
+                      if (transferResp.ok) {
+                          await sendDiscordAlert(`💸 Auto-Funding Triggered`, `**Asset:** ${rawSymbol}\n**Action:** Automatically transferred $60.00 to Derivatives to cover margin requirements.`, 3447003);
+                          await new Promise(resolve => setTimeout(resolve, 2000)); // Let the cash settle
+
+                          // 3. Retry the Exact Order
+                          const retryToken = generateToken('POST', path);
+                          resp = await fetch(`https://api.coinbase.com${path}`, { method: 'POST', headers: { 'Authorization': `Bearer ${retryToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                          result = await resp.json();
+                          
+                          if (!resp.ok || result.success === false) {
+                               throw new Error(`Retry failed after funding: ${JSON.stringify(result)}`);
+                          }
+                      } else {
+                          const transferErrData = await transferResp.json();
+                          throw new Error(`API Transfer call was rejected by Coinbase. ${JSON.stringify(transferErrData)}`);
+                      }
+                  } else {
+                      throw new Error("Could not locate the correct Spot/Futures Portfolio UUIDs.");
+                  }
+              } catch (fundErr) {
+                  throw new Error(`Auto-Funding sequence failed: ${fundErr.message}`);
+              }
+          } else {
+              throw new Error(`Coinbase Order Rejected: ${errMsg}`);
+          }
       }
       
       executionPrice = result.success_response?.average_price ? parseFloat(result.success_response.average_price) : executionPrice;
@@ -172,4 +223,36 @@ export default async function handler(req, res) {
         const pnl = openTrade.side === 'BUY' ? (executionPrice - openTrade.entry_price) * orderQty * multiplier : (openTrade.entry_price - executionPrice) * orderQty * multiplier;
         const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${tradeReason || 'MANUAL_CLOSE'}` : (tradeReason || 'MANUAL_CLOSE');
 
-        const { error: updateError } = await supabase.from('trade_logs').update({ exit_price: executionPrice, pnl: parseFloat(pnl.toFixed(4)), exit_time: new Date().toISOString
+        const { error: updateError } = await supabase.from('trade_logs').update({ exit_price: executionPrice, pnl: parseFloat(pnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+        if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
+        executionStatus = 'closed_position';
+        
+        // 📱 ALERT: TRADE CLOSED (AI Reversal)
+        await sendDiscordAlert(`🏁 Position Closed: ${rawSymbol}`, `**Exit Price:** $${executionPrice}\n**Realized PnL:** $${pnl.toFixed(4)}\n**Trigger:** ${tradeReason || 'Signal Reversal'}`, pnl >= 0 ? 5763719 : 15548997);
+
+      } else {
+        return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
+      }
+    } else {
+      if (isForcedExit) return res.status(200).json({ status: "already_closed_natively", product: coinbaseProduct });
+
+      const { error: insertError } = await supabase.from('trade_logs').insert([{
+        symbol: rawSymbol, side: side, entry_price: executionPrice, execution_mode: mode, strategy_id: strategyId, version: version, qty: orderQty, leverage: leverage, market_type: marketType, tp_price: tpPrice, sl_price: slPrice, reason: tradeReason 
+      }]);
+
+      if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
+      executionStatus = orderType === 'LIMIT' ? 'opened_limit_position' : 'opened_position';
+      
+      // 📱 ALERT: TRADE OPENED
+      await sendDiscordAlert(`🚀 New Position Opened: ${rawSymbol}`, `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}`, 3447003); // Blue
+    }
+
+    return res.status(200).json({ status: executionStatus, product: coinbaseProduct, price: executionPrice });
+
+  } catch (err) {
+    console.error("[EXECUTE FAULT]:", err.message);
+    // 📱 ALERT: EXECUTION ERROR
+    await sendDiscordAlert("❌ Execution Fault", `**Error:** ${err.message}`, 15548997);
+    return res.status(500).json({ error: err.message });
+  }
+}
