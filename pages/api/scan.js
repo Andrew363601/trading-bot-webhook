@@ -71,11 +71,14 @@ export default async function handler(req, res) {
 
         const microstructure = await fetchMicrostructure(asset, triggerCandles, apiKeyName, apiSecret);
 
+        // 🧠 FETCH CURRENT OPEN TRADE
         const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', asset).eq('strategy_id', config.strategy).is('exit_price', null).order('id', { ascending: false }).limit(1);
-        
         const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
-        let forcedExit = null;
+        
+        // 🧠 FETCH SHORT-TERM MEMORY (LAST 3 CLOSED TRADES)
+        const { data: recentTrades } = await supabase.from('trade_logs').select('*').eq('symbol', asset).eq('strategy_id', config.strategy).not('exit_price', 'is', null).order('id', { ascending: false }).limit(3);
 
+        let forcedExit = null;
         let activePosition = null;
         let openOrders = [];
         let coinbaseProduct = asset.toUpperCase().trim();
@@ -247,19 +250,15 @@ export default async function handler(req, res) {
                 
                 const pnlPercent = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? (currentPrice - openTrade.entry_price) / openTrade.entry_price : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
 
-                // 1. Immediately Alert Discord
-                await sendDiscordAlert(`⚡ Tripwire Snapped: ${asset}`, `**Status:** 75% to Take Profit ($${currentPrice})\n**Action:** Waking Oracle for active trade management...`, 16776960); // Gold
+                await sendDiscordAlert(`⚡ Tripwire Snapped: ${asset}`, `**Status:** 75% to Take Profit ($${currentPrice})\n**Action:** Waking Oracle for active trade management...`, 16776960); 
 
-                // 2. Wake the Oracle
                 const tripwireVerdict = await evaluateTradeIdea({
                     mode: 'MANUAL_REVIEW', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent, openTrade
                 });
 
-                // 3. Stamp the Database to apply the Anti-Spam Lock
                 const lockedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_75_CLEARED]: AI dynamically reviewed trade at 75% profit. Verdict: ${tripwireVerdict.action}`;
                 await supabase.from('trade_logs').update({ reason: lockedReason }).eq('id', openTrade.id);
 
-                // 4. Execute the Verdict
                 if (tripwireVerdict.action === 'MARKET_CLOSE') {
                      forcedExit = 'TRIPWIRE_SECURED_PROFIT';
                      await sendDiscordAlert(`🎯 Tripwire Close: ${asset}`, `**Action:** Oracle secured the bag early.\n**Oracle:** ${tripwireVerdict.reasoning}`, 5763719);
@@ -273,7 +272,6 @@ export default async function handler(req, res) {
                      let tickSize = (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) ? 0.50 : 0.01;
                      if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
                      
-                     // 🚨 THE FIX: Fallback to existing brackets if the Oracle decides to leave them alone (outputs null)
                      const finalTp = tripwireVerdict.tp_price || openTrade.tp_price;
                      const finalSl = tripwireVerdict.sl_price || openTrade.sl_price;
 
@@ -293,7 +291,7 @@ export default async function handler(req, res) {
                          try {
                              await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
                              await supabase.from('trade_logs').update({ tp_price: safeTp, sl_price: safeSl }).eq('id', openTrade.id);
-                             await sendDiscordAlert(`🛠️ Tripwire Adjusted: ${asset}`, `**Old Brackets:** TP $${openTrade.tp_price} | SL $${openTrade.sl_price}\n**New Brackets:** TP $${safeTp} | SL $${safeSl}\n**Oracle:** ${tripwireVerdict.reasoning}`, 3447003); // Blue
+                             await sendDiscordAlert(`🛠️ Tripwire Adjusted: ${asset}`, `**Old Brackets:** TP $${openTrade.tp_price} | SL $${openTrade.sl_price}\n**New Brackets:** TP $${safeTp} | SL $${safeSl}\n**Oracle:** ${tripwireVerdict.reasoning}`, 3447003); 
                              openTrade.tp_price = safeTp; openTrade.sl_price = safeSl;
                          } catch (e) {
                              console.error(`[TRIPWIRE FAULT]`, e.message);
@@ -301,7 +299,7 @@ export default async function handler(req, res) {
                      }
                 } 
                 else {
-                     await sendDiscordAlert(`🛡️ Tripwire Hold: ${asset}`, `**Action:** Letting profits run to target.\n**Oracle:** ${tripwireVerdict.reasoning}`, 10181046); // Purple
+                     await sendDiscordAlert(`🛡️ Tripwire Hold: ${asset}`, `**Action:** Letting profits run to target.\n**Oracle:** ${tripwireVerdict.reasoning}`, 10181046); 
                 }
             }
         }
@@ -354,10 +352,11 @@ export default async function handler(req, res) {
                 currentTradeContext = { side: openTrade.side, entry_price: entry, pnl_percent: (pnl * 100).toFixed(2) };
             }
 
+            // 🧠 PASS RECENT TRADES TO ORACLE FOR MEMORY
             const oracleVerdict = await evaluateTradeIdea({
                 mode: isReversal ? 'REVERSAL' : 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, 
                 currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators,
-                orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, marketType: config.parameters?.market_type || 'FUTURES', openTrade: currentTradeContext
+                orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, marketType: config.parameters?.market_type || 'FUTURES', openTrade: currentTradeContext, recentHistory: recentTrades || []
             });
 
             decision.telemetry = { ...decision.telemetry, oracle_score: oracleVerdict.conviction_score, oracle_reasoning: oracleVerdict.reasoning };
