@@ -152,7 +152,7 @@ export default async function handler(req, res) {
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                             await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                             
-                            await sendDiscordAlert(`🧹 Stale Limit Swept: ${asset}`, `**Action:** Canceled un-filled entry limit order at $${openTrade.entry_price} after 15 minutes.`, 9807270);
+                            await sendDiscordAlert(`🧹 Stale Limit Swept: ${asset}`, `**Action:** Canceled un-filled entry limit order at $${openTrade.entry_price} after 25 minutes.`, 9807270);
                             continue; 
                         }
                     }
@@ -232,9 +232,9 @@ export default async function handler(req, res) {
             }
         }
 
-        // --- 🛡️ NEW: THE 50% PROFIT TRIPWIRE ENGINE ---
+        // --- 🛡️ THE 75% PROFIT TRIPWIRE ENGINE ---
         if (openTrade && !forcedExit && openTrade.tp_price && openTrade.entry_price && activePosition) {
-            const isTripwireLocked = openTrade.reason && openTrade.reason.includes('[TRIPWIRE_50_CLEARED]');
+            const isTripwireLocked = openTrade.reason && openTrade.reason.includes('[TRIPWIRE_75_CLEARED]');
             const totalDistance = Math.abs(openTrade.tp_price - openTrade.entry_price);
             const coveredDistance = Math.abs(currentPrice - openTrade.entry_price);
             const progress = coveredDistance / totalDistance;
@@ -242,13 +242,13 @@ export default async function handler(req, res) {
             const isProfitable = (openTrade.side === 'BUY' && currentPrice > openTrade.entry_price) || 
                                  (openTrade.side === 'SELL' && currentPrice < openTrade.entry_price);
 
-            if (isProfitable && progress >= 0.50 && !isTripwireLocked) {
-                console.log(`[TRIPWIRE] 50% milestone reached for ${asset}. Activating AI Tripwire...`);
+            if (isProfitable && progress >= 0.75 && !isTripwireLocked) {
+                console.log(`[TRIPWIRE] 75% milestone reached for ${asset}. Activating AI Tripwire...`);
                 
                 const pnlPercent = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? (currentPrice - openTrade.entry_price) / openTrade.entry_price : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
 
                 // 1. Immediately Alert Discord
-                await sendDiscordAlert(`⚡ Tripwire Snapped: ${asset}`, `**Status:** 50% to Take Profit ($${currentPrice})\n**Action:** Waking Oracle for active trade management...`, 16776960); // Gold
+                await sendDiscordAlert(`⚡ Tripwire Snapped: ${asset}`, `**Status:** 75% to Take Profit ($${currentPrice})\n**Action:** Waking Oracle for active trade management...`, 16776960); // Gold
 
                 // 2. Wake the Oracle
                 const tripwireVerdict = await evaluateTradeIdea({
@@ -256,7 +256,7 @@ export default async function handler(req, res) {
                 });
 
                 // 3. Stamp the Database to apply the Anti-Spam Lock
-                const lockedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_50_CLEARED]: AI dynamically reviewed trade at 50% profit. Verdict: ${tripwireVerdict.action}`;
+                const lockedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_75_CLEARED]: AI dynamically reviewed trade at 75% profit. Verdict: ${tripwireVerdict.action}`;
                 await supabase.from('trade_logs').update({ reason: lockedReason }).eq('id', openTrade.id);
 
                 // 4. Execute the Verdict
