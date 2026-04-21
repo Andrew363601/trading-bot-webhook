@@ -273,8 +273,12 @@ export default async function handler(req, res) {
                      let tickSize = (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) ? 0.50 : 0.01;
                      if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
                      
-                     const safeTp = tripwireVerdict.tp_price ? (Math.round(tripwireVerdict.tp_price / tickSize) * tickSize).toFixed(2) : null;
-                     const safeSl = tripwireVerdict.sl_price ? (Math.round(tripwireVerdict.sl_price / tickSize) * tickSize).toFixed(2) : null;
+                     // 🚨 THE FIX: Fallback to existing brackets if the Oracle decides to leave them alone (outputs null)
+                     const finalTp = tripwireVerdict.tp_price || openTrade.tp_price;
+                     const finalSl = tripwireVerdict.sl_price || openTrade.sl_price;
+
+                     const safeTp = finalTp ? (Math.round(finalTp / tickSize) * tickSize).toFixed(2) : null;
+                     const safeSl = finalSl ? (Math.round(finalSl / tickSize) * tickSize).toFixed(2) : null;
 
                      if (safeTp && safeSl) {
                          const executePath = '/api/v3/brokerage/orders';
