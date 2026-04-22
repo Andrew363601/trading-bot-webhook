@@ -155,13 +155,14 @@ Analyze the 500 candles and classify the current market phase for this asset int
 4. MARKDOWN: Sustained downtrend, lower lows. (Favorable for: Short-trend following, avoiding long-only strategies).
 
 
-      --- DIRECTIVE ---
+--- DIRECTIVE ---
       Analyze the Market Context, check the current market regime (e.g., trending, ranging, volatile chop) and determine if the provided Strategy Logic is mathematically suited for the identified Market Phase.
       
       You must choose ONE of the following actions:
-      1. PAUSE: If the strategy is ACTIVE, but its core logic is fundamentally unsuited for the current market regime (e.g., it's a trend-follower bleeding in a choppy market). Mutating won't fix a regime mismatch.
+      1. PAUSE: If the strategy is ACTIVE, but its core logic is fundamentally unsuited for the current market regime.
       2. REACTIVATE: If the strategy is PAUSED, but the recent 500 candles show a regime that perfectly matches this strategy's source code logic.
-      3. MUTATE: If the strategy is ACTIVE, suited for the regime, but needs parameter tuning (e.g., wider stops, faster EMA) to increase ROI. You must retain the exact parameter keys.
+      3. MUTATE: If the strategy is ACTIVE, suited for the regime, but needs parameter tuning (e.g., wider bands, faster EMA) to increase ROI. 
+         *CRITICAL MUTATION RULES:* You may ONLY mutate indicator-specific parameters (like lookbacks, multipliers, or thresholds). You are STRICTLY FORBIDDEN from mutating execution or risk parameters. You MUST return the exact original values for: 'qty', 'target_usd', 'tripwire_percent', 'sl_percent', 'tp_percent', and 'veto_cooldown_minutes'.
       4. MAINTAIN: If the strategy is ACTIVE and perfectly tuned for the current regime, or PAUSED and the regime is still wrong for it.
 
       If MUTATE, increment the version by 0.1 (e.g., v1.0 to v1.1). Otherwise, keep the current version.
