@@ -364,11 +364,12 @@ export default async function handler(req, res) {
                 currentTradeContext = { side: openTrade.side, entry_price: entry, pnl_percent: (pnl * 100).toFixed(2) };
             }
 
-            // 🧠 PASS RECENT TRADES TO ORACLE FOR MEMORY
+            // 🧠 PASS RECENT TRADES & DYNAMIC SIZING TOGGLE TO ORACLE 
             const oracleVerdict = await evaluateTradeIdea({
                 mode: isReversal ? 'REVERSAL' : 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, 
                 currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators,
-                orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, marketType: config.parameters?.market_type || 'FUTURES', openTrade: currentTradeContext, recentHistory: recentTrades || []
+                orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, marketType: config.parameters?.market_type || 'FUTURES', openTrade: currentTradeContext, recentHistory: recentTrades || [],
+                dynamicSizing: config.parameters?.dynamic_sizing === true
             });
 
             decision.telemetry = { ...decision.telemetry, oracle_score: oracleVerdict.conviction_score, oracle_reasoning: oracleVerdict.reasoning };
@@ -403,7 +404,10 @@ export default async function handler(req, res) {
                 decision.tpPrice = Math.round(decision.tpPrice / tickSize) * tickSize;
                 decision.slPrice = Math.round(decision.slPrice / tickSize) * tickSize;
                 
-                if (oracleVerdict.size_multiplier > 1.0 && config.parameters?.target_usd) config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
+                // MULTIPLIER MATH (Now handles both aggressive scaling up AND defensive scaling down)
+                if (oracleVerdict.size_multiplier && oracleVerdict.size_multiplier !== 1.0 && config.parameters?.target_usd) {
+                    config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
+                }
             }
         }
     }
