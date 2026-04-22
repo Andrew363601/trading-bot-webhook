@@ -75,8 +75,16 @@ export default async function handler(req, res) {
         const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', asset).eq('strategy_id', config.strategy).is('exit_price', null).order('id', { ascending: false }).limit(1);
         const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
         
-        // 🧠 FETCH SHORT-TERM MEMORY (LAST 3 CLOSED TRADES)
-        const { data: recentTrades } = await supabase.from('trade_logs').select('*').eq('symbol', asset).eq('strategy_id', config.strategy).not('exit_price', 'is', null).order('id', { ascending: false }).limit(3);
+        // 🧠 FETCH SHORT-TERM MEMORY (ROLLING 24-HOUR PERFORMANCE)
+        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const { data: recentTrades } = await supabase.from('trade_logs')
+            .select('*')
+            .eq('symbol', asset)
+            .eq('strategy_id', config.strategy)
+            .not('exit_price', 'is', null)
+            .gte('exit_time', twentyFourHoursAgo)
+            .order('exit_time', { ascending: false })
+            .limit(15); // Capped at 15 to keep the AI prompt clean while providing a full day's perspective
 
         let forcedExit = null;
         let activePosition = null;
