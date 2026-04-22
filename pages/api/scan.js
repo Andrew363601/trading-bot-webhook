@@ -235,9 +235,9 @@ export default async function handler(req, res) {
             }
         }
 
-        // --- 🛡️ THE 75% PROFIT TRIPWIRE ENGINE ---
+        // --- 🛡️ THE DYNAMIC PROFIT TRIPWIRE ENGINE ---
         if (openTrade && !forcedExit && openTrade.tp_price && openTrade.entry_price && activePosition) {
-            const isTripwireLocked = openTrade.reason && openTrade.reason.includes('[TRIPWIRE_75_CLEARED]');
+            const isTripwireLocked = openTrade.reason && openTrade.reason.includes('[TRIPWIRE_CLEARED]');
             const totalDistance = Math.abs(openTrade.tp_price - openTrade.entry_price);
             const coveredDistance = Math.abs(currentPrice - openTrade.entry_price);
             const progress = coveredDistance / totalDistance;
@@ -245,18 +245,22 @@ export default async function handler(req, res) {
             const isProfitable = (openTrade.side === 'BUY' && currentPrice > openTrade.entry_price) || 
                                  (openTrade.side === 'SELL' && currentPrice < openTrade.entry_price);
 
-            if (isProfitable && progress >= 0.75 && !isTripwireLocked) {
-                console.log(`[TRIPWIRE] 75% milestone reached for ${asset}. Activating AI Tripwire...`);
+            // Fetch dynamic threshold with parseFloat armor, or fallback to 75%
+            const tripwireThreshold = parseFloat(config.parameters?.tripwire_percent) || 0.75;
+            const displayPercent = Math.round(tripwireThreshold * 100);
+
+            if (isProfitable && progress >= tripwireThreshold && !isTripwireLocked) {
+                console.log(`[TRIPWIRE] ${displayPercent}% milestone reached for ${asset}. Activating AI Tripwire...`);
                 
                 const pnlPercent = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? (currentPrice - openTrade.entry_price) / openTrade.entry_price : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
 
-                await sendDiscordAlert(`⚡ Tripwire Snapped: ${asset}`, `**Status:** 75% to Take Profit ($${currentPrice})\n**Action:** Waking Oracle for active trade management...`, 16776960); 
+                await sendDiscordAlert(`⚡ Tripwire Snapped: ${asset}`, `**Status:** ${displayPercent}% to Take Profit ($${currentPrice})\n**Action:** Waking Oracle for active trade management...`, 16776960); 
 
                 const tripwireVerdict = await evaluateTradeIdea({
                     mode: 'MANUAL_REVIEW', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent, openTrade
                 });
 
-                const lockedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_75_CLEARED]: AI dynamically reviewed trade at 75% profit. Verdict: ${tripwireVerdict.action}`;
+                const lockedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_CLEARED]: AI dynamically reviewed trade at ${displayPercent}% profit. Verdict: ${tripwireVerdict.action}`;
                 await supabase.from('trade_logs').update({ reason: lockedReason }).eq('id', openTrade.id);
 
                 if (tripwireVerdict.action === 'MARKET_CLOSE') {
