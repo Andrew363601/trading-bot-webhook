@@ -364,7 +364,7 @@ export default async function handler(req, res) {
                 currentTradeContext = { side: openTrade.side, entry_price: entry, pnl_percent: (pnl * 100).toFixed(2) };
             }
 
-            // 🧠 PASS RECENT TRADES & DYNAMIC SIZING TOGGLE TO ORACLE 
+            // 🧠 PASS RECENT TRADES & DYNAMIC SIZING TOGGLE TO ORACLE
             const oracleVerdict = await evaluateTradeIdea({
                 mode: isReversal ? 'REVERSAL' : 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, 
                 currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators,
@@ -404,7 +404,7 @@ export default async function handler(req, res) {
                 decision.tpPrice = Math.round(decision.tpPrice / tickSize) * tickSize;
                 decision.slPrice = Math.round(decision.slPrice / tickSize) * tickSize;
                 
-                // MULTIPLIER MATH (Now handles both aggressive scaling up AND defensive scaling down)
+                // MULTIPLIER MATH (Aggressive scaling up AND defensive scaling down)
                 if (oracleVerdict.size_multiplier && oracleVerdict.size_multiplier !== 1.0 && config.parameters?.target_usd) {
                     config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
                 }
@@ -427,7 +427,25 @@ export default async function handler(req, res) {
         }
           
         let finalQty = config.parameters?.qty || 10; 
-        if (config.parameters?.target_usd && decision.entryPrice) finalQty = config.parameters.target_usd / decision.entryPrice;
+        
+        // --- 🛡️ FRACTIONAL FUTURES SIZING ARMOR ---
+        if (config.parameters?.target_usd && decision.entryPrice) {
+            const isFutures = config.parameters?.market_type === 'FUTURES' || asset.includes('PERP') || asset.includes('CDE');
+            
+            if (isFutures) {
+                let contractMultiplier = 1.0;
+                if (asset.includes('ETP')) contractMultiplier = 0.1;
+                if (asset.includes('BIT')) contractMultiplier = 0.01;
+                
+                const rawContracts = config.parameters.target_usd / (decision.entryPrice * contractMultiplier);
+                finalQty = Math.round(rawContracts); // Coinbase strictly requires whole numbers for contracts
+                if (finalQty < 1) finalQty = 1; // Failsafe so we never send 0 contracts
+            } else {
+                // Standard Spot Math (Fractions allowed)
+                finalQty = config.parameters.target_usd / decision.entryPrice;
+            }
+        }
+        // --- END SIZING ARMOR ---
         
         const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
         const protocol = host.includes('localhost') ? 'http' : 'https';
