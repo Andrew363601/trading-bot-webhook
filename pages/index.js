@@ -178,12 +178,11 @@ export default function Dashboard() {
   }));
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS NATIVE INTEGRATION
+  // 📈 LIGHTWEIGHT CHARTS NATIVE INTEGRATION (WITH COINBASE API FIX)
   // =========================================================================
   useEffect(() => {
     if (!chartContainerRef.current) return;
     
-    // Initialize Native Chart
     const chart = createChart(chartContainerRef.current, {
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
         grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
@@ -210,27 +209,32 @@ export default function Dashboard() {
     const loadChartData = async () => {
         if(!seriesRef.current) return;
 
-        // Map Coinbase Ticker to Binance Ticker for free public candle data
+        // THE FIX: Route through Coinbase Spot API to bypass Binance US Geo-blocks entirely
         let baseAsset = activeAsset.split('-')[0].replace('PERP', '').trim();
         if (baseAsset === 'ETP') baseAsset = 'ETH';
         if (baseAsset === 'AVP') baseAsset = 'AVAX';
-        const symbol = `${baseAsset}USDT`;
+        const spotProduct = `${baseAsset}-USD`;
+
+        const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
+        const granularity = tfMap[chartTimeframe] || 60;
 
         try {
-            const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${chartTimeframe}&limit=1000`);
+            const res = await fetch(`https://api.exchange.coinbase.com/products/${spotProduct}/candles?granularity=${granularity}`);
             const data = await res.json();
             if(!isMounted) return;
 
+            // Format: [ [time, low, high, open, close, volume], ... ]
             const formatted = data.map(d => ({
-                time: d[0] / 1000,
-                open: parseFloat(d[1]),
-                high: parseFloat(d[2]),
-                low: parseFloat(d[3]),
-                close: parseFloat(d[4])
-            }));
+                time: d[0],
+                low: d[1],
+                high: d[2],
+                open: d[3],
+                close: d[4]
+            })).sort((a, b) => a.time - b.time); 
+
             seriesRef.current.setData(formatted);
 
-            // 🧠 PAINT TRADE MARKERS (Vetos, Tripwires, Reversals, Entries)
+            // 🧠 PAINT TRADE MARKERS 
             const markers = [];
             const usedTimes = new Set();
             
@@ -238,7 +242,6 @@ export default function Dashboard() {
                 if(!log.created_at) return;
                 let t = Math.floor(new Date(log.created_at).getTime() / 1000);
                 
-                // Lightweight charts requires strictly ascending unique times
                 while(usedTimes.has(t)) t++; 
                 usedTimes.add(t);
 
@@ -266,7 +269,7 @@ export default function Dashboard() {
             markers.sort((a,b) => a.time - b.time);
             seriesRef.current.setMarkers(markers);
 
-            // 🧠 PAINT ACTIVE LIMIT LINES (TP, SL, ENTRY)
+            // 🧠 PAINT ACTIVE LIMIT LINES 
             priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
             priceLinesRef.current = [];
 

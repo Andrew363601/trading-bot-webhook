@@ -84,7 +84,7 @@ export default async function handler(req, res) {
             .not('exit_price', 'is', null)
             .gte('exit_time', twentyFourHoursAgo)
             .order('exit_time', { ascending: false })
-            .limit(15); // Capped at 15 to keep the AI prompt clean while providing a full day's perspective
+            .limit(15);
 
         let forcedExit = null;
         let activePosition = null;
@@ -147,7 +147,6 @@ export default async function handler(req, res) {
                             
                             await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                             
-                            await sendDiscordAlert(`🔄 Native Sync Close: ${asset}`, `**Exit Price:** $${exactExitPrice}\n**Realized PnL:** $${rawPnl.toFixed(4)}\n**Trigger:** ${assumedReason}`, rawPnl >= 0 ? 5763719 : 15548997);
                             continue; 
                         }
                     }
@@ -163,7 +162,6 @@ export default async function handler(req, res) {
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                             await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                             
-                            await sendDiscordAlert(`🧹 Stale Limit Swept: ${asset}`, `**Action:** Canceled un-filled entry limit order at $${openTrade.entry_price} after 25 minutes.`, 9807270);
                             continue; 
                         }
                     }
@@ -213,23 +211,18 @@ export default async function handler(req, res) {
                                         order_configuration: { trigger_bracket_gtc: { limit_price: safeTpPrice.toString(), stop_trigger_price: safeSlPrice.toString(), base_size: orderQty.toString() } }
                                     };
                                     await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
-                                    
-                                    await sendDiscordAlert(`🛠️ Watchdog Deployed Brackets`, `**Asset:** ${asset}\n**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}`, 10181046); 
                                 } catch (e) { 
                                     console.error(`[WATCHDOG FATAL] OCO:`, e.message); 
-                                    await sendDiscordAlert(`❌ Watchdog Bracket Fault: ${asset}`, `**Error:** Failed to deploy backup brackets.\n**Details:** ${e.message}`, 15548997);
                                 }
                             }
                         } 
                     }
                 } catch (err) { 
                     console.error(`[WATCHDOG FAULT]`, err.message); 
-                    await sendDiscordAlert(`⚠️ Watchdog Sync Error: ${asset}`, `**Details:** Failed to query Coinbase API.\n**Error:** ${err.message}`, 15548997);
                 }
             }
         }
 
-        // --- THE 8% EMERGENCY FAILSAFE ---
         if (openTrade && !forcedExit) {
             const entryPrice = parseFloat(openTrade.entry_price);
             const pnlPercent = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? (currentPrice - entryPrice) / entryPrice : (entryPrice - currentPrice) / entryPrice;
@@ -243,7 +236,6 @@ export default async function handler(req, res) {
             }
         }
 
-        // --- 🛡️ THE DYNAMIC PROFIT TRIPWIRE ENGINE ---
         if (openTrade && !forcedExit && openTrade.tp_price && openTrade.entry_price && activePosition) {
             const isTripwireLocked = openTrade.reason && openTrade.reason.includes('[TRIPWIRE_CLEARED]');
             const totalDistance = Math.abs(openTrade.tp_price - openTrade.entry_price);
@@ -253,16 +245,11 @@ export default async function handler(req, res) {
             const isProfitable = (openTrade.side === 'BUY' && currentPrice > openTrade.entry_price) || 
                                  (openTrade.side === 'SELL' && currentPrice < openTrade.entry_price);
 
-            // Fetch dynamic threshold with parseFloat armor, or fallback to 75%
             const tripwireThreshold = parseFloat(config.parameters?.tripwire_percent) || 0.75;
             const displayPercent = Math.round(tripwireThreshold * 100);
 
             if (isProfitable && progress >= tripwireThreshold && !isTripwireLocked) {
-                console.log(`[TRIPWIRE] ${displayPercent}% milestone reached for ${asset}. Activating AI Tripwire...`);
-                
                 const pnlPercent = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? (currentPrice - openTrade.entry_price) / openTrade.entry_price : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
-
-                await sendDiscordAlert(`⚡ Tripwire Snapped: ${asset}`, `**Status:** ${displayPercent}% to Take Profit ($${currentPrice})\n**Action:** Waking Oracle for active trade management...`, 16776960); 
 
                 const tripwireVerdict = await evaluateTradeIdea({
                     mode: 'MANUAL_REVIEW', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent, openTrade
@@ -273,7 +260,6 @@ export default async function handler(req, res) {
 
                 if (tripwireVerdict.action === 'MARKET_CLOSE') {
                      forcedExit = 'TRIPWIRE_SECURED_PROFIT';
-                     await sendDiscordAlert(`🎯 Tripwire Close: ${asset}`, `**Action:** Oracle secured the bag early.\n**Oracle:** ${tripwireVerdict.reasoning}`, 5763719);
                 } 
                 else if (tripwireVerdict.action === 'ADJUST_LIMITS') {
                      if (openOrders.length > 0) {
@@ -303,19 +289,12 @@ export default async function handler(req, res) {
                          try {
                              await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
                              await supabase.from('trade_logs').update({ tp_price: safeTp, sl_price: safeSl }).eq('id', openTrade.id);
-                             await sendDiscordAlert(`🛠️ Tripwire Adjusted: ${asset}`, `**Old Brackets:** TP $${openTrade.tp_price} | SL $${openTrade.sl_price}\n**New Brackets:** TP $${safeTp} | SL $${safeSl}\n**Oracle:** ${tripwireVerdict.reasoning}`, 3447003); 
                              openTrade.tp_price = safeTp; openTrade.sl_price = safeSl;
-                         } catch (e) {
-                             console.error(`[TRIPWIRE FAULT]`, e.message);
-                         }
+                         } catch (e) { console.error(`[TRIPWIRE FAULT]`, e.message); }
                      }
                 } 
-                else {
-                     await sendDiscordAlert(`🛡️ Tripwire Hold: ${asset}`, `**Action:** Letting profits run to target.\n**Oracle:** ${tripwireVerdict.reasoning}`, 10181046); 
-                }
             }
         }
-        // --- END TRIPWIRE ---
 
         const marketData = { macro: macroCandles, trigger: triggerCandles };
         let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
@@ -364,7 +343,6 @@ export default async function handler(req, res) {
                 currentTradeContext = { side: openTrade.side, entry_price: entry, pnl_percent: (pnl * 100).toFixed(2) };
             }
 
-            // 🧠 PASS RECENT TRADES & DYNAMIC SIZING TOGGLE TO ORACLE
             const oracleVerdict = await evaluateTradeIdea({
                 mode: isReversal ? 'REVERSAL' : 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, 
                 currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators,
@@ -372,7 +350,6 @@ export default async function handler(req, res) {
                 dynamicSizing: config.parameters?.dynamic_sizing === true
             });
 
-            // 🟢 NEW: INJECT X-RAY DATA & ORACLE REASONING INTO TELEMETRY FOR THE UI
             decision.telemetry = { 
                 ...decision.telemetry, 
                 oracle_score: oracleVerdict.conviction_score, 
@@ -387,7 +364,6 @@ export default async function handler(req, res) {
                 await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('strategy', config.strategy);
                 decision.statusOverride = 'ORACLE VETO'; 
                 
-                // 👻 GHOST TRADE LOGGING (SHADOW PORTFOLIO)
                 const shadowTrade = {
                     symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', 
                     side: decision.signal, order_type: 'VETO', price: currentPrice, exit_price: currentPrice, 
@@ -401,12 +377,6 @@ export default async function handler(req, res) {
             } else {
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = 'LIMIT';
-                
-                await sendDiscordAlert(
-                    `🟢 Oracle Approved: ${decision.signal} ${asset}`,
-                    `**Target Entry:** $${decision.entryPrice}\n**Conviction:** ${oracleVerdict.conviction_score}/100\n\n_${oracleVerdict.reasoning}_`,
-                    5763719 
-                );
 
                 if (oracleVerdict.tp_price && oracleVerdict.sl_price) {
                     decision.tpPrice = oracleVerdict.tp_price; decision.slPrice = oracleVerdict.sl_price;
@@ -425,7 +395,6 @@ export default async function handler(req, res) {
                 decision.tpPrice = Math.round(decision.tpPrice / tickSize) * tickSize;
                 decision.slPrice = Math.round(decision.slPrice / tickSize) * tickSize;
                 
-                // MULTIPLIER MATH 
                 if (oracleVerdict.size_multiplier && oracleVerdict.size_multiplier !== 1.0 && config.parameters?.target_usd) {
                     config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
                 }
@@ -449,7 +418,6 @@ export default async function handler(req, res) {
           
         let finalQty = config.parameters?.qty || 10; 
         
-        // --- 🛡️ FRACTIONAL FUTURES SIZING ARMOR ---
         if (config.parameters?.target_usd && decision.entryPrice) {
             const isFutures = config.parameters?.market_type === 'FUTURES' || asset.includes('PERP') || asset.includes('CDE');
             
@@ -459,14 +427,12 @@ export default async function handler(req, res) {
                 if (asset.includes('BIT')) contractMultiplier = 0.01;
                 
                 const rawContracts = config.parameters.target_usd / (decision.entryPrice * contractMultiplier);
-                finalQty = Math.round(rawContracts); // Coinbase strictly requires whole numbers for contracts
-                if (finalQty < 1) finalQty = 1; // Failsafe so we never send 0 contracts
+                finalQty = Math.round(rawContracts); 
+                if (finalQty < 1) finalQty = 1; 
             } else {
-                // Standard Spot Math (Fractions allowed)
                 finalQty = config.parameters.target_usd / decision.entryPrice;
             }
         }
-        // --- END SIZING ARMOR ---
         
         const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
         const protocol = host.includes('localhost') ? 'http' : 'https';
@@ -497,7 +463,6 @@ export default async function handler(req, res) {
 
       } catch (assetErr) { 
           console.error(`[ASSET ERROR] ${asset}:`, assetErr.message); 
-          await sendDiscordAlert(`⚠️ Asset Scan Failed: ${asset}`, `**Details:** Strategy loop crashed during evaluation.\n**Error:** ${assetErr.message}`, 15548997);
       } finally {
           await supabase.from('strategy_config').update({ is_processing: false }).eq('strategy', config.strategy);
       }
@@ -505,7 +470,6 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ status: "Dynamic Scan Complete", results });
   } catch (err) { 
-      await sendDiscordAlert("🚨 CRITICAL SYSTEM FAULT", `**Component:** scan.js (Global Handler)\n**Error:** ${err.message}`, 15548997);
       return res.status(500).json({ error: err.message }); 
   }
 }
@@ -541,7 +505,15 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     const resp = await fetch(`https://api.coinbase.com${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, { headers: { 'Authorization': `Bearer ${token}` } });
     if (!resp.ok) throw new Error(`Coinbase HTTP ${resp.status}`); 
     const data = await resp.json();
-    return data.candles?.map(c => ({ close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
+    
+    // THE FIX: Properly parsing the open price so CVD math doesn't crash
+    return data.candles?.map(c => ({ 
+        open: parseFloat(c.open),
+        close: parseFloat(c.close), 
+        high: parseFloat(c.high), 
+        low: parseFloat(c.low), 
+        volume: parseFloat(c.volume) 
+    })).reverse();
   } catch (err) { throw err; } 
 }
 
@@ -550,11 +522,11 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
         let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = [];
         let cvd = 0; 
         
-        // Calculate Local CVD over the most recent 50 candles
+        // Local CVD over the most recent 50 candles
         const cvdCandles = triggerCandles.slice(-50);
         for (const c of cvdCandles) {
             const range = c.high - c.low;
-            if (range > 0) {
+            if (range > 0 && !isNaN(c.open)) {
                 cvd += c.volume * ((c.close - c.open) / range);
             }
         }
@@ -603,8 +575,8 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
                     let totalAskSize = asks.reduce((sum, a) => sum + parseFloat(a.size || 0), 0);
                     
                     orderBookData = {
-                        bids_50_levels: totalBidSize.toFixed(2),
-                        asks_50_levels: totalAskSize.toFixed(2),
+                        bids_50_levels: (totalBidSize || 0).toFixed(2),
+                        asks_50_levels: (totalAskSize || 0).toFixed(2),
                         imbalance: totalBidSize > totalAskSize ? "BULLISH (Bids > Asks)" : "BEARISH (Asks > Bids)"
                     };
                 }
