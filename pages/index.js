@@ -6,7 +6,7 @@ import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers } fr
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet,
-  Eye, Zap, AlertOctagon, BarChart2, Search
+  Eye, Zap, AlertOctagon, BarChart2, Search, Maximize2, Minimize2
 } from 'lucide-react';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
@@ -40,6 +40,9 @@ export default function Dashboard() {
   const [localInput, setLocalInput] = useState('');
   const [localMessages, setLocalMessages] = useState([]);
   const [isManualLoading, setIsManualLoading] = useState(false);
+  
+  // UI States
+  const [isChartMaximized, setIsChartMaximized] = useState(false);
   
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -256,11 +259,13 @@ export default function Dashboard() {
   }, []);
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PHASE 2 (FETCH LOCAL SECURE PROXY)
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 2 (THE LIVE TICK ENGINE)
   // =========================================================================
   useEffect(() => {
     let isMounted = true;
-    const loadChartData = async () => {
+    let intervalId;
+
+    const loadChartData = async (isLiveTick = false) => {
         if(!seriesRef.current) return;
 
         const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
@@ -273,18 +278,28 @@ export default function Dashboard() {
             const data = await res.json();
             if(!isMounted) return;
 
-            if (!Array.isArray(data)) {
-                console.warn(`[CHART WARN] Invalid data. Clearing chart.`);
-                seriesRef.current.setData([]);
-                return;
-            }
+            if (!Array.isArray(data) || data.length === 0) return;
 
-            seriesRef.current.setData(data);
+            if (isLiveTick) {
+                // 🟢 THE FIX: Update only the final candle to prevent freezing/resetting scroll
+                const latestCandle = data[data.length - 1];
+                seriesRef.current.update(latestCandle);
+            } else {
+                // Initial Load
+                seriesRef.current.setData(data);
+            }
         } catch(e) { console.error("Chart Fetch Error:", e); }
     };
 
-    loadChartData();
-    return () => { isMounted = false; };
+    loadChartData(false); // Initial historical pull
+    
+    // 🟢 THE FIX: Re-fetch the endpoint every 3 seconds and inject the live price
+    intervalId = setInterval(() => loadChartData(true), 3000);
+
+    return () => { 
+        isMounted = false; 
+        clearInterval(intervalId); 
+    };
   }, [activeAsset, chartTimeframe]);
 
   // =========================================================================
@@ -305,7 +320,6 @@ export default function Dashboard() {
           const usedTimes = new Set();
           
           [...tradeLogs].reverse().forEach(log => {
-              // --- 1. PLOT ENTRY MARKER ---
               if (log.created_at) {
                   let rawTime = Math.floor(new Date(log.created_at).getTime() / 1000);
                   let snappedTime = candleTimesArray.reduce((prev, curr) => 
@@ -329,7 +343,6 @@ export default function Dashboard() {
                   }
               }
 
-              // --- 2. PLOT EXIT MARKER (TP, SL, REVERSAL, TRIPWIRE) ---
               if (log.exit_time && log.execution_mode !== 'SHADOW') {
                   let rawExitTime = Math.floor(new Date(log.exit_time).getTime() / 1000);
                   let snappedExitTime = candleTimesArray.reduce((prev, curr) => 
@@ -341,7 +354,6 @@ export default function Dashboard() {
                       usedTimes.add(snappedExitTime);
 
                       const isBuy = log.side === 'BUY' || log.side === 'LONG';
-                      // If we close a LONG, we effectively SELL (draw marker above bar)
                       const exitPosition = isBuy ? 'aboveBar' : 'belowBar';
                       const exitShape = isBuy ? 'arrowDown' : 'arrowUp';
                       
@@ -457,7 +469,8 @@ export default function Dashboard() {
 
       <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
         
-        <div className="lg:col-span-2 flex flex-col h-[calc(100vh-100px)] min-h-0 gap-6">
+        {/* 🟢 THE FIX: Added `resize-y overflow-auto` so users can stretch the sidebars natively */}
+        <div className="lg:col-span-2 flex flex-col h-[calc(100vh-100px)] min-h-0 gap-6 resize-y overflow-auto pb-4">
           <div className="bg-slate-900/50 p-5 rounded-[2rem] border border-white/10 flex-shrink-0 shadow-xl">
             <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">Capital Allocation <span className="text-cyan-400 animate-pulse">● LIVE</span></div>
             <div className="space-y-4">
@@ -597,8 +610,13 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col">
+          {/* 🟢 THE FIX: The Chart Panel is now resizable and has a God Mode Fullscreen toggle */}
+          <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col resize-y transition-all"}>
             
+            <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-4 right-4 z-50 bg-black/40 hover:bg-indigo-500/20 text-slate-400 hover:text-indigo-300 border border-white/10 hover:border-indigo-500/50 p-2 rounded-lg transition-colors backdrop-blur-md">
+                {isChartMaximized ? <Minimize size={14}/> : <Maximize2 size={14}/>}
+            </button>
+
             <div className="absolute top-4 left-6 z-20 flex gap-2">
                 {['1m', '5m', '15m', '1h', '4h'].map(tf => (
                     <button 
@@ -611,7 +629,7 @@ export default function Dashboard() {
                 ))}
             </div>
 
-            <div className="absolute top-4 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
+            <div className="absolute top-16 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {openPositions.slice(0, 3).map((log, i) => {
                  const displayPnl = log.execution_mode.includes('LIVE') ? log.pnl : 
                  ((log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1));
@@ -636,11 +654,12 @@ export default function Dashboard() {
                })}
             </div>
 
-            <div className="flex-grow w-full relative mt-12 mb-4 px-2" ref={chartContainerRef} style={{ minHeight: '300px' }} />
-            
+            <div className="flex-grow w-full relative mt-12 mb-4 px-2 min-h-[300px]">
+                <div ref={chartContainerRef} className="absolute inset-0" />
+            </div>
           </div>
 
-          <div className="flex flex-col h-[35%] overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30">
+          <div className="flex flex-col h-[35%] overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30 resize-y pb-2">
             <div className="flex items-center gap-6 px-6 pt-5 border-b border-white/5 bg-slate-950/80 sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
@@ -748,7 +767,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden">
+        <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden resize-y pb-2">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
             <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between"><span>Active Matrix</span><span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span></h3>
             <div className="flex flex-col gap-3">
