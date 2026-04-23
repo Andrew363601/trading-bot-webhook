@@ -56,34 +56,47 @@ export default function Dashboard() {
   
   const chatEndRef = useRef(null);
 
+  // 🚀 THE FIX: Decoupled Data Fetching to prevent UI freezes
   const fetchData = useCallback(async () => {
     try {
-      const portResp = await fetch(`/api/portfolio?asset=${activeAsset}`);
-      if (portResp.ok) {
-        const portData = await portResp.json();
-        setPortfolio(portData);
-        if (portData.price > 0) setLivePrice(portData.price);
-      }
-      
-      const { data: logs } = await supabase.from('trade_logs').select('*').eq('symbol', activeAsset).order('id', { ascending: false });
-      setTradeLogs(logs || []);
-      
-      const { data: configs } = await supabase.from('strategy_config').select('*').eq('is_active', true);
-      setActiveStrategies(configs || []);
-      
-      const { data: scans } = await supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25);
-      if (scans) setScanStream(scans);
+      // 1. FAST QUERIES: Fetch internal DB data first and instantly unlock the UI
+      const [logsRes, configsRes, scansRes] = await Promise.all([
+          supabase.from('trade_logs').select('*').eq('symbol', activeAsset).order('id', { ascending: false }),
+          supabase.from('strategy_config').select('*').eq('is_active', true),
+          supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25)
+      ]);
 
-      try {
-        const syncResp = await fetch('/api/coinbase-sync');
-        if (syncResp.ok) {
-          const syncData = await syncResp.json();
-          setLivePositions(syncData.positions || []);
-          setLiveOrders(syncData.orders || []);
-        }
-      } catch (syncErr) { console.error("Coinbase Sync failed", syncErr); }
+      setTradeLogs(logsRes.data || []);
+      setActiveStrategies(configsRes.data || []);
+      setScanStream(scansRes.data || []);
+      
+      setLoading(false); // Unlock the UI immediately so charts can render!
 
-    } catch (e) { console.error(e); } finally { setLoading(false); }
+      // 2. SLOW QUERIES: Fetch external APIs silently in the background without `await` blocking the main thread
+      fetch(`/api/portfolio?asset=${activeAsset}`)
+          .then(res => res.json())
+          .then(data => {
+              if (data) {
+                  setPortfolio(data);
+                  if (data.price > 0) setLivePrice(data.price);
+              }
+          })
+          .catch(e => console.warn("[NEXUS SYNC] Portfolio API delayed:", e.message));
+
+      fetch('/api/coinbase-sync')
+          .then(res => res.json())
+          .then(data => {
+              if (data) {
+                  setLivePositions(data.positions || []);
+                  setLiveOrders(data.orders || []);
+              }
+          })
+          .catch(e => console.warn("[NEXUS SYNC] Exchange API delayed:", e.message));
+
+    } catch (e) { 
+      console.error("[NEXUS FATAL] DB Fetch Error:", e); 
+      setLoading(false); 
+    }
   }, [activeAsset]);
 
   useEffect(() => {
@@ -178,7 +191,6 @@ export default function Dashboard() {
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
 
-  // THE FIX: useMemo hooks to prevent memory leaks and exhaustive-deps warnings
   const paperPositions = useMemo(() => tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER'), [tradeLogs]);
   
   const formattedLivePositions = useMemo(() => livePositions.map(pos => ({
@@ -344,7 +356,7 @@ export default function Dashboard() {
   // =========================================================================
 
   // =========================================================================
-  // ⚡ LIVE HEATMAP MICRO-JITTER ENGINE (Now safely positioned above 'if loading')
+  // ⚡ LIVE HEATMAP MICRO-JITTER ENGINE
   // =========================================================================
   const activeAssetScans = scanStream.filter(s => s.asset === activeAsset);
   const latestScan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
@@ -374,15 +386,11 @@ export default function Dashboard() {
   const isResonant = latestScan?.status === 'RESONANT';
   const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
 
-  // =========================================================================
-  // CONDITIONAL RENDERS AND RETURNS GO HERE AT THE VERY END
-  // =========================================================================
   let displayLogs = [];
   if (activeTab === 'POSITIONS') displayLogs = openPositions;
   else if (activeTab === 'TRADE_HISTORY') displayLogs = tradeHistory;
   else if (activeTab === 'OPEN_ORDERS') displayLogs = openOrders;
 
-  // THE FIX: Moving the conditional early return to the bottom solves the Hooks Error
   if (loading) return <div className="min-h-screen bg-[#020617] flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">Establishing Nexus...</div>;
 
   return (
@@ -414,8 +422,8 @@ export default function Dashboard() {
           <div className="flex flex-col flex-shrink-0">
             <div className="text-[10px] font-black uppercase text-slate-500 mb-3 px-2 tracking-widest flex items-center gap-2"><Target size={12}/> Market Scanners</div>
             
-            <form onSubmit={(e) => { e.preventDefault(); handleAddAsset(searchAsset); }} className="mb-3 px-1 relative">
-                <div className="relative">
+            <div className="mb-3 px-1 relative">
+                <form onSubmit={(e) => { e.preventDefault(); handleAddAsset(searchAsset); }} className="relative">
                     <input 
                         type="text" 
                         value={searchAsset}
@@ -425,7 +433,7 @@ export default function Dashboard() {
                         className="w-full bg-black/50 border border-white/10 rounded-xl pl-8 pr-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500/50 uppercase relative z-20"
                     />
                     <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 z-20" />
-                </div>
+                </form>
                 
                 {isSearching && searchAsset && (
                     <div className="absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-white/10 rounded-xl overflow-hidden z-30 shadow-2xl">
@@ -442,7 +450,7 @@ export default function Dashboard() {
                         {filteredSearch.length === 0 && <div className="px-4 py-2 text-[10px] text-slate-500 italic">No assets found</div>}
                     </div>
                 )}
-            </form>
+            </div>
 
             <div className="space-y-1 overflow-y-auto max-h-[250px] custom-scrollbar px-1">
               {assetsList.map(asset => (
