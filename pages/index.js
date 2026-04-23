@@ -13,7 +13,6 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhx
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// MASTER DICTIONARY OF COINBASE ASSETS
 const MASTER_ASSETS = [
     'BTC-PERP-INTX', 'ETH-PERP-INTX', 'ETP-20DEC30-CDE', 'SOL-PERP-INTX', 
     'DOGE-PERP-INTX', 'AVP-20DEC30-CDE', 'WLD-PERP-INTX', 'XRP-PERP-INTX', 
@@ -32,7 +31,6 @@ export default function Dashboard() {
   const [activeStrategies, setActiveStrategies] = useState([]);
   const [scanStream, setScanStream] = useState([]); 
   const [portfolio, setPortfolio] = useState({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 } });
-  const [selectedStrat, setSelectedStrat] = useState(null);
   const [loading, setLoading] = useState(true);
   
   const [livePositions, setLivePositions] = useState([]);
@@ -56,10 +54,8 @@ export default function Dashboard() {
   
   const chatEndRef = useRef(null);
 
-  // 🚀 THE FIX: Decoupled Data Fetching to prevent UI freezes
   const fetchData = useCallback(async () => {
     try {
-      // 1. FAST QUERIES: Fetch internal DB data first and instantly unlock the UI
       const [logsRes, configsRes, scansRes] = await Promise.all([
           supabase.from('trade_logs').select('*').eq('symbol', activeAsset).order('id', { ascending: false }),
           supabase.from('strategy_config').select('*').eq('is_active', true),
@@ -70,9 +66,8 @@ export default function Dashboard() {
       setActiveStrategies(configsRes.data || []);
       setScanStream(scansRes.data || []);
       
-      setLoading(false); // Unlock the UI immediately so charts can render!
+      setLoading(false); 
 
-      // 2. SLOW QUERIES: Fetch external APIs silently in the background without `await` blocking the main thread
       fetch(`/api/portfolio?asset=${activeAsset}`)
           .then(res => res.json())
           .then(data => {
@@ -185,7 +180,6 @@ export default function Dashboard() {
   };
 
   const handleStrategySelect = async (stratId) => {
-    setSelectedStrat(stratId);
     await executeNexusChat(`Brief me on the ${stratId} strategy currently running on ${activeAsset}.`);
   };
 
@@ -219,7 +213,7 @@ export default function Dashboard() {
   })), [liveOrders]);
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS NATIVE INTEGRATION
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 1 (INITIALIZATION)
   // =========================================================================
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -257,6 +251,9 @@ export default function Dashboard() {
     };
   }, []);
 
+  // =========================================================================
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 2 (FETCH BINANCE CANDLES ONLY)
+  // =========================================================================
   useEffect(() => {
     let isMounted = true;
     const loadChartData = async () => {
@@ -291,76 +288,97 @@ export default function Dashboard() {
             })).sort((a, b) => a.time - b.time); 
 
             seriesRef.current.setData(formatted);
-
-            const markers = [];
-            const secondsMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
-            const granularity = secondsMap[chartTimeframe] || 60;
-            const candleTimes = new Set(formatted.map(c => c.time));
-            
-            [...tradeLogs].reverse().forEach(log => {
-                if(!log.created_at) return;
-                
-                let rawTime = Math.floor(new Date(log.created_at).getTime() / 1000);
-                let snappedTime = rawTime - (rawTime % granularity);
-                
-                if(!candleTimes.has(snappedTime)) return;
-
-                const isBuy = log.side === 'BUY' || log.side === 'LONG';
-                const isShadow = log.execution_mode === 'SHADOW';
-                const isTripwire = log.reason?.includes('[TRIPWIRE');
-                const isReversal = log.reason?.includes('[REVERSAL');
-
-                let color = isBuy ? '#10b981' : '#ef4444';
-                let text = isBuy ? 'BUY' : 'SELL';
-                
-                if (isShadow) { color = '#64748b'; text = '👻 VETO'; }
-                else if (isTripwire) { color = '#f59e0b'; text = '🛡️ TRIPWIRE'; }
-                else if (isReversal) { color = '#a855f7'; text = '⚡ REVERSAL'; }
-
-                markers.push({
-                    time: snappedTime,
-                    position: isBuy ? 'belowBar' : 'aboveBar',
-                    color: color,
-                    shape: isBuy ? 'arrowUp' : 'arrowDown',
-                    text: text
-                });
-            });
-
-            markers.sort((a,b) => a.time - b.time);
-            seriesRef.current.setMarkers(markers);
-
-            priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
-            priceLinesRef.current = [];
-
-            openPositions.forEach(pos => {
-                if(pos.entry_price) {
-                    const el = seriesRef.current.createPriceLine({ price: pos.entry_price, color: '#6366f1', lineWidth: 2, lineStyle: 0, title: `${pos.side} AVG` });
-                    priceLinesRef.current.push(el);
-                }
-                if(pos.tp_price) {
-                    const tl = seriesRef.current.createPriceLine({ price: pos.tp_price, color: '#10b981', lineWidth: 2, lineStyle: 2, title: 'TP' });
-                    priceLinesRef.current.push(tl);
-                }
-                if(pos.sl_price) {
-                    const sl = seriesRef.current.createPriceLine({ price: pos.sl_price, color: '#ef4444', lineWidth: 2, lineStyle: 2, title: 'SL' });
-                    priceLinesRef.current.push(sl);
-                }
-            });
-
         } catch(e) { console.error("Chart Fetch Error:", e); }
     };
 
     loadChartData();
     return () => { isMounted = false; };
-  }, [activeAsset, chartTimeframe, tradeLogs, openPositions]);
+  }, [activeAsset, chartTimeframe]); // 🛡️ THE FIX: Removed tradeLogs/openPositions from this array
+
   // =========================================================================
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 3 (APPLY LIVE MARKERS AND LINES DECOUPLED)
+  // =========================================================================
+  useEffect(() => {
+      if(!seriesRef.current) return;
+
+      try {
+          const markers = [];
+          const secondsMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
+          const granularity = secondsMap[chartTimeframe] || 60;
+          
+          // Extract currently rendered chart times to match markers against
+          const currentData = seriesRef.current.data();
+          if (!currentData || currentData.length === 0) return;
+          const candleTimes = new Set(currentData.map(c => c.time));
+          
+          const usedTimes = new Set();
+          
+          [...tradeLogs].reverse().forEach(log => {
+              if(!log.created_at) return;
+              
+              let rawTime = Math.floor(new Date(log.created_at).getTime() / 1000);
+              let snappedTime = rawTime - (rawTime % granularity);
+              
+              if(!candleTimes.has(snappedTime)) return;
+              
+              while(usedTimes.has(snappedTime)) snappedTime++; 
+              usedTimes.add(snappedTime);
+
+              const isBuy = log.side === 'BUY' || log.side === 'LONG';
+              const isShadow = log.execution_mode === 'SHADOW';
+              const isTripwire = log.reason?.includes('[TRIPWIRE');
+              const isReversal = log.reason?.includes('[REVERSAL');
+
+              let color = isBuy ? '#10b981' : '#ef4444';
+              let text = isBuy ? 'BUY' : 'SELL';
+              
+              if (isShadow) { color = '#64748b'; text = '👻 VETO'; }
+              else if (isTripwire) { color = '#f59e0b'; text = '🛡️ TRIPWIRE'; }
+              else if (isReversal) { color = '#a855f7'; text = '⚡ REVERSAL'; }
+
+              markers.push({
+                  time: snappedTime,
+                  position: isBuy ? 'belowBar' : 'aboveBar',
+                  color: color,
+                  shape: isBuy ? 'arrowUp' : 'arrowDown',
+                  text: text
+              });
+          });
+
+          markers.sort((a,b) => a.time - b.time);
+          seriesRef.current.setMarkers(markers);
+
+          // Clear previous limit lines
+          priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
+          priceLinesRef.current = [];
+
+          openPositions.forEach(pos => {
+              if(pos.entry_price) {
+                  const el = seriesRef.current.createPriceLine({ price: pos.entry_price, color: '#6366f1', lineWidth: 2, lineStyle: 0, title: `${pos.side} AVG` });
+                  priceLinesRef.current.push(el);
+              }
+              if(pos.tp_price) {
+                  const tl = seriesRef.current.createPriceLine({ price: pos.tp_price, color: '#10b981', lineWidth: 2, lineStyle: 2, title: 'TP' });
+                  priceLinesRef.current.push(tl);
+              }
+              if(pos.sl_price) {
+                  const sl = seriesRef.current.createPriceLine({ price: pos.sl_price, color: '#ef4444', lineWidth: 2, lineStyle: 2, title: 'SL' });
+                  priceLinesRef.current.push(sl);
+              }
+          });
+
+      } catch (err) {
+          console.error("Marker Drawing Error:", err);
+      }
+  }, [tradeLogs, openPositions, activeAsset, chartTimeframe]); // 🛡️ Independent of Binance API
+
+
+  const activeAssetScans = scanStream.filter(s => s.asset === activeAsset);
+  const latestScan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
 
   // =========================================================================
   // ⚡ LIVE HEATMAP MICRO-JITTER ENGINE
   // =========================================================================
-  const activeAssetScans = scanStream.filter(s => s.asset === activeAsset);
-  const latestScan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
-
   const bids = parseFloat(latestScan?.telemetry?.bids || 0);
   const asks = parseFloat(latestScan?.telemetry?.asks || 0);
   const cvd = parseFloat(latestScan?.telemetry?.cvd || 0);
@@ -381,6 +399,7 @@ export default function Dashboard() {
 
       return () => clearInterval(jitterInterval);
   }, [targetPercent, totalLiquidity]);
+  // =========================================================================
 
   const isVeto = latestScan?.status === 'ORACLE VETO';
   const isResonant = latestScan?.status === 'RESONANT';
@@ -391,10 +410,17 @@ export default function Dashboard() {
   else if (activeTab === 'TRADE_HISTORY') displayLogs = tradeHistory;
   else if (activeTab === 'OPEN_ORDERS') displayLogs = openOrders;
 
-  if (loading) return <div className="min-h-screen bg-[#020617] flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">Establishing Nexus...</div>;
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4">
+    <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4 relative">
+      
+      {/* THE FIX: Overlay Loading Screen ensures React finishes building the DOM elements underneath */}
+      {loading && (
+         <div className="absolute inset-0 z-50 bg-[#020617]/90 backdrop-blur-sm flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">
+             Establishing Nexus...
+         </div>
+      )}
+
       <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
         <div className="flex items-center gap-4">
             <h1 className="text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Command</h1>
