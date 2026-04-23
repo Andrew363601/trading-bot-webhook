@@ -71,7 +71,7 @@ export default function Dashboard() {
       const { data: configs } = await supabase.from('strategy_config').select('*').eq('is_active', true);
       setActiveStrategies(configs || []);
       
-      const { data: scans } = await supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(15);
+      const { data: scans } = await supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25);
       if (scans) setScanStream(scans);
 
       try {
@@ -205,7 +205,7 @@ export default function Dashboard() {
   }));
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS WITH BINANCE PROXY FIX
+  // 📈 LIGHTWEIGHT CHARTS NATIVE INTEGRATION (WITH BINANCE PROXY FIX)
   // =========================================================================
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -229,8 +229,11 @@ export default function Dashboard() {
     seriesRef.current = series;
 
     const handleResize = () => {
-        chart.applyOptions({ width: chartContainerRef.current.clientWidth, height: chartContainerRef.current.clientHeight });
+        if(chartContainerRef.current) {
+            chart.applyOptions({ width: chartContainerRef.current.clientWidth, height: chartContainerRef.current.clientHeight });
+        }
     };
+    
     const resizeObserver = new ResizeObserver(handleResize);
     resizeObserver.observe(chartContainerRef.current);
 
@@ -245,22 +248,27 @@ export default function Dashboard() {
     const loadChartData = async () => {
         if(!seriesRef.current) return;
 
-        // THE FIX: Translate Coinbase ticker to Binance spot ticker to bypass CORS
+        // THE FIX: Translate to Binance public spot API to bypass 404s and CORS entirely
         let baseAsset = activeAsset.split('-')[0].replace('PERP', '').trim();
         if (baseAsset === 'ETP') baseAsset = 'ETH';
         if (baseAsset === 'AVP') baseAsset = 'AVAX';
+        if (baseAsset === 'BIT') baseAsset = 'BTC';
         const binanceSymbol = `${baseAsset}USDT`;
 
         const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' };
         const interval = tfMap[chartTimeframe] || '1m';
 
         try {
-            // Fetch from Binance public spot API which allows open CORS
             const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=${interval}&limit=500`);
             const data = await res.json();
             if(!isMounted) return;
 
-            // Format Binance Klines: [openTime, open, high, low, close, volume, closeTime, ...]
+            if (!Array.isArray(data)) {
+                console.warn(`[CHART WARN] Invalid data. Clearing chart.`);
+                seriesRef.current.setData([]);
+                return;
+            }
+
             const formatted = data.map(d => ({
                 time: d[0] / 1000,
                 open: parseFloat(d[1]),
@@ -273,14 +281,18 @@ export default function Dashboard() {
 
             // 🧠 PAINT TRADE MARKERS 
             const markers = [];
-            const usedTimes = new Set();
+            const secondsMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
+            const granularity = secondsMap[chartTimeframe] || 60;
+            const candleTimes = new Set(formatted.map(c => c.time));
             
             [...tradeLogs].reverse().forEach(log => {
                 if(!log.created_at) return;
-                let t = Math.floor(new Date(log.created_at).getTime() / 1000);
                 
-                while(usedTimes.has(t)) t++; 
-                usedTimes.add(t);
+                // Snap timestamp down to the nearest active chart interval to prevent crash
+                let rawTime = Math.floor(new Date(log.created_at).getTime() / 1000);
+                let snappedTime = rawTime - (rawTime % granularity);
+                
+                if(!candleTimes.has(snappedTime)) return;
 
                 const isBuy = log.side === 'BUY' || log.side === 'LONG';
                 const isShadow = log.execution_mode === 'SHADOW';
@@ -295,7 +307,7 @@ export default function Dashboard() {
                 else if (isReversal) { color = '#a855f7'; text = '⚡ REVERSAL'; }
 
                 markers.push({
-                    time: t,
+                    time: snappedTime,
                     position: isBuy ? 'belowBar' : 'aboveBar',
                     color: color,
                     shape: isBuy ? 'arrowUp' : 'arrowDown',
@@ -306,7 +318,6 @@ export default function Dashboard() {
             markers.sort((a,b) => a.time - b.time);
             seriesRef.current.setMarkers(markers);
 
-            // 🧠 PAINT ACTIVE LIMIT LINES 
             priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
             priceLinesRef.current = [];
 
@@ -340,16 +351,38 @@ export default function Dashboard() {
 
   if (loading) return <div className="min-h-screen bg-[#020617] flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">Establishing Nexus...</div>;
 
-  const latestScan = scanStream[0];
+  // THE FIX: Isolate telemetry strictly to the active asset you are currently viewing
+  const activeAssetScans = scanStream.filter(s => s.asset === activeAsset);
+  const latestScan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
+
   const isVeto = latestScan?.status === 'ORACLE VETO';
   const isResonant = latestScan?.status === 'RESONANT';
   const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
 
+  // =========================================================================
+  // ⚡ LIVE HEATMAP MICRO-JITTER ENGINE
+  // =========================================================================
   const bids = parseFloat(latestScan?.telemetry?.bids || 0);
   const asks = parseFloat(latestScan?.telemetry?.asks || 0);
   const cvd = parseFloat(latestScan?.telemetry?.cvd || 0);
   const totalLiquidity = bids + asks;
-  const bidPercent = totalLiquidity > 0 ? (bids / totalLiquidity) * 100 : 50;
+  const targetPercent = totalLiquidity > 0 ? (bids / totalLiquidity) * 100 : 50;
+
+  const [liveBidPercent, setLiveBidPercent] = useState(50);
+
+  useEffect(() => {
+      setLiveBidPercent(targetPercent); 
+      
+      if (totalLiquidity === 0) return; 
+
+      const jitterInterval = setInterval(() => {
+          const microJitter = (Math.random() - 0.5) * 2; 
+          setLiveBidPercent(prev => Math.max(1, Math.min(99, targetPercent + microJitter)));
+      }, 1200);
+
+      return () => clearInterval(jitterInterval);
+  }, [targetPercent, totalLiquidity]);
+  // =========================================================================
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4">
@@ -380,9 +413,8 @@ export default function Dashboard() {
           <div className="flex flex-col flex-shrink-0">
             <div className="text-[10px] font-black uppercase text-slate-500 mb-3 px-2 tracking-widest flex items-center gap-2"><Target size={12}/> Market Scanners</div>
             
-            {/* THE FIX: Dynamic Search Bar with Autocomplete */}
             <div className="mb-3 px-1 relative">
-                <div className="relative">
+                <form onSubmit={(e) => { e.preventDefault(); handleAddAsset(searchAsset); }} className="relative">
                     <input 
                         type="text" 
                         value={searchAsset}
@@ -392,13 +424,14 @@ export default function Dashboard() {
                         className="w-full bg-black/50 border border-white/10 rounded-xl pl-8 pr-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500/50 uppercase relative z-20"
                     />
                     <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 z-20" />
-                </div>
+                </form>
                 
                 {isSearching && searchAsset && (
                     <div className="absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-white/10 rounded-xl overflow-hidden z-30 shadow-2xl">
                         {filteredSearch.map(asset => (
                             <button 
                                 key={asset} 
+                                type="button"
                                 onClick={() => handleAddAsset(asset)}
                                 className="w-full text-left px-4 py-2 text-[10px] font-mono text-white hover:bg-indigo-500/30 transition-colors uppercase"
                             >
@@ -491,10 +524,10 @@ export default function Dashboard() {
                     </div>
                     {totalLiquidity > 0 ? (
                         <div className="w-full h-2 rounded-full overflow-hidden flex bg-slate-800">
-                            <div style={{ width: `${bidPercent}%` }} className="h-full bg-emerald-500/80 transition-all duration-500" />
-                            <div style={{ width: `${100 - bidPercent}%` }} className="h-full bg-red-500/80 transition-all duration-500" />
+                            <div style={{ width: `${liveBidPercent}%` }} className="h-full bg-emerald-500/80 transition-all duration-500 ease-linear" />
+                            <div style={{ width: `${100 - liveBidPercent}%` }} className="h-full bg-red-500/80 transition-all duration-500 ease-linear" />
                         </div>
-                    ) : <div className="text-[10px] font-mono text-slate-600">Awaiting Depth...</div>}
+                    ) : <div className="text-[9px] font-black uppercase text-amber-500/80 tracking-widest mt-1">Radar Offline: Deploy Strategy</div>}
                     <div className="flex justify-between text-[8px] font-mono text-slate-400">
                         <span className="text-emerald-400">BIDS: {bids.toFixed(0)}</span>
                         <span className="text-red-400">ASKS: {asks.toFixed(0)}</span>
@@ -548,8 +581,9 @@ export default function Dashboard() {
                })}
             </div>
 
-            {/* THE FIX: Replaced absolute positioning with Flex rendering to guarantee chart dimensions */}
-            <div className="flex-grow w-full relative mt-12 mb-4 px-2" ref={chartContainerRef} style={{ minHeight: '300px' }} />
+            <div className="flex-grow w-full relative mt-16 mb-4 px-2 min-h-[300px]">
+                <div ref={chartContainerRef} className="absolute inset-0" />
+            </div>
             
           </div>
 
