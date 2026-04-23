@@ -267,7 +267,6 @@ export default function Dashboard() {
         const granularity = tfMap[chartTimeframe] || 60;
 
         try {
-            // 🟢 THE FIX: Request data from our own invisible proxy to bypass CORS and 451 Errors
             const res = await fetch(`/api/chart-data?asset=${activeAsset}&granularity=${granularity}`);
             if(!res.ok) throw new Error("Chart proxy failed");
             
@@ -289,7 +288,7 @@ export default function Dashboard() {
   }, [activeAsset, chartTimeframe]);
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PHASE 3 (APPLY V5 MARKERS AND LINES)
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 3 (APPLY DUAL V5 MARKERS AND LINES)
   // =========================================================================
   useEffect(() => {
       if(!seriesRef.current || !seriesMarkersRef.current) return;
@@ -301,39 +300,74 @@ export default function Dashboard() {
           
           const currentData = seriesRef.current.data();
           if (!currentData || currentData.length === 0) return;
-          const candleTimes = new Set(currentData.map(c => c.time));
+          
+          const candleTimesArray = currentData.map(c => c.time);
           const usedTimes = new Set();
           
           [...tradeLogs].reverse().forEach(log => {
-              if(!log.created_at) return;
-              
-              let rawTime = Math.floor(new Date(log.created_at).getTime() / 1000);
-              let snappedTime = rawTime - (rawTime % granularity);
-              
-              if(!candleTimes.has(snappedTime)) return;
-              
-              while(usedTimes.has(snappedTime)) snappedTime++; 
-              usedTimes.add(snappedTime);
+              // --- 1. PLOT ENTRY MARKER ---
+              if (log.created_at) {
+                  let rawTime = Math.floor(new Date(log.created_at).getTime() / 1000);
+                  let snappedTime = candleTimesArray.reduce((prev, curr) => 
+                      Math.abs(curr - rawTime) < Math.abs(prev - rawTime) ? curr : prev
+                  );
+                  
+                  if (Math.abs(snappedTime - rawTime) <= granularity * 2) {
+                      while(usedTimes.has(snappedTime)) snappedTime++; 
+                      usedTimes.add(snappedTime);
 
-              const isBuy = log.side === 'BUY' || log.side === 'LONG';
-              const isShadow = log.execution_mode === 'SHADOW';
-              const isTripwire = log.reason?.includes('[TRIPWIRE');
-              const isReversal = log.reason?.includes('[REVERSAL');
+                      const isBuy = log.side === 'BUY' || log.side === 'LONG';
+                      const isShadow = log.execution_mode === 'SHADOW';
 
-              let color = isBuy ? '#10b981' : '#ef4444';
-              let text = isBuy ? 'BUY' : 'SELL';
-              
-              if (isShadow) { color = '#64748b'; text = '👻 VETO'; }
-              else if (isTripwire) { color = '#f59e0b'; text = '🛡️ TRIPWIRE'; }
-              else if (isReversal) { color = '#a855f7'; text = '⚡ REVERSAL'; }
+                      markers.push({
+                          time: snappedTime,
+                          position: isBuy ? 'belowBar' : 'aboveBar',
+                          color: isShadow ? '#64748b' : (isBuy ? '#10b981' : '#ef4444'),
+                          shape: isBuy ? 'arrowUp' : 'arrowDown',
+                          text: isShadow ? '👻 VETO' : (isBuy ? 'BUY' : 'SELL')
+                      });
+                  }
+              }
 
-              markers.push({
-                  time: snappedTime,
-                  position: isBuy ? 'belowBar' : 'aboveBar',
-                  color: color,
-                  shape: isBuy ? 'arrowUp' : 'arrowDown',
-                  text: text
-              });
+              // --- 2. PLOT EXIT MARKER (TP, SL, REVERSAL, TRIPWIRE) ---
+              if (log.exit_time && log.execution_mode !== 'SHADOW') {
+                  let rawExitTime = Math.floor(new Date(log.exit_time).getTime() / 1000);
+                  let snappedExitTime = candleTimesArray.reduce((prev, curr) => 
+                      Math.abs(curr - rawExitTime) < Math.abs(prev - rawExitTime) ? curr : prev
+                  );
+
+                  if (Math.abs(snappedExitTime - rawExitTime) <= granularity * 2) {
+                      while(usedTimes.has(snappedExitTime)) snappedExitTime++; 
+                      usedTimes.add(snappedExitTime);
+
+                      const isBuy = log.side === 'BUY' || log.side === 'LONG';
+                      // If we close a LONG, we effectively SELL (draw marker above bar)
+                      const exitPosition = isBuy ? 'aboveBar' : 'belowBar';
+                      const exitShape = isBuy ? 'arrowDown' : 'arrowUp';
+                      
+                      let text = 'CLOSE';
+                      let color = '#94a3b8'; 
+                      const reason = log.reason || '';
+
+                      if (reason.includes('REVERSAL')) {
+                          text = '⚡ REVERSAL'; color = '#a855f7';
+                      } else if (reason.includes('TRIPWIRE')) {
+                          text = '🛡️ TRIPWIRE'; color = '#f59e0b';
+                      } else if (reason.includes('TAKE_PROFIT') || (log.pnl > 0 && !reason.includes('STOP_LOSS'))) {
+                          text = '🎯 TP'; color = '#10b981';
+                      } else if (reason.includes('STOP_LOSS') || log.pnl < 0) {
+                          text = '🛑 SL'; color = '#ef4444';
+                      }
+
+                      markers.push({
+                          time: snappedExitTime,
+                          position: exitPosition,
+                          color: color,
+                          shape: exitShape,
+                          text: text
+                      });
+                  }
+              }
           });
 
           markers.sort((a,b) => a.time - b.time);

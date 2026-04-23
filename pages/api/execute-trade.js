@@ -89,8 +89,6 @@ export default async function handler(req, res) {
     let executionStatus = 'simulated';
 
     if (!isPaper) {
-
-      // 🧹 NEW: THE FLOOR SWEEPER (2-SECOND RULE)
       if (isClosing) {
           try {
               const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
@@ -131,14 +129,12 @@ export default async function handler(req, res) {
       let resp = await fetch(`https://api.coinbase.com${path}`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       let result = await resp.json();
       
-      // 💰 NEW: THE AUTO-FUNDING ENGINE
       if (!resp.ok || result.success === false || result.error_response) {
           const errMsg = result.error_response?.preview_failure_reason || result.error_response?.error || result.failure_reason?.error_message || JSON.stringify(result);
           
           if (errMsg.includes('INSUFFICIENT_FUNDS_FOR_FUTURES') || errMsg.includes('INSUFFICIENT_FUNDS')) {
               console.log("[AUTO-FUNDING] Margin wall hit. Attempting to siphon funds from Spot...");
               try {
-                  // 1. Fetch exact Portfolio UUIDs
                   const portPath = '/api/v3/brokerage/portfolios';
                   const portResp = await fetch(`https://api.coinbase.com${portPath}`, { headers: { 'Authorization': `Bearer ${generateToken('GET', portPath)}` } });
                   const portData = await portResp.json();
@@ -147,12 +143,11 @@ export default async function handler(req, res) {
                   const futuresWallet = portData.portfolios?.find(p => p.type === 'FUTURES' || p.name.includes('Derivatives') || p.name.includes('Futures'));
 
                   if (spotWallet && futuresWallet) {
-                      // 2. Execute the Internal Transfer
                       const transferPath = '/api/v3/brokerage/portfolios/transfer';
                       const transferPayload = {
                           source_portfolio_uuid: spotWallet.uuid,
                           target_portfolio_uuid: futuresWallet.uuid,
-                          funds: { value: "60.00", currency: "USD" } // Move $60 to cover margin
+                          funds: { value: "60.00", currency: "USD" } 
                       };
 
                       const transferResp = await fetch(`https://api.coinbase.com${transferPath}`, {
@@ -163,9 +158,8 @@ export default async function handler(req, res) {
 
                       if (transferResp.ok) {
                           await sendDiscordAlert(`💸 Auto-Funding Triggered`, `**Asset:** ${rawSymbol}\n**Action:** Automatically transferred $60.00 to Derivatives to cover margin requirements.`, 3447003);
-                          await new Promise(resolve => setTimeout(resolve, 2000)); // Let the cash settle
+                          await new Promise(resolve => setTimeout(resolve, 2000)); 
 
-                          // 3. Retry the Exact Order
                           const retryToken = generateToken('POST', path);
                           resp = await fetch(`https://api.coinbase.com${path}`, { method: 'POST', headers: { 'Authorization': `Bearer ${retryToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                           result = await resp.json();
@@ -204,12 +198,10 @@ export default async function handler(req, res) {
                   console.error(`[BRACKET REJECT] OCO Failed:`, JSON.stringify(ocoResult));
                   await sendDiscordAlert(`⚠️ Bracket Failed: ${rawSymbol}`, `**Action:** Missing TP/SL protection!\n**Details:** Exchange rejected the OCO order.`, 15548997);
               } else {
-                  // 📱 ALERT: BRACKETS DEPLOYED SUCCESSFULLY
-                  await sendDiscordAlert(`🎯 Brackets Deployed: ${rawSymbol}`, `**Take Profit:** $${tpPrice}\n**Stop Loss:** $${slPrice}\n**Status:** Active on Exchange`, 10181046); // Purple
+                  await sendDiscordAlert(`🎯 Brackets Deployed: ${rawSymbol}`, `**Take Profit:** $${tpPrice}\n**Stop Loss:** $${slPrice}\n**Status:** Active on Exchange`, 10181046); 
               }
           } catch (e) { console.error("[BRACKET FATAL] OCO failed:", e.message); }
       }
-      
     }
 
     const isForcedExit = tradeReason && (tradeReason.includes('STOP_LOSS') || tradeReason.includes('TAKE_PROFIT') || tradeReason.includes('STALE_LIMIT') || tradeReason.includes('EMERGENCY_CLOSE'));
@@ -227,7 +219,6 @@ export default async function handler(req, res) {
         if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
         executionStatus = 'closed_position';
         
-        // 📱 ALERT: TRADE CLOSED (AI Reversal)
         await sendDiscordAlert(`🏁 Position Closed: ${rawSymbol}`, `**Exit Price:** $${executionPrice}\n**Realized PnL:** $${pnl.toFixed(4)}\n**Trigger:** ${tradeReason || 'Signal Reversal'}`, pnl >= 0 ? 5763719 : 15548997);
 
       } else {
@@ -243,15 +234,15 @@ export default async function handler(req, res) {
       if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
       executionStatus = orderType === 'LIMIT' ? 'opened_limit_position' : 'opened_position';
       
-      // 📱 ALERT: TRADE OPENED
-      await sendDiscordAlert(`🚀 New Position Opened: ${rawSymbol}`, `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}`, 3447003); // Blue
+      // 🟢 THE FIX: We inject the Oracle's reasoning directly into the Open Alert embed
+      const rationaleText = tradeReason ? `\n\n**🧠 Oracle Rationale:**\n_${tradeReason}_` : '';
+      await sendDiscordAlert(`🚀 New Position Opened: ${rawSymbol}`, `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}${rationaleText}`, 3447003); 
     }
 
     return res.status(200).json({ status: executionStatus, product: coinbaseProduct, price: executionPrice });
 
   } catch (err) {
     console.error("[EXECUTE FAULT]:", err.message);
-    // 📱 ALERT: EXECUTION ERROR
     await sendDiscordAlert("❌ Execution Fault", `**Error:** ${err.message}`, 15548997);
     return res.status(500).json({ error: err.message });
   }

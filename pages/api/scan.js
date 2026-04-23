@@ -147,6 +147,9 @@ export default async function handler(req, res) {
                             
                             await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                             
+                            // 📱 DISCORD ALERT: NATIVE CLOSE
+                            await sendDiscordAlert(`🏁 Position Closed Natively: ${asset}`, `**Exit Price:** $${exactExitPrice}\n**Realized PnL:** $${rawPnl.toFixed(4)}\n**Trigger:** ${assumedReason}`, rawPnl >= 0 ? 5763719 : 15548997);
+
                             continue; 
                         }
                     }
@@ -162,6 +165,9 @@ export default async function handler(req, res) {
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                             await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                             
+                            // 📱 DISCORD ALERT: STALE LIMIT
+                            await sendDiscordAlert(`⏳ Limit Order Expired: ${asset}`, `**Entry Price:** $${openTrade.entry_price}\n**Trigger:** Stale Limit Removed`, 16776960);
+
                             continue; 
                         }
                     }
@@ -290,6 +296,9 @@ export default async function handler(req, res) {
                              await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
                              await supabase.from('trade_logs').update({ tp_price: safeTp, sl_price: safeSl }).eq('id', openTrade.id);
                              openTrade.tp_price = safeTp; openTrade.sl_price = safeSl;
+                             
+                             // 🟢 THE FIX: Tripwire Discord Alert
+                             await sendDiscordAlert(`🛡️ Tripwire Activated: ${asset}`, `**Action:** Adjusted Limits (Break-Even/Trail)\n**New TP:** $${safeTp}\n**New SL:** $${safeSl}\n\n**🧠 Oracle Rationale:**\n_${tripwireVerdict.reasoning}_`, 16753920); // Orange
                          } catch (e) { console.error(`[TRIPWIRE FAULT]`, e.message); }
                      }
                 } 
@@ -379,6 +388,9 @@ export default async function handler(req, res) {
                 };
                 await supabase.from('trade_logs').insert([shadowTrade]);
                 decision.signal = null; 
+                
+                // 🟢 THE FIX: Oracle Veto Discord Alert
+                await sendDiscordAlert(`👻 Oracle Veto: ${asset}`, `**Signal:** ${normalizedSignal} (Rejected)\n\n**🧠 Oracle Rationale:**\n_${oracleVerdict.reasoning}_`, 10038562); // Slate
 
             } else {
                 decision.entryPrice = oracleVerdict.limit_price; 
