@@ -614,7 +614,7 @@ export default function Dashboard() {
           <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col resize-y transition-all"}>
             
             <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-4 right-4 z-50 bg-black/40 hover:bg-indigo-500/20 text-slate-400 hover:text-indigo-300 border border-white/10 hover:border-indigo-500/50 p-2 rounded-lg transition-colors backdrop-blur-md">
-                {isChartMaximized ? <Minimize size={14}/> : <Maximize2 size={14}/>}
+                {isChartMaximized ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
             </button>
 
             <div className="absolute top-4 left-6 z-20 flex gap-2">
