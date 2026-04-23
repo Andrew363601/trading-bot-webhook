@@ -41,7 +41,6 @@ export default function Dashboard() {
   const [localMessages, setLocalMessages] = useState([]);
   const [isManualLoading, setIsManualLoading] = useState(false);
   
-  // UI States
   const [isChartMaximized, setIsChartMaximized] = useState(false);
   
   const chartContainerRef = useRef(null);
@@ -142,6 +141,23 @@ export default function Dashboard() {
     fetchData(); 
   };
 
+  // 🟢 THE FIX: Dedicated Cancel Function for pending limit orders
+  const handleCancelOrder = async (order) => {
+      const confirmCancel = window.confirm(`Cancel pending ${order.side} limit order for ${order.symbol}?`);
+      if (!confirmCancel) return;
+      
+      try {
+          await fetch('/api/cancel-order', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ order_ids: [order.order_id] })
+          });
+          fetchData(); 
+      } catch (e) {
+          console.error("Cancel Order Failed:", e);
+      }
+  };
+
   const executeNexusChat = async (contentStr) => {
       const userMsg = { id: Date.now().toString(), role: 'user', content: contentStr };
       if (!sdkAppend) setLocalMessages(prev => [...prev, userMsg]);
@@ -207,6 +223,7 @@ export default function Dashboard() {
   const tradeHistory = useMemo(() => tradeLogs.filter(log => log.exit_price), [tradeLogs]);
   
   const openOrders = useMemo(() => liveOrders.map(ord => ({
+      order_id: ord.order_id, // 🟢 THE FIX: Mapping the Coinbase ID so we can cancel it
       side: ord.side,
       entry_price: parseFloat(ord.order_configuration?.limit_limit_gtc?.limit_price || 0),
       qty: parseFloat(ord.order_configuration?.limit_limit_gtc?.base_size || 0),
@@ -281,19 +298,16 @@ export default function Dashboard() {
             if (!Array.isArray(data) || data.length === 0) return;
 
             if (isLiveTick) {
-                // 🟢 THE FIX: Update only the final candle to prevent freezing/resetting scroll
                 const latestCandle = data[data.length - 1];
                 seriesRef.current.update(latestCandle);
             } else {
-                // Initial Load
                 seriesRef.current.setData(data);
             }
         } catch(e) { console.error("Chart Fetch Error:", e); }
     };
 
-    loadChartData(false); // Initial historical pull
+    loadChartData(false); 
     
-    // 🟢 THE FIX: Re-fetch the endpoint every 3 seconds and inject the live price
     intervalId = setInterval(() => loadChartData(true), 3000);
 
     return () => { 
@@ -469,7 +483,6 @@ export default function Dashboard() {
 
       <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
         
-        {/* 🟢 THE FIX: Added `resize-y overflow-auto` so users can stretch the sidebars natively */}
         <div className="lg:col-span-2 flex flex-col h-[calc(100vh-100px)] min-h-0 gap-6 resize-y overflow-auto pb-4">
           <div className="bg-slate-900/50 p-5 rounded-[2rem] border border-white/10 flex-shrink-0 shadow-xl">
             <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">Capital Allocation <span className="text-cyan-400 animate-pulse">● LIVE</span></div>
@@ -610,7 +623,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* 🟢 THE FIX: The Chart Panel is now resizable and has a God Mode Fullscreen toggle */}
           <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col resize-y transition-all"}>
             
             <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-4 right-4 z-50 bg-black/40 hover:bg-indigo-500/20 text-slate-400 hover:text-indigo-300 border border-white/10 hover:border-indigo-500/50 p-2 rounded-lg transition-colors backdrop-blur-md">
@@ -755,7 +767,8 @@ export default function Dashboard() {
                                 {isShadow ? <span className="text-[9px] text-red-400 font-bold">VETOED</span> :
                                 (log.exit_price ? <span className="text-[10px] text-slate-400">${log.exit_price}</span> : 
                                  <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
-                                 <button onClick={() => handleClosePosition(log)} className="ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">X</button></>)}
+                                 {/* 🟢 THE FIX: Smart button routes to proper cancel function */}
+                                 <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">X</button></>)}
                             </td>
                             <td className="px-4 py-3 text-right font-black text-[10px]">{pnlDisplay}</td>
                           </tr>
