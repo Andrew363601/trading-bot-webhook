@@ -268,7 +268,7 @@ export default async function handler(req, res) {
                     mode: 'MANUAL_REVIEW', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent, openTrade
                 });
 
-                const lockedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_CLEARED]: AI dynamically reviewed trade at ${displayPercent}% profit. Verdict: ${tripwireVerdict.action}`;
+                const lockedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_CLEARED]: AI dynamically reviewed trade at ${displayPercent}% profit. Verdict: ${tripwireVerdict.action} - ${tripwireVerdict.reasoning}`;
                 await supabase.from('trade_logs').update({ reason: lockedReason }).eq('id', openTrade.id);
 
                 if (tripwireVerdict.action === 'MARKET_CLOSE') {
@@ -372,11 +372,32 @@ export default async function handler(req, res) {
                 dynamicSizing: config.parameters?.dynamic_sizing === true
             });
 
-            decision.telemetry = { ...decision.telemetry, oracle_score: oracleVerdict.conviction_score, oracle_reasoning: oracleVerdict.reasoning };
+            // 🟢 NEW: INJECT X-RAY DATA & ORACLE REASONING INTO TELEMETRY FOR THE UI
+            decision.telemetry = { 
+                ...decision.telemetry, 
+                oracle_score: oracleVerdict.conviction_score, 
+                oracle_reasoning: oracleVerdict.reasoning,
+                cvd: microstructure.indicators.current_cvd,
+                bids: microstructure.orderBook.bids_50_levels,
+                asks: microstructure.orderBook.asks_50_levels,
+                premium: microstructure.derivativesData.basis_premium_percent
+            };
 
             if (oracleVerdict.action === 'VETO') {
                 await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('strategy', config.strategy);
-                decision.signal = null; decision.statusOverride = 'ORACLE VETO'; 
+                decision.statusOverride = 'ORACLE VETO'; 
+                
+                // 👻 GHOST TRADE LOGGING (SHADOW PORTFOLIO)
+                const shadowTrade = {
+                    symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', 
+                    side: decision.signal, order_type: 'VETO', price: currentPrice, exit_price: currentPrice, 
+                    exit_time: new Date().toISOString(), execution_mode: 'SHADOW', leverage: 1, 
+                    market_type: config.parameters?.market_type || 'FUTURES', qty: 0, pnl: 0, 
+                    reason: `[SHADOW VETO]: ${oracleVerdict.reasoning}`
+                };
+                await supabase.from('trade_logs').insert([shadowTrade]);
+                decision.signal = null; 
+
             } else {
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = 'LIMIT';
@@ -404,7 +425,7 @@ export default async function handler(req, res) {
                 decision.tpPrice = Math.round(decision.tpPrice / tickSize) * tickSize;
                 decision.slPrice = Math.round(decision.slPrice / tickSize) * tickSize;
                 
-                // MULTIPLIER MATH (Aggressive scaling up AND defensive scaling down)
+                // MULTIPLIER MATH 
                 if (oracleVerdict.size_multiplier && oracleVerdict.size_multiplier !== 1.0 && config.parameters?.target_usd) {
                     config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
                 }
@@ -456,7 +477,7 @@ export default async function handler(req, res) {
                 order_type: 'MARKET', price: currentPrice, tp_price: null, sl_price: null,
                 execution_mode: config.execution_mode || 'PAPER', leverage: decision.leverage || 1,
                 market_type: decision.marketType || 'FUTURES', qty: openTrade.qty,
-                reason: `[REVERSAL CLOSE]: Executing AI Reversal to ${decision.signal}`
+                reason: `[REVERSAL CLOSE]: Executing AI Reversal to ${decision.signal}\n\nOracle Reasoning: ${decision.telemetry?.oracle_reasoning || 'Standard Reversal'}`
             };
 
             await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(closePayload) });
@@ -527,7 +548,7 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
 async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
     try {
         let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = [];
-        let cvd = 0; // 🟢 NEW: Cumulative Volume Delta
+        let cvd = 0; 
         
         // Calculate Local CVD over the most recent 50 candles
         const cvdCandles = triggerCandles.slice(-50);
@@ -547,7 +568,6 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
         const atr = trueRanges.length > 0 ? trueRanges.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, trueRanges.length) : 0;
         const currentPrice = triggerCandles[triggerCandles.length - 1].close;
 
-        // 🟢 NEW: Construct Products for Book and Spot Premium
         let coinbaseProduct = asset.toUpperCase().trim();
         if (!coinbaseProduct.includes('-')) {
             if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
@@ -560,7 +580,6 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
         if (baseAsset === 'AVP') baseAsset = 'AVAX'; 
         const spotProduct = `${baseAsset}-USD`;
 
-        // 🟢 NEW: Fetch Order Book and Spot Ticker (The Radar)
         let orderBookData = { status: "Unavailable" };
         let basisPremium = 0;
         let spotPrice = currentPrice;
