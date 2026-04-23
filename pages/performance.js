@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { 
   BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit
@@ -17,12 +17,14 @@ export default function PerformanceLog() {
   // Execution Log Filters
   const [logFilter, setLogFilter] = useState('ALL'); // ALL, WIN, LOSS, LONG, SHORT
 
-  // Generate last 28 days for Calendar Grid
-  const calendarDays = [...Array(28)].map((_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (27 - i));
-    return d.toISOString().split('T')[0];
-  });
+  // THE FIX: Wrap calendar generation in useMemo to prevent infinite re-renders
+  const calendarDays = useMemo(() => {
+    return [...Array(28)].map((_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (27 - i));
+      return d.toISOString().split('T')[0];
+    });
+  }, []);
 
   const fetchPerformance = useCallback(async () => {
     setLoading(true);
@@ -44,7 +46,9 @@ export default function PerformanceLog() {
       });
 
       setDailyStats(statsMap);
-      if (!selectedDate) setSelectedDate(calendarDays[calendarDays.length - 1]);
+      
+      // THE FIX: Functional state update prevents us from needing selectedDate in the dependency array
+      setSelectedDate(prev => prev || calendarDays[calendarDays.length - 1]);
 
       const stitched = (trades || []).map(trade => {
         const originalReason = trade.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
@@ -64,7 +68,7 @@ export default function PerformanceLog() {
     } finally {
       setLoading(false);
     }
-  }, [selectedDate]);
+  }, [calendarDays]); // THE FIX: Replaced selectedDate with calendarDays to satisfy the linter safely
 
   useEffect(() => { fetchPerformance(); }, [fetchPerformance]);
 

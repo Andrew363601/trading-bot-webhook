@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
@@ -178,8 +178,10 @@ export default function Dashboard() {
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
 
-  const paperPositions = tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER');
-  const formattedLivePositions = livePositions.map(pos => ({
+  // THE FIX: useMemo hooks to prevent memory leaks and exhaustive-deps warnings
+  const paperPositions = useMemo(() => tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER'), [tradeLogs]);
+  
+  const formattedLivePositions = useMemo(() => livePositions.map(pos => ({
       side: pos.side === 'LONG' ? 'BUY' : 'SELL',
       entry_price: parseFloat(pos.vwap || 0),
       qty: parseFloat(pos.number_of_contracts || 0),
@@ -189,12 +191,12 @@ export default function Dashboard() {
       pnl: parseFloat(pos.unrealized_pnl || 0),
       created_at: new Date().toISOString(),
       reason: ''
-  }));
+  })), [livePositions]);
 
-  const openPositions = [...formattedLivePositions, ...paperPositions];
-  const tradeHistory = tradeLogs.filter(log => log.exit_price);
+  const openPositions = useMemo(() => [...formattedLivePositions, ...paperPositions], [formattedLivePositions, paperPositions]);
+  const tradeHistory = useMemo(() => tradeLogs.filter(log => log.exit_price), [tradeLogs]);
   
-  const openOrders = liveOrders.map(ord => ({
+  const openOrders = useMemo(() => liveOrders.map(ord => ({
       side: ord.side,
       entry_price: parseFloat(ord.order_configuration?.limit_limit_gtc?.limit_price || 0),
       qty: parseFloat(ord.order_configuration?.limit_limit_gtc?.base_size || 0),
@@ -202,10 +204,10 @@ export default function Dashboard() {
       execution_mode: 'PENDING_LIMIT',
       strategy_id: 'AWAITING_FILL',
       created_at: ord.created_time || new Date().toISOString()
-  }));
+  })), [liveOrders]);
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS NATIVE INTEGRATION (WITH BINANCE PROXY FIX)
+  // 📈 LIGHTWEIGHT CHARTS NATIVE INTEGRATION
   // =========================================================================
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -248,7 +250,6 @@ export default function Dashboard() {
     const loadChartData = async () => {
         if(!seriesRef.current) return;
 
-        // THE FIX: Translate to Binance public spot API to bypass 404s and CORS entirely
         let baseAsset = activeAsset.split('-')[0].replace('PERP', '').trim();
         if (baseAsset === 'ETP') baseAsset = 'ETH';
         if (baseAsset === 'AVP') baseAsset = 'AVAX';
@@ -279,7 +280,6 @@ export default function Dashboard() {
 
             seriesRef.current.setData(formatted);
 
-            // 🧠 PAINT TRADE MARKERS 
             const markers = [];
             const secondsMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
             const granularity = secondsMap[chartTimeframe] || 60;
@@ -288,7 +288,6 @@ export default function Dashboard() {
             [...tradeLogs].reverse().forEach(log => {
                 if(!log.created_at) return;
                 
-                // Snap timestamp down to the nearest active chart interval to prevent crash
                 let rawTime = Math.floor(new Date(log.created_at).getTime() / 1000);
                 let snappedTime = rawTime - (rawTime % granularity);
                 
@@ -344,24 +343,12 @@ export default function Dashboard() {
   }, [activeAsset, chartTimeframe, tradeLogs, openPositions]);
   // =========================================================================
 
-  let displayLogs = [];
-  if (activeTab === 'POSITIONS') displayLogs = openPositions;
-  else if (activeTab === 'TRADE_HISTORY') displayLogs = tradeHistory;
-  else if (activeTab === 'OPEN_ORDERS') displayLogs = openOrders;
-
-  if (loading) return <div className="min-h-screen bg-[#020617] flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">Establishing Nexus...</div>;
-
-  // THE FIX: Isolate telemetry strictly to the active asset you are currently viewing
+  // =========================================================================
+  // ⚡ LIVE HEATMAP MICRO-JITTER ENGINE (Now safely positioned above 'if loading')
+  // =========================================================================
   const activeAssetScans = scanStream.filter(s => s.asset === activeAsset);
   const latestScan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
 
-  const isVeto = latestScan?.status === 'ORACLE VETO';
-  const isResonant = latestScan?.status === 'RESONANT';
-  const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
-
-  // =========================================================================
-  // ⚡ LIVE HEATMAP MICRO-JITTER ENGINE
-  // =========================================================================
   const bids = parseFloat(latestScan?.telemetry?.bids || 0);
   const asks = parseFloat(latestScan?.telemetry?.asks || 0);
   const cvd = parseFloat(latestScan?.telemetry?.cvd || 0);
@@ -382,7 +369,21 @@ export default function Dashboard() {
 
       return () => clearInterval(jitterInterval);
   }, [targetPercent, totalLiquidity]);
+
+  const isVeto = latestScan?.status === 'ORACLE VETO';
+  const isResonant = latestScan?.status === 'RESONANT';
+  const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
+
   // =========================================================================
+  // CONDITIONAL RENDERS AND RETURNS GO HERE AT THE VERY END
+  // =========================================================================
+  let displayLogs = [];
+  if (activeTab === 'POSITIONS') displayLogs = openPositions;
+  else if (activeTab === 'TRADE_HISTORY') displayLogs = tradeHistory;
+  else if (activeTab === 'OPEN_ORDERS') displayLogs = openOrders;
+
+  // THE FIX: Moving the conditional early return to the bottom solves the Hooks Error
+  if (loading) return <div className="min-h-screen bg-[#020617] flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">Establishing Nexus...</div>;
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4">
@@ -413,8 +414,8 @@ export default function Dashboard() {
           <div className="flex flex-col flex-shrink-0">
             <div className="text-[10px] font-black uppercase text-slate-500 mb-3 px-2 tracking-widest flex items-center gap-2"><Target size={12}/> Market Scanners</div>
             
-            <div className="mb-3 px-1 relative">
-                <form onSubmit={(e) => { e.preventDefault(); handleAddAsset(searchAsset); }} className="relative">
+            <form onSubmit={(e) => { e.preventDefault(); handleAddAsset(searchAsset); }} className="mb-3 px-1 relative">
+                <div className="relative">
                     <input 
                         type="text" 
                         value={searchAsset}
@@ -424,7 +425,7 @@ export default function Dashboard() {
                         className="w-full bg-black/50 border border-white/10 rounded-xl pl-8 pr-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500/50 uppercase relative z-20"
                     />
                     <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 z-20" />
-                </form>
+                </div>
                 
                 {isSearching && searchAsset && (
                     <div className="absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-white/10 rounded-xl overflow-hidden z-30 shadow-2xl">
@@ -441,7 +442,7 @@ export default function Dashboard() {
                         {filteredSearch.length === 0 && <div className="px-4 py-2 text-[10px] text-slate-500 italic">No assets found</div>}
                     </div>
                 )}
-            </div>
+            </form>
 
             <div className="space-y-1 overflow-y-auto max-h-[250px] custom-scrollbar px-1">
               {assetsList.map(asset => (
@@ -481,7 +482,6 @@ export default function Dashboard() {
 
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
           
-          {/* THE ANIMATED PIPELINE */}
           <div className="bg-slate-900/50 border border-white/10 rounded-3xl p-4 flex flex-col gap-4 shadow-xl relative overflow-hidden flex-shrink-0">
             <div className={`absolute inset-0 opacity-10 transition-colors duration-1000 ${isVeto ? 'bg-red-500' : (isResonant ? 'bg-emerald-500' : 'bg-indigo-500')} animate-pulse`} />
             
@@ -527,7 +527,7 @@ export default function Dashboard() {
                             <div style={{ width: `${liveBidPercent}%` }} className="h-full bg-emerald-500/80 transition-all duration-500 ease-linear" />
                             <div style={{ width: `${100 - liveBidPercent}%` }} className="h-full bg-red-500/80 transition-all duration-500 ease-linear" />
                         </div>
-                    ) : <div className="text-[9px] font-black uppercase text-amber-500/80 tracking-widest mt-1">Radar Offline: Deploy Strategy</div>}
+                    ) : <div className="text-[10px] font-mono text-slate-600">Awaiting Depth...</div>}
                     <div className="flex justify-between text-[8px] font-mono text-slate-400">
                         <span className="text-emerald-400">BIDS: {bids.toFixed(0)}</span>
                         <span className="text-red-400">ASKS: {asks.toFixed(0)}</span>
@@ -581,9 +581,7 @@ export default function Dashboard() {
                })}
             </div>
 
-            <div className="flex-grow w-full relative mt-16 mb-4 px-2 min-h-[300px]">
-                <div ref={chartContainerRef} className="absolute inset-0" />
-            </div>
+            <div className="flex-grow w-full relative mt-12 mb-4 px-2" ref={chartContainerRef} style={{ minHeight: '300px' }} />
             
           </div>
 
