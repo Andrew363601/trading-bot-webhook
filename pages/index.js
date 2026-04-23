@@ -2,11 +2,11 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createClient } from '@supabase/supabase-js';
 import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
-import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
+import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers, HistogramSeries } from 'lightweight-charts';
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet,
-  Eye, Zap, AlertOctagon, BarChart2, Search, Maximize2, Minimize2
+  Eye, Zap, AlertOctagon, BarChart2, Search, Maximize2, Minimize2, Flame
 } from 'lucide-react';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
@@ -38,16 +38,20 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('POSITIONS');
   
   const [isChartMaximized, setIsChartMaximized] = useState(false);
+  const [showHeatmap, setShowHeatmap] = useState(false);
   
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
+  const volumeSeriesRef = useRef(null);
   const seriesMarkersRef = useRef(null); 
   const priceLinesRef = useRef([]);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
 
-  // 🟢 THE FIX: Using Vercel's native useChat hook exactly as intended
-  const { messages, input, handleInputChange, handleSubmit, append, error: sdkError, isLoading } = useChat({
+  // React State for bulletproof typing
+  const [localInput, setLocalInput] = useState('');
+
+  const { messages, append, error: sdkError, isLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
@@ -118,7 +122,6 @@ export default function Dashboard() {
 
   const filteredSearch = MASTER_ASSETS.filter(a => a.toLowerCase().includes(searchAsset.toLowerCase()));
 
-  // Auto-scroll chat to bottom
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   const handleClosePosition = async (trade) => {
@@ -152,7 +155,16 @@ export default function Dashboard() {
       }
   };
 
-  // 🟢 THE FIX: Replacing custom submit logic with Vercel's native `append` method
+  // 🟢 THE FIX: Bulletproof Chat Submission using Local State + append()
+  const handleManualSubmit = async (e) => {
+    e.preventDefault();
+    if (!localInput.trim() || isLoading) return;
+    
+    const content = localInput;
+    setLocalInput(''); // Clear the box instantly
+    await append({ role: 'user', content }); // Send to the AI stream
+  };
+
   const handleStrategySelect = async (stratId) => {
     await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
   };
@@ -188,7 +200,7 @@ export default function Dashboard() {
   })), [liveOrders]);
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PHASE 1 (V5 INITIALIZATION)
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 1 (V5 INITIALIZATION & HEATMAP OVERLAY)
   // =========================================================================
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -208,10 +220,24 @@ export default function Dashboard() {
         wickUpColor: '#10b981', wickDownColor: '#ef4444'
     });
 
+    // 🟢 NEW: Initialize the Volume Heatmap Series (hidden by default)
+    const volumeSeries = chart.addSeries(HistogramSeries, {
+        color: '#26a69a',
+        priceFormat: { type: 'volume' },
+        priceScaleId: '', // Setting to blank string creates an overlay scale
+        visible: showHeatmap, 
+    });
+    
+    // Position the volume histogram strictly at the bottom 20% of the chart
+    chart.priceScale('').applyOptions({
+        scaleMargins: { top: 0.8, bottom: 0 },
+    });
+
     const markersPlugin = createSeriesMarkers(series, []);
 
     chartRef.current = chart;
     seriesRef.current = series;
+    volumeSeriesRef.current = volumeSeries;
     seriesMarkersRef.current = markersPlugin; 
 
     const handleResize = () => {
@@ -227,17 +253,18 @@ export default function Dashboard() {
         resizeObserver.disconnect();
         chart.remove();
     };
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); 
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PHASE 2 (THE LIVE TICK ENGINE)
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 2 (THE LIVE TICK ENGINE & VOLUME DATA)
   // =========================================================================
   useEffect(() => {
     let isMounted = true;
     let intervalId;
 
     const loadChartData = async (isLiveTick = false) => {
-        if(!seriesRef.current) return;
+        if(!seriesRef.current || !volumeSeriesRef.current) return;
 
         const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
         const granularity = tfMap[chartTimeframe] || 60;
@@ -254,14 +281,28 @@ export default function Dashboard() {
             if (isLiveTick) {
                 const latestCandle = data[data.length - 1];
                 seriesRef.current.update(latestCandle);
+                
+                // Inject live volume tick
+                volumeSeriesRef.current.update({
+                    time: latestCandle.time,
+                    value: latestCandle.volume,
+                    color: latestCandle.close >= latestCandle.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
+                });
             } else {
                 seriesRef.current.setData(data);
+                
+                // Map historical volume data
+                const volumeData = data.map(c => ({
+                    time: c.time,
+                    value: c.volume,
+                    color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
+                }));
+                volumeSeriesRef.current.setData(volumeData);
             }
         } catch(e) { console.error("Chart Fetch Error:", e); }
     };
 
     loadChartData(false); 
-    
     intervalId = setInterval(() => loadChartData(true), 3000);
 
     return () => { 
@@ -269,6 +310,13 @@ export default function Dashboard() {
         clearInterval(intervalId); 
     };
   }, [activeAsset, chartTimeframe]);
+
+  // Apply Heatmap Visibility Toggle
+  useEffect(() => {
+      if (volumeSeriesRef.current) {
+          volumeSeriesRef.current.applyOptions({ visible: showHeatmap });
+      }
+  }, [showHeatmap]);
 
   // =========================================================================
   // 📈 LIGHTWEIGHT CHARTS: PHASE 3 (APPLY DUAL V5 MARKERS AND LINES)
@@ -583,7 +631,7 @@ export default function Dashboard() {
                 {isChartMaximized ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
             </button>
 
-            <div className="absolute top-4 left-6 z-20 flex gap-2">
+            <div className="absolute top-4 left-6 z-20 flex gap-2 items-center">
                 {['1m', '5m', '15m', '1h', '4h'].map(tf => (
                     <button 
                         key={tf} 
@@ -593,6 +641,15 @@ export default function Dashboard() {
                         {tf}
                     </button>
                 ))}
+                
+                {/* 🟢 THE FIX: Live Volume Heatmap Toggle */}
+                <button 
+                    onClick={() => setShowHeatmap(!showHeatmap)}
+                    className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border transition-all flex items-center gap-1 ml-4 ${showHeatmap ? 'bg-amber-500/20 text-amber-300 border-amber-500/30 shadow-[0_0_10px_-2px_rgba(245,158,11,0.4)]' : 'bg-slate-950/80 text-slate-500 border-white/5 hover:bg-white/5'}`}
+                >
+                    <Flame size={12} className={showHeatmap ? 'text-amber-400 animate-pulse' : 'text-slate-500'} />
+                    Heatmap {showHeatmap ? 'ON' : 'OFF'}
+                </button>
             </div>
 
             <div className="absolute top-16 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
@@ -721,7 +778,6 @@ export default function Dashboard() {
                                 {isShadow ? <span className="text-[9px] text-red-400 font-bold">VETOED</span> :
                                 (log.exit_price ? <span className="text-[10px] text-slate-400">${log.exit_price}</span> : 
                                  <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
-                                 {/* 🟢 THE FIX: Smart button routes to proper cancel function */}
                                  <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">X</button></>)}
                             </td>
                             <td className="px-4 py-3 text-right font-black text-[10px]">{pnlDisplay}</td>
@@ -754,7 +810,6 @@ export default function Dashboard() {
           <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
               
-              {/* 🟢 THE FIX: Render the Tool Invocations so the user can watch Nexus "think" */}
               {messages.map(m => (
                 <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                     
@@ -779,13 +834,14 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
                 <input 
                   className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
-                  value={input || ''} onChange={handleInputChange} placeholder="Command Nexus..." 
+                  value={localInput} 
+                  onChange={(e) => setLocalInput(e.target.value)} 
+                  placeholder="Command Nexus..." 
               />
-              {/* 🟢 THE FIX: Added `?` to safely handle the undefined state during server builds */}
-              <button type="submit" disabled={!input?.trim() || isLoading} className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}>
+              <button type="submit" disabled={!localInput.trim() || isLoading} className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}>
                   {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
               </button>
             </form>
