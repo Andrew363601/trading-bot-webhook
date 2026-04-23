@@ -13,10 +13,18 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhx
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// MASTER DICTIONARY OF COINBASE ASSETS
+const MASTER_ASSETS = [
+    'BTC-PERP-INTX', 'ETH-PERP-INTX', 'ETP-20DEC30-CDE', 'SOL-PERP-INTX', 
+    'DOGE-PERP-INTX', 'AVP-20DEC30-CDE', 'WLD-PERP-INTX', 'XRP-PERP-INTX', 
+    'ADA-PERP-INTX', 'BNB-PERP-INTX', 'LINK-PERP-INTX', 'MATIC-PERP-INTX',
+    'AVAX-PERP-INTX', 'LTC-PERP-INTX', 'BCH-PERP-INTX', 'APT-PERP-INTX'
+];
+
 export default function Dashboard() {
-  // THE FIX: Dynamic Asset List instead of hardcoded array
   const [assetsList, setAssetsList] = useState(['ETP-20DEC30-CDE', 'BTC-PERP-INTX', 'SOL-PERP-INTX']);
   const [searchAsset, setSearchAsset] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
   
   const [activeAsset, setActiveAsset] = useState('ETP-20DEC30-CDE');
   const [livePrice, setLivePrice] = useState(0); 
@@ -35,7 +43,6 @@ export default function Dashboard() {
   const [localMessages, setLocalMessages] = useState([]);
   const [isManualLoading, setIsManualLoading] = useState(false);
   
-  // NATIVE CHART STATES
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
@@ -85,24 +92,23 @@ export default function Dashboard() {
     return () => clearInterval(int);
   }, [fetchData]);
 
-  // THE FIX: Automatically pull unique assets from database to populate list
   useEffect(() => {
      const dbAssets = new Set([...assetsList, ...tradeLogs.map(l => l.symbol), ...activeStrategies.map(s => s.asset)]);
      const uniqueAssets = Array.from(dbAssets).filter(Boolean);
      if (uniqueAssets.length > assetsList.length) setAssetsList(uniqueAssets);
   }, [tradeLogs, activeStrategies, assetsList]);
 
-  const handleAddAsset = (e) => {
-      e.preventDefault();
-      const newAsset = searchAsset.trim().toUpperCase();
+  const handleAddAsset = (assetToAdd) => {
+      const newAsset = assetToAdd.trim().toUpperCase();
       if(newAsset && !assetsList.includes(newAsset)) {
           setAssetsList(prev => [newAsset, ...prev]);
-          setActiveAsset(newAsset);
-      } else if (assetsList.includes(newAsset)) {
-          setActiveAsset(newAsset);
       }
+      setActiveAsset(newAsset);
       setSearchAsset('');
+      setIsSearching(false);
   };
+
+  const filteredSearch = MASTER_ASSETS.filter(a => a.toLowerCase().includes(searchAsset.toLowerCase()));
 
   const displayMessages = sdkMessages?.length > 0 ? sdkMessages : localMessages;
   const isChatActive = sdkIsLoading || isManualLoading;
@@ -199,7 +205,7 @@ export default function Dashboard() {
   }));
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS NATIVE INTEGRATION (WITH RESIZE FIX)
+  // 📈 LIGHTWEIGHT CHARTS WITH BINANCE PROXY FIX
   // =========================================================================
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -210,7 +216,7 @@ export default function Dashboard() {
         crosshair: { mode: CrosshairMode.Normal },
         timeScale: { timeVisible: true, secondsVisible: false, borderColor: 'rgba(255,255,255,0.1)' },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
-        autoSize: true, // Requires container to have explicit dimensions
+        autoSize: true,
     });
 
     const series = chart.addCandlestickSeries({
@@ -222,7 +228,6 @@ export default function Dashboard() {
     chartRef.current = chart;
     seriesRef.current = series;
 
-    // THE FIX: Force chart to fit container dynamically if autoSize fails
     const handleResize = () => {
         chart.applyOptions({ width: chartContainerRef.current.clientWidth, height: chartContainerRef.current.clientHeight });
     };
@@ -240,25 +245,28 @@ export default function Dashboard() {
     const loadChartData = async () => {
         if(!seriesRef.current) return;
 
+        // THE FIX: Translate Coinbase ticker to Binance spot ticker to bypass CORS
         let baseAsset = activeAsset.split('-')[0].replace('PERP', '').trim();
         if (baseAsset === 'ETP') baseAsset = 'ETH';
         if (baseAsset === 'AVP') baseAsset = 'AVAX';
-        const spotProduct = `${baseAsset}-USD`;
+        const binanceSymbol = `${baseAsset}USDT`;
 
-        const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
-        const granularity = tfMap[chartTimeframe] || 60;
+        const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' };
+        const interval = tfMap[chartTimeframe] || '1m';
 
         try {
-            const res = await fetch(`https://api.exchange.coinbase.com/products/${spotProduct}/candles?granularity=${granularity}`);
+            // Fetch from Binance public spot API which allows open CORS
+            const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=${interval}&limit=500`);
             const data = await res.json();
             if(!isMounted) return;
 
+            // Format Binance Klines: [openTime, open, high, low, close, volume, closeTime, ...]
             const formatted = data.map(d => ({
-                time: d[0],
-                low: d[1],
-                high: d[2],
-                open: d[3],
-                close: d[4]
+                time: d[0] / 1000,
+                open: parseFloat(d[1]),
+                high: parseFloat(d[2]),
+                low: parseFloat(d[3]),
+                close: parseFloat(d[4])
             })).sort((a, b) => a.time - b.time); 
 
             seriesRef.current.setData(formatted);
@@ -372,19 +380,35 @@ export default function Dashboard() {
           <div className="flex flex-col flex-shrink-0">
             <div className="text-[10px] font-black uppercase text-slate-500 mb-3 px-2 tracking-widest flex items-center gap-2"><Target size={12}/> Market Scanners</div>
             
-            {/* THE FIX: Dynamic Search Bar */}
-            <form onSubmit={handleAddAsset} className="mb-3 px-1">
+            {/* THE FIX: Dynamic Search Bar with Autocomplete */}
+            <div className="mb-3 px-1 relative">
                 <div className="relative">
                     <input 
                         type="text" 
                         value={searchAsset}
-                        onChange={(e) => setSearchAsset(e.target.value)}
+                        onChange={(e) => { setSearchAsset(e.target.value); setIsSearching(true); }}
+                        onFocus={() => setIsSearching(true)}
                         placeholder="Search Asset..."
-                        className="w-full bg-black/50 border border-white/10 rounded-xl pl-8 pr-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500/50 uppercase"
+                        className="w-full bg-black/50 border border-white/10 rounded-xl pl-8 pr-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500/50 uppercase relative z-20"
                     />
-                    <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                    <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 z-20" />
                 </div>
-            </form>
+                
+                {isSearching && searchAsset && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-slate-800 border border-white/10 rounded-xl overflow-hidden z-30 shadow-2xl">
+                        {filteredSearch.map(asset => (
+                            <button 
+                                key={asset} 
+                                onClick={() => handleAddAsset(asset)}
+                                className="w-full text-left px-4 py-2 text-[10px] font-mono text-white hover:bg-indigo-500/30 transition-colors uppercase"
+                            >
+                                {asset}
+                            </button>
+                        ))}
+                        {filteredSearch.length === 0 && <div className="px-4 py-2 text-[10px] text-slate-500 italic">No assets found</div>}
+                    </div>
+                )}
+            </div>
 
             <div className="space-y-1 overflow-y-auto max-h-[250px] custom-scrollbar px-1">
               {assetsList.map(asset => (
@@ -424,6 +448,7 @@ export default function Dashboard() {
 
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
           
+          {/* THE ANIMATED PIPELINE */}
           <div className="bg-slate-900/50 border border-white/10 rounded-3xl p-4 flex flex-col gap-4 shadow-xl relative overflow-hidden flex-shrink-0">
             <div className={`absolute inset-0 opacity-10 transition-colors duration-1000 ${isVeto ? 'bg-red-500' : (isResonant ? 'bg-emerald-500' : 'bg-indigo-500')} animate-pulse`} />
             
@@ -523,10 +548,8 @@ export default function Dashboard() {
                })}
             </div>
 
-            {/* THE FIX: Absolute positioning and ResizeObserver ensures it never renders blank */}
-            <div className="relative flex-grow w-full h-full pt-14">
-                <div ref={chartContainerRef} className="absolute inset-0 top-12 bottom-0 left-0 right-0 z-10" />
-            </div>
+            {/* THE FIX: Replaced absolute positioning with Flex rendering to guarantee chart dimensions */}
+            <div className="flex-grow w-full relative mt-12 mb-4 px-2" ref={chartContainerRef} style={{ minHeight: '300px' }} />
             
           </div>
 
