@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createClient } from '@supabase/supabase-js';
 import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
-import { createChart, CrosshairMode } from 'lightweight-charts';
+// 🟢 THE FIX: We must now explicitly import CandlestickSeries and the createSeriesMarkers plugin for V5
+import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet,
@@ -13,6 +14,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhx
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// MASTER DICTIONARY OF COINBASE ASSETS
 const MASTER_ASSETS = [
     'BTC-PERP-INTX', 'ETH-PERP-INTX', 'ETP-20DEC30-CDE', 'SOL-PERP-INTX', 
     'DOGE-PERP-INTX', 'AVP-20DEC30-CDE', 'WLD-PERP-INTX', 'XRP-PERP-INTX', 
@@ -44,6 +46,7 @@ export default function Dashboard() {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
+  const seriesMarkersRef = useRef(null); // 🟢 THE FIX: We need a new Ref to hold the V5 Markers Plugin
   const priceLinesRef = useRef([]);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
 
@@ -213,7 +216,7 @@ export default function Dashboard() {
   })), [liveOrders]);
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PHASE 1 (INITIALIZATION)
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 1 (V5 INITIALIZATION FIX)
   // =========================================================================
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -227,14 +230,20 @@ export default function Dashboard() {
         autoSize: true,
     });
 
-    const series = chart.addCandlestickSeries({
+    // 🟢 THE FIX: Lightweight Charts V5 removed "chart.addCandlestickSeries" entirely.
+    // You now inject the "CandlestickSeries" module into "chart.addSeries".
+    const series = chart.addSeries(CandlestickSeries, {
         upColor: '#10b981', downColor: '#ef4444',
         borderVisible: false,
         wickUpColor: '#10b981', wickDownColor: '#ef4444'
     });
 
+    // 🟢 THE FIX: Markers are now a standalone Plugin.
+    const markersPlugin = createSeriesMarkers(series, []);
+
     chartRef.current = chart;
     seriesRef.current = series;
+    seriesMarkersRef.current = markersPlugin; // Lock the plugin ref into React
 
     const handleResize = () => {
         if(chartContainerRef.current) {
@@ -293,24 +302,22 @@ export default function Dashboard() {
 
     loadChartData();
     return () => { isMounted = false; };
-  }, [activeAsset, chartTimeframe]); // 🛡️ THE FIX: Removed tradeLogs/openPositions from this array
+  }, [activeAsset, chartTimeframe]);
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PHASE 3 (APPLY LIVE MARKERS AND LINES DECOUPLED)
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 3 (APPLY V5 MARKERS AND LINES DECOUPLED)
   // =========================================================================
   useEffect(() => {
-      if(!seriesRef.current) return;
+      if(!seriesRef.current || !seriesMarkersRef.current) return;
 
       try {
           const markers = [];
           const secondsMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
           const granularity = secondsMap[chartTimeframe] || 60;
           
-          // Extract currently rendered chart times to match markers against
           const currentData = seriesRef.current.data();
           if (!currentData || currentData.length === 0) return;
           const candleTimes = new Set(currentData.map(c => c.time));
-          
           const usedTimes = new Set();
           
           [...tradeLogs].reverse().forEach(log => {
@@ -346,9 +353,10 @@ export default function Dashboard() {
           });
 
           markers.sort((a,b) => a.time - b.time);
-          seriesRef.current.setMarkers(markers);
+          
+          // 🟢 THE FIX: Feed the markers into the new V5 Plugin Ref, NOT the series.
+          seriesMarkersRef.current.setMarkers(markers);
 
-          // Clear previous limit lines
           priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
           priceLinesRef.current = [];
 
@@ -370,8 +378,7 @@ export default function Dashboard() {
       } catch (err) {
           console.error("Marker Drawing Error:", err);
       }
-  }, [tradeLogs, openPositions, activeAsset, chartTimeframe]); // 🛡️ Independent of Binance API
-
+  }, [tradeLogs, openPositions, activeAsset, chartTimeframe]);
 
   const activeAssetScans = scanStream.filter(s => s.asset === activeAsset);
   const latestScan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
@@ -399,7 +406,6 @@ export default function Dashboard() {
 
       return () => clearInterval(jitterInterval);
   }, [targetPercent, totalLiquidity]);
-  // =========================================================================
 
   const isVeto = latestScan?.status === 'ORACLE VETO';
   const isResonant = latestScan?.status === 'RESONANT';
@@ -414,7 +420,6 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4 relative">
       
-      {/* THE FIX: Overlay Loading Screen ensures React finishes building the DOM elements underneath */}
       {loading && (
          <div className="absolute inset-0 z-50 bg-[#020617]/90 backdrop-blur-sm flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">
              Establishing Nexus...
