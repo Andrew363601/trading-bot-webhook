@@ -6,16 +6,18 @@ import { createChart, CrosshairMode } from 'lightweight-charts';
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet,
-  Eye, Zap, AlertOctagon, BarChart2
+  Eye, Zap, AlertOctagon, BarChart2, Search
 } from 'lucide-react';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const ASSETS = ['BTC-PERP-INTX', 'ETP-20DEC30-CDE', 'SOL-PERP-INTX', 'DOGE-PERP', 'AVP-20DEC30-CDE', 'WLD-PERP-INTX', 'XRP-PERP-INTX', 'ADA-PERP-INTX', 'BNB-PERP-INTX'];
-
 export default function Dashboard() {
+  // THE FIX: Dynamic Asset List instead of hardcoded array
+  const [assetsList, setAssetsList] = useState(['ETP-20DEC30-CDE', 'BTC-PERP-INTX', 'SOL-PERP-INTX']);
+  const [searchAsset, setSearchAsset] = useState('');
+  
   const [activeAsset, setActiveAsset] = useState('ETP-20DEC30-CDE');
   const [livePrice, setLivePrice] = useState(0); 
   const [tradeLogs, setTradeLogs] = useState([]);
@@ -82,6 +84,25 @@ export default function Dashboard() {
     const int = setInterval(fetchData, 8000);
     return () => clearInterval(int);
   }, [fetchData]);
+
+  // THE FIX: Automatically pull unique assets from database to populate list
+  useEffect(() => {
+     const dbAssets = new Set([...assetsList, ...tradeLogs.map(l => l.symbol), ...activeStrategies.map(s => s.asset)]);
+     const uniqueAssets = Array.from(dbAssets).filter(Boolean);
+     if (uniqueAssets.length > assetsList.length) setAssetsList(uniqueAssets);
+  }, [tradeLogs, activeStrategies, assetsList]);
+
+  const handleAddAsset = (e) => {
+      e.preventDefault();
+      const newAsset = searchAsset.trim().toUpperCase();
+      if(newAsset && !assetsList.includes(newAsset)) {
+          setAssetsList(prev => [newAsset, ...prev]);
+          setActiveAsset(newAsset);
+      } else if (assetsList.includes(newAsset)) {
+          setActiveAsset(newAsset);
+      }
+      setSearchAsset('');
+  };
 
   const displayMessages = sdkMessages?.length > 0 ? sdkMessages : localMessages;
   const isChatActive = sdkIsLoading || isManualLoading;
@@ -178,7 +199,7 @@ export default function Dashboard() {
   }));
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS NATIVE INTEGRATION (WITH COINBASE API FIX)
+  // 📈 LIGHTWEIGHT CHARTS NATIVE INTEGRATION (WITH RESIZE FIX)
   // =========================================================================
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -189,7 +210,7 @@ export default function Dashboard() {
         crosshair: { mode: CrosshairMode.Normal },
         timeScale: { timeVisible: true, secondsVisible: false, borderColor: 'rgba(255,255,255,0.1)' },
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
-        autoSize: true,
+        autoSize: true, // Requires container to have explicit dimensions
     });
 
     const series = chart.addCandlestickSeries({
@@ -201,7 +222,17 @@ export default function Dashboard() {
     chartRef.current = chart;
     seriesRef.current = series;
 
-    return () => chart.remove();
+    // THE FIX: Force chart to fit container dynamically if autoSize fails
+    const handleResize = () => {
+        chart.applyOptions({ width: chartContainerRef.current.clientWidth, height: chartContainerRef.current.clientHeight });
+    };
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(chartContainerRef.current);
+
+    return () => {
+        resizeObserver.disconnect();
+        chart.remove();
+    };
   }, []);
 
   useEffect(() => {
@@ -209,7 +240,6 @@ export default function Dashboard() {
     const loadChartData = async () => {
         if(!seriesRef.current) return;
 
-        // THE FIX: Route through Coinbase Spot API to bypass Binance US Geo-blocks entirely
         let baseAsset = activeAsset.split('-')[0].replace('PERP', '').trim();
         if (baseAsset === 'ETP') baseAsset = 'ETH';
         if (baseAsset === 'AVP') baseAsset = 'AVAX';
@@ -223,7 +253,6 @@ export default function Dashboard() {
             const data = await res.json();
             if(!isMounted) return;
 
-            // Format: [ [time, low, high, open, close, volume], ... ]
             const formatted = data.map(d => ({
                 time: d[0],
                 low: d[1],
@@ -308,7 +337,6 @@ export default function Dashboard() {
   const isResonant = latestScan?.status === 'RESONANT';
   const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
 
-  // X-Ray Math (Safe Parsing)
   const bids = parseFloat(latestScan?.telemetry?.bids || 0);
   const asks = parseFloat(latestScan?.telemetry?.asks || 0);
   const cvd = parseFloat(latestScan?.telemetry?.cvd || 0);
@@ -343,8 +371,23 @@ export default function Dashboard() {
 
           <div className="flex flex-col flex-shrink-0">
             <div className="text-[10px] font-black uppercase text-slate-500 mb-3 px-2 tracking-widest flex items-center gap-2"><Target size={12}/> Market Scanners</div>
-            <div className="space-y-1 overflow-y-auto max-h-[250px] custom-scrollbar">
-              {ASSETS.map(asset => (
+            
+            {/* THE FIX: Dynamic Search Bar */}
+            <form onSubmit={handleAddAsset} className="mb-3 px-1">
+                <div className="relative">
+                    <input 
+                        type="text" 
+                        value={searchAsset}
+                        onChange={(e) => setSearchAsset(e.target.value)}
+                        placeholder="Search Asset..."
+                        className="w-full bg-black/50 border border-white/10 rounded-xl pl-8 pr-3 py-2 text-[10px] font-mono text-white focus:outline-none focus:border-indigo-500/50 uppercase"
+                    />
+                    <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                </div>
+            </form>
+
+            <div className="space-y-1 overflow-y-auto max-h-[250px] custom-scrollbar px-1">
+              {assetsList.map(asset => (
                   <button key={asset} onClick={() => setActiveAsset(asset)} className={`w-full text-left px-4 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest border transition-all ${activeAsset === asset ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30' : 'bg-transparent text-slate-500 border-transparent hover:bg-white/5'}`}>{asset}</button>
               ))}
             </div>
@@ -381,7 +424,6 @@ export default function Dashboard() {
 
         <div className="lg:col-span-7 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
           
-          {/* THE ANIMATED PIPELINE */}
           <div className="bg-slate-900/50 border border-white/10 rounded-3xl p-4 flex flex-col gap-4 shadow-xl relative overflow-hidden flex-shrink-0">
             <div className={`absolute inset-0 opacity-10 transition-colors duration-1000 ${isVeto ? 'bg-red-500' : (isResonant ? 'bg-emerald-500' : 'bg-indigo-500')} animate-pulse`} />
             
@@ -416,7 +458,6 @@ export default function Dashboard() {
                </div>
             </div>
 
-            {/* X-RAY HUD & REASONING CONSOLE */}
             <div className="relative z-10 grid grid-cols-3 gap-4 pt-4 border-t border-white/5">
                 <div className="col-span-1 flex flex-col gap-2">
                     <div className="text-[8px] font-black tracking-widest uppercase text-slate-500 flex items-center justify-between mb-1">
@@ -445,7 +486,6 @@ export default function Dashboard() {
 
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col">
             
-            {/* TIMEFRAME HEADER */}
             <div className="absolute top-4 left-6 z-20 flex gap-2">
                 {['1m', '5m', '15m', '1h', '4h'].map(tf => (
                     <button 
@@ -458,7 +498,6 @@ export default function Dashboard() {
                 ))}
             </div>
 
-            {/* LIVE PNL OVERLAY */}
             <div className="absolute top-4 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {openPositions.slice(0, 3).map((log, i) => {
                  const displayPnl = log.execution_mode.includes('LIVE') ? log.pnl : 
@@ -484,8 +523,10 @@ export default function Dashboard() {
                })}
             </div>
 
-            {/* LIGHTWEIGHT CHART CONTAINER */}
-            <div ref={chartContainerRef} className="relative flex-grow w-full h-full z-10 pt-10" />
+            {/* THE FIX: Absolute positioning and ResizeObserver ensures it never renders blank */}
+            <div className="relative flex-grow w-full h-full pt-14">
+                <div ref={chartContainerRef} className="absolute inset-0 top-12 bottom-0 left-0 right-0 z-10" />
+            </div>
             
           </div>
 

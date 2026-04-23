@@ -300,6 +300,15 @@ export default async function handler(req, res) {
         let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
         if (decision.error) continue;
 
+        // 🟢 THE FIX: INJECT X-RAY DATA INTO TELEMETRY FOR *EVERY* SCAN, REGARDLESS OF SIGNAL
+        decision.telemetry = { 
+            ...decision.telemetry, 
+            cvd: microstructure.indicators.current_cvd,
+            bids: microstructure.orderBook.bids_50_levels,
+            asks: microstructure.orderBook.asks_50_levels,
+            premium: microstructure.derivativesData.basis_premium_percent
+        };
+
         if (openTrade && openTrade.sl_price && openTrade.tp_price && !forcedExit && !openTrade.skipVirtualEnforcer) {
             if (openTrade.side === 'BUY' || openTrade.side === 'LONG') {
                 if (currentPrice <= openTrade.sl_price) forcedExit = 'STOP_LOSS'; 
@@ -350,14 +359,11 @@ export default async function handler(req, res) {
                 dynamicSizing: config.parameters?.dynamic_sizing === true
             });
 
+            // Log Oracle specific reasoning
             decision.telemetry = { 
                 ...decision.telemetry, 
                 oracle_score: oracleVerdict.conviction_score, 
-                oracle_reasoning: oracleVerdict.reasoning,
-                cvd: microstructure.indicators.current_cvd,
-                bids: microstructure.orderBook.bids_50_levels,
-                asks: microstructure.orderBook.asks_50_levels,
-                premium: microstructure.derivativesData.basis_premium_percent
+                oracle_reasoning: oracleVerdict.reasoning
             };
 
             if (oracleVerdict.action === 'VETO') {
@@ -506,9 +512,9 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     if (!resp.ok) throw new Error(`Coinbase HTTP ${resp.status}`); 
     const data = await resp.json();
     
-    // THE FIX: Properly parsing the open price so CVD math doesn't crash
+    // 🟢 THE FIX: Safely parse missing open prices without creating NaN errors
     return data.candles?.map(c => ({ 
-        open: parseFloat(c.open),
+        open: c.open ? parseFloat(c.open) : parseFloat(c.close),
         close: parseFloat(c.close), 
         high: parseFloat(c.high), 
         low: parseFloat(c.low), 
@@ -522,12 +528,19 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
         let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = [];
         let cvd = 0; 
         
-        // Local CVD over the most recent 50 candles
+        // 🟢 THE FIX: Mathematical Armor for CVD engine
         const cvdCandles = triggerCandles.slice(-50);
-        for (const c of cvdCandles) {
+        for (let i = 0; i < cvdCandles.length; i++) {
+            const c = cvdCandles[i];
             const range = c.high - c.low;
-            if (range > 0 && !isNaN(c.open)) {
-                cvd += c.volume * ((c.close - c.open) / range);
+            
+            let openPrice = c.open;
+            if (isNaN(openPrice) || openPrice === undefined) {
+                openPrice = i > 0 ? cvdCandles[i-1].close : c.close;
+            }
+
+            if (range > 0) {
+                cvd += c.volume * ((c.close - openPrice) / range);
             }
         }
 
@@ -557,14 +570,12 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
         let spotPrice = currentPrice;
 
         if (apiKey && secret) {
+            // 🟢 THE FIX: 1. Fetch Order Book Safely
             try {
                 const bookPath = `/api/v3/brokerage/product_book?product_id=${coinbaseProduct}&limit=50`;
-                const tickerPath = `/api/v3/brokerage/products/${spotProduct}/ticker`;
-                
-                const [bookResp, tickerResp] = await Promise.all([
-                    fetch(`https://api.coinbase.com${bookPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', bookPath, apiKey, secret)}` } }),
-                    fetch(`https://api.coinbase.com${tickerPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tickerPath, apiKey, secret)}` } })
-                ]);
+                const bookResp = await fetch(`https://api.coinbase.com${bookPath}`, { 
+                    headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', bookPath, apiKey, secret)}` } 
+                });
 
                 if (bookResp.ok) {
                     const bookJson = await bookResp.json();
@@ -580,14 +591,24 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
                         imbalance: totalBidSize > totalAskSize ? "BULLISH (Bids > Asks)" : "BEARISH (Asks > Bids)"
                     };
                 }
+            } catch (err) {
+                console.error("[OrderBook Fetch Error]", err.message);
+            }
 
-                if (tickerResp.ok) {
-                    const tickerJson = await tickerResp.json();
-                    spotPrice = parseFloat(tickerJson.trades ? tickerJson.trades[0]?.price : (tickerJson.price || currentPrice));
+            // 🟢 THE FIX: 2. Fetch Spot Price Safely using V3 Product Endpoint
+            try {
+                const productPath = `/api/v3/brokerage/products/${spotProduct}`;
+                const productResp = await fetch(`https://api.coinbase.com${productPath}`, { 
+                    headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', productPath, apiKey, secret)}` } 
+                });
+
+                if (productResp.ok) {
+                    const productJson = await productResp.json();
+                    spotPrice = parseFloat(productJson.price || currentPrice);
                     basisPremium = ((currentPrice - spotPrice) / spotPrice) * 100;
                 }
-            } catch (apiErr) {
-                console.error("[Microstructure API Error]", apiErr.message);
+            } catch (err) {
+                console.error("[SpotPrice Fetch Error]", err.message);
             }
         }
 
