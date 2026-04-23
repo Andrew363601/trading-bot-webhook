@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createClient } from '@supabase/supabase-js';
 import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
-// 🟢 THE FIX: Explicitly importing V5 modules
 import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
@@ -14,7 +13,6 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhx
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// MASTER DICTIONARY OF COINBASE ASSETS
 const MASTER_ASSETS = [
     'BTC-PERP-INTX', 'ETH-PERP-INTX', 'ETP-20DEC30-CDE', 'SOL-PERP-INTX', 
     'DOGE-PERP-INTX', 'AVP-20DEC30-CDE', 'WLD-PERP-INTX', 'XRP-PERP-INTX', 
@@ -46,7 +44,7 @@ export default function Dashboard() {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
-  const seriesMarkersRef = useRef(null); // 🟢 THE FIX: Separate reference for V5 markers
+  const seriesMarkersRef = useRef(null); 
   const priceLinesRef = useRef([]);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
 
@@ -188,7 +186,6 @@ export default function Dashboard() {
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
 
-  // 🟢 THE FIX: React useMemo shields to prevent build errors
   const paperPositions = useMemo(() => tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER'), [tradeLogs]);
   
   const formattedLivePositions = useMemo(() => livePositions.map(pos => ({
@@ -216,7 +213,6 @@ export default function Dashboard() {
       created_at: ord.created_time || new Date().toISOString()
   })), [liveOrders]);
 
-
   // =========================================================================
   // 📈 LIGHTWEIGHT CHARTS: PHASE 1 (V5 INITIALIZATION)
   // =========================================================================
@@ -232,14 +228,12 @@ export default function Dashboard() {
         autoSize: true,
     });
 
-    // 🟢 THE FIX: Correctly injecting CandlestickSeries for V5
     const series = chart.addSeries(CandlestickSeries, {
         upColor: '#10b981', downColor: '#ef4444',
         borderVisible: false,
         wickUpColor: '#10b981', wickDownColor: '#ef4444'
     });
 
-    // 🟢 THE FIX: Instantiating the V5 markers plugin
     const markersPlugin = createSeriesMarkers(series, []);
 
     chartRef.current = chart;
@@ -262,24 +256,21 @@ export default function Dashboard() {
   }, []);
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PHASE 2 (FETCH BINANCE CANDLES)
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 2 (FETCH LOCAL SECURE PROXY)
   // =========================================================================
   useEffect(() => {
     let isMounted = true;
     const loadChartData = async () => {
         if(!seriesRef.current) return;
 
-        let baseAsset = activeAsset.split('-')[0].replace('PERP', '').trim();
-        if (baseAsset === 'ETP') baseAsset = 'ETH';
-        if (baseAsset === 'AVP') baseAsset = 'AVAX';
-        if (baseAsset === 'BIT') baseAsset = 'BTC';
-        const binanceSymbol = `${baseAsset}USDT`;
-
-        const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' };
-        const interval = tfMap[chartTimeframe] || '1m';
+        const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
+        const granularity = tfMap[chartTimeframe] || 60;
 
         try {
-            const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=${interval}&limit=500`);
+            // 🟢 THE FIX: Request data from our own invisible proxy to bypass CORS and 451 Errors
+            const res = await fetch(`/api/chart-data?asset=${activeAsset}&granularity=${granularity}`);
+            if(!res.ok) throw new Error("Chart proxy failed");
+            
             const data = await res.json();
             if(!isMounted) return;
 
@@ -289,15 +280,7 @@ export default function Dashboard() {
                 return;
             }
 
-            const formatted = data.map(d => ({
-                time: d[0] / 1000,
-                open: parseFloat(d[1]),
-                high: parseFloat(d[2]),
-                low: parseFloat(d[3]),
-                close: parseFloat(d[4])
-            })).sort((a, b) => a.time - b.time); 
-
-            seriesRef.current.setData(formatted);
+            seriesRef.current.setData(data);
         } catch(e) { console.error("Chart Fetch Error:", e); }
     };
 
@@ -354,8 +337,6 @@ export default function Dashboard() {
           });
 
           markers.sort((a,b) => a.time - b.time);
-          
-          // 🟢 THE FIX: V5 requires markers to be sent to the Plugin Ref
           seriesMarkersRef.current.setMarkers(markers);
 
           priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
@@ -421,7 +402,6 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4 relative">
       
-      {/* 🟢 THE FIX: The loader is now an absolute overlay, which allows the HTML chart container to physically mount underneath it immediately. */}
       {loading && (
          <div className="absolute inset-0 z-50 bg-[#020617]/90 backdrop-blur-sm flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">
              Establishing Nexus...
@@ -561,7 +541,7 @@ export default function Dashboard() {
                 <div className="col-span-1 flex flex-col gap-2">
                     <div className="text-[8px] font-black tracking-widest uppercase text-slate-500 flex items-center justify-between mb-1">
                         <span className="flex items-center gap-1"><Eye size={10}/> Order Book Heatmap</span>
-                        <span className={`font-mono ${cvd > 0 ? 'text-emerald-400' : 'text-red-400'}`}>CVD: {cvd.toFixed(0)}</span>
+                        <span className={`font-mono ${cvd !== 0 ? (cvd > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-500'}`}>CVD: {cvd.toFixed(0)}</span>
                     </div>
                     {totalLiquidity > 0 ? (
                         <div className="w-full h-2 rounded-full overflow-hidden flex bg-slate-800">
