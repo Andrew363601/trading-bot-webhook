@@ -527,6 +527,17 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
 async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
     try {
         let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = [];
+        let cvd = 0; // 🟢 NEW: Cumulative Volume Delta
+        
+        // Calculate Local CVD over the most recent 50 candles
+        const cvdCandles = triggerCandles.slice(-50);
+        for (const c of cvdCandles) {
+            const range = c.high - c.low;
+            if (range > 0) {
+                cvd += c.volume * ((c.close - c.open) / range);
+            }
+        }
+
         for (let i = 1; i < triggerCandles.length; i++) {
             const c = triggerCandles[i]; const prev = triggerCandles[i-1];
             typicalPriceVolume += ((c.high + c.low + c.close) / 3) * c.volume; totalVolume += c.volume;
@@ -534,6 +545,70 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
         }
         const vwap = totalVolume > 0 ? typicalPriceVolume / totalVolume : triggerCandles[triggerCandles.length - 1].close;
         const atr = trueRanges.length > 0 ? trueRanges.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, trueRanges.length) : 0;
-        return { indicators: { current_vwap: vwap.toFixed(2), current_atr: atr.toFixed(2) }, orderBook: { status: "REST Level 2 Restricted for CDE Futures. Using VWAP/ATR routing." }, derivativesData: { status: "Active" } };
+        const currentPrice = triggerCandles[triggerCandles.length - 1].close;
+
+        // 🟢 NEW: Construct Products for Book and Spot Premium
+        let coinbaseProduct = asset.toUpperCase().trim();
+        if (!coinbaseProduct.includes('-')) {
+            if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+            else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+            else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
+        }
+        
+        let baseAsset = asset.split('-')[0].replace('PERP', '').trim();
+        if (baseAsset === 'ETP') baseAsset = 'ETH';
+        if (baseAsset === 'AVP') baseAsset = 'AVAX'; 
+        const spotProduct = `${baseAsset}-USD`;
+
+        // 🟢 NEW: Fetch Order Book and Spot Ticker (The Radar)
+        let orderBookData = { status: "Unavailable" };
+        let basisPremium = 0;
+        let spotPrice = currentPrice;
+
+        if (apiKey && secret) {
+            try {
+                const bookPath = `/api/v3/brokerage/product_book?product_id=${coinbaseProduct}&limit=50`;
+                const tickerPath = `/api/v3/brokerage/products/${spotProduct}/ticker`;
+                
+                const [bookResp, tickerResp] = await Promise.all([
+                    fetch(`https://api.coinbase.com${bookPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', bookPath, apiKey, secret)}` } }),
+                    fetch(`https://api.coinbase.com${tickerPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tickerPath, apiKey, secret)}` } })
+                ]);
+
+                if (bookResp.ok) {
+                    const bookJson = await bookResp.json();
+                    const bids = bookJson.pricebook?.bids || [];
+                    const asks = bookJson.pricebook?.asks || [];
+                    
+                    let totalBidSize = bids.reduce((sum, b) => sum + parseFloat(b.size || 0), 0);
+                    let totalAskSize = asks.reduce((sum, a) => sum + parseFloat(a.size || 0), 0);
+                    
+                    orderBookData = {
+                        bids_50_levels: totalBidSize.toFixed(2),
+                        asks_50_levels: totalAskSize.toFixed(2),
+                        imbalance: totalBidSize > totalAskSize ? "BULLISH (Bids > Asks)" : "BEARISH (Asks > Bids)"
+                    };
+                }
+
+                if (tickerResp.ok) {
+                    const tickerJson = await tickerResp.json();
+                    spotPrice = parseFloat(tickerJson.trades ? tickerJson.trades[0]?.price : (tickerJson.price || currentPrice));
+                    basisPremium = ((currentPrice - spotPrice) / spotPrice) * 100;
+                }
+            } catch (apiErr) {
+                console.error("[Microstructure API Error]", apiErr.message);
+            }
+        }
+
+        return { 
+            indicators: { current_vwap: vwap.toFixed(2), current_atr: atr.toFixed(2), current_cvd: cvd.toFixed(2) }, 
+            orderBook: orderBookData, 
+            derivativesData: { 
+                spot_price: spotPrice.toFixed(2),
+                futures_price: currentPrice.toFixed(2),
+                basis_premium_percent: basisPremium.toFixed(4),
+                sentiment: basisPremium > 0.1 ? "OVERHEATED LONGS (Premium)" : (basisPremium < -0.1 ? "OVERHEATED SHORTS (Discount)" : "NEUTRAL")
+            } 
+        };
     } catch (e) { return { indicators: {}, orderBook: {}, derivativesData: {} }; }
 }
