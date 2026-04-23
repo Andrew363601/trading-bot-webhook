@@ -36,10 +36,6 @@ export default function Dashboard() {
   const [livePositions, setLivePositions] = useState([]);
   const [liveOrders, setLiveOrders] = useState([]);
   const [activeTab, setActiveTab] = useState('POSITIONS');
-
-  const [localInput, setLocalInput] = useState('');
-  const [localMessages, setLocalMessages] = useState([]);
-  const [isManualLoading, setIsManualLoading] = useState(false);
   
   const [isChartMaximized, setIsChartMaximized] = useState(false);
   
@@ -50,7 +46,8 @@ export default function Dashboard() {
   const priceLinesRef = useRef([]);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
 
-  const { messages: sdkMessages, append: sdkAppend, error: sdkError, isLoading: sdkIsLoading } = useChat({
+  // 🟢 THE FIX: Using Vercel's native useChat hook exactly as intended
+  const { messages, input, handleInputChange, handleSubmit, append, error: sdkError, isLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
@@ -121,10 +118,8 @@ export default function Dashboard() {
 
   const filteredSearch = MASTER_ASSETS.filter(a => a.toLowerCase().includes(searchAsset.toLowerCase()));
 
-  const displayMessages = sdkMessages?.length > 0 ? sdkMessages : localMessages;
-  const isChatActive = sdkIsLoading || isManualLoading;
-
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [displayMessages]);
+  // Auto-scroll chat to bottom
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   const handleClosePosition = async (trade) => {
     const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id || 'Exchange'}?`);
@@ -157,49 +152,9 @@ export default function Dashboard() {
       }
   };
 
-  const executeNexusChat = async (contentStr) => {
-      const userMsg = { id: Date.now().toString(), role: 'user', content: contentStr };
-      if (!sdkAppend) setLocalMessages(prev => [...prev, userMsg]);
-      setIsManualLoading(true);
-      try {
-          if (typeof sdkAppend === 'function') {
-              await sdkAppend({ role: 'user', content: contentStr });
-          } else {
-              const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [...localMessages, userMsg] }) });
-              if (!res.ok) throw new Error(`Backend Error ${res.status}`);
-              const reader = res.body.getReader();
-              const decoder = new TextDecoder();
-              let botMsg = { id: (Date.now() + 1).toString(), role: 'assistant', content: '' };
-              setLocalMessages(prev => [...prev, botMsg]);
-              while (true) {
-                  const { done, value } = await reader.read();
-                  if (done) break;
-                  const chunk = decoder.decode(value, { stream: true });
-                  const lines = chunk.split('\n');
-                  for (const line of lines) {
-                      if (line.startsWith('0:')) {
-                          try {
-                              const text = JSON.parse(line.substring(2));
-                              botMsg.content += text;
-                              setLocalMessages(prev => [...prev.slice(0, -1), { ...botMsg }]);
-                          } catch(e) {}
-                      }
-                  }
-              }
-          }
-      } catch (err) { console.error("[NEXUS APPEND FAULT]:", err); } finally { setIsManualLoading(false); }
-  };
-
-  const handleManualSubmit = async (e) => {
-    e.preventDefault();
-    if (!localInput.trim()) return;
-    const content = localInput;
-    setLocalInput('');
-    await executeNexusChat(content);
-  };
-
+  // 🟢 THE FIX: Replacing custom submit logic with Vercel's native `append` method
   const handleStrategySelect = async (stratId) => {
-    await executeNexusChat(`Brief me on the ${stratId} strategy currently running on ${activeAsset}.`);
+    await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
   };
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
@@ -766,6 +721,7 @@ export default function Dashboard() {
                                 {isShadow ? <span className="text-[9px] text-red-400 font-bold">VETOED</span> :
                                 (log.exit_price ? <span className="text-[10px] text-slate-400">${log.exit_price}</span> : 
                                  <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
+                                 {/* 🟢 THE FIX: Smart button routes to proper cancel function */}
                                  <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">X</button></>)}
                             </td>
                             <td className="px-4 py-3 text-right font-black text-[10px]">{pnlDisplay}</td>
@@ -799,7 +755,7 @@ export default function Dashboard() {
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
               
               {/* 🟢 THE FIX: Render the Tool Invocations so the user can watch Nexus "think" */}
-              {displayMessages.map(m => (
+              {messages.map(m => (
                 <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                     
                     {m.toolInvocations && m.toolInvocations.map(tool => (
@@ -823,13 +779,13 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+            <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
                 <input 
                   className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
-                  value={localInput} onChange={(e) => setLocalInput(e.target.value)} placeholder="Command Nexus..." 
+                  value={input} onChange={handleInputChange} placeholder="Command Nexus..." 
               />
-              <button type="submit" disabled={!localInput.trim()} className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isChatActive ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}>
-                  {isChatActive ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
+              <button type="submit" disabled={!input.trim() || isLoading} className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}>
+                  {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
               </button>
             </form>
           </div>
