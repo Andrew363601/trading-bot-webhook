@@ -2,10 +2,11 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
+import { createChart, CrosshairMode } from 'lightweight-charts';
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet,
-  Eye, Zap, AlertOctagon
+  Eye, Zap, AlertOctagon, BarChart2
 } from 'lucide-react';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
@@ -20,7 +21,6 @@ export default function Dashboard() {
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
   const [scanStream, setScanStream] = useState([]); 
-  const [activeStudies, setActiveStudies] = useState([]);
   const [portfolio, setPortfolio] = useState({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 } });
   const [selectedStrat, setSelectedStrat] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -32,6 +32,13 @@ export default function Dashboard() {
   const [localInput, setLocalInput] = useState('');
   const [localMessages, setLocalMessages] = useState([]);
   const [isManualLoading, setIsManualLoading] = useState(false);
+  
+  // NATIVE CHART STATES
+  const chartContainerRef = useRef(null);
+  const chartRef = useRef(null);
+  const seriesRef = useRef(null);
+  const priceLinesRef = useRef([]);
+  const [chartTimeframe, setChartTimeframe] = useState('1m');
 
   const { messages: sdkMessages, append: sdkAppend, error: sdkError, isLoading: sdkIsLoading } = useChat({
     api: '/api/chat',
@@ -80,22 +87,6 @@ export default function Dashboard() {
   const isChatActive = sdkIsLoading || isManualLoading;
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [displayMessages]);
-
-  useEffect(() => {
-    if (displayMessages.length > 0) {
-      const lastUserMsg = displayMessages.slice().reverse().find(m => m.role === 'user');
-      if (lastUserMsg) {
-        const content = lastUserMsg.content.toUpperCase();
-        const mentionedAsset = ASSETS.find(asset => content.includes(asset));
-        if (mentionedAsset && mentionedAsset !== activeAsset) setActiveAsset(mentionedAsset);
-        const mentionedStrat = activeStrategies.find(s => content.includes(s.strategy));
-        if (mentionedStrat) {
-           const targetStudies = getStudiesForStrategy(mentionedStrat.strategy);
-           if (JSON.stringify(targetStudies) !== JSON.stringify(activeStudies)) setActiveStudies(targetStudies);
-        }
-      }
-    }
-  }, [displayMessages, activeAsset, activeStrategies, activeStudies]);
 
   const handleClosePosition = async (trade) => {
     const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id || 'Exchange'}?`);
@@ -160,33 +151,6 @@ export default function Dashboard() {
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
 
-  const getStudiesForStrategy = (stratName) => {
-    if (!stratName) return [];
-    const name = stratName.toUpperCase();
-    if (name.includes('KELTNER')) return ["KeltnerChannels@tv-basicstudies"];
-    if (name.includes('WLD_TREND')) return ["MAExp@tv-basicstudies", "MACD@tv-basicstudies"];
-    return ["MASimple@tv-basicstudies"];
-  };
-
-  useEffect(() => {
-    const container = document.getElementById('tv_chart_container');
-    if (!container) return;
-    container.innerHTML = '';
-    const script = document.createElement('script');
-    script.src = 'https://s3.tradingview.com/tv.js';
-    script.async = true;
-    script.onload = () => {
-      if (window.TradingView) {
-        new window.TradingView.widget({
-          "autosize": true, "symbol": `BINANCE:${activeAsset.split('-')[0]}USDT.P`,
-          "interval": "1", "theme": "dark", "style": "1", "backgroundColor": "#020617",
-          "container_id": "tv_chart_container", "studies": activeStudies 
-        });
-      }
-    };
-    container.appendChild(script);
-  }, [activeAsset, activeStudies]);
-
   const paperPositions = tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER');
   const formattedLivePositions = livePositions.map(pos => ({
       side: pos.side === 'LONG' ? 'BUY' : 'SELL',
@@ -213,6 +177,122 @@ export default function Dashboard() {
       created_at: ord.created_time || new Date().toISOString()
   }));
 
+  // =========================================================================
+  // 📈 LIGHTWEIGHT CHARTS NATIVE INTEGRATION
+  // =========================================================================
+  useEffect(() => {
+    if (!chartContainerRef.current) return;
+    
+    // Initialize Native Chart
+    const chart = createChart(chartContainerRef.current, {
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+        crosshair: { mode: CrosshairMode.Normal },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: 'rgba(255,255,255,0.1)' },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
+        autoSize: true,
+    });
+
+    const series = chart.addCandlestickSeries({
+        upColor: '#10b981', downColor: '#ef4444',
+        borderVisible: false,
+        wickUpColor: '#10b981', wickDownColor: '#ef4444'
+    });
+
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    return () => chart.remove();
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadChartData = async () => {
+        if(!seriesRef.current) return;
+
+        // Map Coinbase Ticker to Binance Ticker for free public candle data
+        let baseAsset = activeAsset.split('-')[0].replace('PERP', '').trim();
+        if (baseAsset === 'ETP') baseAsset = 'ETH';
+        if (baseAsset === 'AVP') baseAsset = 'AVAX';
+        const symbol = `${baseAsset}USDT`;
+
+        try {
+            const res = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${chartTimeframe}&limit=1000`);
+            const data = await res.json();
+            if(!isMounted) return;
+
+            const formatted = data.map(d => ({
+                time: d[0] / 1000,
+                open: parseFloat(d[1]),
+                high: parseFloat(d[2]),
+                low: parseFloat(d[3]),
+                close: parseFloat(d[4])
+            }));
+            seriesRef.current.setData(formatted);
+
+            // 🧠 PAINT TRADE MARKERS (Vetos, Tripwires, Reversals, Entries)
+            const markers = [];
+            const usedTimes = new Set();
+            
+            [...tradeLogs].reverse().forEach(log => {
+                if(!log.created_at) return;
+                let t = Math.floor(new Date(log.created_at).getTime() / 1000);
+                
+                // Lightweight charts requires strictly ascending unique times
+                while(usedTimes.has(t)) t++; 
+                usedTimes.add(t);
+
+                const isBuy = log.side === 'BUY' || log.side === 'LONG';
+                const isShadow = log.execution_mode === 'SHADOW';
+                const isTripwire = log.reason?.includes('[TRIPWIRE');
+                const isReversal = log.reason?.includes('[REVERSAL');
+
+                let color = isBuy ? '#10b981' : '#ef4444';
+                let text = isBuy ? 'BUY' : 'SELL';
+                
+                if (isShadow) { color = '#64748b'; text = '👻 VETO'; }
+                else if (isTripwire) { color = '#f59e0b'; text = '🛡️ TRIPWIRE'; }
+                else if (isReversal) { color = '#a855f7'; text = '⚡ REVERSAL'; }
+
+                markers.push({
+                    time: t,
+                    position: isBuy ? 'belowBar' : 'aboveBar',
+                    color: color,
+                    shape: isBuy ? 'arrowUp' : 'arrowDown',
+                    text: text
+                });
+            });
+
+            markers.sort((a,b) => a.time - b.time);
+            seriesRef.current.setMarkers(markers);
+
+            // 🧠 PAINT ACTIVE LIMIT LINES (TP, SL, ENTRY)
+            priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
+            priceLinesRef.current = [];
+
+            openPositions.forEach(pos => {
+                if(pos.entry_price) {
+                    const el = seriesRef.current.createPriceLine({ price: pos.entry_price, color: '#6366f1', lineWidth: 2, lineStyle: 0, title: `${pos.side} AVG` });
+                    priceLinesRef.current.push(el);
+                }
+                if(pos.tp_price) {
+                    const tl = seriesRef.current.createPriceLine({ price: pos.tp_price, color: '#10b981', lineWidth: 2, lineStyle: 2, title: 'TP' });
+                    priceLinesRef.current.push(tl);
+                }
+                if(pos.sl_price) {
+                    const sl = seriesRef.current.createPriceLine({ price: pos.sl_price, color: '#ef4444', lineWidth: 2, lineStyle: 2, title: 'SL' });
+                    priceLinesRef.current.push(sl);
+                }
+            });
+
+        } catch(e) { console.error("Chart Fetch Error:", e); }
+    };
+
+    loadChartData();
+    return () => { isMounted = false; };
+  }, [activeAsset, chartTimeframe, tradeLogs, openPositions]);
+  // =========================================================================
+
   let displayLogs = [];
   if (activeTab === 'POSITIONS') displayLogs = openPositions;
   else if (activeTab === 'TRADE_HISTORY') displayLogs = tradeHistory;
@@ -225,9 +305,10 @@ export default function Dashboard() {
   const isResonant = latestScan?.status === 'RESONANT';
   const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
 
-  // X-Ray Math
+  // X-Ray Math (Safe Parsing)
   const bids = parseFloat(latestScan?.telemetry?.bids || 0);
   const asks = parseFloat(latestScan?.telemetry?.asks || 0);
+  const cvd = parseFloat(latestScan?.telemetry?.cvd || 0);
   const totalLiquidity = bids + asks;
   const bidPercent = totalLiquidity > 0 ? (bids / totalLiquidity) * 100 : 50;
 
@@ -335,7 +416,10 @@ export default function Dashboard() {
             {/* X-RAY HUD & REASONING CONSOLE */}
             <div className="relative z-10 grid grid-cols-3 gap-4 pt-4 border-t border-white/5">
                 <div className="col-span-1 flex flex-col gap-2">
-                    <div className="text-[8px] font-black tracking-widest uppercase text-slate-500 flex items-center gap-1"><Eye size={10}/> X-Ray Heatmap</div>
+                    <div className="text-[8px] font-black tracking-widest uppercase text-slate-500 flex items-center justify-between mb-1">
+                        <span className="flex items-center gap-1"><Eye size={10}/> Order Book Heatmap</span>
+                        <span className={`font-mono ${cvd > 0 ? 'text-emerald-400' : 'text-red-400'}`}>CVD: {cvd.toFixed(0)}</span>
+                    </div>
                     {totalLiquidity > 0 ? (
                         <div className="w-full h-2 rounded-full overflow-hidden flex bg-slate-800">
                             <div style={{ width: `${bidPercent}%` }} className="h-full bg-emerald-500/80 transition-all duration-500" />
@@ -356,8 +440,50 @@ export default function Dashboard() {
             </div>
           </div>
 
-          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col p-4">
-            <div id="tv_chart_container" className="relative flex-grow w-full h-full z-10" />
+          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col">
+            
+            {/* TIMEFRAME HEADER */}
+            <div className="absolute top-4 left-6 z-20 flex gap-2">
+                {['1m', '5m', '15m', '1h', '4h'].map(tf => (
+                    <button 
+                        key={tf} 
+                        onClick={() => setChartTimeframe(tf)}
+                        className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border transition-all ${chartTimeframe === tf ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30' : 'bg-slate-950/80 text-slate-500 border-white/5 hover:bg-white/5'}`}
+                    >
+                        {tf}
+                    </button>
+                ))}
+            </div>
+
+            {/* LIVE PNL OVERLAY */}
+            <div className="absolute top-4 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
+               {openPositions.slice(0, 3).map((log, i) => {
+                 const displayPnl = log.execution_mode.includes('LIVE') ? log.pnl : 
+                 ((log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1));
+                 return (
+                  <div key={i} className="bg-black/70 backdrop-blur-md border border-white/10 p-2 px-3 rounded-xl text-[9px] font-mono flex items-center justify-between gap-4 pointer-events-auto shadow-lg">
+                     <div className="flex flex-col gap-0.5">
+                       <div className="flex items-center gap-2">
+                         <span className={log.side === 'BUY' || log.side === 'LONG' ? 'text-emerald-400 animate-pulse' : 'text-amber-400 animate-pulse'}>●</span>
+                         <span className="text-slate-300 uppercase font-bold">{log.side} {log.qty ? `(${log.qty.toLocaleString()})` : ''} @ {log.entry_price}</span>
+                       </div>
+                       <div className="flex items-center gap-3">
+                         <span className="text-[7px] text-slate-500 font-black tracking-widest uppercase pl-3">{log.strategy_id}</span>
+                       </div>
+                     </div>
+                     {livePrice > 0 && (
+                         <span className={`font-black ${displayPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>
+                             {displayPnl >= 0 ? '+' : ''}{displayPnl?.toFixed(4)}
+                         </span>
+                     )}
+                  </div>
+                 )
+               })}
+            </div>
+
+            {/* LIGHTWEIGHT CHART CONTAINER */}
+            <div ref={chartContainerRef} className="relative flex-grow w-full h-full z-10 pt-10" />
+            
           </div>
 
           <div className="flex flex-col h-[35%] overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30">
@@ -477,7 +603,7 @@ export default function Dashboard() {
                 const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
                 return (
                   <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5">
-                    <div className="flex justify-between items-center mb-1"><span className="text-xs font-black text-white uppercase">{strat.strategy.replace('_V1','')}</span><button onClick={(e) => { e.stopPropagation(); setActiveStudies(getStudiesForStrategy(strat.strategy)); }} className="text-[8px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-1.5 py-0.5 rounded">+ CHART</button></div>
+                    <div className="flex justify-between items-center mb-1"><span className="text-xs font-black text-white uppercase">{strat.strategy.replace('_V1','')}</span><BarChart2 size={12} className="text-cyan-400"/></div>
                     <div className="text-[10px] text-slate-500 font-mono">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
                   </button>
                 )
