@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createClient } from '@supabase/supabase-js';
 import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
-import { createChart, CrosshairMode } from 'lightweight-charts';
+// 🟢 THE FIX: Explicitly importing V5 modules
+import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers } from 'lightweight-charts';
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet,
@@ -13,6 +14,7 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhx
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// MASTER DICTIONARY OF COINBASE ASSETS
 const MASTER_ASSETS = [
     'BTC-PERP-INTX', 'ETH-PERP-INTX', 'ETP-20DEC30-CDE', 'SOL-PERP-INTX', 
     'DOGE-PERP-INTX', 'AVP-20DEC30-CDE', 'WLD-PERP-INTX', 'XRP-PERP-INTX', 
@@ -44,6 +46,7 @@ export default function Dashboard() {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
+  const seriesMarkersRef = useRef(null); // 🟢 THE FIX: Separate reference for V5 markers
   const priceLinesRef = useRef([]);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
 
@@ -185,6 +188,7 @@ export default function Dashboard() {
 
   const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
 
+  // 🟢 THE FIX: React useMemo shields to prevent build errors
   const paperPositions = useMemo(() => tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER'), [tradeLogs]);
   
   const formattedLivePositions = useMemo(() => livePositions.map(pos => ({
@@ -212,8 +216,9 @@ export default function Dashboard() {
       created_at: ord.created_time || new Date().toISOString()
   })), [liveOrders]);
 
+
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PERFECT V5 INITIALIZATION 
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 1 (V5 INITIALIZATION)
   // =========================================================================
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -227,14 +232,19 @@ export default function Dashboard() {
         autoSize: true,
     });
 
-    const series = chart.addCandlestickSeries({
+    // 🟢 THE FIX: Correctly injecting CandlestickSeries for V5
+    const series = chart.addSeries(CandlestickSeries, {
         upColor: '#10b981', downColor: '#ef4444',
         borderVisible: false,
         wickUpColor: '#10b981', wickDownColor: '#ef4444'
     });
 
+    // 🟢 THE FIX: Instantiating the V5 markers plugin
+    const markersPlugin = createSeriesMarkers(series, []);
+
     chartRef.current = chart;
     seriesRef.current = series;
+    seriesMarkersRef.current = markersPlugin; 
 
     const handleResize = () => {
         if(chartContainerRef.current) {
@@ -244,9 +254,6 @@ export default function Dashboard() {
     
     const resizeObserver = new ResizeObserver(handleResize);
     resizeObserver.observe(chartContainerRef.current);
-    
-    // Force a resize immediately after attaching to ensure it fills the container
-    setTimeout(handleResize, 100);
 
     return () => {
         resizeObserver.disconnect();
@@ -255,50 +262,40 @@ export default function Dashboard() {
   }, []);
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: COINBASE API DATA LOADER
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 2 (FETCH BINANCE CANDLES)
   // =========================================================================
   useEffect(() => {
     let isMounted = true;
     const loadChartData = async () => {
         if(!seriesRef.current) return;
 
-        // 🟢 THE FIX: We use Coinbase's public API to guarantee exact price parity with your Watchdog
-        let coinbaseProduct = activeAsset.toUpperCase().trim();
-        if (!coinbaseProduct.includes('-')) {
-            if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
-            else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
-            else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
-        }
-        
         let baseAsset = activeAsset.split('-')[0].replace('PERP', '').trim();
         if (baseAsset === 'ETP') baseAsset = 'ETH';
         if (baseAsset === 'AVP') baseAsset = 'AVAX';
         if (baseAsset === 'BIT') baseAsset = 'BTC';
-        
-        // We ping the spot product, because Coinbase Advanced Trade doesn't allow unauthenticated futures fetching
-        const fetchTarget = `${baseAsset}-USD`;
+        const binanceSymbol = `${baseAsset}USDT`;
 
-        const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
-        const granularity = tfMap[chartTimeframe] || 60;
+        const tfMap = { '1m': '1m', '5m': '5m', '15m': '15m', '1h': '1h', '4h': '4h' };
+        const interval = tfMap[chartTimeframe] || '1m';
 
         try {
-            const res = await fetch(`https://api.exchange.coinbase.com/products/${fetchTarget}/candles?granularity=${granularity}`);
+            const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${binanceSymbol}&interval=${interval}&limit=500`);
             const data = await res.json();
-            
             if(!isMounted) return;
 
             if (!Array.isArray(data)) {
-                console.warn(`[CHART WARN] Invalid data from Coinbase for ${fetchTarget}.`);
+                console.warn(`[CHART WARN] Invalid data. Clearing chart.`);
                 seriesRef.current.setData([]);
                 return;
             }
 
-            // Coinbase returns [ time, low, high, open, close, volume ]
-            const uniqueData = new Map();
-            data.forEach(d => {
-                uniqueData.set(d[0], { time: d[0], low: d[1], high: d[2], open: d[3], close: d[4] });
-            });
-            const formatted = Array.from(uniqueData.values()).sort((a, b) => a.time - b.time);
+            const formatted = data.map(d => ({
+                time: d[0] / 1000,
+                open: parseFloat(d[1]),
+                high: parseFloat(d[2]),
+                low: parseFloat(d[3]),
+                close: parseFloat(d[4])
+            })).sort((a, b) => a.time - b.time); 
 
             seriesRef.current.setData(formatted);
         } catch(e) { console.error("Chart Fetch Error:", e); }
@@ -309,10 +306,10 @@ export default function Dashboard() {
   }, [activeAsset, chartTimeframe]);
 
   // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: DYNAMIC MARKERS & LINES
+  // 📈 LIGHTWEIGHT CHARTS: PHASE 3 (APPLY V5 MARKERS AND LINES)
   // =========================================================================
   useEffect(() => {
-      if(!seriesRef.current) return;
+      if(!seriesRef.current || !seriesMarkersRef.current) return;
 
       try {
           const markers = [];
@@ -321,7 +318,6 @@ export default function Dashboard() {
           
           const currentData = seriesRef.current.data();
           if (!currentData || currentData.length === 0) return;
-          
           const candleTimes = new Set(currentData.map(c => c.time));
           const usedTimes = new Set();
           
@@ -359,10 +355,9 @@ export default function Dashboard() {
 
           markers.sort((a,b) => a.time - b.time);
           
-          // 🟢 THE FIX: V5 compatible marker injection. We attach it directly back to the active series reference.
-          seriesRef.current.setMarkers(markers);
+          // 🟢 THE FIX: V5 requires markers to be sent to the Plugin Ref
+          seriesMarkersRef.current.setMarkers(markers);
 
-          // Clear previous lines
           priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
           priceLinesRef.current = [];
 
@@ -426,6 +421,7 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4 relative">
       
+      {/* 🟢 THE FIX: The loader is now an absolute overlay, which allows the HTML chart container to physically mount underneath it immediately. */}
       {loading && (
          <div className="absolute inset-0 z-50 bg-[#020617]/90 backdrop-blur-sm flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">
              Establishing Nexus...
@@ -565,7 +561,7 @@ export default function Dashboard() {
                 <div className="col-span-1 flex flex-col gap-2">
                     <div className="text-[8px] font-black tracking-widest uppercase text-slate-500 flex items-center justify-between mb-1">
                         <span className="flex items-center gap-1"><Eye size={10}/> Order Book Heatmap</span>
-                        <span className={`font-mono ${cvd !== 0 ? (cvd > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-500'}`}>CVD: {cvd.toFixed(0)}</span>
+                        <span className={`font-mono ${cvd > 0 ? 'text-emerald-400' : 'text-red-400'}`}>CVD: {cvd.toFixed(0)}</span>
                     </div>
                     {totalLiquidity > 0 ? (
                         <div className="w-full h-2 rounded-full overflow-hidden flex bg-slate-800">
