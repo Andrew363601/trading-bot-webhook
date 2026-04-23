@@ -8,13 +8,10 @@ import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
-
-// Loaded at the top to prevent Vercel memory leaks
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
-  // CORS Headers to prevent silent frontend blocking
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -23,8 +20,6 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    console.log("[CHAT API] Nexus Agent pinged. Extracting payload...");
-
     let data = req.body;
     if (typeof data === 'string') {
       try { data = JSON.parse(data); } catch (e) {}
@@ -35,17 +30,10 @@ export default async function handler(req, res) {
         throw new Error("Invalid or empty message payload.");
     }
 
-    // --- THE PROVEN FIX: The Message Sanitizer ---
-    const cleanMessages = messages.filter(msg => {
-      if (msg.role === 'tool') return false; 
-      if (msg.role === 'assistant' && msg.toolInvocations) return false; 
-      return true;
-    });
-
-    const safeMessages = cleanMessages.length > 6 ? cleanMessages.slice(-6) : cleanMessages;
-    while (safeMessages.length > 0 && safeMessages[0].role !== 'user') {
-      safeMessages.shift(); 
-    }
+    // 🟢 THE FIX: We removed the aggressive "Message Sanitizer". 
+    // Gemini MUST receive the raw toolInvocations and tool results to maintain its train of thought.
+    // We only truncate to the last 15 messages to save API tokens.
+    const safeMessages = messages.length > 15 ? messages.slice(-15) : messages;
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -56,8 +44,6 @@ export default async function handler(req, res) {
     const google = createGoogleGenerativeAI({
       apiKey: process.env.GEMINI_API_KEY,
     });
-
-    console.log("[CHAT API] Fetching database telemetry in parallel...");
 
     const [
       { data: allConfigs },
@@ -156,13 +142,11 @@ export default async function handler(req, res) {
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
     `;
 
-    console.log("[CHAT API] Handing over to Gemini 2.5 Pro...");
-
     const result = await streamText({
       model: google('models/gemini-2.5-pro'), 
       system: systemPrompt,
       messages: safeMessages, 
-      maxSteps: 5,
+      maxSteps: 5, // Allows Gemini to call a tool, read the result, and answer automatically
       tools: {
         queryTradeLedger: tool({
           description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
@@ -394,45 +378,8 @@ export default async function handler(req, res) {
       },
     });
 
-    console.log("[CHAT API] Streaming response to client...");
-    
-    // --- THE INVINCIBLE BARE-METAL PUMPER ---
-    // If the official modern pipeline exists, use it.
-    if (typeof result.pipeDataStreamToResponse === 'function') {
-        console.log("[CHAT API] Native pipeline detected. Routing...");
-        return result.pipeDataStreamToResponse(res);
-    } 
-    
-    // If the official legacy pipeline exists, use it.
-    if (typeof result.toAIStreamResponse === 'function') {
-        console.log("[CHAT API] Legacy pipeline detected. Routing...");
-        const streamResponse = result.toAIStreamResponse();
-        res.status(streamResponse.status);
-        streamResponse.headers.forEach((val, key) => res.setHeader(key, val));
-        const reader = streamResponse.body.getReader();
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            res.write(Buffer.from(value));
-        }
-        return res.end();
-    }
-
-    // If both fail, manually extract the textStream and format it as Vercel DSP string chunks.
-    console.log("[CHAT API] Engaging Bare-Metal DSP Pumper...");
-    
-    // 🟢 THE FIX: Explicitly add Transfer-Encoding and Connection headers to force browser streaming
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('x-vercel-ai-data-stream', 'v1');
-    
-    for await (const chunk of result.textStream) {
-        // Formats raw text chunks into DSP format: 0:"text"
-        res.write(`0:${JSON.stringify(chunk)}\n`);
-    }
-    
-    return res.end();
+    // 🟢 THE FIX: Safely route the Next.js API stream response
+    return result.pipeDataStreamToResponse(res);
 
   } catch (err) {
     console.error("====== FULL CHAT FAULT ENCOUNTERED ======");

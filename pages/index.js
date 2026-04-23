@@ -141,7 +141,6 @@ export default function Dashboard() {
     fetchData(); 
   };
 
-  // 🟢 THE FIX: Dedicated Cancel Function for pending limit orders
   const handleCancelOrder = async (order) => {
       const confirmCancel = window.confirm(`Cancel pending ${order.side} limit order for ${order.symbol}?`);
       if (!confirmCancel) return;
@@ -223,7 +222,7 @@ export default function Dashboard() {
   const tradeHistory = useMemo(() => tradeLogs.filter(log => log.exit_price), [tradeLogs]);
   
   const openOrders = useMemo(() => liveOrders.map(ord => ({
-      order_id: ord.order_id, // 🟢 THE FIX: Mapping the Coinbase ID so we can cancel it
+      order_id: ord.order_id, 
       side: ord.side,
       entry_price: parseFloat(ord.order_configuration?.limit_limit_gtc?.limit_price || 0),
       qty: parseFloat(ord.order_configuration?.limit_limit_gtc?.base_size || 0),
@@ -767,7 +766,6 @@ export default function Dashboard() {
                                 {isShadow ? <span className="text-[9px] text-red-400 font-bold">VETOED</span> :
                                 (log.exit_price ? <span className="text-[10px] text-slate-400">${log.exit_price}</span> : 
                                  <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
-                                 {/* 🟢 THE FIX: Smart button routes to proper cancel function */}
                                  <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">X</button></>)}
                             </td>
                             <td className="px-4 py-3 text-right font-black text-[10px]">{pnlDisplay}</td>
@@ -799,13 +797,26 @@ export default function Dashboard() {
           <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
           <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
+              
+              {/* 🟢 THE FIX: Render the Tool Invocations so the user can watch Nexus "think" */}
               {displayMessages.map(m => (
-                <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>
-                        {m.content}
-                    </div>
+                <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+                    
+                    {m.toolInvocations && m.toolInvocations.map(tool => (
+                        <div key={tool.toolCallId} className="text-[9px] text-slate-500 italic bg-black/30 px-3 py-1.5 rounded-lg border border-white/5 flex items-center gap-2">
+                            {tool.state === 'result' ? <span className="text-emerald-400 font-bold">✓</span> : <Cpu size={10} className="animate-spin text-indigo-400" />}
+                            <span>Nexus executing: <span className="font-bold text-slate-400">{tool.toolName}</span></span>
+                        </div>
+                    ))}
+                    
+                    {m.content && (
+                        <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>
+                            {m.content}
+                        </div>
+                    )}
                 </div>
               ))}
+              
               {sdkError && (
                 <div className="flex justify-start"><div className="max-w-[90%] rounded-2xl px-4 py-3 bg-red-500/10 text-red-400 border border-red-500/20">[SYSTEM FAULT]: {sdkError.message}</div></div>
               )}
