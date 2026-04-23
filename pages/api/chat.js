@@ -420,7 +420,11 @@ export default async function handler(req, res) {
 
     // If both fail, manually extract the textStream and format it as Vercel DSP string chunks.
     console.log("[CHAT API] Engaging Bare-Metal DSP Pumper...");
+    
+    // 🟢 THE FIX: Explicitly add Transfer-Encoding and Connection headers to force browser streaming
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    res.setHeader('Connection', 'keep-alive');
     res.setHeader('x-vercel-ai-data-stream', 'v1');
     
     for await (const chunk of result.textStream) {
