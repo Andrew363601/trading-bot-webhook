@@ -119,28 +119,23 @@ export default async function handler(req, res) {
 
                     const entryOrderExists = openOrders.some(o => o.side === openTrade.side && parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price) === parseFloat(openTrade.entry_price));
 
-                    // 🟢 THE FIX: SQUASHING GHOST PROFITS
-                    // If we have no position, AND no entry order, we must verify IF it actually traded before logging PnL.
+                    // 🟢 SQUASHING GHOST PROFITS
                     if (!activePosition && !entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         if (minutesOpen > 2) {
                             
-                            // 1. Double check Historical Orders to see if the entry was canceled or filled
                             let wasCanceled = false;
                             try {
-                                // Note: We only check the last hour of fills to save API limits, assuming fast scalps
                                 const histPath = `/api/v3/brokerage/orders/historical/batch?order_status=CANCELLED&product_id=${coinbaseProduct}`;
                                 const histResp = await fetch(`https://api.coinbase.com${histPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', histPath, apiKeyName, apiSecret)}` } });
                                 if (histResp.ok) {
                                     const histData = await histResp.json();
-                                    // If we find our exact limit price and side in the canceled bucket, it's a stale limit, NOT a trade.
                                     wasCanceled = histData.orders?.some(o => o.side === openTrade.side && parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price) === parseFloat(openTrade.entry_price));
                                 }
                             } catch (e) { console.warn("Failed to check historical cancels:", e.message); }
 
 
                             if (wasCanceled || openTrade.order_type === 'LIMIT') {
-                                // It was a limit order that never filled, or was manually canceled by the user on Coinbase.
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                                 await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                                 
@@ -148,7 +143,6 @@ export default async function handler(req, res) {
                                 continue; 
 
                             } else {
-                                // If it wasn't canceled, it MUST have been a market order that hit its TP/SL natively.
                                 if (openOrders.length > 0) {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                     await fetch(`https://api.coinbase.com${cancelPath}`, {
@@ -181,7 +175,6 @@ export default async function handler(req, res) {
                         }
                     }
 
-                    // ... (The rest of your active position bracket logic remains exactly the same)
                     if (activePosition) {
                         const physicalTP = openOrders.find(o => o.order_configuration?.limit_limit_gtc);
                         const physicalSL = openOrders.find(o => o.order_configuration?.stop_limit_stop_limit_gtc);
@@ -226,7 +219,16 @@ export default async function handler(req, res) {
                                         client_order_id: `nx_oco_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
                                         order_configuration: { trigger_bracket_gtc: { limit_price: safeTpPrice.toString(), stop_trigger_price: safeSlPrice.toString(), base_size: orderQty.toString() } }
                                     };
-                                    await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
+                                    const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
+                                    const ocoResult = await ocoResp.json();
+                                    
+                                    // 🟢 THE FIX: Watchdog successfully places Brackets after Limit fill and pings Discord
+                                    if (ocoResp.ok && ocoResult.success !== false) {
+                                        await sendDiscordAlert(`🎯 Brackets Deployed (Watchdog): ${asset}`, `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** Limit Fill Detected, Brackets Active on Exchange`, 10181046);
+                                    } else {
+                                        console.error(`[WATCHDOG REJECT] OCO Failed:`, JSON.stringify(ocoResult));
+                                        await sendDiscordAlert(`⚠️ Bracket Failed: ${asset}`, `**Action:** Missing TP/SL protection!\n**Details:** Exchange rejected the Watchdog OCO order.`, 15548997);
+                                    }
                                 } catch (e) { 
                                     console.error(`[WATCHDOG FATAL] OCO:`, e.message); 
                                 }
@@ -399,7 +401,6 @@ export default async function handler(req, res) {
                 await sendDiscordAlert(`👻 Oracle Veto: ${asset}`, `**Signal:** ${normalizedSignal} (Rejected)\n\n**🧠 Oracle Rationale:**\n_${oracleVerdict.reasoning}_`, 10038562);
 
             } else {
-                // 🟢 THE FIX: Pass the dynamic Order Type (LIMIT vs MARKET) from the Oracle to the Execution Engine
                 decision.entryPrice = oracleVerdict.limit_price; 
                 decision.orderType = oracleVerdict.order_type || 'LIMIT'; 
 

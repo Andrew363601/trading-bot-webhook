@@ -185,6 +185,7 @@ export default async function handler(req, res) {
       executionPrice = result.success_response?.average_price ? parseFloat(result.success_response.average_price) : executionPrice;
       executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
 
+      // Only MARKET orders can instantly attach OCO brackets upon execution
       if (!isClosing && orderType === 'MARKET' && tpPrice && slPrice) {
           const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
           try {
@@ -234,9 +235,12 @@ export default async function handler(req, res) {
       if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
       executionStatus = orderType === 'LIMIT' ? 'opened_limit_position' : 'opened_position';
       
-      // 🟢 THE FIX: We inject the Oracle's reasoning directly into the Open Alert embed
+      // 🟢 THE FIX: Differentiate Limit vs Market orders visually, and include the intended targets.
       const rationaleText = tradeReason ? `\n\n**🧠 Oracle Rationale:**\n_${tradeReason}_` : '';
-      await sendDiscordAlert(`🚀 New Position Opened: ${rawSymbol}`, `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}${rationaleText}`, 3447003); 
+      const actionTitle = orderType === 'LIMIT' ? `⏳ Limit Order Placed: ${rawSymbol}` : `🚀 New Position Opened: ${rawSymbol}`;
+      const targetText = (tpPrice && slPrice) ? `\n**Target TP:** $${tpPrice}\n**Target SL:** $${slPrice}` : `\n**Targets:** Dynamic`;
+
+      await sendDiscordAlert(actionTitle, `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}${targetText}${rationaleText}`, 3447003); 
     }
 
     return res.status(200).json({ status: executionStatus, product: coinbaseProduct, price: executionPrice });
