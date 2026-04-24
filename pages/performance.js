@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js';
 import { createChart } from 'lightweight-charts';
 import { 
-  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, AlertTriangle, Lightbulb
+  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb
 } from 'lucide-react';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
@@ -10,7 +10,6 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publi
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export default function PerformanceLog() {
-  // 🟢 THE FIX: SSR Hydration Lock
   const [isMounted, setIsMounted] = useState(false);
   
   const [dailyStats, setDailyStats] = useState({});
@@ -43,45 +42,50 @@ export default function PerformanceLog() {
       const statsMap = {};
       calendarDays.forEach(day => statsMap[day] = { date: day, pnl: 0, trades: 0 });
 
-      const validTrades = (trades || []).filter(t => !(parseFloat(t.pnl) === 0 && t.entry_price === t.exit_price));
+      // Ensure valid trades exist and scrub out the stale canceled limit orders
+      const validTrades = (trades || []).filter(t => t?.exit_time && !(parseFloat(t?.pnl || 0) === 0 && t?.entry_price === t?.exit_price));
 
+      // 🟢 THE FIX: Ironclad Chart Array Sorting to prevent Library Crash
+      const rawChartData = validTrades.map(trade => ({
+          time: Math.floor(new Date(trade.exit_time).getTime() / 1000),
+          pnl: parseFloat(trade.pnl || 0)
+      }));
+      
+      rawChartData.sort((a, b) => a.time - b.time);
+
+      const uniqueChartData = [];
       let cumulativePnl = 0;
-      const chartData = [];
-      let lastTime = 0; // 🟢 THE FIX: Chronology tracker
+      let lastTime = 0;
 
+      rawChartData.forEach(data => {
+          cumulativePnl += data.pnl;
+          
+          let safeTime = data.time;
+          if (safeTime <= lastTime) safeTime = lastTime + 1; // Strict time-stepper prevents duplicates
+          lastTime = safeTime;
+          
+          uniqueChartData.push({ time: safeTime, value: parseFloat(cumulativePnl.toFixed(2)) });
+      });
+
+      // Populate Calendar Math
       validTrades.forEach(trade => {
         const dateStr = new Date(trade.exit_time).toISOString().split('T')[0];
-        const pnl = parseFloat(trade.pnl || 0);
-        
         if (statsMap[dateStr]) {
-            statsMap[dateStr].pnl += pnl;
+            statsMap[dateStr].pnl += parseFloat(trade.pnl || 0);
             statsMap[dateStr].trades += 1;
         }
-        
-        cumulativePnl += pnl;
-        
-        // 🟢 THE FIX: Time Stepper guarantees strictly ascending timestamps
-        let currentTime = Math.floor(new Date(trade.exit_time).getTime() / 1000);
-        if (currentTime <= lastTime) {
-            currentTime = lastTime + 1;
-        }
-        lastTime = currentTime;
-
-        chartData.push({
-            time: currentTime,
-            value: parseFloat(cumulativePnl.toFixed(2))
-        });
       });
 
       setDailyStats(statsMap);
       setSelectedDate(prev => prev || calendarDays[calendarDays.length - 1]);
 
-      if (seriesRef.current && chartData.length > 0) {
-          seriesRef.current.setData(chartData);
+      if (seriesRef.current && uniqueChartData.length > 0) {
+          seriesRef.current.setData(uniqueChartData);
       }
 
-      const stitched = validTrades.reverse().map(trade => {
-        const originalReason = trade.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
+      // 🟢 THE FIX: Clone array before reversing to prevent mutating the original math!
+      const stitched = [...validTrades].reverse().map(trade => {
+        const originalReason = trade?.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
         return {
           dateStr: new Date(trade.exit_time).toISOString().split('T')[0],
           timeStr: new Date(trade.exit_time).toLocaleTimeString(),
@@ -140,28 +144,31 @@ export default function PerformanceLog() {
     };
   }, [isMounted]);
 
-  const rawFilteredPipelines = detailedPipelines.filter(p => p.dateStr === selectedDate);
-  const filteredPipelines = rawFilteredPipelines.filter(p => {
-      if (logFilter === 'WIN') return p.trade.pnl > 0;
-      if (logFilter === 'LOSS') return p.trade.pnl <= 0;
+  // 🟢 THE FIX: Aggressive Optional Chaining on all Array Filters
+  const rawFilteredPipelines = detailedPipelines?.filter(p => p?.dateStr === selectedDate) || [];
+  const filteredPipelines = rawFilteredPipelines?.filter(p => {
+      if (!p?.trade) return false;
+      const pnl = parseFloat(p.trade.pnl || 0);
+      if (logFilter === 'WIN') return pnl > 0;
+      if (logFilter === 'LOSS') return pnl <= 0;
       if (logFilter === 'LONG') return p.trade.side === 'BUY' || p.trade.side === 'LONG';
       if (logFilter === 'SHORT') return p.trade.side === 'SELL' || p.trade.side === 'SHORT';
       return true;
-  });
+  }) || [];
 
-  const totalSelectedPnL = rawFilteredPipelines.reduce((sum, p) => sum + parseFloat(p.trade.pnl || 0), 0);
+  const totalSelectedPnL = rawFilteredPipelines.reduce((sum, p) => sum + parseFloat(p?.trade?.pnl || 0), 0);
   const winRate = rawFilteredPipelines.length > 0 
-    ? ((rawFilteredPipelines.filter(p => p.trade.pnl > 0).length / rawFilteredPipelines.length) * 100).toFixed(1) 
+    ? ((rawFilteredPipelines.filter(p => parseFloat(p?.trade?.pnl || 0) > 0).length / rawFilteredPipelines.length) * 100).toFixed(1) 
     : 0;
 
   const generateInsights = () => {
-      if (detailedPipelines.length < 5) return "Accumulating telemetry. Minimum 5 trades required to generate reliable optimization insights.";
+      if (!detailedPipelines || detailedPipelines.length < 5) return "Accumulating telemetry. Minimum 5 trades required to generate reliable optimization insights.";
       
-      const wins = detailedPipelines.filter(p => p.trade.pnl > 0);
-      const losses = detailedPipelines.filter(p => p.trade.pnl <= 0);
+      const wins = detailedPipelines.filter(p => parseFloat(p?.trade?.pnl || 0) > 0);
+      const losses = detailedPipelines.filter(p => parseFloat(p?.trade?.pnl || 0) <= 0);
       
-      const avgWin = wins.length > 0 ? wins.reduce((sum, p) => sum + parseFloat(p.trade.pnl), 0) / wins.length : 0;
-      const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((sum, p) => sum + parseFloat(p.trade.pnl), 0) / losses.length) : 0;
+      const avgWin = wins.length > 0 ? wins.reduce((sum, p) => sum + parseFloat(p?.trade?.pnl || 0), 0) / wins.length : 0;
+      const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((sum, p) => sum + parseFloat(p?.trade?.pnl || 0), 0) / losses.length) : 0;
       
       const profitFactor = avgLoss > 0 ? (avgWin / avgLoss).toFixed(2) : 'Infinity';
       const globalWinRate = ((wins.length / detailedPipelines.length) * 100).toFixed(1);
@@ -177,8 +184,13 @@ export default function PerformanceLog() {
       }
   };
 
-  // 🟢 THE FIX: Prevents Hydration Panic
-  if (!isMounted) return null;
+  // 🟢 THE FIX: Returns a proper loading screen instead of Null to keep Next.js Hydration happy
+  if (!isMounted) return (
+    <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center text-indigo-500 font-mono tracking-widest uppercase">
+       <BarChart3 className="animate-pulse mb-4" size={32} />
+       Syncing Telemetry...
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-6 font-sans flex flex-col gap-6">
@@ -207,7 +219,7 @@ export default function PerformanceLog() {
                  {generateInsights()}
              </p>
              <div className="mt-auto pt-4 border-t border-indigo-500/20">
-                 <div className="text-[9px] font-black uppercase tracking-widest text-indigo-400">Total Valid Trades: <span className="text-white">{detailedPipelines.length}</span></div>
+                 <div className="text-[9px] font-black uppercase tracking-widest text-indigo-400">Total Valid Trades: <span className="text-white">{detailedPipelines?.length || 0}</span></div>
              </div>
           </div>
       </div>
@@ -219,11 +231,11 @@ export default function PerformanceLog() {
             {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(day => (
                 <div key={day} className="text-center text-[9px] font-black uppercase tracking-widest text-slate-600 mb-2">{day}</div>
             ))}
-            {calendarDays.map((day, i) => {
+            {calendarDays?.map((day, i) => {
                 const stat = dailyStats[day];
-                const pnl = stat?.pnl || 0;
+                const pnl = parseFloat(stat?.pnl || 0);
                 const isSelected = selectedDate === day;
-                const hasTrades = stat?.trades > 0;
+                const hasTrades = (stat?.trades || 0) > 0;
                 
                 return (
                     <button 
@@ -263,11 +275,11 @@ export default function PerformanceLog() {
                   </div>
                   <div className="flex justify-between items-center border-b border-white/5 pb-2">
                      <span className="text-[10px] text-slate-400 uppercase tracking-widest flex items-center gap-1"><TrendingUp size={12}/> Winners</span>
-                     <span className="font-mono text-sm text-emerald-400">{rawFilteredPipelines.filter(p => p.trade.pnl > 0).length}</span>
+                     <span className="font-mono text-sm text-emerald-400">{rawFilteredPipelines?.filter(p => parseFloat(p?.trade?.pnl || 0) > 0).length || 0}</span>
                   </div>
                   <div className="flex justify-between items-center pb-2">
                      <span className="text-[10px] text-slate-400 uppercase tracking-widest flex items-center gap-1"><TrendingDown size={12}/> Losers</span>
-                     <span className="font-mono text-sm text-red-400">{rawFilteredPipelines.filter(p => p.trade.pnl <= 0).length}</span>
+                     <span className="font-mono text-sm text-red-400">{rawFilteredPipelines?.filter(p => parseFloat(p?.trade?.pnl || 0) <= 0).length || 0}</span>
                   </div>
                </div>
             </div>
@@ -289,9 +301,11 @@ export default function PerformanceLog() {
                  </div>
              </div>
              
-             {filteredPipelines.map((pipeline, i) => {
-                const t = pipeline.trade;
-                const isWin = t.pnl > 0;
+             {filteredPipelines?.map((pipeline, i) => {
+                const t = pipeline?.trade;
+                if (!t) return null;
+                const pnl = parseFloat(t.pnl || 0);
+                const isWin = pnl > 0;
 
                 return (
                   <div key={i} className={`p-4 rounded-2xl border transition-all duration-300 bg-slate-900/60 ${isWin ? 'border-emerald-500/20 shadow-[0_0_20px_-10px_rgba(52,211,153,0.1)]' : 'border-red-500/20 shadow-[0_0_20px_-10px_rgba(248,113,113,0.1)]'}`}>
@@ -305,7 +319,7 @@ export default function PerformanceLog() {
                         </div>
                         <div className="flex items-center gap-4">
                             <span className="text-[10px] text-slate-500 font-mono">{pipeline.timeStr}</span>
-                            <span className={`font-black font-mono text-sm ${isWin ? 'text-emerald-400' : 'text-red-400'}`}>{isWin ? '+' : ''}${t.pnl}</span>
+                            <span className={`font-black font-mono text-sm ${isWin ? 'text-emerald-400' : 'text-red-400'}`}>{isWin ? '+' : ''}${pnl.toFixed(4)}</span>
                         </div>
                      </div>
 
@@ -320,15 +334,15 @@ export default function PerformanceLog() {
                         <div className="border-l-2 border-slate-500/30 pl-4 py-1 flex flex-wrap gap-x-6 gap-y-2">
                            <div className="flex items-center gap-2">
                               <span className="text-[9px] text-slate-500 uppercase tracking-widest">Entry:</span>
-                              <span className="text-[11px] font-mono text-white">${t.entry_price}</span>
+                              <span className="text-[11px] font-mono text-white">${t.entry_price || 0}</span>
                            </div>
                            <div className="flex items-center gap-2">
                               <span className="text-[9px] text-slate-500 uppercase tracking-widest">Exit:</span>
-                              <span className="text-[11px] font-mono text-white">${t.exit_price}</span>
+                              <span className="text-[11px] font-mono text-white">${t.exit_price || 0}</span>
                            </div>
                            <div className="flex items-center gap-2">
                               <span className="text-[9px] text-slate-500 uppercase tracking-widest">Side:</span>
-                              <span className={`text-[11px] font-black uppercase ${t.side === 'BUY' ? 'text-emerald-400' : 'text-red-400'}`}>{t.side}</span>
+                              <span className={`text-[11px] font-black uppercase ${t.side === 'BUY' || t.side === 'LONG' ? 'text-emerald-400' : 'text-red-400'}`}>{t.side}</span>
                            </div>
                            {t.reason && t.reason.includes('[EXIT TRIGGER]') && (
                              <div className="flex items-center gap-2">
@@ -344,7 +358,7 @@ export default function PerformanceLog() {
                 );
              })}
              
-             {filteredPipelines.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
+             {(!filteredPipelines || filteredPipelines.length === 0) && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
           </div>
         </div>
       )}
