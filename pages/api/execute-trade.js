@@ -23,6 +23,22 @@ async function sendDiscordAlert(title, description, color) {
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
 
+// 🟢 THE FIX: Universal Metrics Dictionary to completely remove hardcoded elements
+const getAssetMetrics = (symbol) => {
+    let multiplier = 1.0;
+    let tickSize = 0.01;
+    
+    if (symbol.includes('ETP') || symbol.includes('ETH')) { multiplier = 0.1; tickSize = 0.50; }
+    else if (symbol.includes('BIT') || symbol.includes('BIP') || symbol.includes('BTC')) { multiplier = 0.01; tickSize = 1.00; }
+    else if (symbol.includes('SLP') || symbol.includes('SOL')) { multiplier = 5.0; tickSize = 0.01; }
+    else if (symbol.includes('DOP') || symbol.includes('DOGE')) { multiplier = 1000.0; tickSize = 0.0001; }
+    else if (symbol.includes('LCP') || symbol.includes('LTC')) { multiplier = 1.0; tickSize = 0.01; }
+    else if (symbol.includes('AVP') || symbol.includes('AVAX')) { multiplier = 1.0; tickSize = 0.01; }
+    else if (symbol.includes('LNP') || symbol.includes('LINK')) { multiplier = 1.0; tickSize = 0.001; }
+    
+    return { multiplier, tickSize };
+};
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
@@ -65,9 +81,10 @@ export default async function handler(req, res) {
 
     const isClosing = openTrade && openTrade.side !== side;
 
-    let orderQty = parseFloat(data.qty || 10);
+    // 🟢 THE FIX: Strictly enforce whole numbers for Contracts to prevent Exchange rejections
+    let orderQty = Math.max(1, Math.round(parseFloat(data.qty || 10)));
     if (isClosing) {
-        orderQty = parseFloat(openTrade.qty || orderQty);
+        orderQty = Math.max(1, Math.round(parseFloat(openTrade.qty || orderQty)));
     }
 
     const generateToken = (method, path) => {
@@ -78,13 +95,11 @@ export default async function handler(req, res) {
       );
     };
 
-    let tickSize = 0.01;
-    if (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) tickSize = 0.50;
-    if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
+    const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
 
-    let executionPrice = data.price ? parseFloat((Math.round(parseFloat(data.price) / tickSize) * tickSize).toFixed(2)) : 0;
-    if (tpPrice) tpPrice = parseFloat((Math.round(parseFloat(tpPrice) / tickSize) * tickSize).toFixed(2));
-    if (slPrice) slPrice = parseFloat((Math.round(parseFloat(slPrice) / tickSize) * tickSize).toFixed(2));
+    let executionPrice = data.price ? parseFloat((Math.round(parseFloat(data.price) / tickSize) * tickSize).toFixed(4)) : 0;
+    if (tpPrice) tpPrice = parseFloat((Math.round(parseFloat(tpPrice) / tickSize) * tickSize).toFixed(4));
+    if (slPrice) slPrice = parseFloat((Math.round(parseFloat(slPrice) / tickSize) * tickSize).toFixed(4));
 
     let executionStatus = 'simulated';
 
@@ -185,7 +200,6 @@ export default async function handler(req, res) {
       executionPrice = result.success_response?.average_price ? parseFloat(result.success_response.average_price) : executionPrice;
       executionStatus = orderType === 'LIMIT' ? 'limit_placed' : 'filled';
 
-      // Only MARKET orders can instantly attach OCO brackets upon execution
       if (!isClosing && orderType === 'MARKET' && tpPrice && slPrice) {
           const closingSide = side === 'BUY' ? 'SELL' : 'BUY';
           try {
@@ -209,10 +223,6 @@ export default async function handler(req, res) {
 
     if (openTrade) {
       if (isClosing) {
-        let multiplier = 1.0;
-        if (coinbaseProduct.includes('ETP')) multiplier = 0.1; 
-        if (coinbaseProduct.includes('BIT')) multiplier = 0.01;
-
         const pnl = openTrade.side === 'BUY' ? (executionPrice - openTrade.entry_price) * orderQty * multiplier : (openTrade.entry_price - executionPrice) * orderQty * multiplier;
         const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${tradeReason || 'MANUAL_CLOSE'}` : (tradeReason || 'MANUAL_CLOSE');
 
@@ -235,7 +245,6 @@ export default async function handler(req, res) {
       if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);
       executionStatus = orderType === 'LIMIT' ? 'opened_limit_position' : 'opened_position';
       
-      // 🟢 THE FIX: Differentiate Limit vs Market orders visually, and include the intended targets.
       const rationaleText = tradeReason ? `\n\n**🧠 Oracle Rationale:**\n_${tradeReason}_` : '';
       const actionTitle = orderType === 'LIMIT' ? `⏳ Limit Order Placed: ${rawSymbol}` : `🚀 New Position Opened: ${rawSymbol}`;
       const targetText = (tpPrice && slPrice) ? `\n**Target TP:** $${tpPrice}\n**Target SL:** $${slPrice}` : `\n**Targets:** Dynamic`;

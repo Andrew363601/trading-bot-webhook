@@ -35,6 +35,22 @@ function generateCoinbaseToken(method, path, apiKey, apiSecret) {
   );
 }
 
+// 🟢 THE FIX: Universal Metrics Dictionary
+const getAssetMetrics = (symbol) => {
+    let multiplier = 1.0;
+    let tickSize = 0.01;
+    
+    if (symbol.includes('ETP') || symbol.includes('ETH')) { multiplier = 0.1; tickSize = 0.50; }
+    else if (symbol.includes('BIT') || symbol.includes('BIP') || symbol.includes('BTC')) { multiplier = 0.01; tickSize = 1.00; }
+    else if (symbol.includes('SLP') || symbol.includes('SOL')) { multiplier = 5.0; tickSize = 0.01; }
+    else if (symbol.includes('DOP') || symbol.includes('DOGE')) { multiplier = 1000.0; tickSize = 0.0001; }
+    else if (symbol.includes('LCP') || symbol.includes('LTC')) { multiplier = 1.0; tickSize = 0.01; }
+    else if (symbol.includes('AVP') || symbol.includes('AVAX')) { multiplier = 1.0; tickSize = 0.01; }
+    else if (symbol.includes('LNP') || symbol.includes('LINK')) { multiplier = 1.0; tickSize = 0.001; }
+    
+    return { multiplier, tickSize };
+};
+
 export default async function handler(req, res) {
   try {
     const results = [];
@@ -50,11 +66,7 @@ export default async function handler(req, res) {
       const asset = config.asset;
       if (!asset) continue;
 
-      if (config.is_processing) {
-          console.log(`[MUTEX LOCK] ${config.strategy} on ${asset} is currently processing a previous ping. Aborting to prevent double-fire.`);
-          continue;
-      }
-
+      if (config.is_processing) continue;
       await supabase.from('strategy_config').update({ is_processing: true }).eq('strategy', config.strategy);
 
       try {
@@ -71,11 +83,9 @@ export default async function handler(req, res) {
 
         const microstructure = await fetchMicrostructure(asset, triggerCandles, apiKeyName, apiSecret);
 
-        // 🧠 FETCH CURRENT OPEN TRADE
         const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', asset).eq('strategy_id', config.strategy).is('exit_price', null).order('id', { ascending: false }).limit(1);
         const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
         
-        // 🧠 FETCH SHORT-TERM MEMORY (ROLLING 24-HOUR PERFORMANCE)
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         const { data: recentTrades } = await supabase.from('trade_logs')
             .select('*')
@@ -117,42 +127,100 @@ export default async function handler(req, res) {
                         openOrders = orderData.orders || [];
                     }
 
-                    const entryOrderExists = openOrders.some(o => o.side === openTrade.side && parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price) === parseFloat(openTrade.entry_price));
+                    const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
+                    let entryOrderExists = openOrders.some(o => 
+                        o.side.toUpperCase() === openTrade.side.toUpperCase() && 
+                        Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)
+                    );
 
-                    // 🟢 SQUASHING GHOST PROFITS
+                    // 🟢 THE FIX: 1. PARTIAL FILL HANDLER
+                    if (activePosition && entryOrderExists) {
+                        const activeQty = parseFloat(activePosition.number_of_contracts);
+                        const expectedQty = parseFloat(openTrade.qty);
+                        
+                        if (activeQty < expectedQty) {
+                            const targetOrder = openOrders.find(o => o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2));
+                            if (targetOrder) {
+                                const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] }) });
+                            }
+                            
+                            const updatedReason = `${openTrade.reason || ''}\n\n[PARTIAL FILL]: Market moved. Remaining ${expectedQty - activeQty} contracts canceled.`;
+                            await supabase.from('trade_logs').update({ qty: activeQty, reason: updatedReason }).eq('id', openTrade.id);
+                            openTrade.qty = activeQty;
+                            openTrade.reason = updatedReason;
+                            
+                            await sendDiscordAlert(`⚠️ Partial Fill Detected: ${asset}`, `**Filled:** ${activeQty} / ${expectedQty}\n**Action:** Unfilled limit order canceled. Proceeding to bracket active contracts.`, 16753920);
+                            
+                            openOrders = openOrders.filter(o => o.order_id !== targetOrder?.order_id);
+                            entryOrderExists = false;
+                        }
+                    }
+
+                    // 🟢 THE FIX: 2. PENDING_REVIEW (SMART SLEEP)
+                    if (!activePosition && entryOrderExists) {
+                        const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
+                        
+                        let fillExpectancy = 15; // default fallback
+                        const match = openTrade.reason?.match(/Fill:\s*(\d+)m/i);
+                        if (match) fillExpectancy = parseInt(match[1]);
+
+                        if (minutesOpen > fillExpectancy) {
+                            const oracleVerdict = await evaluateTradeIdea({ mode: 'PENDING_REVIEW', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, openTrade });
+                            
+                            if (oracleVerdict.action === 'CANCEL' || minutesOpen > 60) {
+                                const targetOrder = openOrders.find(o => o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2));
+                                if (targetOrder) {
+                                    const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] }) });
+                                }
+                                
+                                const finalReason = minutesOpen > 60 ? 'Hard 60m TTL Expired' : oracleVerdict.reasoning;
+                                const updatedReason = `${openTrade.reason || ''}\n\n[EXIT TRIGGER]: ORACLE_CANCELED - ${finalReason}`;
+                                await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                                
+                                await sendDiscordAlert(`⏳ Pending Limit Canceled: ${asset}`, `**Action:** Oracle aborted setup.\n**Reason:** ${finalReason}`, 15548997);
+                                continue;
+                                
+                            } else if (oracleVerdict.action === 'HOLD') {
+                                const newMins = oracleVerdict.new_expectancy || 15;
+                                const updatedReason = `${openTrade.reason || ''}\n\n[PENDING_REVIEW]: Oracle extended wait by ${newMins}m. Reason: ${oracleVerdict.reasoning}`;
+                                
+                                await supabase.from('trade_logs').update({ created_at: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                                openTrade.reason = updatedReason;
+                                continue;
+                            }
+                        }
+                        continue; 
+                    }
+
+                    // 🟢 GHOST PROFIT SQUASH
                     if (!activePosition && !entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         if (minutesOpen > 2) {
-                            
                             let wasCanceled = false;
                             try {
                                 const histPath = `/api/v3/brokerage/orders/historical/batch?order_status=CANCELLED&product_id=${coinbaseProduct}`;
                                 const histResp = await fetch(`https://api.coinbase.com${histPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', histPath, apiKeyName, apiSecret)}` } });
                                 if (histResp.ok) {
                                     const histData = await histResp.json();
-                                    wasCanceled = histData.orders?.some(o => o.side === openTrade.side && parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price) === parseFloat(openTrade.entry_price));
+                                    wasCanceled = histData.orders?.some(o => 
+                                        o.side.toUpperCase() === openTrade.side.toUpperCase() && 
+                                        Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)
+                                    );
                                 }
                             } catch (e) { console.warn("Failed to check historical cancels:", e.message); }
-
 
                             if (wasCanceled || openTrade.order_type === 'LIMIT') {
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                                 await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
-                                
-                                await sendDiscordAlert(`⏳ Limit Order Canceled: ${asset}`, `**Entry Price:** $${openTrade.entry_price}\n**Trigger:** Removed from Exchange`, 16776960);
+                                await sendDiscordAlert(`⏳ Limit Order Canceled: ${asset}`, `**Entry Price:** $${openTrade.entry_price}\n**Trigger:** Removed from Exchange manually.`, 16776960);
                                 continue; 
-
                             } else {
                                 if (openOrders.length > 0) {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                                    await fetch(`https://api.coinbase.com${cancelPath}`, {
-                                        method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) })
-                                    });
+                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                                 }
-                                
-                                let multiplier = 1.0;
-                                if (coinbaseProduct.includes('ETP')) multiplier = 0.1;
-                                if (coinbaseProduct.includes('BIT')) multiplier = 0.01;
 
                                 let exactExitPrice = currentPrice;
                                 let assumedReason = 'EXCHANGE_NATIVE_CLOSE';
@@ -168,13 +236,13 @@ export default async function handler(req, res) {
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                                 
                                 await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
-                                
                                 await sendDiscordAlert(`🏁 Position Closed Natively: ${asset}`, `**Exit Price:** $${exactExitPrice}\n**Realized PnL:** $${rawPnl.toFixed(4)}\n**Trigger:** ${assumedReason}`, rawPnl >= 0 ? 5763719 : 15548997);
                                 continue; 
                             }
                         }
                     }
 
+                    // 🟢 BRACKET INJECTION
                     if (activePosition) {
                         const physicalTP = openOrders.find(o => o.order_configuration?.limit_limit_gtc);
                         const physicalSL = openOrders.find(o => o.order_configuration?.stop_limit_stop_limit_gtc);
@@ -200,11 +268,8 @@ export default async function handler(req, res) {
                         const orderQty = activePosition.number_of_contracts;
                         const executePath = '/api/v3/brokerage/orders';
 
-                        let tickSize = (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) ? 0.50 : 0.01;
-                        if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
-
-                        const safeSlPrice = openTrade.sl_price ? (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(2) : null;
-                        const safeTpPrice = openTrade.tp_price ? (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(2) : null;
+                        const safeSlPrice = openTrade.sl_price ? (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(4) : null;
+                        const safeTpPrice = openTrade.tp_price ? (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(4) : null;
 
                         if (!hasTP && !hasSL && safeTpPrice && safeSlPrice) {
                             let priceCrossed = false;
@@ -222,77 +287,65 @@ export default async function handler(req, res) {
                                     const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
                                     const ocoResult = await ocoResp.json();
                                     
-                                    // 🟢 THE FIX: Watchdog successfully places Brackets after Limit fill and pings Discord
                                     if (ocoResp.ok && ocoResult.success !== false) {
                                         await sendDiscordAlert(`🎯 Brackets Deployed (Watchdog): ${asset}`, `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** Limit Fill Detected, Brackets Active on Exchange`, 10181046);
                                     } else {
                                         console.error(`[WATCHDOG REJECT] OCO Failed:`, JSON.stringify(ocoResult));
                                         await sendDiscordAlert(`⚠️ Bracket Failed: ${asset}`, `**Action:** Missing TP/SL protection!\n**Details:** Exchange rejected the Watchdog OCO order.`, 15548997);
                                     }
-                                } catch (e) { 
-                                    console.error(`[WATCHDOG FATAL] OCO:`, e.message); 
-                                }
+                                } catch (e) { console.error(`[WATCHDOG FATAL] OCO:`, e.message); }
                             }
                         } 
                     }
-                } catch (err) { 
-                    console.error(`[WATCHDOG FAULT]`, err.message); 
-                }
+                } catch (err) { console.error(`[WATCHDOG FAULT]`, err.message); }
             }
         }
 
-        if (openTrade && !forcedExit) {
+        // 🟢 THE FIX: DUAL TRIPWIRES (Offense & Defense)
+        if (openTrade && !forcedExit && openTrade.tp_price && openTrade.sl_price && openTrade.entry_price && activePosition) {
+            const isTpTripwireLocked = openTrade.reason && openTrade.reason.includes('[TP_TRIPWIRE_CLEARED]');
+            const isSlTripwireLocked = openTrade.reason && openTrade.reason.includes('[SL_TRIPWIRE_CLEARED]');
+            
             const entryPrice = parseFloat(openTrade.entry_price);
             const pnlPercent = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? (currentPrice - entryPrice) / entryPrice : (entryPrice - currentPrice) / entryPrice;
 
-            if (pnlPercent <= -0.08) { 
-                const oracleVerdict = await evaluateTradeIdea({ mode: 'EMERGENCY', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent });
-                if (oracleVerdict.action === 'MARKET_CLOSE') {
-                    forcedExit = 'ORACLE_EMERGENCY_CLOSE';
-                    await sendDiscordAlert("🚨 Emergency Override", `**Asset:** ${asset}\n**Action:** Forcing Market Close\n**Reason:** Down 8% - Structure Invalidated`, 15548997);
-                }
-            }
-        }
+            const tpTripwireThreshold = parseFloat(config.parameters?.tp_tripwire_percent) || 0.75;
+            const slTripwireThreshold = parseFloat(config.parameters?.sl_tripwire_percent) || 0.85;
 
-        if (openTrade && !forcedExit && openTrade.tp_price && openTrade.entry_price && activePosition) {
-            const isTripwireLocked = openTrade.reason && openTrade.reason.includes('[TRIPWIRE_CLEARED]');
-            const totalDistance = Math.abs(openTrade.tp_price - openTrade.entry_price);
-            const coveredDistance = Math.abs(currentPrice - openTrade.entry_price);
-            const progress = coveredDistance / totalDistance;
+            const isProfitable = pnlPercent > 0;
+            const isNegative = pnlPercent < 0;
 
-            const isProfitable = (openTrade.side === 'BUY' && currentPrice > openTrade.entry_price) || 
-                                 (openTrade.side === 'SELL' && currentPrice < openTrade.entry_price);
+            const distToTp = Math.abs(openTrade.tp_price - entryPrice);
+            const distToSl = Math.abs(openTrade.sl_price - entryPrice);
+            const coveredDistance = Math.abs(currentPrice - entryPrice);
 
-            const tripwireThreshold = parseFloat(config.parameters?.tripwire_percent) || 0.75;
-            const displayPercent = Math.round(tripwireThreshold * 100);
+            const progressToTp = isProfitable && distToTp > 0 ? (coveredDistance / distToTp) : 0;
+            const progressToSl = isNegative && distToSl > 0 ? (coveredDistance / distToSl) : 0;
 
-            if (isProfitable && progress >= tripwireThreshold && !isTripwireLocked) {
-                const pnlPercent = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? (currentPrice - openTrade.entry_price) / openTrade.entry_price : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
-
+            // OFFENSE: Trail Stop Loss to Breakeven
+            if (isProfitable && progressToTp >= tpTripwireThreshold && !isTpTripwireLocked) {
                 const tripwireVerdict = await evaluateTradeIdea({
                     mode: 'MANUAL_REVIEW', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent, openTrade
                 });
 
-                const lockedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_CLEARED]: AI dynamically reviewed trade at ${displayPercent}% profit. Verdict: ${tripwireVerdict.action} - ${tripwireVerdict.reasoning}`;
+                const lockedReason = `${openTrade.reason || ''}\n\n[TP_TRIPWIRE_CLEARED]: AI reviewed trade at +${Math.round(tpTripwireThreshold * 100)}% to TP. Verdict: ${tripwireVerdict.action} - ${tripwireVerdict.reasoning}`;
                 await supabase.from('trade_logs').update({ reason: lockedReason }).eq('id', openTrade.id);
+                openTrade.reason = lockedReason;
 
                 if (tripwireVerdict.action === 'MARKET_CLOSE') {
                      forcedExit = 'TRIPWIRE_SECURED_PROFIT';
-                } 
-                else if (tripwireVerdict.action === 'ADJUST_LIMITS') {
+                } else if (tripwireVerdict.action === 'ADJUST_LIMITS') {
                      if (openOrders.length > 0) {
                          const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                          await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                      }
                      
-                     let tickSize = (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) ? 0.50 : 0.01;
-                     if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
-                     
+                     const { tickSize } = getAssetMetrics(coinbaseProduct);
                      const finalTp = tripwireVerdict.tp_price || openTrade.tp_price;
                      const finalSl = tripwireVerdict.sl_price || openTrade.sl_price;
 
-                     const safeTp = finalTp ? (Math.round(finalTp / tickSize) * tickSize).toFixed(2) : null;
-                     const safeSl = finalSl ? (Math.round(finalSl / tickSize) * tickSize).toFixed(2) : null;
+                     const safeTp = finalTp ? (Math.round(finalTp / tickSize) * tickSize).toFixed(4) : null;
+                     const safeSl = finalSl ? (Math.round(finalSl / tickSize) * tickSize).toFixed(4) : null;
 
                      if (safeTp && safeSl) {
                          const executePath = '/api/v3/brokerage/orders';
@@ -309,10 +362,28 @@ export default async function handler(req, res) {
                              await supabase.from('trade_logs').update({ tp_price: safeTp, sl_price: safeSl }).eq('id', openTrade.id);
                              openTrade.tp_price = safeTp; openTrade.sl_price = safeSl;
                              
-                             await sendDiscordAlert(`🛡️ Tripwire Activated: ${asset}`, `**Action:** Adjusted Limits (Break-Even/Trail)\n**New TP:** $${safeTp}\n**New SL:** $${safeSl}\n\n**🧠 Oracle Rationale:**\n_${tripwireVerdict.reasoning}_`, 16753920); 
+                             await sendDiscordAlert(`🛡️ Offensive Tripwire: ${asset}`, `**Action:** Adjusted Limits (Trail)\n**New TP:** $${safeTp}\n**New SL:** $${safeSl}\n**Reason:** ${tripwireVerdict.reasoning}`, 16753920); 
                          } catch (e) { console.error(`[TRIPWIRE FAULT]`, e.message); }
                      }
                 } 
+            }
+            
+            // DEFENSE: Cut Losses on Structural Failure
+            else if (isNegative && progressToSl >= slTripwireThreshold && !isSlTripwireLocked) {
+                 const tripwireVerdict = await evaluateTradeIdea({
+                    mode: 'DEFENSIVE_REVIEW', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent, openTrade
+                 });
+
+                 const lockedReason = `${openTrade.reason || ''}\n\n[SL_TRIPWIRE_CLEARED]: AI reviewed trade at -${Math.round(slTripwireThreshold * 100)}% to SL. Verdict: ${tripwireVerdict.action} - ${tripwireVerdict.reasoning}`;
+                 await supabase.from('trade_logs').update({ reason: lockedReason }).eq('id', openTrade.id);
+                 openTrade.reason = lockedReason;
+
+                 if (tripwireVerdict.action === 'MARKET_CLOSE') {
+                     forcedExit = 'DEFENSIVE_MARKET_CLOSE';
+                     await sendDiscordAlert(`🛡️ Defensive Tripwire: ${asset}`, `**Action:** Oracle forced MARKET_CLOSE to prevent full stop-out.\n**Reason:** ${tripwireVerdict.reasoning}`, 15548997);
+                 } else {
+                     await sendDiscordAlert(`🛡️ Defensive Tripwire: ${asset}`, `**Action:** HOLD.\n**Reason:** Oracle identified wick/liquidity sweep. Holding structure.`, 3447003);
+                 }
             }
         }
 
@@ -416,14 +487,17 @@ export default async function handler(req, res) {
                   decision.slPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
                 }
              
-                let tickSize = (asset.includes('ETP') || asset.includes('ETH')) ? 0.50 : 0.01;
-                if (asset.includes('BIT') || asset.includes('BTC')) tickSize = 1.00;
+                const { tickSize } = getAssetMetrics(asset);
                 decision.tpPrice = Math.round(decision.tpPrice / tickSize) * tickSize;
                 decision.slPrice = Math.round(decision.slPrice / tickSize) * tickSize;
                 
                 if (oracleVerdict.size_multiplier && oracleVerdict.size_multiplier !== 1.0 && config.parameters?.target_usd) {
                     config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
                 }
+
+                // 🟢 THE FIX: Pass Expectancies and R:R downstream to the UI
+                const finalFormattedReason = `[EXPECTANCIES] Fill: ${oracleVerdict.fill_expectancy || 0}m | TP: ${oracleVerdict.tp_expectancy || 0}m | R:R: ${oracleVerdict.risk_reward || 0}\n\n${oracleVerdict.reasoning || ''}`;
+                decision.telemetry.oracle_reasoning = finalFormattedReason;
             }
         }
     }
@@ -448,11 +522,8 @@ export default async function handler(req, res) {
             const isFutures = config.parameters?.market_type === 'FUTURES' || asset.includes('PERP') || asset.includes('CDE');
             
             if (isFutures) {
-                let contractMultiplier = 1.0;
-                if (asset.includes('ETP')) contractMultiplier = 0.1;
-                if (asset.includes('BIT')) contractMultiplier = 0.01;
-                
-                const rawContracts = config.parameters.target_usd / (decision.entryPrice * contractMultiplier);
+                const { multiplier } = getAssetMetrics(asset);
+                const rawContracts = config.parameters.target_usd / (decision.entryPrice * multiplier);
                 finalQty = Math.round(rawContracts); 
                 if (finalQty < 1) finalQty = 1; 
             } else {
@@ -571,16 +642,14 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
         const atr = trueRanges.length > 0 ? trueRanges.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, trueRanges.length) : 0;
         const currentPrice = triggerCandles[triggerCandles.length - 1].close;
 
+        const assetMap = {
+            'ETP': 'ETH', 'BIT': 'BTC', 'BIP': 'BTC', 'SLP': 'SOL', 
+            'AVP': 'AVAX', 'LCP': 'LTC', 'LNP': 'LINK', 'DOP': 'DOGE', 'BHP': 'BCH'
+        };
+
         let coinbaseProduct = asset.toUpperCase().trim();
-        if (!coinbaseProduct.includes('-')) {
-            if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
-            else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
-            else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
-        }
-        
         let baseAsset = asset.split('-')[0].replace('PERP', '').trim();
-        if (baseAsset === 'ETP') baseAsset = 'ETH';
-        if (baseAsset === 'AVP') baseAsset = 'AVAX'; 
+        baseAsset = assetMap[baseAsset] || baseAsset;
         const spotProduct = `${baseAsset}-USD`;
 
         let orderBookData = { status: "Unavailable" };

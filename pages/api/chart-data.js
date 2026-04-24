@@ -4,12 +4,14 @@ export default async function handler(req, res) {
     
     if (!asset) return res.status(400).json({ error: "Asset is required" });
 
-    // Format the asset for Coinbase Spot (e.g., BTC-USD)
+    // 🟢 THE FIX: Universal Dynamic Dictionary for all Futures/Nano symbols
+    const assetMap = {
+        'ETP': 'ETH', 'BIT': 'BTC', 'BIP': 'BTC', 'SLP': 'SOL', 
+        'AVP': 'AVAX', 'LCP': 'LTC', 'LNP': 'LINK', 'DOP': 'DOGE', 'BHP': 'BCH'
+    };
+
     let baseAsset = asset.split('-')[0].replace('PERP', '').trim();
-    if (baseAsset === 'ETP') baseAsset = 'ETH';
-    if (baseAsset === 'AVP') baseAsset = 'AVAX';
-    if (baseAsset === 'BIP') baseAsset = 'BTC';
-    if (baseAsset === 'SLP') baseAsset = 'SOL'; // 🟢 THE FIX: Map Solana Futures to Solana Spot
+    baseAsset = assetMap[baseAsset] || baseAsset;
     
     const spotProduct = `${baseAsset}-USD`;
     const tfGranularity = granularity || 60;
@@ -21,14 +23,13 @@ export default async function handler(req, res) {
         
         const data = await response.json();
         
-        // Coinbase returns: [ time, low, high, open, close, volume ]
         const formattedData = data.map(d => ({
             time: d[0],
             low: d[1],
             high: d[2],
             open: d[3],
             close: d[4],
-            volume: d[5] // 🟢 Included volume for the Heatmap
+            volume: d[5] 
         })).sort((a, b) => a.time - b.time); 
 
         return res.status(200).json(formattedData);

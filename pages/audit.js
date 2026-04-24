@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { Activity, Filter, RefreshCw, CheckCircle2, Zap, BrainCircuit, Server, Crosshair, Target, Loader2 } from 'lucide-react';
+import { Activity, Filter, RefreshCw, CheckCircle2, Zap, BrainCircuit, Server, Crosshair, Target, Loader2, Clock, XCircle } from 'lucide-react';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
@@ -9,7 +9,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 export default function AuditLog() {
   const [pipelines, setPipelines] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [reviewingId, setReviewingId] = useState(null); // Tracks which trade is being sniper-reviewed
+  const [reviewingId, setReviewingId] = useState(null); 
+  const [closingId, setClosingId] = useState(null); // 🟢 THE FIX: Tracks which trade is being canceled
   const [assetFilter, setAssetFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   
@@ -76,7 +77,6 @@ export default function AuditLog() {
     return () => clearInterval(interval);
   }, [fetchAuditTrail]);
 
-  // THE SNIPER BUTTON HANDLER
   const handleForceReview = async (tradeId) => {
       setReviewingId(tradeId);
       try {
@@ -87,12 +87,36 @@ export default function AuditLog() {
           if (!res.ok) throw new Error(data.error);
           
           alert(`Oracle Verdict: ${data.status}\n\n${data.reasoning}`);
-          fetchAuditTrail(); // Refresh feed immediately
+          fetchAuditTrail(); 
       } catch (err) {
           alert(`Review Failed: ${err.message}`);
       } finally {
           setReviewingId(null);
       }
+  };
+
+  // 🟢 THE FIX: The Universal Kill Switch
+  const handleClosePosition = async (trade) => {
+    const confirmClose = window.confirm(`Are you sure you want to Cancel/Close the active setup for ${trade.symbol}?`);
+    if (!confirmClose) return;
+    setClosingId(trade.id);
+    
+    try {
+        const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
+        await fetch('/api/execute-trade', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                symbol: trade.symbol, strategy_id: trade.strategy_id, version: trade.version || 'v1.0',
+                side: closingSide, execution_mode: trade.execution_mode, qty: trade.qty, price: 0, reason: "MANUAL_UI_CANCEL"
+            })
+        });
+        fetchAuditTrail(); 
+    } catch (e) {
+        alert(`Cancel Failed: ${e.message}`);
+    } finally {
+        setClosingId(null);
+    }
   };
 
   const uniqueAssets = [...new Set(pipelines.map(p => p.asset).filter(Boolean))];
@@ -182,9 +206,18 @@ export default function AuditLog() {
           const s = pipeline.scan;
           const isOpenTrade = isFullTrade && !t?.exit_price;
 
-// THE FIX: Prioritize the live trade log reason (which contains our appended Manual Reviews) over the old static scan reason!
-const originalTradeReason = t?.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
-const displayReasoning = originalTradeReason || s?.telemetry?.oracle_reasoning;
+          const originalTradeReason = t?.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
+          let displayReasoning = originalTradeReason || s?.telemetry?.oracle_reasoning || '';
+          
+          // 🟢 THE FIX: Safely parse and extract the Expectancy Metrics
+          let expectancies = null;
+          if (displayReasoning.includes('[EXPECTANCIES]')) {
+              const match = displayReasoning.match(/\[EXPECTANCIES\] Fill: (.*?)m \| TP: (.*?)m \| R:R: (.*?)(?:\n|$)/);
+              if (match) {
+                  expectancies = { fill: match[1], tp: match[2], rr: match[3] };
+                  displayReasoning = displayReasoning.replace(match[0], '').trim();
+              }
+          }
 
           return (
             <div key={i} className={`p-5 rounded-3xl border transition-all duration-300 ${
@@ -206,20 +239,35 @@ const displayReasoning = originalTradeReason || s?.telemetry?.oracle_reasoning;
                     <span className="text-[11px] text-slate-500 font-mono pl-1">{new Date(pipeline.timestamp).toLocaleString()}</span>
                  </div>
                  
-                 {/* THE NEW SNIPER BUTTON FOR ACTIVE TRADES */}
+                 {/* 🟢 THE FIX: Dual Control Panel for Active Trades */}
                  {isOpenTrade && (
-                    <button 
-                        onClick={() => handleForceReview(t.id)}
-                        disabled={reviewingId === t.id}
-                        className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                            reviewingId === t.id 
-                            ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50 cursor-not-allowed' 
-                            : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/40 hover:shadow-[0_0_15px_-3px_rgba(99,102,241,0.4)]'
-                        }`}
-                    >
-                        {reviewingId === t.id ? <Loader2 size={14} className="animate-spin" /> : <Target size={14} />}
-                        {reviewingId === t.id ? 'Analyzing...' : 'Force AI Review'}
-                    </button>
+                    <div className="flex gap-2">
+                        <button 
+                            onClick={() => handleForceReview(t.id)}
+                            disabled={reviewingId === t.id}
+                            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                                reviewingId === t.id 
+                                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50 cursor-not-allowed' 
+                                : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/40 hover:shadow-[0_0_15px_-3px_rgba(99,102,241,0.4)]'
+                            }`}
+                        >
+                            {reviewingId === t.id ? <Loader2 size={14} className="animate-spin" /> : <Target size={14} />}
+                            {reviewingId === t.id ? 'Analyzing...' : 'Force AI Review'}
+                        </button>
+
+                        <button 
+                            onClick={() => handleClosePosition(t)}
+                            disabled={closingId === t.id}
+                            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                                closingId === t.id 
+                                ? 'bg-red-500/20 text-red-400 border border-red-500/50 cursor-not-allowed' 
+                                : 'bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 hover:shadow-[0_0_15px_-3px_rgba(239,68,68,0.4)]'
+                            }`}
+                        >
+                            {closingId === t.id ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />}
+                            {closingId === t.id ? 'Closing...' : 'Close / Cancel'}
+                        </button>
+                    </div>
                  )}
               </div>
 
@@ -246,6 +294,18 @@ const displayReasoning = originalTradeReason || s?.telemetry?.oracle_reasoning;
                      <p className="text-[12px] text-slate-400 leading-relaxed bg-black/20 p-3 rounded-xl border border-white/5 italic whitespace-pre-wrap">
                         &quot;{displayReasoning}&quot;
                      </p>
+                  </div>
+                )}
+
+                {/* 🟢 THE FIX: Rendering the new Expectancy Metrics cleanly */}
+                {expectancies && (
+                  <div className="border-l-2 border-indigo-500/30 pl-4 py-1">
+                     <h4 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 flex items-center gap-2 mb-2"><Clock size={12}/> Trade Expectancies</h4>
+                     <div className="flex flex-wrap items-center gap-6 bg-black/20 p-3 rounded-xl border border-white/5">
+                        <span className="text-[11px] text-slate-400 font-mono">Fill Expectancy: <span className="text-white">{expectancies.fill}m</span></span>
+                        <span className="text-[11px] text-slate-400 font-mono">TP Expectancy: <span className="text-white">{expectancies.tp}m</span></span>
+                        <span className="text-[11px] text-slate-400 font-mono">Risk/Reward: <span className="text-emerald-400">{expectancies.rr}</span></span>
+                     </div>
                   </div>
                 )}
 
