@@ -1,3 +1,5 @@
+// hard push
+
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { useChat } from '@ai-sdk/react'; 
