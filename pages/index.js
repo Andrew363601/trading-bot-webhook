@@ -48,8 +48,9 @@ export default function Dashboard() {
   const priceLinesRef = useRef([]);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
 
-  // 🟢 THE FIX: Reverting to Vercel's native SDK input to prevent UI lockouts
-  const { messages, input, handleInputChange, handleSubmit, append, error: sdkError, isLoading } = useChat({
+  const [localInput, setLocalInput] = useState('');
+
+  const { messages, append, error: sdkError, isLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
@@ -151,6 +152,15 @@ export default function Dashboard() {
       } catch (e) {
           console.error("Cancel Order Failed:", e);
       }
+  };
+
+  // 🟢 THE FIX: Explicit event handler to manually clear input and trigger the stream
+  const handleManualSubmit = async (e) => {
+    e.preventDefault();
+    if (!localInput?.trim() || isLoading) return;
+    const content = localInput;
+    setLocalInput(''); 
+    await append({ role: 'user', content });
   };
 
   const handleStrategySelect = async (stratId) => {
@@ -625,7 +635,6 @@ export default function Dashboard() {
                     </button>
                 ))}
                 
-                {/* 🟢 THE FIX: Removed margin-left to align properly, boosted active opacity */}
                 <button 
                     onClick={() => setShowHeatmap(!showHeatmap)}
                     className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border transition-all flex items-center gap-1 ${showHeatmap ? 'bg-amber-500/30 text-amber-300 border-amber-500/50 shadow-[0_0_10px_-2px_rgba(245,158,11,0.4)]' : 'bg-slate-950/80 text-slate-500 border-white/5 hover:bg-amber-500/10'}`}
@@ -796,7 +805,6 @@ export default function Dashboard() {
               {messages.map(m => (
                 <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                     
-                    {/* 🟢 THE FIX: Render Tools gracefully */}
                     {m.toolInvocations && m.toolInvocations.map(tool => (
                         <div key={tool.toolCallId} className="text-[9px] text-slate-500 italic bg-black/30 px-3 py-1.5 rounded-lg border border-white/5 flex items-center gap-2">
                             {tool.state === 'result' ? <span className="text-emerald-400 font-bold">✓</span> : <Cpu size={10} className="animate-spin text-indigo-400" />}
@@ -804,14 +812,12 @@ export default function Dashboard() {
                         </div>
                     ))}
                     
-                    {/* 🟢 THE FIX: Standard Text Payload */}
                     {m.content && (
                         <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>
                             {m.content}
                         </div>
                     )}
 
-                    {/* 🟢 THE FIX: Fallback state for "Empty" payloads while streaming tool calls */}
                     {m.role === 'assistant' && !m.content && (!m.toolInvocations || m.toolInvocations.length === 0) && (
                         <div className="max-w-[90%] rounded-2xl px-4 py-3 bg-slate-900/80 text-cyan-400 border border-white/5 flex items-center gap-2">
                             <Cpu size={12} className="animate-spin text-indigo-400" />
@@ -827,14 +833,14 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
-            <form onSubmit={handleSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
                 <input 
                   className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
-                  value={input || ''} 
-                  onChange={handleInputChange} 
+                  value={localInput} 
+                  onChange={(e) => setLocalInput(e.target.value)} 
                   placeholder="Command Nexus..." 
               />
-              <button type="submit" disabled={!input?.trim() || isLoading} className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}>
+              <button type="submit" disabled={!localInput?.trim() || isLoading} className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}>
                   {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
               </button>
             </form>

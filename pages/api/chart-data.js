@@ -4,7 +4,6 @@ export default async function handler(req, res) {
     
     if (!asset) return res.status(400).json({ error: "Asset is required" });
 
-    // Format the asset for Coinbase Spot (e.g., BTC-USD)
     let baseAsset = asset.split('-')[0].replace('PERP', '').trim();
     if (baseAsset === 'ETP') baseAsset = 'ETH';
     if (baseAsset === 'AVP') baseAsset = 'AVAX';
@@ -20,13 +19,14 @@ export default async function handler(req, res) {
         
         const data = await response.json();
         
-        // Coinbase returns: [ time, low, high, open, close, volume ]
+        // 🟢 THE FIX: Added volume: d[5] so the Heatmap has data to render
         const formattedData = data.map(d => ({
             time: d[0],
             low: d[1],
             high: d[2],
             open: d[3],
-            close: d[4]
+            close: d[4],
+            volume: d[5] 
         })).sort((a, b) => a.time - b.time); 
 
         return res.status(200).json(formattedData);
