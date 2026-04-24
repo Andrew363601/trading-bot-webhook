@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js';
 import { createChart } from 'lightweight-charts';
 import { 
-  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb
+  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Filter
 } from 'lucide-react';
 
 const getEnv = (key, fallback) => {
@@ -16,19 +16,19 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export default function PerformanceLog() {
   const [isMounted, setIsMounted] = useState(false);
-  
-  const [dailyStats, setDailyStats] = useState({});
-  const [selectedDate, setSelectedDate] = useState(null);
-  const [detailedPipelines, setDetailedPipelines] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  // 🟢 THE FIX: The State Buffer to prevent Race Conditions
-  const [equityData, setEquityData] = useState([]);
+  // 🟢 NEW: Global Data State
+  const [allValidTrades, setAllValidTrades] = useState([]);
   
+  // 🟢 NEW: Master Filters
+  const [assetFilter, setAssetFilter] = useState('ALL');
+  const [strategyFilter, setStrategyFilter] = useState('ALL');
+  const [selectedDate, setSelectedDate] = useState(null);
   const [logFilter, setLogFilter] = useState('ALL'); 
+
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
-  const seriesRef = useRef(null);
 
   useEffect(() => {
       setIsMounted(true);
@@ -42,71 +42,21 @@ export default function PerformanceLog() {
     });
   }, []);
 
+  // 1. FETCH RAW DATA ONCE
   const fetchPerformance = useCallback(async () => {
     setLoading(true);
     try {
       const { data: trades } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('exit_time', { ascending: true }); 
 
-      const statsMap = {};
-      calendarDays.forEach(day => statsMap[day] = { date: day, pnl: 0, trades: 0 });
-
-      const validTrades = (trades || []).filter(t => {
+      const valid = (trades || []).filter(t => {
           if (!t?.exit_time) return false;
-          const parsedTime = new Date(t.exit_time).getTime();
-          if (isNaN(parsedTime)) return false; 
+          if (isNaN(new Date(t.exit_time).getTime())) return false; 
           if (parseFloat(t?.pnl || 0) === 0 && t?.entry_price === t?.exit_price) return false; 
           return true;
       });
 
-      const rawChartData = validTrades.map(trade => ({
-          time: Math.floor(new Date(trade.exit_time).getTime() / 1000),
-          pnl: parseFloat(trade.pnl || 0)
-      }));
-      
-      rawChartData.sort((a, b) => a.time - b.time);
-
-      const uniqueChartData = [];
-      let cumulativePnl = 0;
-      let lastTime = 0;
-
-      rawChartData.forEach(data => {
-          let safeTime = data.time;
-          if (safeTime <= lastTime) safeTime = lastTime + 1; 
-          lastTime = safeTime;
-          
-          if (!isNaN(safeTime) && !isNaN(data.pnl)) {
-              cumulativePnl += data.pnl;
-              uniqueChartData.push({ time: safeTime, value: parseFloat(cumulativePnl.toFixed(2)) });
-          }
-      });
-
-      validTrades.forEach(trade => {
-        const dateStr = new Date(trade.exit_time).toISOString().split('T')[0];
-        if (statsMap[dateStr]) {
-            statsMap[dateStr].pnl += parseFloat(trade.pnl || 0);
-            statsMap[dateStr].trades += 1;
-        }
-      });
-
-      setDailyStats(statsMap);
-      setSelectedDate(prev => prev || calendarDays[calendarDays.length - 1]);
-      
-      // 🟢 THE FIX: Dump math into the buffer, don't touch the chart directly
-      setEquityData(uniqueChartData);
-
-      const stitched = [...validTrades].reverse().map(trade => {
-        const originalReason = trade?.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
-        return {
-          dateStr: new Date(trade.exit_time).toISOString().split('T')[0],
-          timeStr: new Date(trade.exit_time).toLocaleTimeString(),
-          asset: trade.symbol,
-          strategy: trade.strategy_id,
-          trade: trade,
-          reasoning: originalReason
-        };
-      });
-
-      setDetailedPipelines(stitched);
+      setAllValidTrades(valid);
+      setSelectedDate(calendarDays[calendarDays.length - 1]);
     } catch (err) {
       console.error("Performance Fetch Error:", err);
     } finally {
@@ -118,93 +68,125 @@ export default function PerformanceLog() {
       if (isMounted) fetchPerformance(); 
   }, [fetchPerformance, isMounted]);
 
-  // 🟢 THE FIX: Safely Initialize Chart without Data Injection
-  useEffect(() => {
-    if (!chartContainerRef.current || !isMounted) return;
-    
-    let chart;
-    try {
-        chart = createChart(chartContainerRef.current, {
-            layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
-            grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
-            timeScale: { timeVisible: true, borderColor: 'rgba(255,255,255,0.1)' },
-            rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
-            autoSize: true,
-        });
+  // 2. APPLY GLOBAL DROPDOWN FILTERS
+  const globalFilteredTrades = useMemo(() => {
+      return allValidTrades.filter(t => {
+          if (assetFilter !== 'ALL' && t.symbol !== assetFilter) return false;
+          if (strategyFilter !== 'ALL' && t.strategy_id !== strategyFilter) return false;
+          return true;
+      });
+  }, [allValidTrades, assetFilter, strategyFilter]);
 
-        // Strict API property verification
-        if (chart && typeof chart.addAreaSeries === 'function') {
-            const series = chart.addAreaSeries({
-                lineColor: '#3b82f6',
-                topColor: 'rgba(59, 130, 246, 0.4)',
-                bottomColor: 'rgba(59, 130, 246, 0.0)',
-                lineWidth: 2,
-            });
-            chartRef.current = chart;
-            seriesRef.current = series;
-        }
-    } catch (e) {
-        console.error("Chart Initialization Fault:", e);
-        return;
+  // 3. GENERATE DYNAMIC CHART DATA
+  const chartData = useMemo(() => {
+      const data = [];
+      let cumulativePnl = 0;
+      let lastTime = 0;
+
+      globalFilteredTrades.forEach(t => {
+          let safeTime = Math.floor(new Date(t.exit_time).getTime() / 1000);
+          if (safeTime <= lastTime) safeTime = lastTime + 1; 
+          lastTime = safeTime;
+          
+          cumulativePnl += parseFloat(t.pnl || 0);
+          data.push({ time: safeTime, value: parseFloat(cumulativePnl.toFixed(2)) });
+      });
+      return data;
+  }, [globalFilteredTrades]);
+
+  // 4. GENERATE DYNAMIC CALENDAR STATS
+  const dailyStats = useMemo(() => {
+      const stats = {};
+      calendarDays.forEach(day => stats[day] = { pnl: 0, trades: 0 });
+      
+      globalFilteredTrades.forEach(t => {
+          const dateStr = new Date(t.exit_time).toISOString().split('T')[0];
+          if (stats[dateStr]) {
+              stats[dateStr].pnl += parseFloat(t.pnl || 0);
+              stats[dateStr].trades += 1;
+          }
+      });
+      return stats;
+  }, [globalFilteredTrades, calendarDays]);
+
+  // 🟢 THE FIX: Bulletproof Chart Initialization
+  useEffect(() => {
+    if (!isMounted || !chartContainerRef.current || chartData.length === 0) return;
+    
+    // Nuke any existing chart to prevent race conditions or ghost nodes
+    chartContainerRef.current.innerHTML = '';
+    if (chartRef.current) {
+        try { chartRef.current.remove(); } catch(e){}
     }
 
+    const chart = createChart(chartContainerRef.current, {
+        width: chartContainerRef.current.clientWidth,
+        height: 300, // Hardcoded fallback height prevents the Zero-Dimension Crash
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+        timeScale: { timeVisible: true, borderColor: 'rgba(255,255,255,0.1)' },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
+    });
+
+    const series = chart.addAreaSeries({
+        lineColor: '#3b82f6',
+        topColor: 'rgba(59, 130, 246, 0.4)',
+        bottomColor: 'rgba(59, 130, 246, 0.0)',
+        lineWidth: 2,
+    });
+
+    series.setData(chartData);
+    chart.timeScale().fitContent();
+    chartRef.current = chart;
+
     const handleResize = () => {
-        if(chartContainerRef.current && chart) {
-            chart.applyOptions({ width: chartContainerRef.current.clientWidth, height: chartContainerRef.current.clientHeight });
+        if(chartContainerRef.current && chartRef.current) {
+            chartRef.current.applyOptions({ 
+                width: chartContainerRef.current.clientWidth, 
+                height: chartContainerRef.current.clientHeight || 300 
+            });
         }
     };
     
-    const resizeObserver = new ResizeObserver(handleResize);
-    resizeObserver.observe(chartContainerRef.current);
+    window.addEventListener('resize', handleResize);
 
     return () => {
-        resizeObserver.disconnect();
-        if (chart) {
-            try { chart.remove(); } catch (e) {}
+        window.removeEventListener('resize', handleResize);
+        if (chartRef.current) {
+            try { chartRef.current.remove(); } catch (e) {}
+            chartRef.current = null;
         }
-        chartRef.current = null;
-        seriesRef.current = null;
     };
-  }, [isMounted]);
+  }, [chartData, isMounted]);
 
-  // 🟢 THE FIX: Independent Data Injector listens for both components to be ready
-  useEffect(() => {
-      if (seriesRef.current && equityData.length > 0) {
-          try {
-              seriesRef.current.setData(equityData);
-          } catch (e) {
-              console.error("Chart Injection Fault:", e);
-          }
-      }
-  }, [equityData, isMounted]);
+  // 5. FILTER LOGS FOR THE UI LIST
+  const displayLogs = useMemo(() => {
+      const reversed = [...globalFilteredTrades].reverse(); // Newest first
+      return reversed.filter(t => {
+          const dateStr = new Date(t.exit_time).toISOString().split('T')[0];
+          if (selectedDate && dateStr !== selectedDate) return false;
 
-  const rawFilteredPipelines = detailedPipelines?.filter(p => p?.dateStr === selectedDate) || [];
-  const filteredPipelines = rawFilteredPipelines?.filter(p => {
-      if (!p?.trade) return false;
-      const pnl = parseFloat(p.trade.pnl || 0);
-      if (logFilter === 'WIN') return pnl > 0;
-      if (logFilter === 'LOSS') return pnl <= 0;
-      if (logFilter === 'LONG') return p.trade.side === 'BUY' || p.trade.side === 'LONG';
-      if (logFilter === 'SHORT') return p.trade.side === 'SELL' || p.trade.side === 'SHORT';
-      return true;
-  }) || [];
+          const pnl = parseFloat(t.pnl || 0);
+          if (logFilter === 'WIN') return pnl > 0;
+          if (logFilter === 'LOSS') return pnl <= 0;
+          if (logFilter === 'LONG') return t.side === 'BUY' || t.side === 'LONG';
+          if (logFilter === 'SHORT') return t.side === 'SELL' || t.side === 'SHORT';
+          return true;
+      });
+  }, [globalFilteredTrades, selectedDate, logFilter]);
 
-  const totalSelectedPnL = rawFilteredPipelines.reduce((sum, p) => sum + parseFloat(p?.trade?.pnl || 0), 0);
-  const winRate = rawFilteredPipelines.length > 0 
-    ? ((rawFilteredPipelines.filter(p => parseFloat(p?.trade?.pnl || 0) > 0).length / rawFilteredPipelines.length) * 100).toFixed(1) 
-    : 0;
-
+  // 6. GENERATE OPTIMIZER INSIGHTS
   const generateInsights = () => {
-      if (!detailedPipelines || detailedPipelines.length < 5) return "Accumulating telemetry. Minimum 5 trades required to generate reliable optimization insights.";
+      if (globalFilteredTrades.length < 5) return "Accumulating telemetry. Minimum 5 trades required to generate reliable optimization insights.";
       
-      const wins = detailedPipelines.filter(p => parseFloat(p?.trade?.pnl || 0) > 0);
-      const losses = detailedPipelines.filter(p => parseFloat(p?.trade?.pnl || 0) <= 0);
+      const wins = globalFilteredTrades.filter(t => parseFloat(t.pnl || 0) > 0);
+      const losses = globalFilteredTrades.filter(t => parseFloat(t.pnl || 0) <= 0);
       
-      const avgWin = wins.length > 0 ? wins.reduce((sum, p) => sum + parseFloat(p?.trade?.pnl || 0), 0) / wins.length : 0;
-      const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((sum, p) => sum + parseFloat(p?.trade?.pnl || 0), 0) / losses.length) : 0;
+      const avgWin = wins.length > 0 ? wins.reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0) / wins.length : 0;
+      const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0) / losses.length) : 0;
       
       const profitFactor = avgLoss > 0 ? (avgWin / avgLoss).toFixed(2) : 'Infinity';
-      const globalWinRate = ((wins.length / detailedPipelines.length) * 100).toFixed(1);
+      const globalWinRate = ((wins.length / globalFilteredTrades.length) * 100).toFixed(1);
 
       if (profitFactor !== 'Infinity' && parseFloat(profitFactor) < 1.0 && globalWinRate > 50) {
           return `Negative Skew Detected: Win rate is healthy (${globalWinRate}%), but Average Loss ($${avgLoss.toFixed(2)}) exceeds Average Win ($${avgWin.toFixed(2)}). Consider tightening your SL Tripwire or trailing stops faster to preserve capital.`;
@@ -216,6 +198,17 @@ export default function PerformanceLog() {
           return `System Stable: Win Rate is ${globalWinRate}% with an Average Win of $${avgWin.toFixed(2)}. Monitor market regimes before adjusting tripwires.`;
       }
   };
+
+  // Extract Daily Box Stats
+  const dailyLogs = globalFilteredTrades.filter(t => new Date(t.exit_time).toISOString().split('T')[0] === selectedDate);
+  const dailyPnl = dailyLogs.reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0);
+  const dailyWins = dailyLogs.filter(t => parseFloat(t.pnl || 0) > 0).length;
+  const dailyLosses = dailyLogs.filter(t => parseFloat(t.pnl || 0) <= 0).length;
+  const dailyWinRate = dailyLogs.length > 0 ? ((dailyWins / dailyLogs.length) * 100).toFixed(1) : 0;
+
+  // Extract Unique Dropdown Options
+  const uniqueAssets = [...new Set(allValidTrades.map(t => t.symbol).filter(Boolean))];
+  const uniqueStrategies = [...new Set(allValidTrades.map(t => t.strategy_id).filter(Boolean))];
 
   if (!isMounted) return (
     <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center text-indigo-500 font-mono tracking-widest uppercase">
@@ -237,12 +230,44 @@ export default function PerformanceLog() {
             <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-1">Daily ROI & Execution Ledger</p>
           </div>
         </div>
+
+        {/* 🟢 NEW: Global Dropdown Filters */}
+        <div className="flex items-center gap-4 bg-slate-900/50 p-2 rounded-2xl border border-white/5">
+            <div className="flex items-center gap-2 px-3">
+                <Filter size={14} className="text-slate-400" />
+                <select 
+                    className="bg-transparent text-[10px] font-black uppercase tracking-widest text-cyan-300 focus:outline-none cursor-pointer" 
+                    value={assetFilter} 
+                    onChange={(e) => setAssetFilter(e.target.value)}
+                >
+                    <option value="ALL">All Assets</option>
+                    {uniqueAssets.map(a => <option key={a} value={a}>{a}</option>)}
+                </select>
+            </div>
+            <div className="flex items-center gap-2 px-3 border-l border-white/10">
+                <select 
+                    className="bg-transparent text-[10px] font-black uppercase tracking-widest text-indigo-300 focus:outline-none cursor-pointer" 
+                    value={strategyFilter} 
+                    onChange={(e) => setStrategyFilter(e.target.value)}
+                >
+                    <option value="ALL">All Strategies</option>
+                    {uniqueStrategies.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+            </div>
+        </div>
       </header>
 
       <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl flex flex-col min-h-[300px]">
-              <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center gap-2"><LineChart size={14}/> Cumulative Equity Curve</h3>
-              <div ref={chartContainerRef} className="flex-grow w-full relative" />
+              <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center justify-between">
+                  <span className="flex items-center gap-2"><LineChart size={14}/> Cumulative Equity Curve</span>
+                  {chartData.length > 0 && <span className={`text-xs font-mono font-bold ${chartData[chartData.length-1].value >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>${chartData[chartData.length-1].value.toFixed(2)}</span>}
+              </h3>
+              {chartData.length > 0 ? (
+                  <div ref={chartContainerRef} className="flex-grow w-full relative min-h-[250px]" style={{ height: '300px' }} />
+              ) : (
+                  <div className="flex-grow flex items-center justify-center text-slate-600 font-mono text-[10px] uppercase tracking-widest">No valid trades to plot</div>
+              )}
           </div>
           
           <div className="lg:col-span-1 bg-indigo-500/10 border border-indigo-500/20 rounded-3xl p-6 shadow-2xl flex flex-col gap-4">
@@ -251,7 +276,7 @@ export default function PerformanceLog() {
                  {generateInsights()}
              </p>
              <div className="mt-auto pt-4 border-t border-indigo-500/20">
-                 <div className="text-[9px] font-black uppercase tracking-widest text-indigo-400">Total Valid Trades: <span className="text-white">{detailedPipelines?.length || 0}</span></div>
+                 <div className="text-[9px] font-black uppercase tracking-widest text-indigo-400">Filtered Trades Evaluated: <span className="text-white">{globalFilteredTrades.length}</span></div>
              </div>
           </div>
       </div>
@@ -263,9 +288,9 @@ export default function PerformanceLog() {
             {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(day => (
                 <div key={day} className="text-center text-[9px] font-black uppercase tracking-widest text-slate-600 mb-2">{day}</div>
             ))}
-            {calendarDays?.map((day, i) => {
+            {calendarDays.map((day) => {
                 const stat = dailyStats[day];
-                const pnl = parseFloat(stat?.pnl || 0);
+                const pnl = stat?.pnl || 0;
                 const isSelected = selectedDate === day;
                 const hasTrades = (stat?.trades || 0) > 0;
                 
@@ -296,22 +321,22 @@ export default function PerformanceLog() {
           <div className="lg:col-span-1 flex flex-col gap-4">
             <div className="bg-slate-900/40 border border-white/10 p-5 rounded-3xl">
                <div className="text-[10px] text-slate-500 font-black tracking-widest uppercase mb-4">Date: {selectedDate}</div>
-               <div className={`text-3xl font-black font-mono mb-6 ${totalSelectedPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {totalSelectedPnL >= 0 ? '+' : ''}${totalSelectedPnL.toFixed(2)}
+               <div className={`text-3xl font-black font-mono mb-6 ${dailyPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {dailyPnl >= 0 ? '+' : ''}${dailyPnl.toFixed(2)}
                </div>
                
                <div className="space-y-3">
                   <div className="flex justify-between items-center border-b border-white/5 pb-2">
                      <span className="text-[10px] text-slate-400 uppercase tracking-widest flex items-center gap-1"><Target size={12}/> Win Rate</span>
-                     <span className="font-mono text-sm">{winRate}%</span>
+                     <span className="font-mono text-sm">{dailyWinRate}%</span>
                   </div>
                   <div className="flex justify-between items-center border-b border-white/5 pb-2">
                      <span className="text-[10px] text-slate-400 uppercase tracking-widest flex items-center gap-1"><TrendingUp size={12}/> Winners</span>
-                     <span className="font-mono text-sm text-emerald-400">{rawFilteredPipelines?.filter(p => parseFloat(p?.trade?.pnl || 0) > 0).length || 0}</span>
+                     <span className="font-mono text-sm text-emerald-400">{dailyWins}</span>
                   </div>
                   <div className="flex justify-between items-center pb-2">
                      <span className="text-[10px] text-slate-400 uppercase tracking-widest flex items-center gap-1"><TrendingDown size={12}/> Losers</span>
-                     <span className="font-mono text-sm text-red-400">{rawFilteredPipelines?.filter(p => parseFloat(p?.trade?.pnl || 0) <= 0).length || 0}</span>
+                     <span className="font-mono text-sm text-red-400">{dailyLosses}</span>
                   </div>
                </div>
             </div>
@@ -333,9 +358,8 @@ export default function PerformanceLog() {
                  </div>
              </div>
              
-             {filteredPipelines?.map((pipeline, i) => {
-                const t = pipeline?.trade;
-                if (!t) return null;
+             {displayLogs.map((pipeline, i) => {
+                const t = pipeline.trade;
                 const pnl = parseFloat(t.pnl || 0);
                 const isWin = pnl > 0;
 
@@ -359,7 +383,7 @@ export default function PerformanceLog() {
                         {pipeline.reasoning && (
                           <div className="border-l-2 border-amber-500/30 pl-4 py-1">
                              <h4 className="text-[9px] font-black uppercase tracking-widest text-amber-400 flex items-center gap-2 mb-1"><BrainCircuit size={10}/> Oracle Rationale</h4>
-                             <p className="text-[11px] text-slate-400 italic">&quot;{pipeline.reasoning}&quot;</p>
+                             <p className="text-[11px] text-slate-400 italic whitespace-pre-wrap">&quot;{pipeline.reasoning}&quot;</p>
                           </div>
                         )}
                         
@@ -390,7 +414,7 @@ export default function PerformanceLog() {
                 );
              })}
              
-             {(!filteredPipelines || filteredPipelines.length === 0) && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
+             {displayLogs.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
           </div>
         </div>
       )}
