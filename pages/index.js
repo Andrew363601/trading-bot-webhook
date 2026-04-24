@@ -154,7 +154,6 @@ export default function Dashboard() {
       }
   };
 
-  // 🟢 THE FIX: Explicit event handler to manually clear input and trigger the stream
   const handleManualSubmit = async (e) => {
     e.preventDefault();
     if (!localInput?.trim() || isLoading) return;
@@ -770,6 +769,7 @@ export default function Dashboard() {
                                 {isShadow ? <span className="text-[9px] text-red-400 font-bold">VETOED</span> :
                                 (log.exit_price ? <span className="text-[10px] text-slate-400">${log.exit_price}</span> : 
                                  <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
+                                 {/* 🟢 THE FIX: Smart button routes to proper cancel function */}
                                  <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">X</button></>)}
                             </td>
                             <td className="px-4 py-3 text-right font-black text-[10px]">{pnlDisplay}</td>
@@ -800,11 +800,13 @@ export default function Dashboard() {
           </div>
           <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
           <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
-            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
+            {/* 🟢 THE FIX: Added min-h-[150px] so the chat window never visually collapses when empty */}
+            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow min-h-[150px]">
               
               {messages.map(m => (
                 <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                     
+                    {/* Render Tools gracefully */}
                     {m.toolInvocations && m.toolInvocations.map(tool => (
                         <div key={tool.toolCallId} className="text-[9px] text-slate-500 italic bg-black/30 px-3 py-1.5 rounded-lg border border-white/5 flex items-center gap-2">
                             {tool.state === 'result' ? <span className="text-emerald-400 font-bold">✓</span> : <Cpu size={10} className="animate-spin text-indigo-400" />}
@@ -812,12 +814,14 @@ export default function Dashboard() {
                         </div>
                     ))}
                     
+                    {/* Standard Text Payload */}
                     {m.content && (
                         <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>
                             {m.content}
                         </div>
                     )}
 
+                    {/* Fallback state for "Empty" payloads while streaming tool calls */}
                     {m.role === 'assistant' && !m.content && (!m.toolInvocations || m.toolInvocations.length === 0) && (
                         <div className="max-w-[90%] rounded-2xl px-4 py-3 bg-slate-900/80 text-cyan-400 border border-white/5 flex items-center gap-2">
                             <Cpu size={12} className="animate-spin text-indigo-400" />
@@ -833,10 +837,11 @@ export default function Dashboard() {
               <div ref={chatEndRef} />
             </div>
 
+            {/* 🟢 THE FIX: Wired the form back to handleManualSubmit instead of Vercel's empty handleSubmit */}
             <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
                 <input 
                   className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
-                  value={localInput} 
+                  value={localInput || ''} 
                   onChange={(e) => setLocalInput(e.target.value)} 
                   placeholder="Command Nexus..." 
               />
