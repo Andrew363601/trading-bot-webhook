@@ -5,23 +5,17 @@ import {
   BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Filter
 } from 'lucide-react';
 
-const getEnv = (key, fallback) => {
-    if (typeof process !== 'undefined' && process.env) return process.env[key] || fallback;
-    return fallback;
-};
-
-const SUPABASE_URL = getEnv('NEXT_PUBLIC_SUPABASE_URL', "https://wsrioyxzhxxrtzjncfvn.supabase.co");
-const SUPABASE_ANON_KEY = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb");
+// 🟢 THE FIX: Reverted to standard static Next.js env variables to prevent browser ReferenceErrors
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export default function PerformanceLog() {
   const [isMounted, setIsMounted] = useState(false);
   const [loading, setLoading] = useState(true);
   
-  // 🟢 NEW: Global Data State
   const [allValidTrades, setAllValidTrades] = useState([]);
   
-  // 🟢 NEW: Master Filters
   const [assetFilter, setAssetFilter] = useState('ALL');
   const [strategyFilter, setStrategyFilter] = useState('ALL');
   const [selectedDate, setSelectedDate] = useState(null);
@@ -42,7 +36,6 @@ export default function PerformanceLog() {
     });
   }, []);
 
-  // 1. FETCH RAW DATA ONCE
   const fetchPerformance = useCallback(async () => {
     setLoading(true);
     try {
@@ -68,7 +61,6 @@ export default function PerformanceLog() {
       if (isMounted) fetchPerformance(); 
   }, [fetchPerformance, isMounted]);
 
-  // 2. APPLY GLOBAL DROPDOWN FILTERS
   const globalFilteredTrades = useMemo(() => {
       return allValidTrades.filter(t => {
           if (assetFilter !== 'ALL' && t.symbol !== assetFilter) return false;
@@ -77,7 +69,6 @@ export default function PerformanceLog() {
       });
   }, [allValidTrades, assetFilter, strategyFilter]);
 
-  // 3. GENERATE DYNAMIC CHART DATA
   const chartData = useMemo(() => {
       const data = [];
       let cumulativePnl = 0;
@@ -94,7 +85,6 @@ export default function PerformanceLog() {
       return data;
   }, [globalFilteredTrades]);
 
-  // 4. GENERATE DYNAMIC CALENDAR STATS
   const dailyStats = useMemo(() => {
       const stats = {};
       calendarDays.forEach(day => stats[day] = { pnl: 0, trades: 0 });
@@ -109,19 +99,16 @@ export default function PerformanceLog() {
       return stats;
   }, [globalFilteredTrades, calendarDays]);
 
-  // 🟢 THE FIX: Bulletproof Chart Initialization
   useEffect(() => {
     if (!isMounted || !chartContainerRef.current || chartData.length === 0) return;
     
-    // Nuke any existing chart to prevent race conditions or ghost nodes
     chartContainerRef.current.innerHTML = '';
     if (chartRef.current) {
         try { chartRef.current.remove(); } catch(e){}
     }
 
     const chart = createChart(chartContainerRef.current, {
-        width: chartContainerRef.current.clientWidth,
-        height: 300, // Hardcoded fallback height prevents the Zero-Dimension Crash
+        autoSize: true, // This protects against the Zero-Dimension crash
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
         grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
         timeScale: { timeVisible: true, borderColor: 'rgba(255,255,255,0.1)' },
@@ -139,19 +126,7 @@ export default function PerformanceLog() {
     chart.timeScale().fitContent();
     chartRef.current = chart;
 
-    const handleResize = () => {
-        if(chartContainerRef.current && chartRef.current) {
-            chartRef.current.applyOptions({ 
-                width: chartContainerRef.current.clientWidth, 
-                height: chartContainerRef.current.clientHeight || 300 
-            });
-        }
-    };
-    
-    window.addEventListener('resize', handleResize);
-
     return () => {
-        window.removeEventListener('resize', handleResize);
         if (chartRef.current) {
             try { chartRef.current.remove(); } catch (e) {}
             chartRef.current = null;
@@ -159,9 +134,9 @@ export default function PerformanceLog() {
     };
   }, [chartData, isMounted]);
 
-  // 5. FILTER LOGS FOR THE UI LIST
+  // 🟢 THE FIX: Properly map the database rows back into Pipeline UI objects
   const displayLogs = useMemo(() => {
-      const reversed = [...globalFilteredTrades].reverse(); // Newest first
+      const reversed = [...globalFilteredTrades].reverse(); 
       return reversed.filter(t => {
           const dateStr = new Date(t.exit_time).toISOString().split('T')[0];
           if (selectedDate && dateStr !== selectedDate) return false;
@@ -172,10 +147,19 @@ export default function PerformanceLog() {
           if (logFilter === 'LONG') return t.side === 'BUY' || t.side === 'LONG';
           if (logFilter === 'SHORT') return t.side === 'SELL' || t.side === 'SHORT';
           return true;
+      }).map(t => {
+          const originalReason = t.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
+          return {
+              dateStr: new Date(t.exit_time).toISOString().split('T')[0],
+              timeStr: new Date(t.exit_time).toLocaleTimeString(),
+              asset: t.symbol,
+              strategy: t.strategy_id,
+              trade: t,
+              reasoning: originalReason
+          };
       });
   }, [globalFilteredTrades, selectedDate, logFilter]);
 
-  // 6. GENERATE OPTIMIZER INSIGHTS
   const generateInsights = () => {
       if (globalFilteredTrades.length < 5) return "Accumulating telemetry. Minimum 5 trades required to generate reliable optimization insights.";
       
@@ -199,14 +183,12 @@ export default function PerformanceLog() {
       }
   };
 
-  // Extract Daily Box Stats
   const dailyLogs = globalFilteredTrades.filter(t => new Date(t.exit_time).toISOString().split('T')[0] === selectedDate);
   const dailyPnl = dailyLogs.reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0);
   const dailyWins = dailyLogs.filter(t => parseFloat(t.pnl || 0) > 0).length;
   const dailyLosses = dailyLogs.filter(t => parseFloat(t.pnl || 0) <= 0).length;
   const dailyWinRate = dailyLogs.length > 0 ? ((dailyWins / dailyLogs.length) * 100).toFixed(1) : 0;
 
-  // Extract Unique Dropdown Options
   const uniqueAssets = [...new Set(allValidTrades.map(t => t.symbol).filter(Boolean))];
   const uniqueStrategies = [...new Set(allValidTrades.map(t => t.strategy_id).filter(Boolean))];
 
@@ -231,7 +213,6 @@ export default function PerformanceLog() {
           </div>
         </div>
 
-        {/* 🟢 NEW: Global Dropdown Filters */}
         <div className="flex items-center gap-4 bg-slate-900/50 p-2 rounded-2xl border border-white/5">
             <div className="flex items-center gap-2 px-3">
                 <Filter size={14} className="text-slate-400" />
@@ -246,7 +227,7 @@ export default function PerformanceLog() {
             </div>
             <div className="flex items-center gap-2 px-3 border-l border-white/10">
                 <select 
-                    className="bg-transparent text-[10px] font-black uppercase tracking-widest text-indigo-300 focus:outline-none cursor-pointer" 
+                    className="bg-transparent text-[10px] font-black uppercase tracking-widest text-indigo-300 focus:outline-none cursor-pointer max-w-[150px] truncate" 
                     value={strategyFilter} 
                     onChange={(e) => setStrategyFilter(e.target.value)}
                 >
@@ -290,7 +271,7 @@ export default function PerformanceLog() {
             ))}
             {calendarDays.map((day) => {
                 const stat = dailyStats[day];
-                const pnl = stat?.pnl || 0;
+                const pnl = parseFloat(stat?.pnl || 0);
                 const isSelected = selectedDate === day;
                 const hasTrades = (stat?.trades || 0) > 0;
                 
