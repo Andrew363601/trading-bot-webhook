@@ -35,7 +35,7 @@ function generateCoinbaseToken(method, path, apiKey, apiSecret) {
   );
 }
 
-// 🟢 THE FIX: Universal Metrics Dictionary
+// 🟢 Universal Metrics Dictionary (Purged all Ghost Multipliers below)
 const getAssetMetrics = (symbol) => {
     let multiplier = 1.0;
     let tickSize = 0.01;
@@ -120,7 +120,6 @@ export default async function handler(req, res) {
 
                     if (posResp.ok) {
                         const posData = await posResp.json();
-                        // 🟢 THE FIX: Absolute Value prevents Shorts from turning invisible
                         activePosition = posData.positions?.find(p => p.product_id === coinbaseProduct && Math.abs(parseFloat(p.number_of_contracts)) > 0);
                     }
                     if (orderResp.ok) {
@@ -134,7 +133,7 @@ export default async function handler(req, res) {
                         Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)
                     );
 
-                    // 🟢 THE FIX: 1. PARTIAL FILL HANDLER (Using Absolute Values)
+                    // 1. PARTIAL FILL HANDLER
                     if (activePosition && entryOrderExists) {
                         const activeQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                         const expectedQty = Math.abs(parseFloat(openTrade.qty));
@@ -158,15 +157,22 @@ export default async function handler(req, res) {
                         }
                     }
 
-                    // 🟢 THE FIX: 2. PENDING_REVIEW (SMART SLEEP)
+                    // 🟢 THE FIX: 2. PENDING_REVIEW (THE AMNESIA CURE)
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         
-                        let fillExpectancy = 15; // default fallback
-                        const match = openTrade.reason?.match(/Fill:\s*(\d+)m/i);
-                        if (match) fillExpectancy = parseInt(match[1]);
+                        // Start with the initial expectancy
+                        let totalAllowedMinutes = 15; 
+                        const initialMatch = openTrade.reason?.match(/Fill:\s*(\d+)m/i);
+                        if (initialMatch) totalAllowedMinutes = parseInt(initialMatch[1]);
 
-                        if (minutesOpen > fillExpectancy) {
+                        // Accumulate every single extension the Oracle granted
+                        const extensionMatches = [...(openTrade.reason?.matchAll(/extended wait by\s*(\d+)m/gi) || [])];
+                        extensionMatches.forEach(match => {
+                            totalAllowedMinutes += parseInt(match[1]);
+                        });
+
+                        if (minutesOpen > totalAllowedMinutes) {
                             const oracleVerdict = await evaluateTradeIdea({ mode: 'PENDING_REVIEW', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, openTrade });
                             
                             if (oracleVerdict.action === 'CANCEL' || minutesOpen > 60) {
@@ -187,7 +193,8 @@ export default async function handler(req, res) {
                                 const newMins = oracleVerdict.new_expectancy || 15;
                                 const updatedReason = `${openTrade.reason || ''}\n\n[PENDING_REVIEW]: Oracle extended wait by ${newMins}m. Reason: ${oracleVerdict.reasoning}`;
                                 
-                                await supabase.from('trade_logs').update({ created_at: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                                // DO NOT overwrite created_at. We now track true time elapsed.
+                                await supabase.from('trade_logs').update({ reason: updatedReason }).eq('id', openTrade.id);
                                 openTrade.reason = updatedReason;
                                 continue;
                             }
@@ -233,6 +240,7 @@ export default async function handler(req, res) {
                                     else { exactExitPrice = openTrade.sl_price; assumedReason = 'STOP_LOSS (NATIVE_SYNC)'; }
                                 }
 
+                                // 🟢 The universal `multiplier` variable flawlessly handles Bitcoin (0.01) vs Dogecoin (1000)
                                 const rawPnl = openTrade.side === 'BUY' ? (exactExitPrice - openTrade.entry_price) * openTrade.qty * multiplier : (openTrade.entry_price - exactExitPrice) * openTrade.qty * multiplier;
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                                 
@@ -266,7 +274,6 @@ export default async function handler(req, res) {
                         if (hasTP && hasSL) openTrade.skipVirtualEnforcer = true;
 
                         const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
-                        // 🟢 THE FIX: Safely parse absolute qty to ensure valid payload for short brackets
                         const orderQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                         const executePath = '/api/v3/brokerage/orders';
 
@@ -303,7 +310,7 @@ export default async function handler(req, res) {
             }
         }
 
-        // 🟢 THE FIX: DUAL TRIPWIRES (Offense & Defense) with Short Vision!
+        // 🟢 DUAL TRIPWIRES (Offense & Defense)
         if (openTrade && !forcedExit && openTrade.tp_price && openTrade.sl_price && openTrade.entry_price && activePosition) {
             const isTpTripwireLocked = openTrade.reason && openTrade.reason.includes('[TP_TRIPWIRE_CLEARED]');
             const isSlTripwireLocked = openTrade.reason && openTrade.reason.includes('[SL_TRIPWIRE_CLEARED]');
@@ -497,7 +504,6 @@ export default async function handler(req, res) {
                     config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
                 }
 
-                // 🟢 THE FIX: Pass Expectancies and R:R downstream to the UI
                 const finalFormattedReason = `[EXPECTANCIES] Fill: ${oracleVerdict.fill_expectancy || 0}m | TP: ${oracleVerdict.tp_expectancy || 0}m | R:R: ${oracleVerdict.risk_reward || 0}\n\n${oracleVerdict.reasoning || ''}`;
                 decision.telemetry.oracle_reasoning = finalFormattedReason;
             }
