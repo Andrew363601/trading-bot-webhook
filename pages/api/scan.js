@@ -120,7 +120,8 @@ export default async function handler(req, res) {
 
                     if (posResp.ok) {
                         const posData = await posResp.json();
-                        activePosition = posData.positions?.find(p => p.product_id === coinbaseProduct && parseFloat(p.number_of_contracts) > 0);
+                        // 🟢 THE FIX: Absolute Value prevents Shorts from turning invisible
+                        activePosition = posData.positions?.find(p => p.product_id === coinbaseProduct && Math.abs(parseFloat(p.number_of_contracts)) > 0);
                     }
                     if (orderResp.ok) {
                         const orderData = await orderResp.json();
@@ -133,10 +134,10 @@ export default async function handler(req, res) {
                         Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)
                     );
 
-                    // 🟢 THE FIX: 1. PARTIAL FILL HANDLER
+                    // 🟢 THE FIX: 1. PARTIAL FILL HANDLER (Using Absolute Values)
                     if (activePosition && entryOrderExists) {
-                        const activeQty = parseFloat(activePosition.number_of_contracts);
-                        const expectedQty = parseFloat(openTrade.qty);
+                        const activeQty = Math.abs(parseFloat(activePosition.number_of_contracts));
+                        const expectedQty = Math.abs(parseFloat(openTrade.qty));
                         
                         if (activeQty < expectedQty) {
                             const targetOrder = openOrders.find(o => o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2));
@@ -265,7 +266,8 @@ export default async function handler(req, res) {
                         if (hasTP && hasSL) openTrade.skipVirtualEnforcer = true;
 
                         const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
-                        const orderQty = activePosition.number_of_contracts;
+                        // 🟢 THE FIX: Safely parse absolute qty to ensure valid payload for short brackets
+                        const orderQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                         const executePath = '/api/v3/brokerage/orders';
 
                         const safeSlPrice = openTrade.sl_price ? (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(4) : null;
@@ -301,7 +303,7 @@ export default async function handler(req, res) {
             }
         }
 
-        // 🟢 THE FIX: DUAL TRIPWIRES (Offense & Defense)
+        // 🟢 THE FIX: DUAL TRIPWIRES (Offense & Defense) with Short Vision!
         if (openTrade && !forcedExit && openTrade.tp_price && openTrade.sl_price && openTrade.entry_price && activePosition) {
             const isTpTripwireLocked = openTrade.reason && openTrade.reason.includes('[TP_TRIPWIRE_CLEARED]');
             const isSlTripwireLocked = openTrade.reason && openTrade.reason.includes('[SL_TRIPWIRE_CLEARED]');
@@ -350,7 +352,7 @@ export default async function handler(req, res) {
                      if (safeTp && safeSl) {
                          const executePath = '/api/v3/brokerage/orders';
                          const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
-                         const orderQty = activePosition.number_of_contracts;
+                         const orderQty = Math.abs(parseFloat(activePosition.number_of_contracts));
 
                          const ocoPayload = {
                              client_order_id: `nx_tripwire_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
