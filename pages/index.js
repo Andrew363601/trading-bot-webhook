@@ -6,7 +6,7 @@ import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers, His
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet,
-  Eye, Zap, AlertOctagon, BarChart2, Search, Maximize2, Minimize2, Flame
+  Eye, Zap, AlertOctagon, BarChart2, Search, Maximize2, Minimize2, Flame, Power, AlertTriangle
 } from 'lucide-react';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
@@ -41,6 +41,9 @@ export default function Dashboard() {
   const [isChartMaximized, setIsChartMaximized] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
   
+  // 🟢 NEW: DEFCON Time Monitor
+  const [isDefconActive, setIsDefconActive] = useState(false);
+
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
@@ -49,7 +52,6 @@ export default function Dashboard() {
   const priceLinesRef = useRef([]);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
 
-  // 🟢 THE FIX: Re-instating explicit React State for the input field so it never locks up.
   const [localInput, setLocalInput] = useState('');
 
   const { messages, append, error: sdkError, isLoading } = useChat({
@@ -59,11 +61,26 @@ export default function Dashboard() {
   
   const chatEndRef = useRef(null);
 
+  // 🟢 THE FIX: DEFCON Margin Sweep Monitor (2:00 PM - 2:59 PM CT)
+  useEffect(() => {
+      const checkDefconTime = () => {
+          const now = new Date();
+          const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hour: 'numeric', hour12: false });
+          const centralHour = parseInt(formatter.format(now), 10);
+          setIsDefconActive(centralHour === 14); // 14:00 is 2 PM
+      };
+      
+      checkDefconTime();
+      const defconInterval = setInterval(checkDefconTime, 60000); // Check every minute
+      return () => clearInterval(defconInterval);
+  }, []);
+
   const fetchData = useCallback(async () => {
     try {
+      // 🟢 THE FIX: Removed .eq('is_active', true) to load ALL strategies for the Power Switch
       const [logsRes, configsRes, scansRes] = await Promise.all([
           supabase.from('trade_logs').select('*').eq('symbol', activeAsset).order('id', { ascending: false }),
-          supabase.from('strategy_config').select('*').eq('is_active', true),
+          supabase.from('strategy_config').select('*'),
           supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25)
       ]);
 
@@ -121,6 +138,16 @@ export default function Dashboard() {
       setIsSearching(false);
   };
 
+  // 🟢 NEW: Strategy Power Switch Handler
+  const handleToggleStrategy = async (strategyId, currentState) => {
+      try {
+          await supabase.from('strategy_config').update({ is_active: !currentState }).eq('strategy', strategyId);
+          fetchData(); // Instantly refresh the UI
+      } catch (err) {
+          console.error("Failed to toggle strategy:", err);
+      }
+  };
+
   const filteredSearch = MASTER_ASSETS.filter(a => a.toLowerCase().includes(searchAsset.toLowerCase()));
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -156,7 +183,6 @@ export default function Dashboard() {
       }
   };
 
-  // 🟢 THE FIX: Bulletproof Custom Submit that handles the manual React state
   const handleManualSubmit = async (e) => {
     e.preventDefault();
     if (!localInput?.trim() || isLoading) return;
@@ -199,9 +225,6 @@ export default function Dashboard() {
       created_at: ord.created_time || new Date().toISOString()
   })), [liveOrders]);
 
-  // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PHASE 1 (V5 INITIALIZATION & HEATMAP OVERLAY)
-  // =========================================================================
   useEffect(() => {
     if (!chartContainerRef.current) return;
     
@@ -254,9 +277,6 @@ export default function Dashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); 
 
-  // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PHASE 2 (THE LIVE TICK ENGINE & VOLUME DATA)
-  // =========================================================================
   useEffect(() => {
     let isMounted = true;
     let intervalId;
@@ -268,7 +288,8 @@ export default function Dashboard() {
         const granularity = tfMap[chartTimeframe] || 60;
 
         try {
-            const res = await fetch(`/api/chart-data?asset=${activeAsset}&granularity=${granularity}`);
+            // 🟢 THE FIX: Appended limits and deepCache flags to the backend request
+            const res = await fetch(`/api/chart-data?asset=${activeAsset}&granularity=${granularity}&limit=1500&deepCache=true`);
             if(!res.ok) throw new Error("Chart proxy failed");
             
             const data = await res.json();
@@ -313,9 +334,6 @@ export default function Dashboard() {
       }
   }, [showHeatmap]);
 
-  // =========================================================================
-  // 📈 LIGHTWEIGHT CHARTS: PHASE 3 (APPLY DUAL V5 MARKERS AND LINES)
-  // =========================================================================
   useEffect(() => {
       if(!seriesRef.current || !seriesMarkersRef.current) return;
 
@@ -422,9 +440,6 @@ export default function Dashboard() {
   const activeAssetScans = scanStream.filter(s => s.asset === activeAsset);
   const latestScan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
 
-  // =========================================================================
-  // ⚡ LIVE HEATMAP MICRO-JITTER ENGINE
-  // =========================================================================
   const bids = parseFloat(latestScan?.telemetry?.bids || 0);
   const asks = parseFloat(latestScan?.telemetry?.asks || 0);
   const cvd = parseFloat(latestScan?.telemetry?.cvd || 0);
@@ -459,6 +474,16 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4 relative">
       
+      {/* 🟢 THE FIX: The DEFCON Override Banner */}
+      {isDefconActive && (
+          <div className="bg-red-500/20 border-b border-red-500/50 text-red-200 px-6 py-3 flex items-center justify-center gap-3 w-full animate-pulse z-50">
+              <AlertTriangle size={18} className="text-red-400" />
+              <span className="text-[11px] font-black uppercase tracking-widest">
+                  DEFCON 3: OVERNIGHT MARGIN SWEEP APPROACHING. VERIFY CAPITAL OR FLATTEN OPEN DERIVATIVE POSITIONS.
+              </span>
+          </div>
+      )}
+
       {loading && (
          <div className="absolute inset-0 z-50 bg-[#020617]/90 backdrop-blur-sm flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">
              Establishing Nexus...
@@ -792,9 +817,22 @@ export default function Dashboard() {
                 const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy && l.execution_mode !== 'SHADOW');
                 const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
                 return (
-                  <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5">
-                    <div className="flex justify-between items-center mb-1"><span className="text-xs font-black text-white uppercase">{strat.strategy.replace('_V1','')}</span><BarChart2 size={12} className="text-cyan-400"/></div>
-                    <div className="text-[10px] text-slate-500 font-mono">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
+                  <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
+                    {/* 🟢 THE FIX: Strategy Power Switch UI */}
+                    <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${strat.is_active ? 'bg-emerald-500' : 'bg-slate-700'}`} />
+                    
+                    <div className="flex justify-between items-center mb-1 pl-2">
+                        <span className={`text-xs font-black uppercase transition-colors ${strat.is_active ? 'text-white' : 'text-slate-500'}`}>{strat.strategy.replace('_V1','')}</span>
+                        
+                        <div 
+                            onClick={(e) => { e.stopPropagation(); handleToggleStrategy(strat.strategy, strat.is_active); }}
+                            className={`p-1.5 rounded-lg border transition-colors hover:cursor-pointer ${strat.is_active ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 hover:shadow-[0_0_10px_-2px_rgba(16,185,129,0.4)]' : 'bg-slate-800 border-white/5 text-slate-500 hover:bg-slate-700 hover:text-slate-300'}`}
+                            title={strat.is_active ? "Pause Strategy" : "Activate Strategy"}
+                        >
+                            <Power size={12} />
+                        </div>
+                    </div>
+                    <div className="text-[10px] text-slate-500 font-mono pl-2">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
                   </button>
                 )
               })}

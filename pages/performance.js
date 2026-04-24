@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
+import { createChart } from 'lightweight-charts';
 import { 
-  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit
+  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, AlertTriangle, Lightbulb
 } from 'lucide-react';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
@@ -14,10 +15,11 @@ export default function PerformanceLog() {
   const [detailedPipelines, setDetailedPipelines] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  // Execution Log Filters
-  const [logFilter, setLogFilter] = useState('ALL'); // ALL, WIN, LOSS, LONG, SHORT
+  const [logFilter, setLogFilter] = useState('ALL'); 
+  const chartContainerRef = useRef(null);
+  const chartRef = useRef(null);
+  const seriesRef = useRef(null);
 
-  // THE FIX: Wrap calendar generation in useMemo to prevent infinite re-renders
   const calendarDays = useMemo(() => {
     return [...Array(28)].map((_, i) => {
       const d = new Date();
@@ -29,28 +31,42 @@ export default function PerformanceLog() {
   const fetchPerformance = useCallback(async () => {
     setLoading(true);
     try {
-      const [{ data: trades }, { data: scans }] = await Promise.all([
-        supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('exit_time', { ascending: false }),
-        supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(500)
-      ]);
+      const { data: trades } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('exit_time', { ascending: true }); // ASC for chart drawing
 
       const statsMap = {};
       calendarDays.forEach(day => statsMap[day] = { date: day, pnl: 0, trades: 0 });
 
-      (trades || []).forEach(trade => {
+      // 🟢 THE FIX: Filter out Canceled Limits from the Win-Rate Math entirely
+      const validTrades = (trades || []).filter(t => !(parseFloat(t.pnl) === 0 && t.entry_price === t.exit_price));
+
+      let cumulativePnl = 0;
+      const chartData = [];
+
+      validTrades.forEach(trade => {
         const dateStr = new Date(trade.exit_time).toISOString().split('T')[0];
+        const pnl = parseFloat(trade.pnl || 0);
+        
         if (statsMap[dateStr]) {
-            statsMap[dateStr].pnl += parseFloat(trade.pnl || 0);
+            statsMap[dateStr].pnl += pnl;
             statsMap[dateStr].trades += 1;
         }
+        
+        cumulativePnl += pnl;
+        chartData.push({
+            time: Math.floor(new Date(trade.exit_time).getTime() / 1000),
+            value: parseFloat(cumulativePnl.toFixed(2))
+        });
       });
 
       setDailyStats(statsMap);
-      
-      // THE FIX: Functional state update prevents us from needing selectedDate in the dependency array
       setSelectedDate(prev => prev || calendarDays[calendarDays.length - 1]);
 
-      const stitched = (trades || []).map(trade => {
+      if (seriesRef.current && chartData.length > 0) {
+          seriesRef.current.setData(chartData);
+      }
+
+      // Reverse for UI log rendering
+      const stitched = validTrades.reverse().map(trade => {
         const originalReason = trade.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
         return {
           dateStr: new Date(trade.exit_time).toISOString().split('T')[0],
@@ -68,9 +84,46 @@ export default function PerformanceLog() {
     } finally {
       setLoading(false);
     }
-  }, [calendarDays]); // THE FIX: Replaced selectedDate with calendarDays to satisfy the linter safely
+  }, [calendarDays]);
 
   useEffect(() => { fetchPerformance(); }, [fetchPerformance]);
+
+  // 🟢 NEW: Initialize the Equity Curve Chart
+  useEffect(() => {
+    if (!chartContainerRef.current) return;
+    
+    const chart = createChart(chartContainerRef.current, {
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+        timeScale: { timeVisible: true, borderColor: 'rgba(255,255,255,0.1)' },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
+        autoSize: true,
+    });
+
+    const series = chart.addAreaSeries({
+        lineColor: '#3b82f6',
+        topColor: 'rgba(59, 130, 246, 0.4)',
+        bottomColor: 'rgba(59, 130, 246, 0.0)',
+        lineWidth: 2,
+    });
+
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    const handleResize = () => {
+        if(chartContainerRef.current) {
+            chart.applyOptions({ width: chartContainerRef.current.clientWidth, height: chartContainerRef.current.clientHeight });
+        }
+    };
+    
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(chartContainerRef.current);
+
+    return () => {
+        resizeObserver.disconnect();
+        chart.remove();
+    };
+  }, []);
 
   const rawFilteredPipelines = detailedPipelines.filter(p => p.dateStr === selectedDate);
   const filteredPipelines = rawFilteredPipelines.filter(p => {
@@ -85,6 +138,30 @@ export default function PerformanceLog() {
   const winRate = rawFilteredPipelines.length > 0 
     ? ((rawFilteredPipelines.filter(p => p.trade.pnl > 0).length / rawFilteredPipelines.length) * 100).toFixed(1) 
     : 0;
+
+  // 🟢 NEW: Math Engine for AI Optimizer Insights
+  const generateInsights = () => {
+      if (detailedPipelines.length < 5) return "Accumulating telemetry. Minimum 5 trades required to generate reliable optimization insights.";
+      
+      const wins = detailedPipelines.filter(p => p.trade.pnl > 0);
+      const losses = detailedPipelines.filter(p => p.trade.pnl <= 0);
+      
+      const avgWin = wins.length > 0 ? wins.reduce((sum, p) => sum + parseFloat(p.trade.pnl), 0) / wins.length : 0;
+      const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((sum, p) => sum + parseFloat(p.trade.pnl), 0) / losses.length) : 0;
+      
+      const profitFactor = avgLoss > 0 ? (avgWin / avgLoss).toFixed(2) : 'Infinity';
+      const globalWinRate = ((wins.length / detailedPipelines.length) * 100).toFixed(1);
+
+      if (profitFactor !== 'Infinity' && profitFactor < 1.0 && globalWinRate > 50) {
+          return `Negative Skew Detected: Win rate is healthy (${globalWinRate}%), but Average Loss ($${avgLoss.toFixed(2)}) exceeds Average Win ($${avgWin.toFixed(2)}). Consider tightening your SL Tripwire or trailing stops faster to preserve capital.`;
+      } else if (globalWinRate < 40 && profitFactor > 1.5) {
+          return `Low Strike Rate / High Reward: You are getting stopped out frequently (${globalWinRate}% Win Rate), but when you win, you win big (PF: ${profitFactor}). Consider widening your initial Stop Loss to avoid liquidity wicks.`;
+      } else if (profitFactor > 1.5 && globalWinRate >= 50) {
+          return `Optimal Structure Maintained: System is highly profitable with a Profit Factor of ${profitFactor}. Maintain current tripwire settings. Consider scaling up base contract sizes dynamically.`;
+      } else {
+          return `System Stable: Win Rate is ${globalWinRate}% with an Average Win of $${avgWin.toFixed(2)}. Monitor market regimes before adjusting tripwires.`;
+      }
+  };
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-6 font-sans flex flex-col gap-6">
@@ -101,7 +178,24 @@ export default function PerformanceLog() {
         </div>
       </header>
 
-      {/* NEW CALENDAR GRID */}
+      {/* 🟢 NEW: The Equity Curve & Insights Panel */}
+      <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl flex flex-col min-h-[300px]">
+              <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center gap-2"><LineChart size={14}/> Cumulative Equity Curve</h3>
+              <div ref={chartContainerRef} className="flex-grow w-full relative" />
+          </div>
+          
+          <div className="lg:col-span-1 bg-indigo-500/10 border border-indigo-500/20 rounded-3xl p-6 shadow-2xl flex flex-col gap-4">
+             <h3 className="text-[10px] font-black uppercase text-indigo-300 tracking-widest flex items-center gap-2"><Lightbulb size={14}/> Optimizer Insights</h3>
+             <p className="text-[12px] text-indigo-200 leading-relaxed font-mono italic">
+                 {generateInsights()}
+             </p>
+             <div className="mt-auto pt-4 border-t border-indigo-500/20">
+                 <div className="text-[9px] font-black uppercase tracking-widest text-indigo-400">Total Valid Trades: <span className="text-white">{detailedPipelines.length}</span></div>
+             </div>
+          </div>
+      </div>
+
       <div className="max-w-[1400px] w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl">
         <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center gap-2"><Calendar size={14}/> 4-Week Rolling Calendar</h3>
         
