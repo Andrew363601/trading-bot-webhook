@@ -5,7 +5,6 @@ import {
   BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb
 } from 'lucide-react';
 
-// 🟢 THE FIX: Safe process.env wrapper to prevent browser-side ReferenceErrors
 const getEnv = (key, fallback) => {
     if (typeof process !== 'undefined' && process.env) return process.env[key] || fallback;
     return fallback;
@@ -22,6 +21,9 @@ export default function PerformanceLog() {
   const [selectedDate, setSelectedDate] = useState(null);
   const [detailedPipelines, setDetailedPipelines] = useState([]);
   const [loading, setLoading] = useState(true);
+  
+  // 🟢 THE FIX: The State Buffer to prevent Race Conditions
+  const [equityData, setEquityData] = useState([]);
   
   const [logFilter, setLogFilter] = useState('ALL'); 
   const chartContainerRef = useRef(null);
@@ -48,12 +50,11 @@ export default function PerformanceLog() {
       const statsMap = {};
       calendarDays.forEach(day => statsMap[day] = { date: day, pnl: 0, trades: 0 });
 
-      // 🟢 THE FIX: Strict Date Validation Shield prevents NaN from crashing the chart
       const validTrades = (trades || []).filter(t => {
           if (!t?.exit_time) return false;
           const parsedTime = new Date(t.exit_time).getTime();
-          if (isNaN(parsedTime)) return false; // Block corrupted date strings
-          if (parseFloat(t?.pnl || 0) === 0 && t?.entry_price === t?.exit_price) return false; // Block stale limits
+          if (isNaN(parsedTime)) return false; 
+          if (parseFloat(t?.pnl || 0) === 0 && t?.entry_price === t?.exit_price) return false; 
           return true;
       });
 
@@ -70,7 +71,7 @@ export default function PerformanceLog() {
 
       rawChartData.forEach(data => {
           let safeTime = data.time;
-          if (safeTime <= lastTime) safeTime = lastTime + 1; // Strict time-stepper prevents duplicates
+          if (safeTime <= lastTime) safeTime = lastTime + 1; 
           lastTime = safeTime;
           
           if (!isNaN(safeTime) && !isNaN(data.pnl)) {
@@ -79,7 +80,6 @@ export default function PerformanceLog() {
           }
       });
 
-      // Populate Calendar Math
       validTrades.forEach(trade => {
         const dateStr = new Date(trade.exit_time).toISOString().split('T')[0];
         if (statsMap[dateStr]) {
@@ -90,10 +90,9 @@ export default function PerformanceLog() {
 
       setDailyStats(statsMap);
       setSelectedDate(prev => prev || calendarDays[calendarDays.length - 1]);
-
-      if (seriesRef.current && uniqueChartData.length > 0) {
-          seriesRef.current.setData(uniqueChartData);
-      }
+      
+      // 🟢 THE FIX: Dump math into the buffer, don't touch the chart directly
+      setEquityData(uniqueChartData);
 
       const stitched = [...validTrades].reverse().map(trade => {
         const originalReason = trade?.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
@@ -119,29 +118,38 @@ export default function PerformanceLog() {
       if (isMounted) fetchPerformance(); 
   }, [fetchPerformance, isMounted]);
 
+  // 🟢 THE FIX: Safely Initialize Chart without Data Injection
   useEffect(() => {
     if (!chartContainerRef.current || !isMounted) return;
     
-    const chart = createChart(chartContainerRef.current, {
-        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
-        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
-        timeScale: { timeVisible: true, borderColor: 'rgba(255,255,255,0.1)' },
-        rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
-        autoSize: true,
-    });
+    let chart;
+    try {
+        chart = createChart(chartContainerRef.current, {
+            layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+            grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+            timeScale: { timeVisible: true, borderColor: 'rgba(255,255,255,0.1)' },
+            rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
+            autoSize: true,
+        });
 
-    const series = chart.addAreaSeries({
-        lineColor: '#3b82f6',
-        topColor: 'rgba(59, 130, 246, 0.4)',
-        bottomColor: 'rgba(59, 130, 246, 0.0)',
-        lineWidth: 2,
-    });
-
-    chartRef.current = chart;
-    seriesRef.current = series;
+        // Strict API property verification
+        if (chart && typeof chart.addAreaSeries === 'function') {
+            const series = chart.addAreaSeries({
+                lineColor: '#3b82f6',
+                topColor: 'rgba(59, 130, 246, 0.4)',
+                bottomColor: 'rgba(59, 130, 246, 0.0)',
+                lineWidth: 2,
+            });
+            chartRef.current = chart;
+            seriesRef.current = series;
+        }
+    } catch (e) {
+        console.error("Chart Initialization Fault:", e);
+        return;
+    }
 
     const handleResize = () => {
-        if(chartContainerRef.current) {
+        if(chartContainerRef.current && chart) {
             chart.applyOptions({ width: chartContainerRef.current.clientWidth, height: chartContainerRef.current.clientHeight });
         }
     };
@@ -151,9 +159,24 @@ export default function PerformanceLog() {
 
     return () => {
         resizeObserver.disconnect();
-        chart.remove();
+        if (chart) {
+            try { chart.remove(); } catch (e) {}
+        }
+        chartRef.current = null;
+        seriesRef.current = null;
     };
   }, [isMounted]);
+
+  // 🟢 THE FIX: Independent Data Injector listens for both components to be ready
+  useEffect(() => {
+      if (seriesRef.current && equityData.length > 0) {
+          try {
+              seriesRef.current.setData(equityData);
+          } catch (e) {
+              console.error("Chart Injection Fault:", e);
+          }
+      }
+  }, [equityData, isMounted]);
 
   const rawFilteredPipelines = detailedPipelines?.filter(p => p?.dateStr === selectedDate) || [];
   const filteredPipelines = rawFilteredPipelines?.filter(p => {
