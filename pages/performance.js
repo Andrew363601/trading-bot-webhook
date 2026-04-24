@@ -5,8 +5,14 @@ import {
   BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb
 } from 'lucide-react';
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
+// 🟢 THE FIX: Safe process.env wrapper to prevent browser-side ReferenceErrors
+const getEnv = (key, fallback) => {
+    if (typeof process !== 'undefined' && process.env) return process.env[key] || fallback;
+    return fallback;
+};
+
+const SUPABASE_URL = getEnv('NEXT_PUBLIC_SUPABASE_URL', "https://wsrioyxzhxxrtzjncfvn.supabase.co");
+const SUPABASE_ANON_KEY = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb");
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export default function PerformanceLog() {
@@ -42,10 +48,15 @@ export default function PerformanceLog() {
       const statsMap = {};
       calendarDays.forEach(day => statsMap[day] = { date: day, pnl: 0, trades: 0 });
 
-      // Ensure valid trades exist and scrub out the stale canceled limit orders
-      const validTrades = (trades || []).filter(t => t?.exit_time && !(parseFloat(t?.pnl || 0) === 0 && t?.entry_price === t?.exit_price));
+      // 🟢 THE FIX: Strict Date Validation Shield prevents NaN from crashing the chart
+      const validTrades = (trades || []).filter(t => {
+          if (!t?.exit_time) return false;
+          const parsedTime = new Date(t.exit_time).getTime();
+          if (isNaN(parsedTime)) return false; // Block corrupted date strings
+          if (parseFloat(t?.pnl || 0) === 0 && t?.entry_price === t?.exit_price) return false; // Block stale limits
+          return true;
+      });
 
-      // 🟢 THE FIX: Ironclad Chart Array Sorting to prevent Library Crash
       const rawChartData = validTrades.map(trade => ({
           time: Math.floor(new Date(trade.exit_time).getTime() / 1000),
           pnl: parseFloat(trade.pnl || 0)
@@ -58,13 +69,14 @@ export default function PerformanceLog() {
       let lastTime = 0;
 
       rawChartData.forEach(data => {
-          cumulativePnl += data.pnl;
-          
           let safeTime = data.time;
           if (safeTime <= lastTime) safeTime = lastTime + 1; // Strict time-stepper prevents duplicates
           lastTime = safeTime;
           
-          uniqueChartData.push({ time: safeTime, value: parseFloat(cumulativePnl.toFixed(2)) });
+          if (!isNaN(safeTime) && !isNaN(data.pnl)) {
+              cumulativePnl += data.pnl;
+              uniqueChartData.push({ time: safeTime, value: parseFloat(cumulativePnl.toFixed(2)) });
+          }
       });
 
       // Populate Calendar Math
@@ -83,7 +95,6 @@ export default function PerformanceLog() {
           seriesRef.current.setData(uniqueChartData);
       }
 
-      // 🟢 THE FIX: Clone array before reversing to prevent mutating the original math!
       const stitched = [...validTrades].reverse().map(trade => {
         const originalReason = trade?.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
         return {
@@ -144,7 +155,6 @@ export default function PerformanceLog() {
     };
   }, [isMounted]);
 
-  // 🟢 THE FIX: Aggressive Optional Chaining on all Array Filters
   const rawFilteredPipelines = detailedPipelines?.filter(p => p?.dateStr === selectedDate) || [];
   const filteredPipelines = rawFilteredPipelines?.filter(p => {
       if (!p?.trade) return false;
@@ -173,18 +183,17 @@ export default function PerformanceLog() {
       const profitFactor = avgLoss > 0 ? (avgWin / avgLoss).toFixed(2) : 'Infinity';
       const globalWinRate = ((wins.length / detailedPipelines.length) * 100).toFixed(1);
 
-      if (profitFactor !== 'Infinity' && profitFactor < 1.0 && globalWinRate > 50) {
+      if (profitFactor !== 'Infinity' && parseFloat(profitFactor) < 1.0 && globalWinRate > 50) {
           return `Negative Skew Detected: Win rate is healthy (${globalWinRate}%), but Average Loss ($${avgLoss.toFixed(2)}) exceeds Average Win ($${avgWin.toFixed(2)}). Consider tightening your SL Tripwire or trailing stops faster to preserve capital.`;
-      } else if (globalWinRate < 40 && profitFactor > 1.5) {
+      } else if (globalWinRate < 40 && profitFactor !== 'Infinity' && parseFloat(profitFactor) > 1.5) {
           return `Low Strike Rate / High Reward: You are getting stopped out frequently (${globalWinRate}% Win Rate), but when you win, you win big (PF: ${profitFactor}). Consider widening your initial Stop Loss to avoid liquidity wicks.`;
-      } else if (profitFactor > 1.5 && globalWinRate >= 50) {
+      } else if (profitFactor !== 'Infinity' && parseFloat(profitFactor) > 1.5 && globalWinRate >= 50) {
           return `Optimal Structure Maintained: System is highly profitable with a Profit Factor of ${profitFactor}. Maintain current tripwire settings. Consider scaling up base contract sizes dynamically.`;
       } else {
           return `System Stable: Win Rate is ${globalWinRate}% with an Average Win of $${avgWin.toFixed(2)}. Monitor market regimes before adjusting tripwires.`;
       }
   };
 
-  // 🟢 THE FIX: Returns a proper loading screen instead of Null to keep Next.js Hydration happy
   if (!isMounted) return (
     <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center text-indigo-500 font-mono tracking-widest uppercase">
        <BarChart3 className="animate-pulse mb-4" size={32} />
