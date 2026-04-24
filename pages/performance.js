@@ -10,6 +10,9 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publi
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export default function PerformanceLog() {
+  // 🟢 THE FIX: SSR Hydration Lock
+  const [isMounted, setIsMounted] = useState(false);
+  
   const [dailyStats, setDailyStats] = useState({});
   const [selectedDate, setSelectedDate] = useState(null);
   const [detailedPipelines, setDetailedPipelines] = useState([]);
@@ -19,6 +22,10 @@ export default function PerformanceLog() {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
+
+  useEffect(() => {
+      setIsMounted(true);
+  }, []);
 
   const calendarDays = useMemo(() => {
     return [...Array(28)].map((_, i) => {
@@ -31,16 +38,16 @@ export default function PerformanceLog() {
   const fetchPerformance = useCallback(async () => {
     setLoading(true);
     try {
-      const { data: trades } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('exit_time', { ascending: true }); // ASC for chart drawing
+      const { data: trades } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('exit_time', { ascending: true }); 
 
       const statsMap = {};
       calendarDays.forEach(day => statsMap[day] = { date: day, pnl: 0, trades: 0 });
 
-      // 🟢 THE FIX: Filter out Canceled Limits from the Win-Rate Math entirely
       const validTrades = (trades || []).filter(t => !(parseFloat(t.pnl) === 0 && t.entry_price === t.exit_price));
 
       let cumulativePnl = 0;
       const chartData = [];
+      let lastTime = 0; // 🟢 THE FIX: Chronology tracker
 
       validTrades.forEach(trade => {
         const dateStr = new Date(trade.exit_time).toISOString().split('T')[0];
@@ -52,8 +59,16 @@ export default function PerformanceLog() {
         }
         
         cumulativePnl += pnl;
+        
+        // 🟢 THE FIX: Time Stepper guarantees strictly ascending timestamps
+        let currentTime = Math.floor(new Date(trade.exit_time).getTime() / 1000);
+        if (currentTime <= lastTime) {
+            currentTime = lastTime + 1;
+        }
+        lastTime = currentTime;
+
         chartData.push({
-            time: Math.floor(new Date(trade.exit_time).getTime() / 1000),
+            time: currentTime,
             value: parseFloat(cumulativePnl.toFixed(2))
         });
       });
@@ -65,7 +80,6 @@ export default function PerformanceLog() {
           seriesRef.current.setData(chartData);
       }
 
-      // Reverse for UI log rendering
       const stitched = validTrades.reverse().map(trade => {
         const originalReason = trade.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
         return {
@@ -86,11 +100,12 @@ export default function PerformanceLog() {
     }
   }, [calendarDays]);
 
-  useEffect(() => { fetchPerformance(); }, [fetchPerformance]);
+  useEffect(() => { 
+      if (isMounted) fetchPerformance(); 
+  }, [fetchPerformance, isMounted]);
 
-  // 🟢 NEW: Initialize the Equity Curve Chart
   useEffect(() => {
-    if (!chartContainerRef.current) return;
+    if (!chartContainerRef.current || !isMounted) return;
     
     const chart = createChart(chartContainerRef.current, {
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
@@ -123,7 +138,7 @@ export default function PerformanceLog() {
         resizeObserver.disconnect();
         chart.remove();
     };
-  }, []);
+  }, [isMounted]);
 
   const rawFilteredPipelines = detailedPipelines.filter(p => p.dateStr === selectedDate);
   const filteredPipelines = rawFilteredPipelines.filter(p => {
@@ -139,7 +154,6 @@ export default function PerformanceLog() {
     ? ((rawFilteredPipelines.filter(p => p.trade.pnl > 0).length / rawFilteredPipelines.length) * 100).toFixed(1) 
     : 0;
 
-  // 🟢 NEW: Math Engine for AI Optimizer Insights
   const generateInsights = () => {
       if (detailedPipelines.length < 5) return "Accumulating telemetry. Minimum 5 trades required to generate reliable optimization insights.";
       
@@ -163,6 +177,9 @@ export default function PerformanceLog() {
       }
   };
 
+  // 🟢 THE FIX: Prevents Hydration Panic
+  if (!isMounted) return null;
+
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-6 font-sans flex flex-col gap-6">
       
@@ -178,7 +195,6 @@ export default function PerformanceLog() {
         </div>
       </header>
 
-      {/* 🟢 NEW: The Equity Curve & Insights Panel */}
       <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl flex flex-col min-h-[300px]">
               <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center gap-2"><LineChart size={14}/> Cumulative Equity Curve</h3>
@@ -230,7 +246,6 @@ export default function PerformanceLog() {
         </div>
       </div>
 
-      {/* DAILY DETAILED REPORT */}
       {selectedDate && (
         <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 lg:grid-cols-4 gap-6">
           
