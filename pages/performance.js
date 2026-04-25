@@ -2,10 +2,9 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createClient } from '@supabase/supabase-js';
 import { createChart } from 'lightweight-charts';
 import { 
-  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Filter
+  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers
 } from 'lucide-react';
 
-// 🟢 THE FIX: Reverted to standard static Next.js env variables to prevent browser ReferenceErrors
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -42,9 +41,9 @@ export default function PerformanceLog() {
       const { data: trades } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('exit_time', { ascending: true }); 
 
       const valid = (trades || []).filter(t => {
-          if (!t?.exit_time) return false;
+          if (!t || !t.exit_time) return false;
           if (isNaN(new Date(t.exit_time).getTime())) return false; 
-          if (parseFloat(t?.pnl || 0) === 0 && t?.entry_price === t?.exit_price) return false; 
+          if (parseFloat(t.pnl || 0) === 0 && t.entry_price === t.exit_price) return false; 
           return true;
       });
 
@@ -74,12 +73,16 @@ export default function PerformanceLog() {
       let cumulativePnl = 0;
       let lastTime = 0;
 
-      globalFilteredTrades.forEach(t => {
+      // 🟢 THE FIX: Strictly sort trades chronologically before plotting to prevent Library crash
+      const sortedTrades = [...globalFilteredTrades].sort((a, b) => new Date(a.exit_time).getTime() - new Date(b.exit_time).getTime());
+
+      sortedTrades.forEach(t => {
           let safeTime = Math.floor(new Date(t.exit_time).getTime() / 1000);
           if (safeTime <= lastTime) safeTime = lastTime + 1; 
           lastTime = safeTime;
           
-          cumulativePnl += parseFloat(t.pnl || 0);
+          const pnlNum = parseFloat(t.pnl) || 0;
+          cumulativePnl += pnlNum;
           data.push({ time: safeTime, value: parseFloat(cumulativePnl.toFixed(2)) });
       });
       return data;
@@ -92,7 +95,7 @@ export default function PerformanceLog() {
       globalFilteredTrades.forEach(t => {
           const dateStr = new Date(t.exit_time).toISOString().split('T')[0];
           if (stats[dateStr]) {
-              stats[dateStr].pnl += parseFloat(t.pnl || 0);
+              stats[dateStr].pnl += (parseFloat(t.pnl) || 0);
               stats[dateStr].trades += 1;
           }
       });
@@ -102,13 +105,16 @@ export default function PerformanceLog() {
   useEffect(() => {
     if (!isMounted || !chartContainerRef.current || chartData.length === 0) return;
     
-    chartContainerRef.current.innerHTML = '';
+    // Clean up existing chart safely
     if (chartRef.current) {
         try { chartRef.current.remove(); } catch(e){}
+        chartRef.current = null;
     }
 
+    // 🟢 THE FIX: Explicit Dimensions to prevent the Zero-Dimension Crash
     const chart = createChart(chartContainerRef.current, {
-        autoSize: true, // This protects against the Zero-Dimension crash
+        width: chartContainerRef.current.clientWidth || 800,
+        height: chartContainerRef.current.clientHeight || 300,
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
         grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
         timeScale: { timeVisible: true, borderColor: 'rgba(255,255,255,0.1)' },
@@ -126,7 +132,19 @@ export default function PerformanceLog() {
     chart.timeScale().fitContent();
     chartRef.current = chart;
 
+    const handleResize = () => {
+        if(chartContainerRef.current && chartRef.current) {
+            chartRef.current.applyOptions({ 
+                width: chartContainerRef.current.clientWidth || 800, 
+                height: chartContainerRef.current.clientHeight || 300 
+            });
+        }
+    };
+    
+    window.addEventListener('resize', handleResize);
+
     return () => {
+        window.removeEventListener('resize', handleResize);
         if (chartRef.current) {
             try { chartRef.current.remove(); } catch (e) {}
             chartRef.current = null;
@@ -134,26 +152,26 @@ export default function PerformanceLog() {
     };
   }, [chartData, isMounted]);
 
-  // 🟢 THE FIX: Properly map the database rows back into Pipeline UI objects
   const displayLogs = useMemo(() => {
       const reversed = [...globalFilteredTrades].reverse(); 
       return reversed.filter(t => {
           const dateStr = new Date(t.exit_time).toISOString().split('T')[0];
           if (selectedDate && dateStr !== selectedDate) return false;
 
-          const pnl = parseFloat(t.pnl || 0);
+          const pnl = parseFloat(t.pnl) || 0;
           if (logFilter === 'WIN') return pnl > 0;
           if (logFilter === 'LOSS') return pnl <= 0;
           if (logFilter === 'LONG') return t.side === 'BUY' || t.side === 'LONG';
           if (logFilter === 'SHORT') return t.side === 'SELL' || t.side === 'SHORT';
           return true;
       }).map(t => {
-          const originalReason = t.reason?.split('[EXIT TRIGGER]:')[0]?.trim();
+          // 🟢 THE FIX: Defensive typeof shield against null strings crashing .split()
+          const originalReason = typeof t.reason === 'string' ? t.reason.split('[EXIT TRIGGER]:')[0].trim() : '';
           return {
               dateStr: new Date(t.exit_time).toISOString().split('T')[0],
               timeStr: new Date(t.exit_time).toLocaleTimeString(),
-              asset: t.symbol,
-              strategy: t.strategy_id,
+              asset: t.symbol || 'UNKNOWN',
+              strategy: t.strategy_id || 'UNKNOWN',
               trade: t,
               reasoning: originalReason
           };
@@ -163,20 +181,21 @@ export default function PerformanceLog() {
   const generateInsights = () => {
       if (globalFilteredTrades.length < 5) return "Accumulating telemetry. Minimum 5 trades required to generate reliable optimization insights.";
       
-      const wins = globalFilteredTrades.filter(t => parseFloat(t.pnl || 0) > 0);
-      const losses = globalFilteredTrades.filter(t => parseFloat(t.pnl || 0) <= 0);
+      const wins = globalFilteredTrades.filter(t => (parseFloat(t.pnl) || 0) > 0);
+      const losses = globalFilteredTrades.filter(t => (parseFloat(t.pnl) || 0) <= 0);
       
-      const avgWin = wins.length > 0 ? wins.reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0) / wins.length : 0;
-      const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0) / losses.length) : 0;
+      const avgWin = wins.length > 0 ? wins.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0) / wins.length : 0;
+      const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0) / losses.length) : 0;
       
+      // 🟢 THE FIX: Safe NaN math
       const profitFactor = avgLoss > 0 ? (avgWin / avgLoss).toFixed(2) : 'Infinity';
-      const globalWinRate = ((wins.length / globalFilteredTrades.length) * 100).toFixed(1);
+      const globalWinRate = globalFilteredTrades.length > 0 ? ((wins.length / globalFilteredTrades.length) * 100).toFixed(1) : '0.0';
 
-      if (profitFactor !== 'Infinity' && parseFloat(profitFactor) < 1.0 && globalWinRate > 50) {
+      if (profitFactor !== 'Infinity' && parseFloat(profitFactor) < 1.0 && parseFloat(globalWinRate) > 50) {
           return `Negative Skew Detected: Win rate is healthy (${globalWinRate}%), but Average Loss ($${avgLoss.toFixed(2)}) exceeds Average Win ($${avgWin.toFixed(2)}). Consider tightening your SL Tripwire or trailing stops faster to preserve capital.`;
-      } else if (globalWinRate < 40 && profitFactor !== 'Infinity' && parseFloat(profitFactor) > 1.5) {
+      } else if (parseFloat(globalWinRate) < 40 && profitFactor !== 'Infinity' && parseFloat(profitFactor) > 1.5) {
           return `Low Strike Rate / High Reward: You are getting stopped out frequently (${globalWinRate}% Win Rate), but when you win, you win big (PF: ${profitFactor}). Consider widening your initial Stop Loss to avoid liquidity wicks.`;
-      } else if (profitFactor !== 'Infinity' && parseFloat(profitFactor) > 1.5 && globalWinRate >= 50) {
+      } else if (profitFactor !== 'Infinity' && parseFloat(profitFactor) > 1.5 && parseFloat(globalWinRate) >= 50) {
           return `Optimal Structure Maintained: System is highly profitable with a Profit Factor of ${profitFactor}. Maintain current tripwire settings. Consider scaling up base contract sizes dynamically.`;
       } else {
           return `System Stable: Win Rate is ${globalWinRate}% with an Average Win of $${avgWin.toFixed(2)}. Monitor market regimes before adjusting tripwires.`;
@@ -184,9 +203,9 @@ export default function PerformanceLog() {
   };
 
   const dailyLogs = globalFilteredTrades.filter(t => new Date(t.exit_time).toISOString().split('T')[0] === selectedDate);
-  const dailyPnl = dailyLogs.reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0);
-  const dailyWins = dailyLogs.filter(t => parseFloat(t.pnl || 0) > 0).length;
-  const dailyLosses = dailyLogs.filter(t => parseFloat(t.pnl || 0) <= 0).length;
+  const dailyPnl = dailyLogs.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+  const dailyWins = dailyLogs.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+  const dailyLosses = dailyLogs.filter(t => (parseFloat(t.pnl) || 0) <= 0).length;
   const dailyWinRate = dailyLogs.length > 0 ? ((dailyWins / dailyLogs.length) * 100).toFixed(1) : 0;
 
   const uniqueAssets = [...new Set(allValidTrades.map(t => t.symbol).filter(Boolean))];
@@ -215,7 +234,7 @@ export default function PerformanceLog() {
 
         <div className="flex items-center gap-4 bg-slate-900/50 p-2 rounded-2xl border border-white/5">
             <div className="flex items-center gap-2 px-3">
-                <Filter size={14} className="text-slate-400" />
+                <Layers size={14} className="text-slate-400" />
                 <select 
                     className="bg-transparent text-[10px] font-black uppercase tracking-widest text-cyan-300 focus:outline-none cursor-pointer" 
                     value={assetFilter} 
@@ -341,6 +360,7 @@ export default function PerformanceLog() {
              
              {displayLogs.map((pipeline, i) => {
                 const t = pipeline.trade;
+                if (!t) return null;
                 const pnl = parseFloat(t.pnl || 0);
                 const isWin = pnl > 0;
 
@@ -381,7 +401,7 @@ export default function PerformanceLog() {
                               <span className="text-[9px] text-slate-500 uppercase tracking-widest">Side:</span>
                               <span className={`text-[11px] font-black uppercase ${t.side === 'BUY' || t.side === 'LONG' ? 'text-emerald-400' : 'text-red-400'}`}>{t.side}</span>
                            </div>
-                           {t.reason && t.reason.includes('[EXIT TRIGGER]') && (
+                           {typeof t.reason === 'string' && t.reason.includes('[EXIT TRIGGER]') && (
                              <div className="flex items-center gap-2">
                                 <span className="text-[9px] text-slate-500 uppercase tracking-widest">Trigger:</span>
                                 <span className="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-white/10 uppercase">
