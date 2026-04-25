@@ -56,8 +56,10 @@ export default function Dashboard() {
 
   const [localInput, setLocalInput] = useState('');
 
+  // 🟢 THE FIX: Inject custom generateId directly into the root hook to bypass browser crypto limits
   const { messages, append, error: sdkError, isLoading } = useChat({
     api: '/api/chat',
+    generateId: () => `msg-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
   
@@ -192,11 +194,8 @@ export default function Dashboard() {
     const content = localInput;
     setLocalInput(''); // Clear UI instantly
     
-    // 🟢 THE FIX: Manually inject a safe ID so the SDK doesn't crash in iframes
-    const safeId = `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-    
     try {
-        await append({ id: safeId, role: 'user', content });
+        await append({ role: 'user', content });
     } catch (err) {
         console.error("Append Fault:", err);
     }
