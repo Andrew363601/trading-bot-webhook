@@ -414,12 +414,28 @@ export default async function handler(req, res) {
             }
         }
 
+        // 🟢 THE FIX: Safely route forced exits to Execute-Trade and abort the scan to prevent double-entries
         if (forcedExit) {
-            decision.signal = (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? 'SELL' : 'BUY';
-            decision.entryPrice = currentPrice;
-            decision.orderType = 'MARKET'; 
-            decision.tpPrice = null; decision.slPrice = null;
-            decision.telemetry = { ...decision.telemetry, exit_reason: forcedExit };
+            const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
+            const protocol = host.includes('localhost') ? 'http' : 'https';
+            
+            const exitPayload = {
+                symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', 
+                side: (openTrade.side === 'BUY' || openTrade.side === 'LONG') ? 'SELL' : 'BUY',
+                order_type: 'MARKET', price: currentPrice, tp_price: null, sl_price: null,
+                execution_mode: config.execution_mode || 'PAPER', leverage: openTrade.leverage || 1,
+                market_type: config.parameters?.market_type || 'FUTURES', qty: openTrade.qty,
+                reason: forcedExit
+            };
+            
+            await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exitPayload) });
+            
+            decision.statusOverride = `HIT_${forcedExit}`;
+            const scanEntry = { strategy: config.strategy, asset, telemetry: decision.telemetry || {}, status: decision.statusOverride };
+            results.push(scanEntry);
+            await supabase.from('scan_results').insert([scanEntry]);
+            
+            continue; // CRITICAL: Stop evaluating this strategy and move to the next one to prevent Double-Tap
         } 
        else if (decision.signal) {
         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
@@ -432,12 +448,11 @@ export default async function handler(req, res) {
         const lastVetoTime = config.last_veto_time ? new Date(config.last_veto_time).getTime() : 0;
         const isCooldownActive = (Date.now() - lastVetoTime) < (cooldownMinutes * 60000);
 
-        // 🟢 THE FIX: Absolute Cooldown Enforcement
         if (isDuplicate) {
-            decision.signal = null; // Silently ignore duplicate trend signals
+            decision.signal = null; 
         } else if (isCooldownActive) {
             decision.signal = null;
-            decision.statusOverride = `COOLDOWN (${cooldownMinutes}M)`; // Gag the Oracle for both reversals and new entries
+            decision.statusOverride = `COOLDOWN (${cooldownMinutes}M)`; 
         } else if (decision.signal) {
             let currentTradeContext = null;
             if (isReversal) {

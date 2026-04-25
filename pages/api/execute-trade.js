@@ -23,7 +23,6 @@ async function sendDiscordAlert(title, description, color) {
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
 
-// 🟢 THE FIX: Universal Metrics Dictionary to completely remove hardcoded elements
 const getAssetMetrics = (symbol) => {
     let multiplier = 1.0;
     let tickSize = 0.01;
@@ -81,7 +80,6 @@ export default async function handler(req, res) {
 
     const isClosing = openTrade && openTrade.side !== side;
 
-    // 🟢 THE FIX: Strictly enforce whole numbers for Contracts to prevent Exchange rejections
     let orderQty = Math.max(1, Math.round(parseFloat(data.qty || 10)));
     if (isClosing) {
         orderQty = Math.max(1, Math.round(parseFloat(openTrade.qty || orderQty)));
@@ -219,7 +217,15 @@ export default async function handler(req, res) {
       }
     }
 
-    const isForcedExit = tradeReason && (tradeReason.includes('STOP_LOSS') || tradeReason.includes('TAKE_PROFIT') || tradeReason.includes('STALE_LIMIT') || tradeReason.includes('EMERGENCY_CLOSE'));
+    // 🟢 THE FIX: Added all Tripwire exit signatures to the trap door
+    const isForcedExit = tradeReason && (
+        tradeReason.includes('STOP_LOSS') || 
+        tradeReason.includes('TAKE_PROFIT') || 
+        tradeReason.includes('STALE_LIMIT') || 
+        tradeReason.includes('EMERGENCY_CLOSE') ||
+        tradeReason.includes('DEFENSIVE_MARKET_CLOSE') ||
+        tradeReason.includes('TRIPWIRE_SECURED_PROFIT')
+    );
 
     if (openTrade) {
       if (isClosing) {
@@ -236,6 +242,7 @@ export default async function handler(req, res) {
         return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
       }
     } else {
+      // 🟢 THE FIX: The trap door will now successfully catch Tripwire exits and stop the Double-Tap!
       if (isForcedExit) return res.status(200).json({ status: "already_closed_natively", product: coinbaseProduct });
 
       const { error: insertError } = await supabase.from('trade_logs').insert([{

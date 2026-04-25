@@ -91,7 +91,9 @@ export default async function handler(req, res) {
 
         // 5. EXECUTE THE VERDICT
         if (verdict.action === 'HOLD') {
-            await supabase.from('trade_logs').update({ reason: appendReason(verdict.reasoning) }).eq('id', trade.id);
+            // 🟢 THE FIX: Catching Supabase update errors
+            const { error: dbErr } = await supabase.from('trade_logs').update({ reason: appendReason(verdict.reasoning) }).eq('id', trade.id);
+            if (dbErr) throw new Error(`Database failed to save HOLD status: ${dbErr.message}`);
             
             // 📱 ALERT: HOLD
             await sendDiscordAlert(`🛡️ Sniper Review: HOLD ${trade.symbol}`, `**Action:** Maintaining current position.\n**Oracle:** ${verdict.reasoning}`, 10181046); 
@@ -99,13 +101,29 @@ export default async function handler(req, res) {
         } 
         
         else if (verdict.action === 'MARKET_CLOSE') {
+            // 🟢 THE FIX: Full payload injected to satisfy execute-trade route validation
             const payload = {
-                symbol: trade.symbol, strategy_id: trade.strategy_id, side: trade.side === 'BUY' ? 'SELL' : 'BUY',
-                order_type: 'MARKET', qty: trade.qty, reason: `[ORACLE MANUAL REVIEW CLOSE]: ${verdict.reasoning}`
+                symbol: trade.symbol, 
+                strategy_id: trade.strategy_id, 
+                version: trade.version || 'v1.0',
+                side: trade.side === 'BUY' ? 'SELL' : 'BUY',
+                order_type: 'MARKET', 
+                price: currentPrice,
+                qty: trade.qty, 
+                execution_mode: trade.execution_mode || 'PAPER',
+                leverage: trade.leverage || 1,
+                market_type: trade.market_type || 'FUTURES',
+                reason: `[ORACLE MANUAL REVIEW CLOSE]: ${verdict.reasoning}`
             };
+            
             const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
             const protocol = host.includes('localhost') ? 'http' : 'https';
-            await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            const closeRes = await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            
+            if (!closeRes.ok) {
+                const errData = await closeRes.json();
+                throw new Error(`Execution route failed: ${errData.error || closeRes.statusText}`);
+            }
             
             // 📱 ALERT: FORCE CLOSE
             await sendDiscordAlert(`🎯 Sniper Review: CLOSE ${trade.symbol}`, `**Action:** Force closing position.\n**Oracle:** ${verdict.reasoning}`, 15548997);
@@ -118,7 +136,7 @@ export default async function handler(req, res) {
             
             let safeTp = null;
             let safeSl = null;
-
+ 
             if (trade.execution_mode === 'LIVE') {
                 const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
                 const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, apiKeyName, apiSecret)}` } });
@@ -159,15 +177,21 @@ export default async function handler(req, res) {
                 safeSl = verdict.sl_price;
             }
             
-            await supabase.from('trade_logs').update({ 
+            // 🟢 THE FIX: Checking for DB rejection on Bracket updates
+            const { error: limitDbErr } = await supabase.from('trade_logs').update({ 
                 tp_price: safeTp || verdict.tp_price, sl_price: safeSl || verdict.sl_price, 
                 reason: appendReason(`ADJUSTED LIMITS. ${verdict.reasoning}`) 
             }).eq('id', trade.id);
+
+            if (limitDbErr) throw new Error(`Database failed to save updated limits: ${limitDbErr.message}`);
 
             // 📱 ALERT: ADJUST LIMITS WITH OLD VS NEW
             await sendDiscordAlert(`🛠️ Sniper Review: ADJUSTED ${trade.symbol}`, `**Old Brackets:** TP $${oldTp} | SL $${oldSl}\n**New Brackets:** TP $${safeTp || 'N/A'} | SL $${safeSl || 'N/A'}\n**Oracle:** ${verdict.reasoning}`, 3447003);
 
             return res.status(200).json({ status: "ADJUSTED", reasoning: verdict.reasoning });
+        } else {
+            // 🟢 THE FIX: Trap door for rogue AI outputs
+            throw new Error(`Oracle returned an unrecognized action: ${verdict.action}`);
         }
 
     } catch (err) {
