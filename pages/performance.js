@@ -1,12 +1,18 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
-import { createChart } from 'lightweight-charts';
+// 🟢 THE FIX: Explicitly import AreaSeries for V5 compatibility
+import { createChart, AreaSeries } from 'lightweight-charts';
 import { 
   BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers
 } from 'lucide-react';
 
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
+const getEnv = (key, fallback) => {
+    if (typeof process !== 'undefined' && process.env) return process.env[key] || fallback;
+    return fallback;
+};
+
+const SUPABASE_URL = getEnv('NEXT_PUBLIC_SUPABASE_URL', "https://wsrioyxzhxxrtzjncfvn.supabase.co");
+const SUPABASE_ANON_KEY = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb");
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export default function PerformanceLog() {
@@ -73,7 +79,6 @@ export default function PerformanceLog() {
       let cumulativePnl = 0;
       let lastTime = 0;
 
-      // 🟢 THE FIX: Strictly sort trades chronologically before plotting to prevent Library crash
       const sortedTrades = [...globalFilteredTrades].sort((a, b) => new Date(a.exit_time).getTime() - new Date(b.exit_time).getTime());
 
       sortedTrades.forEach(t => {
@@ -105,13 +110,11 @@ export default function PerformanceLog() {
   useEffect(() => {
     if (!isMounted || !chartContainerRef.current || chartData.length === 0) return;
     
-    // Clean up existing chart safely
     if (chartRef.current) {
         try { chartRef.current.remove(); } catch(e){}
         chartRef.current = null;
     }
 
-    // 🟢 THE FIX: Explicit Dimensions to prevent the Zero-Dimension Crash
     const chart = createChart(chartContainerRef.current, {
         width: chartContainerRef.current.clientWidth || 800,
         height: chartContainerRef.current.clientHeight || 300,
@@ -121,7 +124,8 @@ export default function PerformanceLog() {
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
     });
 
-    const series = chart.addAreaSeries({
+    // 🟢 THE FIX: Use V5 syntax for adding AreaSeries
+    const series = chart.addSeries(AreaSeries, {
         lineColor: '#3b82f6',
         topColor: 'rgba(59, 130, 246, 0.4)',
         bottomColor: 'rgba(59, 130, 246, 0.0)',
@@ -165,7 +169,6 @@ export default function PerformanceLog() {
           if (logFilter === 'SHORT') return t.side === 'SELL' || t.side === 'SHORT';
           return true;
       }).map(t => {
-          // 🟢 THE FIX: Defensive typeof shield against null strings crashing .split()
           const originalReason = typeof t.reason === 'string' ? t.reason.split('[EXIT TRIGGER]:')[0].trim() : '';
           return {
               dateStr: new Date(t.exit_time).toISOString().split('T')[0],
@@ -187,7 +190,6 @@ export default function PerformanceLog() {
       const avgWin = wins.length > 0 ? wins.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0) / wins.length : 0;
       const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0) / losses.length) : 0;
       
-      // 🟢 THE FIX: Safe NaN math
       const profitFactor = avgLoss > 0 ? (avgWin / avgLoss).toFixed(2) : 'Infinity';
       const globalWinRate = globalFilteredTrades.length > 0 ? ((wins.length / globalFilteredTrades.length) * 100).toFixed(1) : '0.0';
 
