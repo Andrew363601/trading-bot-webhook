@@ -30,9 +30,6 @@ export default async function handler(req, res) {
         throw new Error("Invalid or empty message payload.");
     }
 
-    // 🟢 THE FIX: We removed the aggressive "Message Sanitizer". 
-    // Gemini MUST receive the raw toolInvocations and tool results to maintain its train of thought.
-    // We only truncate to the last 15 messages to save API tokens.
     const safeMessages = messages.length > 15 ? messages.slice(-15) : messages;
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
@@ -146,7 +143,7 @@ export default async function handler(req, res) {
       model: google('models/gemini-2.5-pro'), 
       system: systemPrompt,
       messages: safeMessages, 
-      maxSteps: 5, // Allows Gemini to call a tool, read the result, and answer automatically
+      maxSteps: 5,
       tools: {
         queryTradeLedger: tool({
           description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
@@ -378,8 +375,8 @@ export default async function handler(req, res) {
       },
     });
 
-    // 🟢 THE FIX: Safely route the Next.js API stream response
-    return result.pipeDataStreamToResponse(res);
+    // 🟢 THE FIX: Remove 'return' to allow the Node ServerResponse to stream properly
+    result.pipeDataStreamToResponse(res);
 
   } catch (err) {
     console.error("====== FULL CHAT FAULT ENCOUNTERED ======");

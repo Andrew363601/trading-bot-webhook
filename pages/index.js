@@ -188,9 +188,18 @@ export default function Dashboard() {
   const handleManualSubmit = async (e) => {
     e.preventDefault();
     if (!localInput?.trim() || isLoading) return;
+    
     const content = localInput;
-    setLocalInput('');
-    await append({ role: 'user', content });
+    setLocalInput(''); // Clear UI instantly
+    
+    // 🟢 THE FIX: Manually inject a safe ID so the SDK doesn't crash in iframes
+    const safeId = `msg-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    
+    try {
+        await append({ id: safeId, role: 'user', content });
+    } catch (err) {
+        console.error("Append Fault:", err);
+    }
   };
 
   const handleStrategySelect = async (stratId) => {
