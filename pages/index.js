@@ -1,5 +1,3 @@
-// hard push
-
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { useChat } from '@ai-sdk/react'; 
@@ -10,6 +8,20 @@ import {
   Send, Activity, Layers, TrendingUp, Target, Shield, Wallet,
   Eye, Zap, AlertOctagon, BarChart2, Search, Maximize2, Minimize2, Flame, Power, AlertTriangle
 } from 'lucide-react';
+
+// 🟢 THE NUCLEAR FIX: Global Polyfill for crypto.randomUUID to prevent StackBlitz iframe crashes
+if (typeof window !== 'undefined') {
+    if (!window.crypto) window.crypto = {};
+    if (!window.crypto.randomUUID) {
+        window.crypto.randomUUID = () => {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                const r = Math.random() * 16 | 0;
+                const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        };
+    }
+}
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
@@ -42,8 +54,6 @@ export default function Dashboard() {
   
   const [isChartMaximized, setIsChartMaximized] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
-  
-  // 🟢 NEW: DEFCON Time Monitor
   const [isDefconActive, setIsDefconActive] = useState(false);
 
   const chartContainerRef = useRef(null);
@@ -56,32 +66,29 @@ export default function Dashboard() {
 
   const [localInput, setLocalInput] = useState('');
 
-  // 🟢 THE FIX: Inject custom generateId directly into the root hook to bypass browser crypto limits
+  // 🟢 We can now use the standard hook, as the polyfill protects it globally
   const { messages, append, error: sdkError, isLoading } = useChat({
     api: '/api/chat',
-    generateId: () => `msg-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
   
   const chatEndRef = useRef(null);
 
-  // 🟢 THE FIX: DEFCON Margin Sweep Monitor (2:00 PM - 2:59 PM CT)
   useEffect(() => {
       const checkDefconTime = () => {
           const now = new Date();
           const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hour: 'numeric', hour12: false });
           const centralHour = parseInt(formatter.format(now), 10);
-          setIsDefconActive(centralHour === 14); // 14:00 is 2 PM
+          setIsDefconActive(centralHour === 14); 
       };
       
       checkDefconTime();
-      const defconInterval = setInterval(checkDefconTime, 60000); // Check every minute
+      const defconInterval = setInterval(checkDefconTime, 60000); 
       return () => clearInterval(defconInterval);
   }, []);
 
   const fetchData = useCallback(async () => {
     try {
-      // 🟢 THE FIX: Removed .eq('is_active', true) to load ALL strategies for the Power Switch
       const [logsRes, configsRes, scansRes] = await Promise.all([
           supabase.from('trade_logs').select('*').eq('symbol', activeAsset).order('id', { ascending: false }),
           supabase.from('strategy_config').select('*'),
@@ -142,11 +149,10 @@ export default function Dashboard() {
       setIsSearching(false);
   };
 
-  // 🟢 NEW: Strategy Power Switch Handler
   const handleToggleStrategy = async (strategyId, currentState) => {
       try {
           await supabase.from('strategy_config').update({ is_active: !currentState }).eq('strategy', strategyId);
-          fetchData(); // Instantly refresh the UI
+          fetchData(); 
       } catch (err) {
           console.error("Failed to toggle strategy:", err);
       }
@@ -192,7 +198,7 @@ export default function Dashboard() {
     if (!localInput?.trim() || isLoading) return;
     
     const content = localInput;
-    setLocalInput(''); // Clear UI instantly
+    setLocalInput(''); 
     
     try {
         await append({ role: 'user', content });
@@ -298,7 +304,6 @@ export default function Dashboard() {
         const granularity = tfMap[chartTimeframe] || 60;
 
         try {
-            // 🟢 THE FIX: Appended limits and deepCache flags to the backend request
             const res = await fetch(`/api/chart-data?asset=${activeAsset}&granularity=${granularity}&limit=1500&deepCache=true`);
             if(!res.ok) throw new Error("Chart proxy failed");
             
@@ -484,7 +489,6 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4 relative">
       
-      {/* 🟢 THE FIX: The DEFCON Override Banner */}
       {isDefconActive && (
           <div className="bg-red-500/20 border-b border-red-500/50 text-red-200 px-6 py-3 flex items-center justify-center gap-3 w-full animate-pulse z-50">
               <AlertTriangle size={18} className="text-red-400" />
