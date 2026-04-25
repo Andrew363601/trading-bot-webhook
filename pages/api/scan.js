@@ -157,16 +157,14 @@ export default async function handler(req, res) {
                         }
                     }
 
-                    // 🟢 THE FIX: 2. PENDING_REVIEW (THE AMNESIA CURE)
+                    // 2. PENDING_REVIEW (THE AMNESIA CURE)
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         
-                        // Start with the initial expectancy
                         let totalAllowedMinutes = 15; 
                         const initialMatch = openTrade.reason?.match(/Fill:\s*(\d+)m/i);
                         if (initialMatch) totalAllowedMinutes = parseInt(initialMatch[1]);
 
-                        // Accumulate every single extension the Oracle granted
                         const extensionMatches = [...(openTrade.reason?.matchAll(/extended wait by\s*(\d+)m/gi) || [])];
                         extensionMatches.forEach(match => {
                             totalAllowedMinutes += parseInt(match[1]);
@@ -193,7 +191,6 @@ export default async function handler(req, res) {
                                 const newMins = oracleVerdict.new_expectancy || 15;
                                 const updatedReason = `${openTrade.reason || ''}\n\n[PENDING_REVIEW]: Oracle extended wait by ${newMins}m. Reason: ${oracleVerdict.reasoning}`;
                                 
-                                // DO NOT overwrite created_at. We now track true time elapsed.
                                 await supabase.from('trade_logs').update({ reason: updatedReason }).eq('id', openTrade.id);
                                 openTrade.reason = updatedReason;
                                 continue;
@@ -202,7 +199,7 @@ export default async function handler(req, res) {
                         continue; 
                     }
 
-                    // 🟢 GHOST PROFIT SQUASH
+                    // GHOST PROFIT SQUASH
                     if (!activePosition && !entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         if (minutesOpen > 2) {
@@ -240,7 +237,6 @@ export default async function handler(req, res) {
                                     else { exactExitPrice = openTrade.sl_price; assumedReason = 'STOP_LOSS (NATIVE_SYNC)'; }
                                 }
 
-                                // 🟢 The universal `multiplier` variable flawlessly handles Bitcoin (0.01) vs Dogecoin (1000)
                                 const rawPnl = openTrade.side === 'BUY' ? (exactExitPrice - openTrade.entry_price) * openTrade.qty * multiplier : (openTrade.entry_price - exactExitPrice) * openTrade.qty * multiplier;
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                                 
@@ -251,7 +247,7 @@ export default async function handler(req, res) {
                         }
                     }
 
-                    // 🟢 BRACKET INJECTION
+                    // BRACKET INJECTION
                     if (activePosition) {
                         const physicalTP = openOrders.find(o => o.order_configuration?.limit_limit_gtc);
                         const physicalSL = openOrders.find(o => o.order_configuration?.stop_limit_stop_limit_gtc);
@@ -310,7 +306,7 @@ export default async function handler(req, res) {
             }
         }
 
-        // 🟢 DUAL TRIPWIRES (Offense & Defense)
+        // DUAL TRIPWIRES (Offense & Defense)
         if (openTrade && !forcedExit && openTrade.tp_price && openTrade.sl_price && openTrade.entry_price && activePosition) {
             const isTpTripwireLocked = openTrade.reason && openTrade.reason.includes('[TP_TRIPWIRE_CLEARED]');
             const isSlTripwireLocked = openTrade.reason && openTrade.reason.includes('[SL_TRIPWIRE_CLEARED]');
@@ -436,13 +432,12 @@ export default async function handler(req, res) {
         const lastVetoTime = config.last_veto_time ? new Date(config.last_veto_time).getTime() : 0;
         const isCooldownActive = (Date.now() - lastVetoTime) < (cooldownMinutes * 60000);
 
-        if (isCooldownActive && !openTrade && !isReversal && !isDuplicate) {
-            decision.signal = null;
-            decision.statusOverride = `COOLDOWN (${cooldownMinutes}M)`;
-        }
-
+        // 🟢 THE FIX: Absolute Cooldown Enforcement
         if (isDuplicate) {
+            decision.signal = null; // Silently ignore duplicate trend signals
+        } else if (isCooldownActive) {
             decision.signal = null;
+            decision.statusOverride = `COOLDOWN (${cooldownMinutes}M)`; // Gag the Oracle for both reversals and new entries
         } else if (decision.signal) {
             let currentTradeContext = null;
             if (isReversal) {
