@@ -68,7 +68,6 @@ export default async function handler(req, res) {
       if (config.is_processing) continue;
       await supabase.from('strategy_config').update({ is_processing: true }).eq('strategy', config.strategy);
 
-      // 🟢 THE FIX: Hoisted to the loop scope so the finally block can interact with them!
       let trapSprung = false;
       let trapExpired = false;
 
@@ -84,7 +83,8 @@ export default async function handler(req, res) {
         if (!macroCandles || !triggerCandles || macroCandles.length < 21 || triggerCandles.length < 21) continue;
         const currentPrice = triggerCandles[triggerCandles.length - 1].close;
 
-        const microstructure = await fetchMicrostructure(asset, triggerCandles, apiKeyName, apiSecret);
+        // 🟢 THE FIX: Passing macroCandles into the microstructure engine
+        const microstructure = await fetchMicrostructure(asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
 
         const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', asset).eq('strategy_id', config.strategy).is('exit_price', null).order('id', { ascending: false }).limit(1);
         const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
@@ -729,26 +729,27 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   } catch (err) { throw err; } 
 }
 
-async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
+// 🟢 THE FIX: Upgraded to calculate Macro CVD and Point of Control (POC)
+async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, secret) {
     try {
         let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = [];
         let cvd = 0; 
         
+        // --- MICRO CVD CALCULATION ---
         const cvdCandles = triggerCandles.slice(-50);
         for (let i = 0; i < cvdCandles.length; i++) {
             const c = cvdCandles[i];
             const range = c.high - c.low;
-            
             let openPrice = c.open;
             if (isNaN(openPrice) || openPrice === undefined) {
                 openPrice = i > 0 ? cvdCandles[i-1].close : c.close;
             }
-
             if (range > 0) {
                 cvd += c.volume * ((c.close - openPrice) / range);
             }
         }
 
+        // --- MICRO VWAP & ATR ---
         for (let i = 1; i < triggerCandles.length; i++) {
             const c = triggerCandles[i]; const prev = triggerCandles[i-1];
             typicalPriceVolume += ((c.high + c.low + c.close) / 3) * c.volume; totalVolume += c.volume;
@@ -757,6 +758,54 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
         const vwap = totalVolume > 0 ? typicalPriceVolume / totalVolume : triggerCandles[triggerCandles.length - 1].close;
         const atr = trueRanges.length > 0 ? trueRanges.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, trueRanges.length) : 0;
         const currentPrice = triggerCandles[triggerCandles.length - 1].close;
+
+        // 🟢 THE FIX: MACRO CVD CALCULATION (Last 50 Macro Candles)
+        let macro_cvd = 0;
+        const macroCvdCandles = macroCandles.slice(-50);
+        for (let i = 0; i < macroCvdCandles.length; i++) {
+            const c = macroCvdCandles[i];
+            const range = c.high - c.low;
+            let openPrice = c.open;
+            if (isNaN(openPrice) || openPrice === undefined) {
+                openPrice = i > 0 ? macroCvdCandles[i-1].close : c.close;
+            }
+            if (range > 0) {
+                macro_cvd += c.volume * ((c.close - openPrice) / range);
+            }
+        }
+
+        // 🟢 THE FIX: POINT OF CONTROL (POC) ENGINE (Last 150 Macro Candles)
+        let minPrice = Infinity;
+        let maxPrice = -Infinity;
+        const pocCandles = macroCandles.slice(-150);
+        
+        pocCandles.forEach(c => {
+            if (c.low < minPrice) minPrice = c.low;
+            if (c.high > maxPrice) maxPrice = c.high;
+        });
+
+        const numBuckets = 50;
+        const bucketSize = (maxPrice - minPrice) / numBuckets;
+        const volumeProfile = new Array(numBuckets).fill(0);
+
+        pocCandles.forEach(c => {
+            const typicalPrice = (c.high + c.low + c.close) / 3;
+            let bucketIndex = Math.floor((typicalPrice - minPrice) / bucketSize);
+            if (bucketIndex >= numBuckets) bucketIndex = numBuckets - 1; 
+            if (bucketIndex < 0) bucketIndex = 0;
+            volumeProfile[bucketIndex] += c.volume;
+        });
+
+        let maxVol = -1;
+        let pocIndex = 0;
+        for(let i=0; i<numBuckets; i++) {
+            if (volumeProfile[i] > maxVol) {
+                maxVol = volumeProfile[i];
+                pocIndex = i;
+            }
+        }
+        const macro_poc = minPrice + (pocIndex * bucketSize) + (bucketSize / 2);
+
 
         const assetMap = {
             'ETP': 'ETH', 'BIT': 'BTC', 'BIP': 'BTC', 'SLP': 'SOL', 
@@ -814,7 +863,13 @@ async function fetchMicrostructure(asset, triggerCandles, apiKey, secret) {
         }
 
         return { 
-            indicators: { current_vwap: vwap.toFixed(2), current_atr: atr.toFixed(2), current_cvd: cvd.toFixed(2) }, 
+            indicators: { 
+                current_vwap: vwap.toFixed(2), 
+                current_atr: atr.toFixed(2), 
+                current_cvd: cvd.toFixed(2),
+                macro_cvd: macro_cvd.toFixed(2), // 🟢 Injected into telemetry
+                macro_poc: macro_poc.toFixed(2)  // 🟢 Injected into telemetry
+            }, 
             orderBook: orderBookData, 
             derivativesData: { 
                 spot_price: spotPrice.toFixed(2),
