@@ -35,7 +35,6 @@ function generateCoinbaseToken(method, path, apiKey, apiSecret) {
   );
 }
 
-// 🟢 Universal Metrics Dictionary (Purged all Ghost Multipliers below)
 const getAssetMetrics = (symbol) => {
     let multiplier = 1.0;
     let tickSize = 0.01;
@@ -133,7 +132,6 @@ export default async function handler(req, res) {
                         Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)
                     );
 
-                    // 1. PARTIAL FILL HANDLER
                     if (activePosition && entryOrderExists) {
                         const activeQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                         const expectedQty = Math.abs(parseFloat(openTrade.qty));
@@ -157,7 +155,6 @@ export default async function handler(req, res) {
                         }
                     }
 
-                    // 2. PENDING_REVIEW (THE AMNESIA CURE)
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         
@@ -199,7 +196,6 @@ export default async function handler(req, res) {
                         continue; 
                     }
 
-                    // GHOST PROFIT SQUASH
                     if (!activePosition && !entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         if (minutesOpen > 2) {
@@ -220,6 +216,7 @@ export default async function handler(req, res) {
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                                 await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                                 await sendDiscordAlert(`⏳ Limit Order Canceled: ${asset}`, `**Entry Price:** $${openTrade.entry_price}\n**Trigger:** Removed from Exchange manually.`, 16776960);
+                                // 🟢 THE FIX: Removed aggressive trap clearing. Let TTL manage the ghost order.
                                 continue; 
                             } else {
                                 if (openOrders.length > 0) {
@@ -242,12 +239,12 @@ export default async function handler(req, res) {
                                 
                                 await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                                 await sendDiscordAlert(`🏁 Position Closed Natively: ${asset}`, `**Exit Price:** $${exactExitPrice}\n**Realized PnL:** $${rawPnl.toFixed(4)}\n**Trigger:** ${assumedReason}`, rawPnl >= 0 ? 5763719 : 15548997);
+                                // 🟢 THE FIX: Removed aggressive trap clearing. Let TTL manage the ghost order.
                                 continue; 
                             }
                         }
                     }
 
-                    // BRACKET INJECTION
                     if (activePosition) {
                         const physicalTP = openOrders.find(o => o.order_configuration?.limit_limit_gtc);
                         const physicalSL = openOrders.find(o => o.order_configuration?.stop_limit_stop_limit_gtc);
@@ -306,7 +303,6 @@ export default async function handler(req, res) {
             }
         }
 
-        // DUAL TRIPWIRES (Offense & Defense)
         if (openTrade && !forcedExit && openTrade.tp_price && openTrade.sl_price && openTrade.entry_price && activePosition) {
             const isTpTripwireLocked = openTrade.reason && openTrade.reason.includes('[TP_TRIPWIRE_CLEARED]');
             const isSlTripwireLocked = openTrade.reason && openTrade.reason.includes('[SL_TRIPWIRE_CLEARED]');
@@ -327,7 +323,6 @@ export default async function handler(req, res) {
             const progressToTp = isProfitable && distToTp > 0 ? (coveredDistance / distToTp) : 0;
             const progressToSl = isNegative && distToSl > 0 ? (coveredDistance / distToSl) : 0;
 
-            // OFFENSE: Trail Stop Loss to Breakeven
             if (isProfitable && progressToTp >= tpTripwireThreshold && !isTpTripwireLocked) {
                 const tripwireVerdict = await evaluateTradeIdea({
                     mode: 'MANUAL_REVIEW', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent, openTrade
@@ -372,8 +367,6 @@ export default async function handler(req, res) {
                      }
                 } 
             }
-            
-            // DEFENSE: Cut Losses on Structural Failure
             else if (isNegative && progressToSl >= slTripwireThreshold && !isSlTripwireLocked) {
                  const tripwireVerdict = await evaluateTradeIdea({
                     mode: 'DEFENSIVE_REVIEW', asset, strategy: config.strategy, currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators, orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, pnlPercent, openTrade
@@ -392,18 +385,6 @@ export default async function handler(req, res) {
             }
         }
 
-        const marketData = { macro: macroCandles, trigger: triggerCandles };
-        let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
-        if (decision.error) continue;
-
-        decision.telemetry = { 
-            ...decision.telemetry, 
-            cvd: microstructure.indicators.current_cvd,
-            bids: microstructure.orderBook.bids_50_levels,
-            asks: microstructure.orderBook.asks_50_levels,
-            premium: microstructure.derivativesData.basis_premium_percent
-        };
-
         if (openTrade && openTrade.sl_price && openTrade.tp_price && !forcedExit && !openTrade.skipVirtualEnforcer) {
             if (openTrade.side === 'BUY' || openTrade.side === 'LONG') {
                 if (currentPrice <= openTrade.sl_price) forcedExit = 'STOP_LOSS'; 
@@ -414,7 +395,6 @@ export default async function handler(req, res) {
             }
         }
 
-        // 🟢 THE FIX: Safely route forced exits to Execute-Trade and abort the scan to prevent double-entries
         if (forcedExit) {
             const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
             const protocol = host.includes('localhost') ? 'http' : 'https';
@@ -430,156 +410,276 @@ export default async function handler(req, res) {
             
             await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exitPayload) });
             
-            decision.statusOverride = `HIT_${forcedExit}`;
-            const scanEntry = { strategy: config.strategy, asset, telemetry: decision.telemetry || {}, status: decision.statusOverride };
+            const scanEntry = { strategy: config.strategy, asset, telemetry: microstructure.indicators || {}, status: `HIT_${forcedExit}` };
             results.push(scanEntry);
             await supabase.from('scan_results').insert([scanEntry]);
             
-            continue; // CRITICAL: Stop evaluating this strategy and move to the next one to prevent Double-Tap
+            // 🟢 THE FIX: Removed aggressive trap clearing. Let TTL manage the ghost order.
+            continue; 
         } 
-       else if (decision.signal) {
-        const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
-        decision.signal = normalizedSignal; 
-        
-        const isReversal = openTrade && openTrade.side !== normalizedSignal;
-        const isDuplicate = openTrade && !isReversal;
 
-        const cooldownMinutes = config.parameters?.veto_cooldown_minutes || 15; 
-        const lastVetoTime = config.last_veto_time ? new Date(config.last_veto_time).getTime() : 0;
-        const isCooldownActive = (Date.now() - lastVetoTime) < (cooldownMinutes * 60000);
+        let trapSprung = false;
+        let trapExpired = false;
 
-        if (isDuplicate) {
-            decision.signal = null; 
-        } else if (isCooldownActive) {
-            decision.signal = null;
-            decision.statusOverride = `COOLDOWN (${cooldownMinutes}M)`; 
-        } else if (decision.signal) {
-            let currentTradeContext = null;
-            if (isReversal) {
-                const entry = parseFloat(openTrade.entry_price);
-                const pnl = openTrade.side === 'BUY' ? (currentPrice - entry) / entry : (entry - currentPrice) / entry;
-                currentTradeContext = { side: openTrade.side, entry_price: entry, pnl_percent: (pnl * 100).toFixed(2) };
-            }
-
-            const oracleVerdict = await evaluateTradeIdea({
-                mode: isReversal ? 'REVERSAL' : 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, 
-                currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators,
-                orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, marketType: config.parameters?.market_type || 'FUTURES', openTrade: currentTradeContext, recentHistory: recentTrades || [],
-                dynamicSizing: config.parameters?.dynamic_sizing === true
-            });
-
-            decision.telemetry = { 
-                ...decision.telemetry, 
-                oracle_score: oracleVerdict.conviction_score, 
-                oracle_reasoning: oracleVerdict.reasoning
-            };
-
-            if (oracleVerdict.action === 'VETO') {
-                await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('strategy', config.strategy);
-                decision.statusOverride = 'ORACLE VETO'; 
-                
-                const shadowTrade = {
-                    symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', 
-                    side: decision.signal, order_type: 'VETO', price: currentPrice, exit_price: currentPrice, 
-                    exit_time: new Date().toISOString(), execution_mode: 'SHADOW', leverage: 1, 
-                    market_type: config.parameters?.market_type || 'FUTURES', qty: 0, pnl: 0, 
-                    reason: `[SHADOW VETO]: ${oracleVerdict.reasoning}`
-                };
-                await supabase.from('trade_logs').insert([shadowTrade]);
-                decision.signal = null; 
-                
-                await sendDiscordAlert(`👻 Oracle Veto: ${asset}`, `**Signal:** ${normalizedSignal} (Rejected)\n\n**🧠 Oracle Rationale:**\n_${oracleVerdict.reasoning}_`, 10038562);
-
+        if (config.trap_side && config.trap_price && config.trap_expires_at) {
+            const expiresAt = new Date(config.trap_expires_at).getTime();
+            if (Date.now() > expiresAt) {
+                trapExpired = true;
             } else {
-                decision.entryPrice = oracleVerdict.limit_price; 
-                decision.orderType = oracleVerdict.order_type || 'LIMIT'; 
-
-                if (oracleVerdict.tp_price && oracleVerdict.sl_price) {
-                    decision.tpPrice = oracleVerdict.tp_price; decision.slPrice = oracleVerdict.sl_price;
-                } else if (decision.tpPrice && decision.slPrice) {
-                  const tpDist = decision.tpPrice - currentPrice; const slDist = currentPrice - decision.slPrice;
-                  decision.tpPrice = decision.entryPrice + (normalizedSignal === 'BUY' ? Math.abs(tpDist) : -Math.abs(tpDist));
-                  decision.slPrice = decision.entryPrice - (normalizedSignal === 'BUY' ? Math.abs(slDist) : -Math.abs(slDist));
-                } else {
-                  const slP = config.parameters?.sl_percent || 0.01; const tpP = config.parameters?.tp_percent || 0.02;
-                  decision.tpPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
-                  decision.slPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
-                }
-             
-                const { tickSize } = getAssetMetrics(asset);
-                decision.tpPrice = Math.round(decision.tpPrice / tickSize) * tickSize;
-                decision.slPrice = Math.round(decision.slPrice / tickSize) * tickSize;
-                
-                if (oracleVerdict.size_multiplier && oracleVerdict.size_multiplier !== 1.0 && config.parameters?.target_usd) {
-                    config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
-                }
-
-                const finalFormattedReason = `[EXPECTANCIES] Fill: ${oracleVerdict.fill_expectancy || 0}m | TP: ${oracleVerdict.tp_expectancy || 0}m | R:R: ${oracleVerdict.risk_reward || 0}\n\n${oracleVerdict.reasoning || ''}`;
-                decision.telemetry.oracle_reasoning = finalFormattedReason;
+                if (config.trap_side === 'BUY' && currentPrice <= config.trap_price) trapSprung = true;
+                if (config.trap_side === 'SELL' && currentPrice >= config.trap_price) trapSprung = true;
             }
         }
-    }
 
-    const finalStatus = decision.statusOverride ? decision.statusOverride : (decision.signal ? (forcedExit ? `HIT_${forcedExit}` : "RESONANT") : "STABLE");
-    const scanEntry = { strategy: config.strategy, asset, telemetry: decision.telemetry || {}, status: finalStatus };
-    results.push(scanEntry);
-    await supabase.from('scan_results').insert([scanEntry]);
-
-    if (decision.signal && decision.signal !== null) {
-        const isExecutingReversal = openTrade && openTrade.side !== decision.signal;
-        
-        if (isExecutingReversal && config.execution_mode === 'LIVE' && openOrders.length > 0) {
-            const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-            await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
-            await new Promise(resolve => setTimeout(resolve, 2500));
-        }
-          
-        let finalQty = config.parameters?.qty || 10; 
-        
-        if (config.parameters?.target_usd && decision.entryPrice) {
-            const isFutures = config.parameters?.market_type === 'FUTURES' || asset.includes('PERP') || asset.includes('CDE');
+        if (trapSprung) {
+            const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
+            const protocol = host.includes('localhost') ? 'http' : 'https';
             
-            if (isFutures) {
-                const { multiplier } = getAssetMetrics(asset);
-                const rawContracts = config.parameters.target_usd / (decision.entryPrice * multiplier);
-                finalQty = Math.round(rawContracts); 
-                if (finalQty < 1) finalQty = 1; 
-            } else {
-                finalQty = config.parameters.target_usd / decision.entryPrice;
+            if (config.execution_mode === 'LIVE' && openOrders.length > 0) {
+                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                 await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                 await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+
+            const isExecutingReversal = openTrade && openTrade.side !== config.trap_side;
+            if (isExecutingReversal) {
+                const closePayload = {
+                    symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: config.trap_side,
+                    order_type: 'MARKET', price: currentPrice, tp_price: null, sl_price: null,
+                    execution_mode: config.execution_mode || 'PAPER', leverage: openTrade.leverage || 1,
+                    market_type: config.parameters?.market_type || 'FUTURES', qty: openTrade.qty,
+                    reason: `[REVERSAL CLOSE]: Virtual Trap Sprung at $${config.trap_price}. Reversing to ${config.trap_side}`
+                };
+                
+                const closeResp = await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(closePayload) });
+                if (!closeResp.ok) {
+                    console.error(`[RACE CONDITION] Trap reversal failed to close existing trade for ${asset}`);
+                    await sendDiscordAlert(`⚠️ Trap Aborted: ${asset}`, `**Issue:** Failed to close existing position. Aborting new trap entry to prevent double exposure.`, 15548997);
+                    continue; 
+                }
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+
+            let finalQty = config.parameters?.qty || 10; 
+            if (config.parameters?.target_usd) {
+                const isFutures = config.parameters?.market_type === 'FUTURES' || asset.includes('PERP') || asset.includes('CDE');
+                if (isFutures) {
+                    const { multiplier } = getAssetMetrics(asset);
+                    finalQty = Math.max(1, Math.round(config.parameters.target_usd / (currentPrice * multiplier))); 
+                } else {
+                    finalQty = config.parameters.target_usd / currentPrice;
+                }
+            }
+
+            const slP = config.parameters?.sl_percent || 0.01; 
+            const tpP = config.parameters?.tp_percent || 0.02;
+            const trapTpPrice = config.trap_side === 'BUY' ? currentPrice * (1 + tpP) : currentPrice * (1 - tpP);
+            const trapSlPrice = config.trap_side === 'BUY' ? currentPrice * (1 - slP) : currentPrice * (1 + slP);
+            const { tickSize } = getAssetMetrics(asset);
+
+            const trapPayload = {
+                symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: config.trap_side,
+                order_type: 'MARKET', price: currentPrice, 
+                tp_price: parseFloat((Math.round(trapTpPrice / tickSize) * tickSize).toFixed(4)), 
+                sl_price: parseFloat((Math.round(trapSlPrice / tickSize) * tickSize).toFixed(4)),
+                execution_mode: config.execution_mode || 'PAPER', leverage: config.parameters?.leverage || 1,
+                market_type: config.parameters?.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)),
+                reason: `[VIRTUAL TRAP SPRUNG]: Oracle Thesis Executed at $${config.trap_price}`
+            };
+            
+            await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(trapPayload) });
+            
+            const scanEntry = { strategy: config.strategy, asset, telemetry: microstructure.indicators || {}, status: `HIT_TRAP_${config.trap_side}` };
+            results.push(scanEntry);
+            await supabase.from('scan_results').insert([scanEntry]);
+            
+            config.clear_trap = true;
+            continue; 
+        }
+
+        const marketData = { macro: macroCandles, trigger: triggerCandles };
+        let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
+        if (decision.error) continue;
+
+        decision.telemetry = { 
+            ...decision.telemetry, 
+            cvd: microstructure.indicators.current_cvd,
+            bids: microstructure.orderBook.bids_50_levels,
+            asks: microstructure.orderBook.asks_50_levels,
+            premium: microstructure.derivativesData.basis_premium_percent
+        };
+
+        if (decision.signal) {
+            const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
+            decision.signal = normalizedSignal; 
+            
+            const isReversal = openTrade && openTrade.side !== normalizedSignal;
+            const isDuplicate = openTrade && !isReversal;
+
+            const cooldownMinutes = config.parameters?.veto_cooldown_minutes || 15; 
+            const lastVetoTime = config.last_veto_time ? new Date(config.last_veto_time).getTime() : 0;
+            const isCooldownActive = (Date.now() - lastVetoTime) < (cooldownMinutes * 60000);
+
+            if (isDuplicate) {
+                decision.signal = null; 
+            } else if (isCooldownActive) {
+                decision.signal = null;
+                decision.statusOverride = `COOLDOWN (${cooldownMinutes}M)`; 
+            } else if (decision.signal) {
+                let currentTradeContext = null;
+                if (isReversal) {
+                    const entry = parseFloat(openTrade.entry_price);
+                    const pnl = openTrade.side === 'BUY' ? (currentPrice - entry) / entry : (entry - currentPrice) / entry;
+                    currentTradeContext = { side: openTrade.side, entry_price: entry, pnl_percent: (pnl * 100).toFixed(2) };
+                }
+
+                const oracleVerdict = await evaluateTradeIdea({
+                    mode: isReversal ? 'REVERSAL' : 'ENTRY', asset, strategy: config.strategy, signal: decision.signal, 
+                    currentPrice, candles: triggerCandles, macroCandles: macroCandles, indicators: microstructure.indicators,
+                    orderBook: microstructure.orderBook, derivativesData: microstructure.derivativesData, marketType: config.parameters?.market_type || 'FUTURES', openTrade: currentTradeContext, recentHistory: recentTrades || [],
+                    dynamicSizing: config.parameters?.dynamic_sizing === true,
+                    activeThesis: config.active_thesis 
+                });
+
+                config.new_thesis = oracleVerdict.working_thesis;
+
+                if (oracleVerdict.trap_side && oracleVerdict.trap_price && oracleVerdict.trap_expires_in_minutes) {
+                    config.new_trap_side = oracleVerdict.trap_side;
+                    config.new_trap_price = oracleVerdict.trap_price;
+                    config.new_trap_expires_at = new Date(Date.now() + (oracleVerdict.trap_expires_in_minutes * 60000)).toISOString();
+                } else if (oracleVerdict.action === 'MARKET_CLOSE' || oracleVerdict.action === 'APPROVE') {
+                    config.clear_trap = true;
+                }
+
+                decision.telemetry = { 
+                    ...decision.telemetry, 
+                    oracle_score: oracleVerdict.conviction_score, 
+                    oracle_reasoning: oracleVerdict.reasoning
+                };
+
+                if (oracleVerdict.action === 'VETO') {
+                    await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('strategy', config.strategy);
+                    decision.statusOverride = 'ORACLE VETO'; 
+                    
+                    const shadowTrade = {
+                        symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', 
+                        side: decision.signal, order_type: 'VETO', price: currentPrice, exit_price: currentPrice, 
+                        exit_time: new Date().toISOString(), execution_mode: 'SHADOW', leverage: 1, 
+                        market_type: config.parameters?.market_type || 'FUTURES', qty: 0, pnl: 0, 
+                        reason: `[SHADOW VETO]: ${oracleVerdict.reasoning}\n\n[WORKING THESIS]: ${oracleVerdict.working_thesis || 'None'}`
+                    };
+                    await supabase.from('trade_logs').insert([shadowTrade]);
+                    decision.signal = null; 
+                    
+                    await sendDiscordAlert(`👻 Oracle Veto: ${asset}`, `**Signal:** ${normalizedSignal} (Rejected)\n\n**🧠 Oracle Rationale:**\n_${oracleVerdict.reasoning}_`, 10038562);
+
+                } else {
+                    decision.entryPrice = oracleVerdict.limit_price; 
+                    decision.orderType = oracleVerdict.order_type || 'LIMIT'; 
+
+                    if (oracleVerdict.tp_price && oracleVerdict.sl_price) {
+                        decision.tpPrice = oracleVerdict.tp_price; decision.slPrice = oracleVerdict.sl_price;
+                    } else if (decision.tpPrice && decision.slPrice) {
+                      const tpDist = decision.tpPrice - currentPrice; const slDist = currentPrice - decision.slPrice;
+                      decision.tpPrice = decision.entryPrice + (normalizedSignal === 'BUY' ? Math.abs(tpDist) : -Math.abs(tpDist));
+                      decision.slPrice = decision.entryPrice - (normalizedSignal === 'BUY' ? Math.abs(slDist) : -Math.abs(slDist));
+                    } else {
+                      const slP = config.parameters?.sl_percent || 0.01; const tpP = config.parameters?.tp_percent || 0.02;
+                      decision.tpPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 + tpP) : decision.entryPrice * (1 - tpP);
+                      decision.slPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
+                    }
+                 
+                    const { tickSize } = getAssetMetrics(asset);
+                    decision.tpPrice = Math.round(decision.tpPrice / tickSize) * tickSize;
+                    decision.slPrice = Math.round(decision.slPrice / tickSize) * tickSize;
+                    
+                    if (oracleVerdict.size_multiplier && oracleVerdict.size_multiplier !== 1.0 && config.parameters?.target_usd) {
+                        config.parameters.target_usd = config.parameters.target_usd * oracleVerdict.size_multiplier;
+                    }
+
+                    const finalFormattedReason = `[EXPECTANCIES] Fill: ${oracleVerdict.fill_expectancy || 0}m | TP: ${oracleVerdict.tp_expectancy || 0}m | R:R: ${oracleVerdict.risk_reward || 0}\n\n${oracleVerdict.reasoning || ''}\n\n[WORKING THESIS]: ${oracleVerdict.working_thesis || 'None'}`;
+                    decision.telemetry.oracle_reasoning = finalFormattedReason;
+                }
             }
         }
-        
-        const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
-        const protocol = host.includes('localhost') ? 'http' : 'https';
 
-        if (isExecutingReversal) {
-            const closePayload = {
+        const finalStatus = decision.statusOverride ? decision.statusOverride : (decision.signal ? "RESONANT" : "STABLE");
+        const scanEntry = { strategy: config.strategy, asset, telemetry: decision.telemetry || {}, status: finalStatus };
+        results.push(scanEntry);
+        await supabase.from('scan_results').insert([scanEntry]);
+
+        if (decision.signal && decision.signal !== null) {
+            const isExecutingReversal = openTrade && openTrade.side !== decision.signal;
+            
+            if (isExecutingReversal && config.execution_mode === 'LIVE' && openOrders.length > 0) {
+                const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                await new Promise(resolve => setTimeout(resolve, 2500));
+            }
+              
+            let finalQty = config.parameters?.qty || 10; 
+            
+            if (config.parameters?.target_usd && decision.entryPrice) {
+                const isFutures = config.parameters?.market_type === 'FUTURES' || asset.includes('PERP') || asset.includes('CDE');
+                if (isFutures) {
+                    const { multiplier } = getAssetMetrics(asset);
+                    const rawContracts = config.parameters.target_usd / (decision.entryPrice * multiplier);
+                    finalQty = Math.round(rawContracts); 
+                    if (finalQty < 1) finalQty = 1; 
+                } else {
+                    finalQty = config.parameters.target_usd / decision.entryPrice;
+                }
+            }
+            
+            const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
+            const protocol = host.includes('localhost') ? 'http' : 'https';
+
+            if (isExecutingReversal) {
+                const closePayload = {
+                    symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: decision.signal,
+                    order_type: 'MARKET', price: currentPrice, tp_price: null, sl_price: null,
+                    execution_mode: config.execution_mode || 'PAPER', leverage: decision.leverage || 1,
+                    market_type: decision.marketType || 'FUTURES', qty: openTrade.qty,
+                    reason: `[REVERSAL CLOSE]: Executing AI Reversal to ${decision.signal}\n\nOracle Reasoning: ${decision.telemetry?.oracle_reasoning || 'Standard Reversal'}`
+                };
+
+                const closeResp = await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(closePayload) });
+                if (!closeResp.ok) {
+                    console.error(`[RACE CONDITION] Standard reversal failed to close existing trade for ${asset}`);
+                    await sendDiscordAlert(`⚠️ Reversal Aborted: ${asset}`, `**Issue:** Failed to close existing position. Aborting new entry to prevent double exposure.`, 15548997);
+                    continue; 
+                }
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            
+            const tradePayload = {
                 symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: decision.signal,
-                order_type: 'MARKET', price: currentPrice, tp_price: null, sl_price: null,
-                execution_mode: config.execution_mode || 'PAPER', leverage: decision.leverage || 1,
-                market_type: decision.marketType || 'FUTURES', qty: openTrade.qty,
-                reason: `[REVERSAL CLOSE]: Executing AI Reversal to ${decision.signal}\n\nOracle Reasoning: ${decision.telemetry?.oracle_reasoning || 'Standard Reversal'}`
+                order_type: decision.orderType || 'MARKET', price: decision.entryPrice, tp_price: decision.tpPrice || null,
+                sl_price: decision.slPrice || null, execution_mode: config.execution_mode || 'PAPER', leverage: decision.leverage || 1,
+                market_type: decision.marketType || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)),
+                reason: decision.telemetry?.oracle_reasoning || null 
             };
-
-            await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(closePayload) });
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tradePayload) });
         }
-        
-        const tradePayload = {
-            symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: decision.signal,
-            order_type: decision.orderType || 'MARKET', price: decision.entryPrice, tp_price: decision.tpPrice || null,
-            sl_price: decision.slPrice || null, execution_mode: config.execution_mode || 'PAPER', leverage: decision.leverage || 1,
-            market_type: decision.marketType || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)),
-            reason: decision.telemetry?.oracle_reasoning || decision.telemetry?.exit_reason || null 
-        };
-        
-        await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tradePayload) });
-    }
 
       } catch (assetErr) { 
           console.error(`[ASSET ERROR] ${asset}:`, assetErr.message); 
       } finally {
-          await supabase.from('strategy_config').update({ is_processing: false }).eq('strategy', config.strategy);
+          const finalUpdates = { is_processing: false };
+          if (config.new_thesis) finalUpdates.active_thesis = config.new_thesis;
+          
+          if (config.new_trap_side) {
+              finalUpdates.trap_side = config.new_trap_side;
+              finalUpdates.trap_price = config.new_trap_price;
+              finalUpdates.trap_expires_at = config.new_trap_expires_at;
+          } else if (config.clear_trap || trapExpired) {
+              finalUpdates.trap_side = null;
+              finalUpdates.trap_price = null;
+              finalUpdates.trap_expires_at = null;
+          }
+
+          await supabase.from('strategy_config').update(finalUpdates).eq('strategy', config.strategy);
       }
     }
 

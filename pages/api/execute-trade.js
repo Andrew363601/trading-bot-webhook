@@ -217,7 +217,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 🟢 THE FIX: Added all Tripwire exit signatures to the trap door
     const isForcedExit = tradeReason && (
         tradeReason.includes('STOP_LOSS') || 
         tradeReason.includes('TAKE_PROFIT') || 
@@ -236,13 +235,20 @@ export default async function handler(req, res) {
         if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
         executionStatus = 'closed_position';
         
+        // 🟢 THE FIX: The "Ghost Bomb" Sweeper
+        // Instantly delete any active traps for this strategy/asset combination when the trade is closed to prevent rogue orders later.
+        await supabase.from('strategy_config').update({
+            trap_side: null,
+            trap_price: null,
+            trap_expires_at: null
+        }).eq('strategy', strategyId).eq('asset', rawSymbol);
+
         await sendDiscordAlert(`🏁 Position Closed: ${rawSymbol}`, `**Exit Price:** $${executionPrice}\n**Realized PnL:** $${pnl.toFixed(4)}\n**Trigger:** ${tradeReason || 'Signal Reversal'}`, pnl >= 0 ? 5763719 : 15548997);
 
       } else {
         return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
       }
     } else {
-      // 🟢 THE FIX: The trap door will now successfully catch Tripwire exits and stop the Double-Tap!
       if (isForcedExit) return res.status(200).json({ status: "already_closed_natively", product: coinbaseProduct });
 
       const { error: insertError } = await supabase.from('trade_logs').insert([{
