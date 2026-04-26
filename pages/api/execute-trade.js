@@ -21,10 +21,16 @@ async function sendDiscordAlert({ title, description, color, fields = [], imageU
         if (fields.length > 0) embed.fields = fields;
         if (imageUrl) embed.image = { url: imageUrl };
 
-        await fetch(webhookUrl, {
+        const response = await fetch(webhookUrl, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ embeds: [embed] })
         });
+
+        // 🟢 THE FIX: Catch and log silent Discord rejections
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`[DISCORD REJECTION] Status ${response.status}:`, errorText);
+        }
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
 
@@ -262,8 +268,8 @@ export default async function handler(req, res) {
         tradeReason.includes('TRIPWIRE_SECURED_PROFIT')
     );
 
-    // Generate the final Chart Image URL based on the finalized executionPrice
-    const chartUrl = buildRadarChartUrl({
+    // 🟢 THE FIX: Await added so the execution blocks until QuickChart builds the image
+    const chartUrl = await buildRadarChartUrl({
         asset: rawSymbol, candles: recentCandles, currentPrice: executionPrice,
         poc: telemetry.macro_poc, upperNode: telemetry.upper_macro_node, lowerNode: telemetry.lower_macro_node
     });

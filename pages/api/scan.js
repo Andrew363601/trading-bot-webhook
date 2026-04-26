@@ -23,10 +23,16 @@ async function sendDiscordAlert({ title, description, color, fields = [], imageU
         if (fields.length > 0) embed.fields = fields;
         if (imageUrl) embed.image = { url: imageUrl };
 
-        await fetch(webhookUrl, {
+        const response = await fetch(webhookUrl, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ embeds: [embed] })
         });
+
+        // 🟢 THE FIX: Catch and log silent Discord rejections
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`[DISCORD REJECTION] Status ${response.status}:`, errorText);
+        }
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
 
@@ -220,7 +226,6 @@ export default async function handler(req, res) {
                                     );
                                 }
                                 
-                                // 🟢 THE FIX: Ask Coinbase if the Limit Order was actually Filled before assuming it expired
                                 const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
                                 const fillResp = await fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, apiKeyName, apiSecret)}` } });
                                 if (fillResp.ok) {
@@ -592,7 +597,8 @@ export default async function handler(req, res) {
                     await supabase.from('trade_logs').insert([shadowTrade]);
                     decision.signal = null; 
                     
-                    const chartUrl = buildRadarChartUrl({
+                    // 🟢 THE FIX: Await added so the bot actually generates the tiny URL before firing to Discord
+                    const chartUrl = await buildRadarChartUrl({
                         asset, candles: triggerCandles, currentPrice,
                         poc: microstructure.indicators.macro_poc,
                         upperNode: microstructure.indicators.upper_macro_node,
@@ -628,7 +634,6 @@ export default async function handler(req, res) {
                       decision.slPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
                     }
                  
-                    // 🟢 THE FIX: The Hard ATR Safety Net
                     const currentAtr = parseFloat(microstructure.indicators.current_atr || 0);
                     const minSlDistance = currentAtr * 1.5;
                     const proposedSlDistance = Math.abs(decision.entryPrice - decision.slPrice);
