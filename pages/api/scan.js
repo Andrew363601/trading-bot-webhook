@@ -68,6 +68,10 @@ export default async function handler(req, res) {
       if (config.is_processing) continue;
       await supabase.from('strategy_config').update({ is_processing: true }).eq('strategy', config.strategy);
 
+      // 🟢 THE FIX: Hoisted to the loop scope so the finally block can interact with them!
+      let trapSprung = false;
+      let trapExpired = false;
+
       try {
         const macroTf = config.parameters?.macro_tf || 'ONE_HOUR';
         const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
@@ -216,7 +220,6 @@ export default async function handler(req, res) {
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                                 await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                                 await sendDiscordAlert(`⏳ Limit Order Canceled: ${asset}`, `**Entry Price:** $${openTrade.entry_price}\n**Trigger:** Removed from Exchange manually.`, 16776960);
-                                // 🟢 THE FIX: Removed aggressive trap clearing. Let TTL manage the ghost order.
                                 continue; 
                             } else {
                                 if (openOrders.length > 0) {
@@ -239,7 +242,6 @@ export default async function handler(req, res) {
                                 
                                 await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                                 await sendDiscordAlert(`🏁 Position Closed Natively: ${asset}`, `**Exit Price:** $${exactExitPrice}\n**Realized PnL:** $${rawPnl.toFixed(4)}\n**Trigger:** ${assumedReason}`, rawPnl >= 0 ? 5763719 : 15548997);
-                                // 🟢 THE FIX: Removed aggressive trap clearing. Let TTL manage the ghost order.
                                 continue; 
                             }
                         }
@@ -414,12 +416,8 @@ export default async function handler(req, res) {
             results.push(scanEntry);
             await supabase.from('scan_results').insert([scanEntry]);
             
-            // 🟢 THE FIX: Removed aggressive trap clearing. Let TTL manage the ghost order.
             continue; 
         } 
-
-        let trapSprung = false;
-        let trapExpired = false;
 
         if (config.trap_side && config.trap_price && config.trap_expires_at) {
             const expiresAt = new Date(config.trap_expires_at).getTime();
