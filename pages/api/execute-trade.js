@@ -5,20 +5,25 @@ export const maxDuration = 300;
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { buildRadarChartUrl } from '../../lib/discord-chart.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// --- 📱 DISCORD MESSENGER ---
-async function sendDiscordAlert(title, description, color) {
+// --- 📱 DISCORD MESSENGER (UPGRADED) ---
+async function sendDiscordAlert({ title, description, color, fields = [], imageUrl = null }) {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) return;
     try {
+        const embed = { title, description, color, timestamp: new Date().toISOString() };
+        if (fields.length > 0) embed.fields = fields;
+        if (imageUrl) embed.image = { url: imageUrl };
+
         await fetch(webhookUrl, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ embeds: [{ title, description, color, timestamp: new Date().toISOString() }] })
+            body: JSON.stringify({ embeds: [embed] })
         });
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
@@ -87,8 +92,9 @@ export default async function handler(req, res) {
 
     const generateToken = (method, path) => {
       const privateKey = crypto.createPrivateKey({ key: formattedSecret, format: 'pem' });
+      const uriPath = path.split('?')[0]; 
       return jwt.sign(
-        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${path}` },
+        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${uriPath}` },
         privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
       );
     };
@@ -98,6 +104,36 @@ export default async function handler(req, res) {
     let executionPrice = data.price ? parseFloat((Math.round(parseFloat(data.price) / tickSize) * tickSize).toFixed(4)) : 0;
     if (tpPrice) tpPrice = parseFloat((Math.round(parseFloat(tpPrice) / tickSize) * tickSize).toFixed(4));
     if (slPrice) slPrice = parseFloat((Math.round(parseFloat(slPrice) / tickSize) * tickSize).toFixed(4));
+
+    // 🟢 FETCH TELEMETRY & CANDLES FOR THE RADAR SNAPSHOT
+    let telemetry = {};
+    try {
+        const { data: scanData } = await supabase.from('scan_results')
+            .select('telemetry')
+            .eq('asset', rawSymbol)
+            .order('created_at', { ascending: false })
+            .limit(1);
+        if (scanData && scanData.length > 0) telemetry = scanData[0].telemetry || {};
+    } catch(e) { console.error("Telemetry fetch failed", e.message); }
+
+    let recentCandles = [];
+    try {
+        const end = Math.floor(Date.now() / 1000);
+        const start = end - (300 * 50); // 50 5-min candles
+        const candlePath = `/api/v3/brokerage/products/${coinbaseProduct}/candles?start=${start}&end=${end}&granularity=FIVE_MINUTE`;
+        const token = generateToken('GET', candlePath);
+        const candleResp = await fetch(`https://api.coinbase.com${candlePath}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (candleResp.ok) {
+            const cData = await candleResp.json();
+            recentCandles = cData.candles?.map(c => ({ close: parseFloat(c.close) })).reverse() || [];
+        }
+    } catch (e) { console.error("Chart candle fetch failed", e.message); }
+
+    const standardFields = [
+        { name: "Regime", value: telemetry.macro_regime_oracle || "EVALUATING", inline: true },
+        { name: "Macro POC", value: telemetry.macro_poc ? `$${telemetry.macro_poc}` : "--", inline: true },
+        { name: "Micro CVD", value: telemetry.micro_cvd ? telemetry.micro_cvd.toString() : "--", inline: true }
+    ];
 
     let executionStatus = 'simulated';
 
@@ -170,7 +206,7 @@ export default async function handler(req, res) {
                       });
 
                       if (transferResp.ok) {
-                          await sendDiscordAlert(`💸 Auto-Funding Triggered`, `**Asset:** ${rawSymbol}\n**Action:** Automatically transferred $60.00 to Derivatives to cover margin requirements.`, 3447003);
+                          await sendDiscordAlert({ title: `💸 Auto-Funding Triggered`, description: `**Asset:** ${rawSymbol}\n**Action:** Automatically transferred $60.00 to Derivatives to cover margin requirements.`, color: 3447003 });
                           await new Promise(resolve => setTimeout(resolve, 2000)); 
 
                           const retryToken = generateToken('POST', path);
@@ -209,9 +245,9 @@ export default async function handler(req, res) {
               const ocoResult = await ocoResp.json();
               if (!ocoResp.ok || ocoResult.success === false) {
                   console.error(`[BRACKET REJECT] OCO Failed:`, JSON.stringify(ocoResult));
-                  await sendDiscordAlert(`⚠️ Bracket Failed: ${rawSymbol}`, `**Action:** Missing TP/SL protection!\n**Details:** Exchange rejected the OCO order.`, 15548997);
+                  await sendDiscordAlert({ title: `⚠️ Bracket Failed: ${rawSymbol}`, description: `**Action:** Missing TP/SL protection!\n**Details:** Exchange rejected the OCO order.`, color: 15548997 });
               } else {
-                  await sendDiscordAlert(`🎯 Brackets Deployed: ${rawSymbol}`, `**Take Profit:** $${tpPrice}\n**Stop Loss:** $${slPrice}\n**Status:** Active on Exchange`, 10181046); 
+                  await sendDiscordAlert({ title: `🎯 Brackets Deployed: ${rawSymbol}`, description: `**Take Profit:** $${tpPrice}\n**Stop Loss:** $${slPrice}\n**Status:** Active on Exchange`, color: 10181046 }); 
               }
           } catch (e) { console.error("[BRACKET FATAL] OCO failed:", e.message); }
       }
@@ -226,6 +262,12 @@ export default async function handler(req, res) {
         tradeReason.includes('TRIPWIRE_SECURED_PROFIT')
     );
 
+    // Generate the final Chart Image URL based on the finalized executionPrice
+    const chartUrl = buildRadarChartUrl({
+        asset: rawSymbol, candles: recentCandles, currentPrice: executionPrice,
+        poc: telemetry.macro_poc, upperNode: telemetry.upper_macro_node, lowerNode: telemetry.lower_macro_node
+    });
+
     if (openTrade) {
       if (isClosing) {
         const pnl = openTrade.side === 'BUY' ? (executionPrice - openTrade.entry_price) * orderQty * multiplier : (openTrade.entry_price - executionPrice) * orderQty * multiplier;
@@ -235,15 +277,19 @@ export default async function handler(req, res) {
         if (updateError) throw new Error(`Supabase Update Error: ${updateError.message}`);
         executionStatus = 'closed_position';
         
-        // 🟢 THE FIX: The "Ghost Bomb" Sweeper
-        // Instantly delete any active traps for this strategy/asset combination when the trade is closed to prevent rogue orders later.
         await supabase.from('strategy_config').update({
             trap_side: null,
             trap_price: null,
             trap_expires_at: null
         }).eq('strategy', strategyId).eq('asset', rawSymbol);
 
-        await sendDiscordAlert(`🏁 Position Closed: ${rawSymbol}`, `**Exit Price:** $${executionPrice}\n**Realized PnL:** $${pnl.toFixed(4)}\n**Trigger:** ${tradeReason || 'Signal Reversal'}`, pnl >= 0 ? 5763719 : 15548997);
+        await sendDiscordAlert({
+            title: `🏁 Position Closed: ${rawSymbol}`, 
+            description: `**Exit Price:** $${executionPrice}\n**Realized PnL:** $${pnl.toFixed(4)}\n**Trigger:** ${tradeReason || 'Signal Reversal'}`, 
+            color: pnl >= 0 ? 5763719 : 15548997,
+            fields: standardFields,
+            imageUrl: chartUrl
+        });
 
       } else {
         return res.status(200).json({ status: "ignored_already_open", product: coinbaseProduct });
@@ -262,14 +308,20 @@ export default async function handler(req, res) {
       const actionTitle = orderType === 'LIMIT' ? `⏳ Limit Order Placed: ${rawSymbol}` : `🚀 New Position Opened: ${rawSymbol}`;
       const targetText = (tpPrice && slPrice) ? `\n**Target TP:** $${tpPrice}\n**Target SL:** $${slPrice}` : `\n**Targets:** Dynamic`;
 
-      await sendDiscordAlert(actionTitle, `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}${targetText}${rationaleText}`, 3447003); 
+      await sendDiscordAlert({
+          title: actionTitle, 
+          description: `**Side:** ${side}\n**Entry Price:** $${executionPrice}\n**Qty:** ${orderQty}\n**Mode:** ${mode}${targetText}${rationaleText}`, 
+          color: 3447003,
+          fields: standardFields,
+          imageUrl: chartUrl
+      }); 
     }
 
     return res.status(200).json({ status: executionStatus, product: coinbaseProduct, price: executionPrice });
 
   } catch (err) {
     console.error("[EXECUTE FAULT]:", err.message);
-    await sendDiscordAlert("❌ Execution Fault", `**Error:** ${err.message}`, 15548997);
+    await sendDiscordAlert({ title: "❌ Execution Fault", description: `**Error:** ${err.message}`, color: 15548997 });
     return res.status(500).json({ error: err.message });
   }
 }

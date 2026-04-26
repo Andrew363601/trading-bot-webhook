@@ -7,20 +7,26 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { evaluateStrategy } from '../../lib/strategy-router.js';
 import { evaluateTradeIdea } from '../../lib/trade-oracle.js';
+import { buildRadarChartUrl } from '../../lib/discord-chart.js'; // 🟢 THE FIX: Imported Radar Generator
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// --- 📱 DISCORD MESSENGER ---
-async function sendDiscordAlert(title, description, color) {
+// --- 📱 DISCORD MESSENGER (UPGRADED) ---
+// 🟢 THE FIX: Upgraded to accept structured fields and image URLs
+async function sendDiscordAlert({ title, description, color, fields = [], imageUrl = null }) {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) return;
     try {
+        const embed = { title, description, color, timestamp: new Date().toISOString() };
+        if (fields.length > 0) embed.fields = fields;
+        if (imageUrl) embed.image = { url: imageUrl };
+
         await fetch(webhookUrl, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ embeds: [{ title, description, color, timestamp: new Date().toISOString() }] })
+            body: JSON.stringify({ embeds: [embed] })
         });
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
@@ -83,7 +89,6 @@ export default async function handler(req, res) {
         if (!macroCandles || !triggerCandles || macroCandles.length < 21 || triggerCandles.length < 21) continue;
         const currentPrice = triggerCandles[triggerCandles.length - 1].close;
 
-        // 🟢 THE FIX: Passing macroCandles into the microstructure engine
         const microstructure = await fetchMicrostructure(asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
 
         const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', asset).eq('strategy_id', config.strategy).is('exit_price', null).order('id', { ascending: false }).limit(1);
@@ -152,7 +157,7 @@ export default async function handler(req, res) {
                             openTrade.qty = activeQty;
                             openTrade.reason = updatedReason;
                             
-                            await sendDiscordAlert(`⚠️ Partial Fill Detected: ${asset}`, `**Filled:** ${activeQty} / ${expectedQty}\n**Action:** Unfilled limit order canceled. Proceeding to bracket active contracts.`, 16753920);
+                            await sendDiscordAlert({ title: `⚠️ Partial Fill Detected: ${asset}`, description: `**Filled:** ${activeQty} / ${expectedQty}\n**Action:** Unfilled limit order canceled. Proceeding to bracket active contracts.`, color: 16753920 });
                             
                             openOrders = openOrders.filter(o => o.order_id !== targetOrder?.order_id);
                             entryOrderExists = false;
@@ -185,7 +190,7 @@ export default async function handler(req, res) {
                                 const updatedReason = `${openTrade.reason || ''}\n\n[EXIT TRIGGER]: ORACLE_CANCELED - ${finalReason}`;
                                 await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                                 
-                                await sendDiscordAlert(`⏳ Pending Limit Canceled: ${asset}`, `**Action:** Oracle aborted setup.\n**Reason:** ${finalReason}`, 15548997);
+                                await sendDiscordAlert({ title: `⏳ Pending Limit Canceled: ${asset}`, description: `**Action:** Oracle aborted setup.\n**Reason:** ${finalReason}`, color: 15548997 });
                                 continue;
                                 
                             } else if (oracleVerdict.action === 'HOLD') {
@@ -219,7 +224,7 @@ export default async function handler(req, res) {
                             if (wasCanceled || openTrade.order_type === 'LIMIT') {
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                                 await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
-                                await sendDiscordAlert(`⏳ Limit Order Canceled: ${asset}`, `**Entry Price:** $${openTrade.entry_price}\n**Trigger:** Removed from Exchange manually.`, 16776960);
+                                await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `**Entry Price:** $${openTrade.entry_price}\n**Trigger:** Removed from Exchange manually.`, color: 16776960 });
                                 continue; 
                             } else {
                                 if (openOrders.length > 0) {
@@ -241,7 +246,7 @@ export default async function handler(req, res) {
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                                 
                                 await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
-                                await sendDiscordAlert(`🏁 Position Closed Natively: ${asset}`, `**Exit Price:** $${exactExitPrice}\n**Realized PnL:** $${rawPnl.toFixed(4)}\n**Trigger:** ${assumedReason}`, rawPnl >= 0 ? 5763719 : 15548997);
+                                await sendDiscordAlert({ title: `🏁 Position Closed Natively: ${asset}`, description: `**Exit Price:** $${exactExitPrice}\n**Realized PnL:** $${rawPnl.toFixed(4)}\n**Trigger:** ${assumedReason}`, color: rawPnl >= 0 ? 5763719 : 15548997 });
                                 continue; 
                             }
                         }
@@ -292,10 +297,10 @@ export default async function handler(req, res) {
                                     const ocoResult = await ocoResp.json();
                                     
                                     if (ocoResp.ok && ocoResult.success !== false) {
-                                        await sendDiscordAlert(`🎯 Brackets Deployed (Watchdog): ${asset}`, `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** Limit Fill Detected, Brackets Active on Exchange`, 10181046);
+                                        await sendDiscordAlert({ title: `🎯 Brackets Deployed (Watchdog): ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** Limit Fill Detected, Brackets Active on Exchange`, color: 10181046 });
                                     } else {
                                         console.error(`[WATCHDOG REJECT] OCO Failed:`, JSON.stringify(ocoResult));
-                                        await sendDiscordAlert(`⚠️ Bracket Failed: ${asset}`, `**Action:** Missing TP/SL protection!\n**Details:** Exchange rejected the Watchdog OCO order.`, 15548997);
+                                        await sendDiscordAlert({ title: `⚠️ Bracket Failed: ${asset}`, description: `**Action:** Missing TP/SL protection!\n**Details:** Exchange rejected the Watchdog OCO order.`, color: 15548997 });
                                     }
                                 } catch (e) { console.error(`[WATCHDOG FATAL] OCO:`, e.message); }
                             }
@@ -364,7 +369,7 @@ export default async function handler(req, res) {
                              await supabase.from('trade_logs').update({ tp_price: safeTp, sl_price: safeSl }).eq('id', openTrade.id);
                              openTrade.tp_price = safeTp; openTrade.sl_price = safeSl;
                              
-                             await sendDiscordAlert(`🛡️ Offensive Tripwire: ${asset}`, `**Action:** Adjusted Limits (Trail)\n**New TP:** $${safeTp}\n**New SL:** $${safeSl}\n**Reason:** ${tripwireVerdict.reasoning}`, 16753920); 
+                             await sendDiscordAlert({ title: `🛡️ Offensive Tripwire: ${asset}`, description: `**Action:** Adjusted Limits (Trail)\n**New TP:** $${safeTp}\n**New SL:** $${safeSl}\n**Reason:** ${tripwireVerdict.reasoning}`, color: 16753920 }); 
                          } catch (e) { console.error(`[TRIPWIRE FAULT]`, e.message); }
                      }
                 } 
@@ -380,9 +385,9 @@ export default async function handler(req, res) {
 
                  if (tripwireVerdict.action === 'MARKET_CLOSE') {
                      forcedExit = 'DEFENSIVE_MARKET_CLOSE';
-                     await sendDiscordAlert(`🛡️ Defensive Tripwire: ${asset}`, `**Action:** Oracle forced MARKET_CLOSE to prevent full stop-out.\n**Reason:** ${tripwireVerdict.reasoning}`, 15548997);
+                     await sendDiscordAlert({ title: `🛡️ Defensive Tripwire: ${asset}`, description: `**Action:** Oracle forced MARKET_CLOSE to prevent full stop-out.\n**Reason:** ${tripwireVerdict.reasoning}`, color: 15548997 });
                  } else {
-                     await sendDiscordAlert(`🛡️ Defensive Tripwire: ${asset}`, `**Action:** HOLD.\n**Reason:** Oracle identified wick/liquidity sweep. Holding structure.`, 3447003);
+                     await sendDiscordAlert({ title: `🛡️ Defensive Tripwire: ${asset}`, description: `**Action:** HOLD.\n**Reason:** Oracle identified wick/liquidity sweep. Holding structure.`, color: 3447003 });
                  }
             }
         }
@@ -452,7 +457,7 @@ export default async function handler(req, res) {
                 const closeResp = await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(closePayload) });
                 if (!closeResp.ok) {
                     console.error(`[RACE CONDITION] Trap reversal failed to close existing trade for ${asset}`);
-                    await sendDiscordAlert(`⚠️ Trap Aborted: ${asset}`, `**Issue:** Failed to close existing position. Aborting new trap entry to prevent double exposure.`, 15548997);
+                    await sendDiscordAlert({ title: `⚠️ Trap Aborted: ${asset}`, description: `**Issue:** Failed to close existing position. Aborting new trap entry to prevent double exposure.`, color: 15548997 });
                     continue; 
                 }
                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -499,7 +504,6 @@ export default async function handler(req, res) {
         let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
         if (decision.error) continue;
 
-        // 🟢 THE FIX: Exposing all 3 Topographical Nodes and the Oracle's Regime to your logs
         decision.telemetry = { 
             ...decision.telemetry, 
             macro_regime_oracle: decision.market_regime || "EVALUATING",
@@ -546,7 +550,6 @@ export default async function handler(req, res) {
                 });
 
                 config.new_thesis = oracleVerdict.working_thesis;
-                // 🟢 Capture the Oracle's regime declaration for the telemetry log
                 decision.market_regime = oracleVerdict.market_regime;
 
                 if (oracleVerdict.trap_side && oracleVerdict.trap_price && oracleVerdict.trap_expires_in_minutes) {
@@ -557,7 +560,6 @@ export default async function handler(req, res) {
                     config.clear_trap = true;
                 }
 
-                // 🟢 Push the final Oracle verdict to the telemetry log
                 decision.telemetry = { 
                     ...decision.telemetry,
                     macro_regime_oracle: decision.market_regime || "CHOP",
@@ -579,7 +581,26 @@ export default async function handler(req, res) {
                     await supabase.from('trade_logs').insert([shadowTrade]);
                     decision.signal = null; 
                     
-                    await sendDiscordAlert(`👻 Oracle Veto: ${asset}`, `**Signal:** ${normalizedSignal} (Rejected)\n\n**🧠 Oracle Rationale:**\n_${oracleVerdict.reasoning}_`, 10038562);
+                    // 🟢 THE FIX: Generate the VETO Radar Snapshot and send the Structured Embed
+                    const chartUrl = buildRadarChartUrl({
+                        asset, candles: triggerCandles, currentPrice,
+                        poc: microstructure.indicators.macro_poc,
+                        upperNode: microstructure.indicators.upper_macro_node,
+                        lowerNode: microstructure.indicators.lower_macro_node,
+                        trapPrice: config.new_trap_price, trapSide: config.new_trap_side
+                    });
+
+                    await sendDiscordAlert({ 
+                        title: `👻 Oracle Veto: ${asset}`, 
+                        description: `**Signal:** ${normalizedSignal} (Rejected)\n\n**🧠 Oracle Rationale:**\n_${oracleVerdict.reasoning}_`, 
+                        color: 10038562,
+                        fields: [
+                            { name: "Regime", value: decision.market_regime || "CHOP", inline: true },
+                            { name: "Conviction", value: oracleVerdict.conviction_score?.toString() || "--", inline: true },
+                            { name: "Macro POC", value: `$${microstructure.indicators.macro_poc}`, inline: true }
+                        ],
+                        imageUrl: chartUrl
+                    });
 
                 } else {
                     decision.entryPrice = oracleVerdict.limit_price; 
@@ -654,7 +675,7 @@ export default async function handler(req, res) {
                 const closeResp = await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(closePayload) });
                 if (!closeResp.ok) {
                     console.error(`[RACE CONDITION] Standard reversal failed to close existing trade for ${asset}`);
-                    await sendDiscordAlert(`⚠️ Reversal Aborted: ${asset}`, `**Issue:** Failed to close existing position. Aborting new entry to prevent double exposure.`, 15548997);
+                    await sendDiscordAlert({ title: `⚠️ Reversal Aborted: ${asset}`, description: `**Issue:** Failed to close existing position. Aborting new entry to prevent double exposure.`, color: 15548997 });
                     continue; 
                 }
                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -739,7 +760,6 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   } catch (err) { throw err; } 
 }
 
-// 🟢 THE FIX: The Multi-Node Radar
 async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, secret) {
     try {
         let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = [];
@@ -784,7 +804,7 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
             }
         }
 
-        // 🟢 THE FIX: MULTI-NODE RADAR (POC, Upper Node, Lower Node)
+        // --- POINT OF CONTROL (POC) ENGINE ---
         let minPrice = Infinity;
         let maxPrice = -Infinity;
         const pocCandles = macroCandles.slice(-150);
@@ -806,7 +826,7 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
             volumeProfile[bucketIndex] += c.volume;
         });
 
-        // 1. Map all local maxima (peaks in the volume profile)
+        // Map all local maxima
         let peaks = [];
         for (let i = 1; i < numBuckets - 1; i++) {
             if (volumeProfile[i] > volumeProfile[i-1] && volumeProfile[i] > volumeProfile[i+1]) {
@@ -816,17 +836,13 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                 });
             }
         }
-        // Handle edges
         if (volumeProfile[0] > volumeProfile[1]) peaks.push({ price: minPrice + (bucketSize / 2), volume: volumeProfile[0] });
         if (volumeProfile[numBuckets - 1] > volumeProfile[numBuckets - 2]) peaks.push({ price: minPrice + ((numBuckets - 1) * bucketSize) + (bucketSize / 2), volume: volumeProfile[numBuckets - 1] });
 
-        // 2. Sort peaks by volume (largest first)
         peaks.sort((a, b) => b.volume - a.volume);
 
-        // 3. Assign Primary POC
         const macro_poc = peaks.length > 0 ? peaks[0].price : currentPrice;
 
-        // 4. Find closest significant nodes above and below current price
         let upper_macro_node = null;
         let lower_macro_node = null;
 
