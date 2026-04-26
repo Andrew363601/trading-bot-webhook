@@ -7,7 +7,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { evaluateStrategy } from '../../lib/strategy-router.js';
 import { evaluateTradeIdea } from '../../lib/trade-oracle.js';
-import { buildRadarChartUrl } from '../../lib/discord-chart.js'; // 🟢 THE FIX: Imported Radar Generator
+import { buildRadarChartUrl } from '../../lib/discord-chart.js'; 
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -15,7 +15,6 @@ const supabase = createClient(
 );
 
 // --- 📱 DISCORD MESSENGER (UPGRADED) ---
-// 🟢 THE FIX: Upgraded to accept structured fields and image URLs
 async function sendDiscordAlert({ title, description, color, fields = [], imageUrl = null }) {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) return;
@@ -209,6 +208,7 @@ export default async function handler(req, res) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         if (minutesOpen > 2) {
                             let wasCanceled = false;
+                            let wasFilled = false;
                             try {
                                 const histPath = `/api/v3/brokerage/orders/historical/batch?order_status=CANCELLED&product_id=${coinbaseProduct}`;
                                 const histResp = await fetch(`https://api.coinbase.com${histPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', histPath, apiKeyName, apiSecret)}` } });
@@ -219,9 +219,20 @@ export default async function handler(req, res) {
                                         Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)
                                     );
                                 }
-                            } catch (e) { console.warn("Failed to check historical cancels:", e.message); }
+                                
+                                // 🟢 THE FIX: Ask Coinbase if the Limit Order was actually Filled before assuming it expired
+                                const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
+                                const fillResp = await fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, apiKeyName, apiSecret)}` } });
+                                if (fillResp.ok) {
+                                    const fillData = await fillResp.json();
+                                    wasFilled = fillData.orders?.some(o => 
+                                        o.side.toUpperCase() === openTrade.side.toUpperCase() && 
+                                        Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || o.average_filled_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)
+                                    );
+                                }
+                            } catch (e) { console.warn("Failed to check historical cancels/fills:", e.message); }
 
-                            if (wasCanceled || openTrade.order_type === 'LIMIT') {
+                            if (wasCanceled || (openTrade.order_type === 'LIMIT' && !wasFilled)) {
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
                                 await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                                 await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `**Entry Price:** $${openTrade.entry_price}\n**Trigger:** Removed from Exchange manually.`, color: 16776960 });
@@ -581,7 +592,6 @@ export default async function handler(req, res) {
                     await supabase.from('trade_logs').insert([shadowTrade]);
                     decision.signal = null; 
                     
-                    // 🟢 THE FIX: Generate the VETO Radar Snapshot and send the Structured Embed
                     const chartUrl = buildRadarChartUrl({
                         asset, candles: triggerCandles, currentPrice,
                         poc: microstructure.indicators.macro_poc,
@@ -618,6 +628,16 @@ export default async function handler(req, res) {
                       decision.slPrice = normalizedSignal === 'BUY' ? decision.entryPrice * (1 - slP) : decision.entryPrice * (1 + slP);
                     }
                  
+                    // 🟢 THE FIX: The Hard ATR Safety Net
+                    const currentAtr = parseFloat(microstructure.indicators.current_atr || 0);
+                    const minSlDistance = currentAtr * 1.5;
+                    const proposedSlDistance = Math.abs(decision.entryPrice - decision.slPrice);
+                    
+                    if (currentAtr > 0 && proposedSlDistance < minSlDistance) {
+                        decision.slPrice = decision.entryPrice - (normalizedSignal === 'BUY' ? minSlDistance : -minSlDistance);
+                        oracleVerdict.reasoning += `\n\n[SYSTEM OVERRIDE]: Oracle SL was suicidal ($${proposedSlDistance.toFixed(2)}). Widened mechanically to 1.5x ATR ($${minSlDistance.toFixed(2)}) to survive noise.`;
+                    }
+
                     const { tickSize } = getAssetMetrics(asset);
                     decision.tpPrice = Math.round(decision.tpPrice / tickSize) * tickSize;
                     decision.slPrice = Math.round(decision.slPrice / tickSize) * tickSize;
