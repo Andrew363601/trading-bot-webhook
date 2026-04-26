@@ -499,9 +499,12 @@ export default async function handler(req, res) {
         let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
         if (decision.error) continue;
 
+        // 🟢 THE FIX: The telemetry log now successfully includes the topographical map!
         decision.telemetry = { 
             ...decision.telemetry, 
             cvd: microstructure.indicators.current_cvd,
+            macro_cvd: microstructure.indicators.macro_cvd,
+            macro_poc: microstructure.indicators.macro_poc,
             bids: microstructure.orderBook.bids_50_levels,
             asks: microstructure.orderBook.asks_50_levels,
             premium: microstructure.derivativesData.basis_premium_percent
@@ -729,7 +732,6 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   } catch (err) { throw err; } 
 }
 
-// 🟢 THE FIX: Upgraded to calculate Macro CVD and Point of Control (POC)
 async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, secret) {
     try {
         let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = [];
@@ -867,8 +869,8 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                 current_vwap: vwap.toFixed(2), 
                 current_atr: atr.toFixed(2), 
                 current_cvd: cvd.toFixed(2),
-                macro_cvd: macro_cvd.toFixed(2), // 🟢 Injected into telemetry
-                macro_poc: macro_poc.toFixed(2)  // 🟢 Injected into telemetry
+                macro_cvd: macro_cvd.toFixed(2),
+                macro_poc: macro_poc.toFixed(2)
             }, 
             orderBook: orderBookData, 
             derivativesData: { 
