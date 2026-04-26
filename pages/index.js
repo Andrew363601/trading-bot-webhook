@@ -66,7 +66,6 @@ export default function Dashboard() {
 
   const [localInput, setLocalInput] = useState('');
 
-  // 🟢 We can now use the standard hook, as the polyfill protects it globally
   const { messages, append, error: sdkError, isLoading } = useChat({
     api: '/api/chat',
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
@@ -447,10 +446,39 @@ export default function Dashboard() {
               }
           });
 
+          // 🟢 THE FIX: DRAWING THE ORACLE'S BRAIN ON THE CHART
+          const currentStrat = activeStrategies.find(s => s.asset === activeAsset);
+          if (currentStrat?.trap_price) {
+              const tPrice = parseFloat(currentStrat.trap_price);
+              const color = currentStrat.trap_side === 'BUY' ? '#10b981' : '#ef4444';
+              const trapLine = seriesRef.current.createPriceLine({ price: tPrice, color: color, lineWidth: 2, lineStyle: 2, title: `👻 ${currentStrat.trap_side} TRAP` });
+              priceLinesRef.current.push(trapLine);
+          }
+
+          const assetScans = scanStream.filter(s => s.asset === activeAsset);
+          const latestAssetScan = assetScans.length > 0 ? assetScans[0] : null;
+          if (latestAssetScan?.telemetry) {
+              const t = latestAssetScan.telemetry;
+              
+              if (t.macro_poc && t.macro_poc !== "None") {
+                  const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.macro_poc), color: '#f59e0b', lineWidth: 2, lineStyle: 0, title: 'MACRO POC' });
+                  priceLinesRef.current.push(pl);
+              }
+              if (t.upper_macro_node && t.upper_macro_node !== "None") {
+                  const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.upper_macro_node), color: '#94a3b8', lineWidth: 1, lineStyle: 1, title: 'UPPER NODE' });
+                  priceLinesRef.current.push(pl);
+              }
+              if (t.lower_macro_node && t.lower_macro_node !== "None") {
+                  const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.lower_macro_node), color: '#94a3b8', lineWidth: 1, lineStyle: 1, title: 'LOWER NODE' });
+                  priceLinesRef.current.push(pl);
+              }
+          }
+
       } catch (err) {
           console.error("Marker Drawing Error:", err);
       }
-  }, [tradeLogs, openPositions, activeAsset, chartTimeframe]);
+  // 🟢 THE FIX: Added activeStrategies and scanStream to dependencies so it redraws immediately
+  }, [tradeLogs, openPositions, activeAsset, chartTimeframe, activeStrategies, scanStream]);
 
   const activeAssetScans = scanStream.filter(s => s.asset === activeAsset);
   const latestScan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
@@ -683,6 +711,14 @@ export default function Dashboard() {
                     <Flame size={12} className={showHeatmap ? 'text-amber-400 animate-pulse' : 'text-slate-500'} />
                     Heatmap {showHeatmap ? 'ON' : 'OFF'}
                 </button>
+                
+                {/* 🟢 THE FIX: The Regime HUD Badge */}
+                {latestScan?.telemetry?.macro_regime_oracle && (
+                    <div className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border flex items-center gap-1 shadow-lg backdrop-blur-md ${latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50' : (latestScan.telemetry.macro_regime_oracle === 'CHOP' ? 'bg-amber-500/20 text-amber-300 border-amber-500/50' : 'bg-slate-500/20 text-slate-400 border-slate-500/50')}`}>
+                        <Target size={12} />
+                        REGIME: {latestScan.telemetry.macro_regime_oracle}
+                    </div>
+                )}
             </div>
 
             <div className="absolute top-16 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
@@ -832,7 +868,6 @@ export default function Dashboard() {
                 const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
                 return (
                   <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
-                    {/* 🟢 THE FIX: Strategy Power Switch UI */}
                     <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${strat.is_active ? 'bg-emerald-500' : 'bg-slate-700'}`} />
                     
                     <div className="flex justify-between items-center mb-1 pl-2">

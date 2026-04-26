@@ -499,12 +499,15 @@ export default async function handler(req, res) {
         let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
         if (decision.error) continue;
 
-        // 🟢 THE FIX: The telemetry log now successfully includes the topographical map!
+        // 🟢 THE FIX: Exposing all 3 Topographical Nodes and the Oracle's Regime to your logs
         decision.telemetry = { 
             ...decision.telemetry, 
-            cvd: microstructure.indicators.current_cvd,
-            macro_cvd: microstructure.indicators.macro_cvd,
+            macro_regime_oracle: decision.market_regime || "EVALUATING",
             macro_poc: microstructure.indicators.macro_poc,
+            upper_macro_node: microstructure.indicators.upper_macro_node,
+            lower_macro_node: microstructure.indicators.lower_macro_node,
+            macro_cvd: microstructure.indicators.macro_cvd,
+            micro_cvd: microstructure.indicators.current_cvd,
             bids: microstructure.orderBook.bids_50_levels,
             asks: microstructure.orderBook.asks_50_levels,
             premium: microstructure.derivativesData.basis_premium_percent
@@ -543,6 +546,8 @@ export default async function handler(req, res) {
                 });
 
                 config.new_thesis = oracleVerdict.working_thesis;
+                // 🟢 Capture the Oracle's regime declaration for the telemetry log
+                decision.market_regime = oracleVerdict.market_regime;
 
                 if (oracleVerdict.trap_side && oracleVerdict.trap_price && oracleVerdict.trap_expires_in_minutes) {
                     config.new_trap_side = oracleVerdict.trap_side;
@@ -552,8 +557,10 @@ export default async function handler(req, res) {
                     config.clear_trap = true;
                 }
 
+                // 🟢 Push the final Oracle verdict to the telemetry log
                 decision.telemetry = { 
-                    ...decision.telemetry, 
+                    ...decision.telemetry,
+                    macro_regime_oracle: decision.market_regime || "CHOP",
                     oracle_score: oracleVerdict.conviction_score, 
                     oracle_reasoning: oracleVerdict.reasoning
                 };
@@ -732,6 +739,7 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   } catch (err) { throw err; } 
 }
 
+// 🟢 THE FIX: The Multi-Node Radar
 async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, secret) {
     try {
         let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = [];
@@ -761,7 +769,7 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
         const atr = trueRanges.length > 0 ? trueRanges.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, trueRanges.length) : 0;
         const currentPrice = triggerCandles[triggerCandles.length - 1].close;
 
-        // 🟢 THE FIX: MACRO CVD CALCULATION (Last 50 Macro Candles)
+        // --- MACRO CVD CALCULATION ---
         let macro_cvd = 0;
         const macroCvdCandles = macroCandles.slice(-50);
         for (let i = 0; i < macroCvdCandles.length; i++) {
@@ -776,7 +784,7 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
             }
         }
 
-        // 🟢 THE FIX: POINT OF CONTROL (POC) ENGINE (Last 150 Macro Candles)
+        // 🟢 THE FIX: MULTI-NODE RADAR (POC, Upper Node, Lower Node)
         let minPrice = Infinity;
         let maxPrice = -Infinity;
         const pocCandles = macroCandles.slice(-150);
@@ -798,16 +806,35 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
             volumeProfile[bucketIndex] += c.volume;
         });
 
-        let maxVol = -1;
-        let pocIndex = 0;
-        for(let i=0; i<numBuckets; i++) {
-            if (volumeProfile[i] > maxVol) {
-                maxVol = volumeProfile[i];
-                pocIndex = i;
+        // 1. Map all local maxima (peaks in the volume profile)
+        let peaks = [];
+        for (let i = 1; i < numBuckets - 1; i++) {
+            if (volumeProfile[i] > volumeProfile[i-1] && volumeProfile[i] > volumeProfile[i+1]) {
+                peaks.push({
+                    price: minPrice + (i * bucketSize) + (bucketSize / 2),
+                    volume: volumeProfile[i]
+                });
             }
         }
-        const macro_poc = minPrice + (pocIndex * bucketSize) + (bucketSize / 2);
+        // Handle edges
+        if (volumeProfile[0] > volumeProfile[1]) peaks.push({ price: minPrice + (bucketSize / 2), volume: volumeProfile[0] });
+        if (volumeProfile[numBuckets - 1] > volumeProfile[numBuckets - 2]) peaks.push({ price: minPrice + ((numBuckets - 1) * bucketSize) + (bucketSize / 2), volume: volumeProfile[numBuckets - 1] });
 
+        // 2. Sort peaks by volume (largest first)
+        peaks.sort((a, b) => b.volume - a.volume);
+
+        // 3. Assign Primary POC
+        const macro_poc = peaks.length > 0 ? peaks[0].price : currentPrice;
+
+        // 4. Find closest significant nodes above and below current price
+        let upper_macro_node = null;
+        let lower_macro_node = null;
+
+        const upperPeaks = peaks.filter(p => p.price > currentPrice);
+        if (upperPeaks.length > 0) upper_macro_node = upperPeaks[0].price;
+
+        const lowerPeaks = peaks.filter(p => p.price < currentPrice);
+        if (lowerPeaks.length > 0) lower_macro_node = lowerPeaks[0].price;
 
         const assetMap = {
             'ETP': 'ETH', 'BIT': 'BTC', 'BIP': 'BTC', 'SLP': 'SOL', 
@@ -870,7 +897,9 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                 current_atr: atr.toFixed(2), 
                 current_cvd: cvd.toFixed(2),
                 macro_cvd: macro_cvd.toFixed(2),
-                macro_poc: macro_poc.toFixed(2)
+                macro_poc: macro_poc.toFixed(2),
+                upper_macro_node: upper_macro_node ? upper_macro_node.toFixed(2) : "None",
+                lower_macro_node: lower_macro_node ? lower_macro_node.toFixed(2) : "None"
             }, 
             orderBook: orderBookData, 
             derivativesData: { 
