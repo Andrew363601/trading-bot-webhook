@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { evaluateStrategy } from '../lib/strategy-router.js';
-import { evaluateTradeIdea } from '../lib/oracle-brain.js';
+import { evaluateTradeIdea } from '../lib/trade-oracle.js';
 import { buildRadarChartUrl } from '../lib/discord-chart.js';
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
