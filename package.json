@@ -7,8 +7,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "start-swarm": "node hermes.js"
   },
+
   "dependencies": {
     "@ai-sdk/google": "^3.0.63",
     "@ai-sdk/react": "^3.0.161",
