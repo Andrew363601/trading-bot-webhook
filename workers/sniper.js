@@ -293,15 +293,23 @@ export async function startSniper() {
                     const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', asset).eq('strategy_id', config.strategy).is('exit_price', null).limit(1);
                     const openTrade = openTrades?.[0];
 
-                    // 🟢 4. THE STRATEGY ROUTER (Local Math)
-                    let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
+                  // 🟢 4. THE STRATEGY ROUTER (Local Math)
+let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
 
-                    decision.telemetry = { 
-                        ...decision.telemetry, 
-                        macro_poc: microstructure.indicators.macro_poc,
-                        micro_cvd: microstructure.indicators.current_cvd,
-                        oracle_reasoning: "Awaiting signal..."
-                    };
+// 🟢 THE FIX: Restoring all missing X-Ray telemetry fields for the UI!
+decision.telemetry = { 
+    ...decision.telemetry, 
+    macro_poc: microstructure.indicators.macro_poc,
+    upper_macro_node: microstructure.indicators.upper_macro_node,
+    lower_macro_node: microstructure.indicators.lower_macro_node,
+    macro_cvd: microstructure.indicators.macro_cvd,
+    micro_cvd: microstructure.indicators.current_cvd,
+    bids: microstructure.orderBook.bids_50_levels || 0,
+    asks: microstructure.orderBook.asks_50_levels || 0,
+    premium: microstructure.derivativesData.basis_premium_percent || 0,
+    macro_regime_oracle: "EVALUATING",
+    oracle_reasoning: "Awaiting signal..."
+};
 
                     // 🟢 5. GEMINI HANDOFF (Only if math fires)
                     if (decision.signal) {
