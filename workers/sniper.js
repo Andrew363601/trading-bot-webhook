@@ -2,24 +2,10 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import WebSocket from 'ws'; // 🟢 THE NEW SPINAL CORD
+import WebSocket from 'ws'; 
 import { evaluateStrategy } from '../lib/strategy-router.js';
-import { evaluateTradeIdea } from '../lib/trade-oracle.js';
-import { buildRadarChartUrl } from '../lib/discord-chart.js';
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
-
-// --- HELPER FUNCTIONS ---
-async function sendDiscordAlert({ title, description, color, fields = [], imageUrl = null }) {
-    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-    if (!webhookUrl) return;
-    try {
-        const embed = { title, description, color, timestamp: new Date().toISOString() };
-        if (fields.length > 0) embed.fields = fields;
-        if (imageUrl) embed.image = { url: imageUrl };
-        await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) });
-    } catch (e) { console.error("Discord Alert Failed:", e.message); }
-}
 
 function generateCoinbaseToken(method, path, apiKey, apiSecret) {
     const privateKey = crypto.createPrivateKey({ key: apiSecret.replace(/\\n/g, '\n'), format: 'pem' });
@@ -42,6 +28,18 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
+// 🟢 THE HTTP FLARE TO HERMES
+async function pingHermes(payload) {
+    const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
+    try {
+        await fetch(hermesEndpoint, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+    } catch (e) {
+        console.error(`[HERMES PING FAILED] Is the Docker container running?`);
+    }
+}
+
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   try {
     const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
@@ -53,45 +51,23 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     }
     const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
     const end = Math.floor(Date.now() / 1000);
-    
-    let secondsPerCandle = 3600; 
-    if (safeGranularity === 'ONE_MINUTE') secondsPerCandle = 60;
-    else if (safeGranularity === 'FIVE_MINUTE') secondsPerCandle = 300;
-    else if (safeGranularity === 'FIFTEEN_MINUTE') secondsPerCandle = 900;
-    else if (safeGranularity === 'THIRTY_MINUTE') secondsPerCandle = 1800;
-    else if (safeGranularity === 'ONE_HOUR') secondsPerCandle = 3600;
-    else if (safeGranularity === 'TWO_HOUR') secondsPerCandle = 7200;
-    else if (safeGranularity === 'SIX_HOUR') secondsPerCandle = 21600;
-    else if (safeGranularity === 'ONE_DAY') secondsPerCandle = 86400;
-
-    let lookbackSeconds = secondsPerCandle * 300; 
-    const start = end - lookbackSeconds; 
-    
+    const secondsPerCandle = safeGranularity === 'ONE_HOUR' ? 3600 : 300;
+    const start = end - (secondsPerCandle * 300); 
     const token = generateCoinbaseToken('GET', path, apiKey, secret);
 
     const resp = await fetch(`https://api.coinbase.com${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, { headers: { 'Authorization': `Bearer ${token}` } });
     if (!resp.ok) throw new Error(`Coinbase HTTP ${resp.status}`); 
     const data = await resp.json();
-    
-    return data.candles?.map(c => ({ 
-        open: c.open ? parseFloat(c.open) : parseFloat(c.close),
-        close: parseFloat(c.close), 
-        high: parseFloat(c.high), 
-        low: parseFloat(c.low), 
-        volume: parseFloat(c.volume) 
-    })).reverse();
+    return data.candles?.map(c => ({ open: c.open ? parseFloat(c.open) : parseFloat(c.close), close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
   } catch (err) { throw err; } 
 }
 
 async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, secret) {
     try {
-        let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = [];
-        let cvd = 0; 
-        
+        let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = []; let cvd = 0; 
         const cvdCandles = triggerCandles.slice(-50);
         for (let i = 0; i < cvdCandles.length; i++) {
-            const c = cvdCandles[i];
-            const range = c.high - c.low;
+            const c = cvdCandles[i]; const range = c.high - c.low;
             let openPrice = c.open;
             if (isNaN(openPrice) || openPrice === undefined) { openPrice = i > 0 ? cvdCandles[i-1].close : c.close; }
             if (range > 0) { cvd += c.volume * ((c.close - openPrice) / range); }
@@ -106,24 +82,19 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
         const atr = trueRanges.length > 0 ? trueRanges.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, trueRanges.length) : 0;
         const currentPrice = triggerCandles[triggerCandles.length - 1].close;
 
-        let macro_cvd = 0;
-        const macroCvdCandles = macroCandles.slice(-50);
+        let macro_cvd = 0; const macroCvdCandles = macroCandles.slice(-50);
         for (let i = 0; i < macroCvdCandles.length; i++) {
-            const c = macroCvdCandles[i];
-            const range = c.high - c.low;
+            const c = macroCvdCandles[i]; const range = c.high - c.low;
             let openPrice = c.open;
             if (isNaN(openPrice) || openPrice === undefined) { openPrice = i > 0 ? macroCvdCandles[i-1].close : c.close; }
             if (range > 0) { macro_cvd += c.volume * ((c.close - openPrice) / range); }
         }
 
-        let minPrice = Infinity; let maxPrice = -Infinity;
-        const pocCandles = macroCandles.slice(-150);
+        let minPrice = Infinity; let maxPrice = -Infinity; const pocCandles = macroCandles.slice(-150);
         pocCandles.forEach(c => { if (c.low < minPrice) minPrice = c.low; if (c.high > maxPrice) maxPrice = c.high; });
 
-        const numBuckets = 50;
-        const bucketSize = (maxPrice - minPrice) / numBuckets;
+        const numBuckets = 50; const bucketSize = (maxPrice - minPrice) / numBuckets;
         const volumeProfile = new Array(numBuckets).fill(0);
-
         pocCandles.forEach(c => {
             const typicalPrice = (c.high + c.low + c.close) / 3;
             let bucketIndex = Math.floor((typicalPrice - minPrice) / bucketSize);
@@ -138,28 +109,21 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                 peaks.push({ price: minPrice + (i * bucketSize) + (bucketSize / 2), volume: volumeProfile[i] });
             }
         }
-        if (volumeProfile[0] > volumeProfile[1]) peaks.push({ price: minPrice + (bucketSize / 2), volume: volumeProfile[0] });
-        if (volumeProfile[numBuckets - 1] > volumeProfile[numBuckets - 2]) peaks.push({ price: minPrice + ((numBuckets - 1) * bucketSize) + (bucketSize / 2), volume: volumeProfile[numBuckets - 1] });
-
         peaks.sort((a, b) => b.volume - a.volume);
         const macro_poc = peaks.length > 0 ? peaks[0].price : currentPrice;
 
         let upper_macro_node = null; let lower_macro_node = null;
         const upperPeaks = peaks.filter(p => p.price > currentPrice);
         if (upperPeaks.length > 0) upper_macro_node = upperPeaks[0].price;
-
         const lowerPeaks = peaks.filter(p => p.price < currentPrice);
         if (lowerPeaks.length > 0) lower_macro_node = lowerPeaks[0].price;
 
-        const assetMap = { 'ETP': 'ETH', 'BIT': 'BTC', 'BIP': 'BTC', 'SLP': 'SOL', 'AVP': 'AVAX', 'LCP': 'LTC', 'LNP': 'LINK', 'DOP': 'DOGE', 'BHP': 'BCH' };
         let coinbaseProduct = asset.toUpperCase().trim();
         let baseAsset = asset.split('-')[0].replace('PERP', '').trim();
-        baseAsset = assetMap[baseAsset] || baseAsset;
+        if (baseAsset === 'ETP') baseAsset = 'ETH'; else if (baseAsset === 'BIT' || baseAsset === 'BIP') baseAsset = 'BTC';
         const spotProduct = `${baseAsset}-USD`;
 
-        let orderBookData = { status: "Unavailable" };
-        let basisPremium = 0;
-        let spotPrice = currentPrice;
+        let orderBookData = { status: "Unavailable" }; let basisPremium = 0; let spotPrice = currentPrice;
 
         if (apiKey && secret) {
             try {
@@ -167,8 +131,7 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                 const bookResp = await fetch(`https://api.coinbase.com${bookPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', bookPath, apiKey, secret)}` } });
                 if (bookResp.ok) {
                     const bookJson = await bookResp.json();
-                    const bids = bookJson.pricebook?.bids || [];
-                    const asks = bookJson.pricebook?.asks || [];
+                    const bids = bookJson.pricebook?.bids || []; const asks = bookJson.pricebook?.asks || [];
                     let totalBidSize = bids.reduce((sum, b) => sum + parseFloat(b.size || 0), 0);
                     let totalAskSize = asks.reduce((sum, a) => sum + parseFloat(a.size || 0), 0);
                     orderBookData = { bids_50_levels: (totalBidSize || 0).toFixed(2), asks_50_levels: (totalAskSize || 0).toFixed(2), imbalance: totalBidSize > totalAskSize ? "BULLISH" : "BEARISH" };
@@ -190,32 +153,23 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
             indicators: { 
                 current_vwap: vwap.toFixed(2), current_atr: atr.toFixed(2), current_cvd: cvd.toFixed(2),
                 macro_cvd: macro_cvd.toFixed(2), macro_poc: macro_poc.toFixed(2),
-                upper_macro_node: upper_macro_node ? upper_macro_node.toFixed(2) : "None",
-                lower_macro_node: lower_macro_node ? lower_macro_node.toFixed(2) : "None"
-            }, 
-            orderBook: orderBookData, 
-            derivativesData: { spot_price: spotPrice.toFixed(2), futures_price: currentPrice.toFixed(2), basis_premium_percent: basisPremium.toFixed(4) } 
+                upper_macro_node: upper_macro_node ? upper_macro_node.toFixed(2) : "None", lower_macro_node: lower_macro_node ? lower_macro_node.toFixed(2) : "None"
+            }, orderBook: orderBookData, derivativesData: { spot_price: spotPrice.toFixed(2), futures_price: currentPrice.toFixed(2), basis_premium_percent: basisPremium.toFixed(4) } 
         };
     } catch (e) { return { indicators: {}, orderBook: {}, derivativesData: {} }; }
 }
 
-// 🟢 THE NEW WEBSOCKET STATE MANAGER
-const RAM = {
-    configs: [],           // Holds active strategies in memory
-    lastMathRun: {},       // Throttles the heavy math to 60 seconds
-    isProcessingMath: {}   // Prevents overlapping API calls
-};
+const RAM = { configs: [], lastMathRun: {}, isProcessingMath: {} };
 
 export async function startSniper() {
     console.log(`[SNIPER] Booting WebSocket Spinal Cord...`);
-    const apiKeyName = process.env.COINBASE_API_KEY;
-    const apiSecret = process.env.COINBASE_API_SECRET;
+    const apiKeyName = process.env.COINBASE_API_KEY; const apiSecret = process.env.COINBASE_API_SECRET;
 
     const syncConfigs = async () => {
         try {
             const { data } = await supabase.from('strategy_config').select('*').eq('is_active', true);
             if (data) RAM.configs = data;
-        } catch (e) { console.error("[RAM SYNC FAULT]", e.message); }
+        } catch (e) {}
     };
     await syncConfigs();
     setInterval(syncConfigs, 30000); 
@@ -230,19 +184,12 @@ export async function startSniper() {
             return p;
         }))];
 
-        if (productIds.length > 0) {
-            ws.send(JSON.stringify({
-                type: 'subscribe',
-                product_ids: productIds,
-                channel: 'ticker'
-            }));
-        }
+        if (productIds.length > 0) ws.send(JSON.stringify({ type: 'subscribe', product_ids: productIds, channel: 'ticker' }));
     });
 
     ws.on('message', async (data) => {
         const message = JSON.parse(data);
         if (message.channel !== 'ticker' || !message.events) return;
-
         const tick = message.events[0].tickers[0];
         if (!tick) return;
 
@@ -258,7 +205,6 @@ export async function startSniper() {
         for (const config of activeAssetConfigs) {
             const params = config.parameters || {};
 
-            // 🟢 MILLISECOND TRAP EXECUTION (Bypasses all throttles)
             if (config.trap_side && config.trap_price && config.trap_expires_at) {
                 const expiresAt = new Date(config.trap_expires_at).getTime();
                 let trapSprung = false;
@@ -274,7 +220,6 @@ export async function startSniper() {
 
                 if (trapSprung) {
                     console.log(`[SNIPER] LIGHTNING TRAP SPRUNG for ${config.asset} at $${currentPrice}!`);
-                    
                     config.trap_side = null; 
                     await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_expires_at: null }).eq('id', config.id);
 
@@ -296,16 +241,14 @@ export async function startSniper() {
                         tp_price: parseFloat((Math.round(trapTpPrice / tickSize) * tickSize).toFixed(4)), 
                         sl_price: parseFloat((Math.round(trapSlPrice / tickSize) * tickSize).toFixed(4)),
                         execution_mode: config.execution_mode || 'PAPER', leverage: params.leverage || 1,
-                        market_type: params.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)),
-                        reason: `[VIRTUAL TRAP SPRUNG]: Lightning WS Execution at $${currentPrice}`
+                        market_type: params.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)), reason: `[VIRTUAL TRAP SPRUNG]: Lightning WS Execution at $${currentPrice}`
                     };
                     
-                    fetch(`${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(trapPayload) }).catch(e => console.error("Trap Execution Error:", e));
+                    fetch(`${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(trapPayload) }).catch(e => {});
                     continue; 
                 }
             }
 
-            // 🟢 THROTTLED STRATEGY MATH (Runs every 60 seconds max per strategy)
             const now = Date.now();
             const lastRun = RAM.lastMathRun[config.strategy] || 0;
             const isProcessing = RAM.isProcessingMath[config.strategy] || false;
@@ -317,7 +260,6 @@ export async function startSniper() {
             await supabase.from('strategy_config').update({ is_processing: true }).eq('id', config.id);
 
             try {
-                // 🟢 FIX: Moved cooldown check to AFTER math runs so UI stays alive
                 const cooldownMins = params.veto_cooldown_minutes || 15;
                 const lastVeto = config.last_veto_time ? new Date(config.last_veto_time).getTime() : 0;
                 const isCooldownActive = (Date.now() - lastVeto) < (cooldownMins * 60000);
@@ -333,97 +275,52 @@ export async function startSniper() {
                 if (!macroCandles || !triggerCandles) continue;
 
                 const microstructure = await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
-                const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).is('exit_price', null).limit(1);
-                const openTrade = openTrades?.[0];
-
                 let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
 
-                // 🟢 FIX: Renamed micro_cvd to cvd so UI picks it up
                 decision.telemetry = { 
                     ...decision.telemetry, 
-                    macro_poc: microstructure.indicators.macro_poc,
-                    upper_macro_node: microstructure.indicators.upper_macro_node,
-                    lower_macro_node: microstructure.indicators.lower_macro_node,
-                    macro_cvd: microstructure.indicators.macro_cvd,
-                    cvd: microstructure.indicators.current_cvd, 
-                    bids: microstructure.orderBook.bids_50_levels || 0,
-                    asks: microstructure.orderBook.asks_50_levels || 0,
-                    premium: microstructure.derivativesData.basis_premium_percent || 0,
-                    macro_regime_oracle: "EVALUATING",
-                    oracle_reasoning: "Awaiting signal..."
+                    macro_poc: microstructure.indicators.macro_poc, upper_macro_node: microstructure.indicators.upper_macro_node, lower_macro_node: microstructure.indicators.lower_macro_node,
+                    macro_cvd: microstructure.indicators.macro_cvd, cvd: microstructure.indicators.current_cvd, 
+                    bids: microstructure.orderBook.bids_50_levels || 0, asks: microstructure.orderBook.asks_50_levels || 0, premium: microstructure.derivativesData.basis_premium_percent || 0,
+                    macro_regime_oracle: "EVALUATING", oracle_reasoning: "Awaiting signal..."
                 };
 
+                // 🟢 THE FIX: The Hermes Handoff
                 if (decision.signal) {
                     if (isCooldownActive) {
                         decision.statusOverride = `COOLDOWN (${cooldownMins}M)`;
-                        decision.telemetry.oracle_reasoning = `System in penalty box. Ignoring ${decision.signal} signal for cooldown duration.`;
+                        decision.telemetry.oracle_reasoning = `System in penalty box. Ignoring ${decision.signal} signal.`;
                     } else {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
                         
-                        const oracleVerdict = await evaluateTradeIdea({
-                            mode: (openTrade && openTrade.side !== normalizedSignal) ? 'REVERSAL' : 'ENTRY',
-                            asset: config.asset, strategy: config.strategy, signal: normalizedSignal,
-                            currentPrice, candles: triggerCandles, macroCandles: macroCandles,
-                            indicators: microstructure.indicators, orderBook: microstructure.orderBook,
-                            derivativesData: microstructure.derivativesData, openTrade, 
-                            dynamicSizing: params.dynamic_sizing, activeThesis: config.active_thesis
+                        console.log(`[SNIPER] Math signal detected for ${config.asset}. Waking Hermes...`);
+                        
+                        await pingHermes({
+                            asset: config.asset,
+                            mode: "ENTRY",
+                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}. Please fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`
                         });
 
-                        config.new_thesis = oracleVerdict.working_thesis;
-                        decision.telemetry.oracle_reasoning = oracleVerdict.reasoning;
-                        decision.telemetry.oracle_score = oracleVerdict.conviction_score;
-                        decision.telemetry.macro_regime_oracle = oracleVerdict.market_regime || "EVALUATING";
+                        // Instantly trigger a cooldown so we don't spam Hermes on the next 60s loop
+                        await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('id', config.id);
 
-                        if (oracleVerdict.trap_side && oracleVerdict.trap_price && oracleVerdict.trap_expires_in_minutes) {
-                            const expireTime = new Date(Date.now() + (oracleVerdict.trap_expires_in_minutes * 60000)).toISOString();
-                            config.trap_side = oracleVerdict.trap_side; config.trap_price = oracleVerdict.trap_price; config.trap_expires_at = expireTime;
-                            await supabase.from('strategy_config').update({ trap_side: config.trap_side, trap_price: config.trap_price, trap_expires_at: expireTime }).eq('id', config.id);
-                        } 
-
-                        if (oracleVerdict.action === 'VETO') {
-                            decision.statusOverride = 'ORACLE VETO';
-                            await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('id', config.id);
-                            
-                            const chartUrl = await buildRadarChartUrl({ asset: config.asset, candles: triggerCandles, currentPrice, poc: microstructure.indicators.macro_poc, upperNode: microstructure.indicators.upper_macro_node, lowerNode: microstructure.indicators.lower_macro_node, trapPrice: config.trap_price, trapSide: config.trap_side });
-                            await sendDiscordAlert({ title: `👻 Veto: ${config.asset}`, description: `_${oracleVerdict.reasoning}_`, color: 10038562, imageUrl: chartUrl });
-                        } else {
-                            decision.statusOverride = 'RESONANT';
-                            
-                            const host = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000';
-                            let finalQty = params.qty || 1;
-                            if (params.target_usd) {
-                                const { multiplier } = getAssetMetrics(config.asset);
-                                finalQty = Math.max(1, Math.round(params.target_usd / (oracleVerdict.limit_price || currentPrice) * multiplier));
-                            }
-
-                            const tradePayload = {
-                                symbol: config.asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: normalizedSignal,
-                                order_type: oracleVerdict.order_type || 'MARKET', price: oracleVerdict.limit_price || currentPrice, 
-                                tp_price: oracleVerdict.tp_price || null, sl_price: oracleVerdict.sl_price || null,
-                                execution_mode: config.execution_mode || 'PAPER', leverage: params.leverage || 1,
-                                market_type: params.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)), reason: oracleVerdict.reasoning 
-                            };
-                            fetch(`${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tradePayload) }).catch(e => console.error(e));
-                        }
+                        decision.statusOverride = 'HERMES_NOTIFIED';
+                        decision.telemetry.oracle_reasoning = "Ping sent to Hermes Agent. Awaiting autonomous execution or veto.";
+                        decision.telemetry.macro_regime_oracle = "HANDED TO AGENT";
                     }
                 }
 
-                // UI Sonar Heartbeat
                 const finalStatus = decision.statusOverride || (decision.signal ? "RESONANT" : "STABLE");
                 await supabase.from('scan_results').insert([{ strategy: config.strategy, asset: config.asset, telemetry: decision.telemetry, status: finalStatus }]);
 
             } catch (e) { console.error(`[ASSET ERROR] ${config.asset}:`, e.message); }
             finally {
                 RAM.isProcessingMath[config.strategy] = false;
-                await supabase.from('strategy_config').update({ is_processing: false, active_thesis: config.new_thesis || config.active_thesis }).eq('id', config.id);
+                await supabase.from('strategy_config').update({ is_processing: false }).eq('id', config.id);
             }
         }
     });
 
-    ws.on('close', () => {
-        console.error('[SNIPER] WebSocket disconnected. Attempting to reconnect in 5 seconds...');
-        setTimeout(startSniper, 5000);
-    });
-
+    ws.on('close', () => { setTimeout(startSniper, 5000); });
     ws.on('error', (err) => { console.error('[SNIPER] WebSocket Error:', err.message); });
 }

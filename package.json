@@ -10,7 +10,6 @@
     "lint": "next lint",
     "start-swarm": "node hermes.js"
   },
-
   "dependencies": {
     "@ai-sdk/google": "^3.0.63",
     "@ai-sdk/react": "^3.0.161",
@@ -20,6 +19,7 @@
     "discord-interactions": "^4.4.0",
     "eslint": "8.56.0",
     "eslint-config-next": "14.1.0",
+    "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "lightweight-charts": "^5.1.0",
     "lucide-react": "^0.344.0",

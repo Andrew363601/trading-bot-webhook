@@ -2,7 +2,6 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { evaluateTradeIdea } from '../lib/trade-oracle.js';
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -39,13 +38,24 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
-// 🟢 THE RESTORED WATCHDOG LOOP
+// 🟢 THE HTTP FLARE TO HERMES
+async function pingHermes(payload) {
+    // This will point to your Docker container's listener port
+    const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
+    try {
+        await fetch(hermesEndpoint, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+    } catch (e) {
+        console.error(`[HERMES PING FAILED] Is the Docker container running?`);
+    }
+}
+
 export async function startWatchdog() {
     console.log(`[WATCHDOG] Physical Exchange Janitor online. Sweeping orders...`);
     const apiKeyName = process.env.COINBASE_API_KEY;
     const apiSecret = process.env.COINBASE_API_SECRET;
 
-    // Run every 5 seconds
     setInterval(async () => {
         try {
             const { data: openTrades } = await supabase.from('trade_logs').select('*').is('exit_price', null);
@@ -56,14 +66,12 @@ export async function startWatchdog() {
                 let coinbaseProduct = asset.toUpperCase().trim();
                 if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP'); 
 
-                // 1. FAST TICKER FETCH FOR TRIPWIRES
                 const tickerPath = `/api/v3/brokerage/products/${coinbaseProduct}/ticker`;
                 const tickerResp = await fetch(`https://api.coinbase.com${tickerPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tickerPath, apiKeyName, apiSecret)}` } });
                 const tickerData = await tickerResp.json();
                 const currentPrice = parseFloat(tickerData.price);
                 if (!currentPrice) continue;
 
-                // 2. EXCHANGE SYNC (Positions & Orders)
                 let activePosition = null;
                 let openOrders = [];
                 
@@ -109,17 +117,25 @@ export async function startWatchdog() {
                         }
                     }
 
-                    // 🧹 STALE LIMIT SWEEP (Pending Review)
+                    // 🧹 STALE LIMIT SWEEP (🟢 THE FIX: Hermes Handoff Restored)
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         let totalAllowedMinutes = 15; 
                         const initialMatch = openTrade.reason?.match(/Fill:\s*(\d+)m/i);
                         if (initialMatch) totalAllowedMinutes = parseInt(initialMatch[1]);
 
-                        if (minutesOpen > totalAllowedMinutes) {
-                            console.log(`[WATCHDOG] Stale limit detected on ${asset}. Waking Oracle...`);
-                            // We trigger the evaluateTradeIdea for PENDING_REVIEW here
-                            // If Oracle says CANCEL, we hit the Coinbase batch_cancel endpoint
+                        if (minutesOpen > totalAllowedMinutes && !openTrade.reason?.includes('[HERMES_NOTIFIED]')) {
+                            console.log(`[WATCHDOG] Stale limit detected on ${asset}. Waking Hermes Agent...`);
+                            
+                            // Fire the flare to the Docker Container
+                            await pingHermes({
+                                asset: asset,
+                                mode: "PENDING_REVIEW",
+                                message: `Your limit order for ${asset} at $${openTrade.entry_price} has sat unfilled for ${Math.round(minutesOpen)}m. Current price is $${currentPrice}. Use get_market_state to evaluate if you should hold, adjust, or cancel.`
+                            });
+
+                            // Tag the DB so we don't spam Hermes every 5 seconds
+                            await supabase.from('trade_logs').update({ reason: `${openTrade.reason || ''}\n\n[HERMES_NOTIFIED]: Reviewing Stale Limit` }).eq('id', openTrade.id);
                         }
                         continue; 
                     }
@@ -147,12 +163,11 @@ export async function startWatchdog() {
                             }
 
                             if (wasCanceled || (openTrade.order_type === 'LIMIT' && !wasFilled)) {
-                                const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: STALE_LIMIT_EXPIRED` : 'STALE_LIMIT_EXPIRED';
+                                const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
                                 await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                                 await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960 });
                                 continue; 
                             } else {
-                                // Native Bracket Hit (TP or SL was hit on the exchange)
                                 if (openOrders.length > 0) {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                     await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
@@ -203,9 +218,6 @@ export async function startWatchdog() {
                         }
                     }
                 }
-
-                // 3. TRIPWIRE LOGIC (Trailing Stops) goes here...
-                // (Logic matches previous step)
             }
         } catch (err) {
             console.error("[WATCHDOG FAULT]:", err.message);
