@@ -30,114 +30,109 @@ function generateCoinbaseToken(method, path, apiKey, apiSecret) {
     );
 }
 
-// ... (Keep your exact getAssetMetrics, fetchCoinbaseData, and fetchMicrostructure functions here) ...
+// ... (fetchCoinbaseData, fetchMicrostructure, getAssetMetrics here) ...
 
-// 🟢 THE NEW CONTINUOUS SNIPER LOOP
 export async function startSniper() {
-    console.log(`[SNIPER] Target acquisition system online. Sweeping continuous tape...`);
+    console.log(`[SNIPER] Systems fully integrated. Watching parameters...`);
     const apiKeyName = process.env.COINBASE_API_KEY;
     const apiSecret = process.env.COINBASE_API_SECRET;
 
-    // Run this loop infinitely every 10 seconds
     setInterval(async () => {
         try {
             const { data: activeConfigs } = await supabase.from('strategy_config').select('*').eq('is_active', true);
-            if (!activeConfigs || activeConfigs.length === 0) return;
+            if (!activeConfigs) return;
 
             for (const config of activeConfigs) {
                 const asset = config.asset;
-                if (!asset || config.is_processing) continue;
+                const params = config.parameters || {};
 
-                // Lock the row so the Watchdog doesn't clash with it
+                // 🟢 1. COOLDOWN GUARDRAIL
+                const cooldownMins = params.veto_cooldown_minutes || 15;
+                const lastVeto = config.last_veto_time ? new Date(config.last_veto_time).getTime() : 0;
+                if ((Date.now() - lastVeto) < (cooldownMins * 60000)) continue;
+
+                if (config.is_processing) continue;
                 await supabase.from('strategy_config').update({ is_processing: true }).eq('strategy', config.strategy);
 
-                let trapSprung = false;
-                let trapExpired = false;
-
                 try {
-                    const macroTf = config.parameters?.macro_tf || 'ONE_HOUR';
-                    const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
+                    // 🟢 2. TIME-FRAME INJECTION
+                    const macroTf = params.macro_tf || 'ONE_HOUR';
+                    const triggerTf = params.trigger_tf || 'FIVE_MINUTE';
 
                     const [macroCandles, triggerCandles] = await Promise.all([
                         fetchCoinbaseData(asset, macroTf, apiKeyName, apiSecret),
                         fetchCoinbaseData(asset, triggerTf, apiKeyName, apiSecret)
                     ]);
 
-                    if (!macroCandles || !triggerCandles || macroCandles.length < 21) continue;
+                    if (!macroCandles || !triggerCandles) continue;
                     const currentPrice = triggerCandles[triggerCandles.length - 1].close;
 
+                    // 🟢 3. X-RAY HANDOFF (Microstructure)
                     const microstructure = await fetchMicrostructure(asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
 
-                    // We only fetch the open trade to know if a signal is a REVERSAL
-                    const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', asset).eq('strategy_id', config.strategy).is('exit_price', null).order('id', { ascending: false }).limit(1);
-                    const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
+                    const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', asset).eq('strategy_id', config.strategy).is('exit_price', null).limit(1);
+                    const openTrade = openTrades?.[0];
 
-                    // 1. TRAP EVALUATION
-                    if (config.trap_side && config.trap_price && config.trap_expires_at) {
-                        const expiresAt = new Date(config.trap_expires_at).getTime();
-                        if (Date.now() > expiresAt) trapExpired = true;
-                        else if (config.trap_side === 'BUY' && currentPrice <= config.trap_price) trapSprung = true;
-                        else if (config.trap_side === 'SELL' && currentPrice >= config.trap_price) trapSprung = true;
-                    }
+                    // 🟢 4. THE STRATEGY ROUTER (Local Math)
+                    let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
 
-                    if (trapSprung) {
-                        console.log(`[SNIPER] Ghost Trap sprung for ${asset}!`);
-                        // Build execution payload and trigger local execution tool
-                        config.clear_trap = true;
-                        continue;
-                    }
-
-                    // 2. STRATEGY EVALUATION
-                    const marketData = { macro: macroCandles, trigger: triggerCandles };
-                    let decision = await evaluateStrategy(config.strategy, marketData, config.parameters);
-                    if (decision.error) continue;
-
-                    decision.telemetry = {
-                        ...decision.telemetry,
+                    decision.telemetry = { 
+                        ...decision.telemetry, 
                         macro_poc: microstructure.indicators.macro_poc,
-                        upper_macro_node: microstructure.indicators.upper_macro_node,
-                        lower_macro_node: microstructure.indicators.lower_macro_node,
-                        micro_cvd: microstructure.indicators.current_cvd
+                        micro_cvd: microstructure.indicators.current_cvd,
+                        oracle_reasoning: "Awaiting signal..."
                     };
 
+                    // 🟢 5. GEMINI HANDOFF (Only if math fires)
                     if (decision.signal) {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
                         
-                        // 3. ORACLE EVALUATION
                         const oracleVerdict = await evaluateTradeIdea({
                             mode: (openTrade && openTrade.side !== normalizedSignal) ? 'REVERSAL' : 'ENTRY',
                             asset, strategy: config.strategy, signal: normalizedSignal,
                             currentPrice, candles: triggerCandles, macroCandles: macroCandles,
                             indicators: microstructure.indicators, orderBook: microstructure.orderBook,
-                            derivativesData: microstructure.derivativesData, openTrade, activeThesis: config.active_thesis
+                            derivativesData: microstructure.derivativesData, openTrade, 
+                            dynamicSizing: params.dynamic_sizing, activeThesis: config.active_thesis
                         });
 
                         config.new_thesis = oracleVerdict.working_thesis;
+                        decision.telemetry.oracle_reasoning = oracleVerdict.reasoning;
+                        decision.telemetry.oracle_score = oracleVerdict.conviction_score;
 
                         if (oracleVerdict.action === 'VETO') {
+                            decision.statusOverride = 'ORACLE VETO';
                             await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('strategy', config.strategy);
-                            const chartUrl = await buildRadarChartUrl({ asset, candles: triggerCandles, currentPrice, poc: microstructure.indicators.macro_poc, upperNode: microstructure.indicators.upper_macro_node, lowerNode: microstructure.indicators.lower_macro_node, trapPrice: config.new_trap_price, trapSide: config.new_trap_side });
                             
-                            await sendDiscordAlert({ title: `👻 Oracle Veto: ${asset}`, description: `**Signal:** ${normalizedSignal} (Rejected)\n\n**🧠 Oracle Rationale:**\n_${oracleVerdict.reasoning}_`, color: 10038562, imageUrl: chartUrl });
+                            const chartUrl = await buildRadarChartUrl({ asset, candles: triggerCandles, currentPrice, poc: microstructure.indicators.macro_poc });
+                            await sendDiscordAlert({ title: `👻 Veto: ${asset}`, description: `_${oracleVerdict.reasoning}_`, color: 10038562, imageUrl: chartUrl });
                         } else {
-                            // Trigger Local MCP Execution Vault
-                            console.log(`[SNIPER] Firing execution sequence for ${asset}...`);
+                            decision.statusOverride = 'RESONANT';
+                            
+                            // 🟢 6. THE HANDS (Physical Execution)
+                            const host = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000';
+                            const tradePayload = {
+                                symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: normalizedSignal,
+                                order_type: oracleVerdict.order_type || 'MARKET', 
+                                price: oracleVerdict.limit_price || currentPrice, 
+                                tp_price: oracleVerdict.tp_price || null, sl_price: oracleVerdict.sl_price || null,
+                                execution_mode: config.execution_mode || 'PAPER', leverage: params.leverage || 1,
+                                market_type: params.market_type || 'FUTURES', qty: params.qty || 1,
+                                reason: oracleVerdict.reasoning 
+                            };
+                            await fetch(`${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tradePayload) });
                         }
                     }
 
-                } catch (assetErr) {
-                    console.error(`[ASSET ERROR] ${asset}:`, assetErr.message);
-                } finally {
-                    const finalUpdates = { is_processing: false };
-                    if (config.new_thesis) finalUpdates.active_thesis = config.new_thesis;
-                    if (config.clear_trap || trapExpired) {
-                        finalUpdates.trap_side = null; finalUpdates.trap_price = null; finalUpdates.trap_expires_at = null;
-                    }
-                    await supabase.from('strategy_config').update(finalUpdates).eq('strategy', config.strategy);
+                    // 🟢 7. SONAR HEARTBEAT (UI Update)
+                    const finalStatus = decision.statusOverride || (decision.signal ? "RESONANT" : "STABLE");
+                    await supabase.from('scan_results').insert([{ strategy: config.strategy, asset, telemetry: decision.telemetry, status: finalStatus }]);
+
+                } catch (e) { console.error(`[ASSET ERROR] ${asset}:`, e.message); }
+                finally {
+                    await supabase.from('strategy_config').update({ is_processing: false, active_thesis: config.new_thesis || config.active_thesis }).eq('strategy', config.strategy);
                 }
             }
-        } catch (err) {
-            console.error("[SNIPER FAULT]:", err.message);
-        }
-    }, 10000); 
+        } catch (err) { console.error("[SNIPER FAULT]:", err.message); }
+    }, 10000);
 }
