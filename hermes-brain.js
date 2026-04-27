@@ -1,19 +1,30 @@
 // hermes-brain.js (Now powered by Gemini 2.5 Pro)
 import express from 'express';
 import fs from 'fs';
+import { buildRadarChartUrl } from './lib/discord-chart.js';
 
 const app = express();
 app.use(express.json());
 
-// 1. Load the Master Policy (The Agent's Memory)
 const skillMemory = fs.readFileSync('./SKILL.md', 'utf-8');
 
-// 2. The Flare Listener (Sniper pings this endpoint)
+// 🟢 THE FIX: Restored Discord functionality so the AI stops talking to itself in the void
+async function sendDiscordAlert({ title, description, color, fields = [], imageUrl = null }) {
+    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+    if (!webhookUrl) return;
+    try {
+        const embed = { title, description, color, timestamp: new Date().toISOString() };
+        if (fields.length > 0) embed.fields = fields;
+        if (imageUrl) embed.image = { url: imageUrl };
+        await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) });
+    } catch (e) { console.error("Discord Alert Failed:", e.message); }
+}
+
 app.post('/api/wake', async (req, res) => {
-    const { asset, mode, message } = req.body;
+    // 🟢 THE FIX: Intercept the new telemetry objects sent by the Sniper
+    const { asset, mode, message, openTrade, candles, indicators } = req.body;
     console.log(`[AGENT CORTEX] Awakened by Sniper. Asset: ${asset} | Mode: ${mode}`);
     
-    // Immediately respond to the Sniper so the WebSocket loop doesn't hang
     res.status(200).json({ status: "Agent Awakened. Initiating analysis." });
 
     try {
@@ -22,7 +33,6 @@ app.post('/api/wake', async (req, res) => {
 
         if (!mcpUrl || !geminiKey) throw new Error("Missing MCP Gateway URL or Gemini API Key.");
 
-        // Step 1: Call the MCP Gateway to get the X-Ray Data
         console.log(`[AGENT CORTEX] Pulling get_market_state tool...`);
         const stateResp = await fetch(mcpUrl, {
             method: 'POST',
@@ -31,7 +41,6 @@ app.post('/api/wake', async (req, res) => {
         });
         const marketState = await stateResp.json();
 
-        // Step 2: Handoff to Gemini 2.5 Pro
         console.log(`[AGENT CORTEX] X-Ray Data acquired. Booting Gemini inference engine...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`;
         
@@ -59,8 +68,25 @@ app.post('/api/wake', async (req, res) => {
         console.log(`[AGENT CORTEX] Decision Matrix:`, decisionJson.action || "APPROVE_EXECUTION");
         console.log(`[AGENT RATIONALE]:`, decisionJson.reason || "Executing protocol.");
 
-        // Step 3: Call the Execution Tool if Approved
-        if (decisionJson.action !== "VETO" && decisionJson.price) {
+        // 🟢 THE FIX: Build the radar chart using the new Candlestick logic and OpenTrade overlay
+        let chartUrl = null;
+        if (candles && indicators) {
+            chartUrl = await buildRadarChartUrl({
+                asset, candles, poc: indicators.macro_poc, upperNode: indicators.upper_macro_node, lowerNode: indicators.lower_macro_node,
+                currentPrice: candles[candles.length - 1]?.close, openTrade
+            });
+        }
+
+        // 🟢 THE FIX: Blast the decision logic straight to Discord!
+        const isVeto = decisionJson.action === "VETO";
+        await sendDiscordAlert({
+            title: isVeto ? `🛡️ Agent VETO: ${asset}` : `🧠 Agent APPROVED: ${asset}`,
+            description: `**Mode:** ${mode}\n**Reasoning:** _${decisionJson.reason || 'No rationale provided'}_`,
+            color: isVeto ? 10038562 : 3447003, // Red for VETO, Blue for APPROVE
+            imageUrl: chartUrl
+        });
+
+        if (!isVeto && decisionJson.price) {
             console.log(`[AGENT CORTEX] Triggering execute_order tool...`);
             await fetch(mcpUrl, {
                 method: 'POST', 
@@ -74,7 +100,6 @@ app.post('/api/wake', async (req, res) => {
     }
 });
 
-// 🟢 THE FIX: Bound to 0.0.0.0 to prevent Render Crash Loops
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`[AGENT CORTEX] Online. Listening for Sniper flares on port ${PORT}`);

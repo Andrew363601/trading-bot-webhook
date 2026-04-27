@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import WebSocket from 'ws'; 
 import { evaluateStrategy } from '../lib/strategy-router.js';
+import { executeTradeMCP } from '../lib/execute-trade-mcp.js'; // 🟢 THE FIX: Imported local execution
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -223,7 +224,6 @@ export async function startSniper() {
                     config.trap_side = null; 
                     await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_expires_at: null }).eq('id', config.id);
 
-                    const host = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000';
                     let finalQty = params.qty || 1;
                     if (params.target_usd) {
                         const { multiplier } = getAssetMetrics(config.asset);
@@ -244,7 +244,8 @@ export async function startSniper() {
                         market_type: params.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)), reason: `[VIRTUAL TRAP SPRUNG]: Lightning WS Execution at $${currentPrice}`
                     };
                     
-                    fetch(`${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(trapPayload) }).catch(e => {});
+                    // 🟢 THE FIX: Replaced dead Vercel HTTP hit with direct local execution. Zero latency.
+                    executeTradeMCP(trapPayload).catch(e => console.error("[TRAP EXECUTION FATAL]:", e.message));
                     continue; 
                 }
             }
@@ -275,6 +276,10 @@ export async function startSniper() {
                 if (!macroCandles || !triggerCandles) continue;
 
                 const microstructure = await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
+                
+                const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).is('exit_price', null).limit(1);
+                const openTrade = openTrades?.[0];
+
                 let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
 
                 decision.telemetry = { 
@@ -282,30 +287,34 @@ export async function startSniper() {
                     macro_poc: microstructure.indicators.macro_poc, upper_macro_node: microstructure.indicators.upper_macro_node, lower_macro_node: microstructure.indicators.lower_macro_node,
                     macro_cvd: microstructure.indicators.macro_cvd, cvd: microstructure.indicators.current_cvd, 
                     bids: microstructure.orderBook.bids_50_levels || 0, asks: microstructure.orderBook.asks_50_levels || 0, premium: microstructure.derivativesData.basis_premium_percent || 0,
+                    open_position: openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : "NONE",
+                    open_tp: openTrade?.tp_price || "NONE",
+                    open_sl: openTrade?.sl_price || "NONE",
+                    open_pnl: openTrade ? (openTrade.pnl || 0) : 0,
                     macro_regime_oracle: "EVALUATING", oracle_reasoning: "Awaiting signal..."
                 };
 
-                // 🟢 THE FIX: The Hermes Handoff
                 if (decision.signal) {
                     if (isCooldownActive) {
                         decision.statusOverride = `COOLDOWN (${cooldownMins}M)`;
                         decision.telemetry.oracle_reasoning = `System in penalty box. Ignoring ${decision.signal} signal.`;
                     } else {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
-                        
                         console.log(`[SNIPER] Math signal detected for ${config.asset}. Waking Hermes...`);
                         
                         await pingHermes({
                             asset: config.asset,
                             mode: "ENTRY",
-                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}. Please fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`
+                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}. Please fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
+                            openTrade: openTrade || null,
+                            candles: triggerCandles.slice(-50),
+                            indicators: microstructure.indicators
                         });
 
-                        // Instantly trigger a cooldown so we don't spam Hermes on the next 60s loop
                         await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('id', config.id);
 
                         decision.statusOverride = 'HERMES_NOTIFIED';
-                        decision.telemetry.oracle_reasoning = "Ping sent to Hermes Agent. Awaiting autonomous execution or veto.";
+                        decision.telemetry.oracle_reasoning = "Ping sent to Agent Cortex. Awaiting autonomous execution or veto.";
                         decision.telemetry.macro_regime_oracle = "HANDED TO AGENT";
                     }
                 }

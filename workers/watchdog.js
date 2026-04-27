@@ -2,6 +2,7 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { buildRadarChartUrl } from '../lib/discord-chart.js'; // 🟢 THE FIX: Imported the visual engine
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -38,9 +39,36 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
-// 🟢 THE HTTP FLARE TO HERMES
+// 🟢 THE FIX: Standalone chart generator for Watchdog sweeps
+async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, openTrade = null) {
+    try {
+        let telemetry = {};
+        const { data: scanData } = await supabase.from('scan_results').select('telemetry').eq('asset', symbol).order('created_at', { ascending: false }).limit(1);
+        if (scanData && scanData.length > 0) telemetry = scanData[0].telemetry || {};
+
+        const end = Math.floor(Date.now() / 1000);
+        const start = end - (300 * 50); 
+        let coinbaseProduct = symbol.toUpperCase().trim();
+        if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
+        const candlePath = `/api/v3/brokerage/products/${coinbaseProduct}/candles?start=${start}&end=${end}&granularity=FIVE_MINUTE`;
+        const token = generateCoinbaseToken('GET', candlePath, apiKeyName, apiSecret);
+        
+        const candleResp = await fetch(`https://api.coinbase.com${candlePath}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        let recentCandles = [];
+        if (candleResp.ok) {
+            const cData = await candleResp.json();
+            recentCandles = cData.candles?.map(c => ({ open: parseFloat(c.open || c.close), high: parseFloat(c.high), low: parseFloat(c.low), close: parseFloat(c.close) })).reverse() || [];
+        }
+        
+        return await buildRadarChartUrl({
+            asset: symbol, candles: recentCandles, currentPrice: currentPrice,
+            poc: telemetry.macro_poc, upperNode: telemetry.upper_macro_node, lowerNode: telemetry.lower_macro_node,
+            openTrade: openTrade
+        });
+    } catch(e) { console.error("[WATCHDOG CHART FAILED]", e.message); return null; }
+}
+
 async function pingHermes(payload) {
-    // This will point to your Docker container's listener port
     const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
     try {
         await fetch(hermesEndpoint, {
@@ -117,7 +145,7 @@ export async function startWatchdog() {
                         }
                     }
 
-                    // 🧹 STALE LIMIT SWEEP (🟢 THE FIX: Hermes Handoff Restored)
+                    // 🧹 STALE LIMIT SWEEP
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         let totalAllowedMinutes = 15; 
@@ -127,20 +155,18 @@ export async function startWatchdog() {
                         if (minutesOpen > totalAllowedMinutes && !openTrade.reason?.includes('[HERMES_NOTIFIED]')) {
                             console.log(`[WATCHDOG] Stale limit detected on ${asset}. Waking Hermes Agent...`);
                             
-                            // Fire the flare to the Docker Container
                             await pingHermes({
                                 asset: asset,
                                 mode: "PENDING_REVIEW",
                                 message: `Your limit order for ${asset} at $${openTrade.entry_price} has sat unfilled for ${Math.round(minutesOpen)}m. Current price is $${currentPrice}. Use get_market_state to evaluate if you should hold, adjust, or cancel.`
                             });
 
-                            // Tag the DB so we don't spam Hermes every 5 seconds
                             await supabase.from('trade_logs').update({ reason: `${openTrade.reason || ''}\n\n[HERMES_NOTIFIED]: Reviewing Stale Limit` }).eq('id', openTrade.id);
                         }
                         continue; 
                     }
 
-                    // 🧹 NATIVE EXCHANGE CLOSE SWEEP (Physical SL/TP hit)
+                    // 🧹 NATIVE EXCHANGE CLOSE SWEEP
                     if (!activePosition && !entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         if (minutesOpen > 2) {
@@ -165,7 +191,10 @@ export async function startWatchdog() {
                             if (wasCanceled || (openTrade.order_type === 'LIMIT' && !wasFilled)) {
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
                                 await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
-                                await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960 });
+                                
+                                // 🟢 THE FIX: Visual chart generated for manual limit cancels
+                                const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
+                                await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: chartUrl });
                                 continue; 
                             } else {
                                 if (openOrders.length > 0) {
@@ -187,7 +216,10 @@ export async function startWatchdog() {
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                                 
                                 await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
-                                await sendDiscordAlert({ title: `🏁 Position Closed Natively: ${asset}`, description: `**Trigger:** ${assumedReason}`, color: rawPnl >= 0 ? 5763719 : 15548997 });
+                                
+                                // 🟢 THE FIX: Visual chart generated for Native Stop Loss or Take Profit hits
+                                const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
+                                await sendDiscordAlert({ title: `🏁 Position Closed Natively: ${asset}`, description: `**Trigger:** ${assumedReason}\n**Realized PnL:** $${rawPnl.toFixed(4)}`, color: rawPnl >= 0 ? 5763719 : 15548997, imageUrl: chartUrl });
                                 continue; 
                             }
                         }
