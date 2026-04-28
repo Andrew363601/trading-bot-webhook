@@ -98,7 +98,6 @@ export async function startWatchdog() {
                 const currentPrice = parseFloat(tickerData.price);
                 if (!currentPrice) continue;
 
-                // 🟢 THE FIX: Self-Healing Protocol for $0 Entry Prices
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
                      console.log(`[WATCHDOG] Missing entry price detected for trade ${openTrade.id}. Attempting to self-heal...`);
                      const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
@@ -116,7 +115,6 @@ export async function startWatchdog() {
                          }
                      } catch(e) { console.error("[WATCHDOG SELF-HEAL FAULT]", e.message); }
                      
-                     // Skip further processing for this cycle if we couldn't heal it yet
                      if (!openTrade.entry_price || openTrade.entry_price === 0) continue; 
                 }
 
@@ -240,7 +238,6 @@ export async function startWatchdog() {
                                 else { assumedReason = 'STOP_LOSS (NATIVE_SYNC)'; }
                             }
 
-                            // 🟢 Final layer of protection against NaN calculations
                             const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
                             const safeExitPrice = exactExitPrice || 0;
                             const rawPnl = openTrade.side === 'BUY' ? (safeExitPrice - safeEntryPrice) * openTrade.qty * multiplier : (safeEntryPrice - safeExitPrice) * openTrade.qty * multiplier;
@@ -264,6 +261,7 @@ export async function startWatchdog() {
                         }
                     }
 
+                    // 🧹 MISSING BRACKET SWEEP (Watchdog Safety Net)
                     if (activePosition) {
                         const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc);
 
@@ -279,7 +277,22 @@ export async function startWatchdog() {
                                 client_order_id: ocoClientId, product_id: coinbaseProduct, side: closingSide,
                                 order_configuration: { trigger_bracket_gtc: { limit_price: safeTpPrice, stop_trigger_price: safeSlPrice, base_size: orderQty.toString() } }
                             };
-                            await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
+                            
+                            try {
+                                const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
+                                const ocoResult = await ocoResp.json();
+                                
+                                // 🟢 THE FIX: The Scream Protocol
+                                if (!ocoResp.ok || ocoResult.success === false) {
+                                    const ocoErrMsg = ocoResult.error_response?.preview_failure_reason || ocoResult.error_response?.error || ocoResult.failure_reason?.error_message || JSON.stringify(ocoResult);
+                                    console.error(`[WATCHDOG BRACKET REJECT] OCO Failed:`, ocoErrMsg);
+                                    await sendDiscordAlert({ title: `⚠️ Watchdog Bracket Failed: ${asset}`, description: `**Action:** Attempted to deploy missing TP/SL protection!\n**Details:** ${ocoErrMsg}`, color: 15548997 });
+                                } else {
+                                    await sendDiscordAlert({ title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046 });
+                                }
+                            } catch (error) {
+                                console.error("[WATCHDOG BRACKET FATAL]:", error.message);
+                            }
                         }
                     }
                 }
