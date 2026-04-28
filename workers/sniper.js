@@ -308,7 +308,9 @@ export async function startSniper() {
                             message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}. Please fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
                             openTrade: openTrade || null,
                             candles: triggerCandles.slice(-50),
-                            indicators: microstructure.indicators
+                            indicators: microstructure.indicators,
+                            macro_tf: macroTf,
+                            trigger_tf: triggerTf
                         });
 
                         await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('id', config.id);

@@ -8,7 +8,6 @@ app.use(express.json());
 
 const skillMemory = fs.readFileSync('./SKILL.md', 'utf-8');
 
-// 🟢 THE FIX: Restored Discord functionality so the AI stops talking to itself in the void
 async function sendDiscordAlert({ title, description, color, fields = [], imageUrl = null }) {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) return;
@@ -21,8 +20,8 @@ async function sendDiscordAlert({ title, description, color, fields = [], imageU
 }
 
 app.post('/api/wake', async (req, res) => {
-    // 🟢 THE FIX: Intercept the new telemetry objects sent by the Sniper
-    const { asset, mode, message, openTrade, candles, indicators } = req.body;
+    // 🟢 THE FIX: Intercepting the dynamic timeframes
+    const { asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf } = req.body;
     console.log(`[AGENT CORTEX] Awakened by Sniper. Asset: ${asset} | Mode: ${mode}`);
     
     res.status(200).json({ status: "Agent Awakened. Initiating analysis." });
@@ -37,7 +36,8 @@ app.post('/api/wake', async (req, res) => {
         const stateResp = await fetch(mcpUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tool: 'get_market_state', arguments: { symbol: asset } })
+            // 🟢 THE FIX: Passing the dynamic timeframes to the MCP Tool
+            body: JSON.stringify({ tool: 'get_market_state', arguments: { symbol: asset, macro_tf, trigger_tf } })
         });
         const marketState = await stateResp.json();
 
@@ -48,7 +48,7 @@ app.post('/api/wake', async (req, res) => {
             systemInstruction: { parts: [{ text: skillMemory }] },
             contents: [{
                 role: "user",
-                parts: [{ text: `ALERT: ${message}\n\nLIVE MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\nEvaluate this data against your SKILL.md directives. If you approve the setup, output a JSON object with the exact parameters for the 'execute_order' tool. If the setup is flawed, output {"action": "VETO", "reason": "Your rationale"}. Output ONLY raw, valid JSON.` }]
+                parts: [{ text: `ALERT: ${message}\n\nLIVE MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\nEvaluate this data against your SKILL.md directives. Output ONLY raw, valid JSON matching the required schema in your instructions.` }]
             }],
             generationConfig: { responseMimeType: "application/json" }
         };
@@ -66,9 +66,8 @@ app.post('/api/wake', async (req, res) => {
         const decisionJson = JSON.parse(agentOutput);
 
         console.log(`[AGENT CORTEX] Decision Matrix:`, decisionJson.action || "APPROVE_EXECUTION");
-        console.log(`[AGENT RATIONALE]:`, decisionJson.reason || "Executing protocol.");
+        console.log(`[AGENT RATIONALE]:`, decisionJson.working_thesis || "Executing protocol.");
 
-        // 🟢 THE FIX: Build the radar chart using the new Candlestick logic and OpenTrade overlay
         let chartUrl = null;
         if (candles && indicators) {
             chartUrl = await buildRadarChartUrl({
@@ -77,12 +76,25 @@ app.post('/api/wake', async (req, res) => {
             });
         }
 
-        // 🟢 THE FIX: Blast the decision logic straight to Discord!
         const isVeto = decisionJson.action === "VETO";
+        const isReversal = decisionJson.action === "REVERSE";
+        
+        let alertTitle = `🧠 Agent APPROVED: ${asset}`;
+        let alertColor = 3447003;
+        
+        if (isVeto) {
+            alertTitle = `🛡️ Agent VETO: ${asset}`;
+            alertColor = 10038562;
+        } else if (isReversal) {
+            alertTitle = `🔥 Agent REVERSED: ${asset}`;
+            alertColor = 15548997; // Orange/Red for an aggressive reversal
+        }
+
+        // 🟢 THE FIX: Injecting the Conviction Score and Thesis into Discord
         await sendDiscordAlert({
-            title: isVeto ? `🛡️ Agent VETO: ${asset}` : `🧠 Agent APPROVED: ${asset}`,
-            description: `**Mode:** ${mode}\n**Reasoning:** _${decisionJson.reason || 'No rationale provided'}_`,
-            color: isVeto ? 10038562 : 3447003, // Red for VETO, Blue for APPROVE
+            title: alertTitle,
+            description: `**Conviction Score:** ${decisionJson.conviction_score || 'N/A'}/100\n**Action:** ${decisionJson.action}\n\n**Working Thesis:**\n_${decisionJson.working_thesis || 'No thesis provided'}_`,
+            color: alertColor, 
             imageUrl: chartUrl
         });
 
