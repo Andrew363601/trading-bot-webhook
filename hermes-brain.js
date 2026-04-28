@@ -68,13 +68,14 @@ app.post('/api/wake', async (req, res) => {
         console.log(`[AGENT CORTEX] Decision Matrix:`, decisionJson.action || "APPROVE_EXECUTION");
         console.log(`[AGENT RATIONALE]:`, decisionJson.working_thesis || "Executing protocol.");
 
-        if (decisionJson.working_thesis || decisionJson.trap_price) {
+        // 🟢 THE FIX: The Rolling Ledger Logic
+        if (decisionJson.working_thesis) {
+            // 1. Update the Strategy Config (Memory for the next iteration)
             const updatePayload = { active_thesis: decisionJson.working_thesis };
             
             if (decisionJson.action === "VIRTUAL_TRAP" && decisionJson.trap_price && decisionJson.side) {
                 updatePayload.trap_side = decisionJson.side;
                 updatePayload.trap_price = decisionJson.trap_price;
-                // 🟢 THE FIX: Extracts the pre-calculated armor from the AI
                 updatePayload.trap_tp_price = decisionJson.trap_tp_price || decisionJson.tp_price; 
                 updatePayload.trap_sl_price = decisionJson.trap_sl_price || decisionJson.sl_price;
                 updatePayload.trap_expires_at = new Date(Date.now() + 3600000).toISOString(); 
@@ -85,6 +86,17 @@ app.post('/api/wake', async (req, res) => {
                 .update(updatePayload)
                 .eq('strategy', strategy_id || 'MANUAL')
                 .eq('asset', asset);
+                
+            // 2. Append the AI's thoughts chronologically to the physical Open Trade in the database
+            if (openTrade) {
+                const timeStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
+                const newLogEntry = `\n[${timeStr}Z] [${decisionJson.action}]: ${decisionJson.working_thesis}`;
+                const rollingLedger = (openTrade.reason || '') + newLogEntry;
+                
+                await supabase.from('trade_logs')
+                    .update({ reason: rollingLedger })
+                    .eq('id', openTrade.id);
+            }
         }
 
         let chartUrl = null;

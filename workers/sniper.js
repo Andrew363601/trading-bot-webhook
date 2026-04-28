@@ -43,6 +43,18 @@ async function pingHermes(payload) {
     }
 }
 
+async function fetchMacroAsset(ticker) {
+    try {
+        const resp = await fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1m&range=1d`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        if (resp.ok) {
+            const data = await resp.json();
+            const closes = data.chart.result[0].indicators.quote[0].close.filter(p => p !== null);
+            return parseFloat(closes[closes.length - 1].toFixed(2));
+        }
+        return null;
+    } catch (e) { return null; }
+}
+
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
   try {
     const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
@@ -162,14 +174,19 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
             } catch (err) {}
         }
 
+        // 🟢 THE FIX: Fetch Macro context on the fly so it gets dumped straight to the database
+        const [sp500, dxy] = await Promise.all([fetchMacroAsset('%5EGSPC'), fetchMacroAsset('DX-Y.NYB')]);
+
         return { 
             indicators: { 
                 current_vwap: vwap.toFixed(2), current_atr: atr.toFixed(2), current_cvd: cvd.toFixed(2),
                 macro_cvd: macro_cvd.toFixed(2), macro_poc: macro_poc.toFixed(2),
                 upper_macro_node: upper_macro_node ? upper_macro_node.toFixed(2) : "None", lower_macro_node: lower_macro_node ? lower_macro_node.toFixed(2) : "None"
-            }, orderBook: orderBookData, derivativesData: { spot_price: spotPrice.toFixed(2), futures_price: currentPrice.toFixed(2), basis_premium_percent: basisPremium.toFixed(4) } 
+            }, 
+            crossAsset: { sp500, dxy }, // 🟢 Added to return object
+            orderBook: orderBookData, derivativesData: { spot_price: spotPrice.toFixed(2), futures_price: currentPrice.toFixed(2), basis_premium_percent: basisPremium.toFixed(4) } 
         };
-    } catch (e) { return { indicators: {}, orderBook: {}, derivativesData: {} }; }
+    } catch (e) { return { indicators: {}, crossAsset: {}, orderBook: {}, derivativesData: {} }; }
 }
 
 const RAM = { configs: [], lastMathRun: {}, isProcessingMath: {} };
@@ -238,7 +255,6 @@ export async function startSniper() {
 
                 if (Date.now() > expiresAt) {
                     config.trap_side = null; 
-                    // 🟢 THE FIX: Clear all ghost order metadata on expiration
                     await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id);
                 } else if (config.trap_side === 'BUY' && currentPrice <= config.trap_price) {
                     trapSprung = true;
@@ -250,7 +266,6 @@ export async function startSniper() {
                     console.log(`[SNIPER] LIGHTNING TRAP SPRUNG for ${config.asset} at $${currentPrice}!`);
                     config.trap_side = null; 
                     
-                    // 🟢 THE FIX: Clear DB state instantly to prevent double-firing
                     await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id);
 
                     let finalQty = params.qty || 1;
@@ -259,19 +274,14 @@ export async function startSniper() {
                         finalQty = Math.max(1, Math.round(params.target_usd / (currentPrice * multiplier)));
                     }
 
-                    // 🟢 THE FIX: Extracts AI's pre-calculated armored targets
                     let trapTpPrice = config.trap_tp_price;
                     let trapSlPrice = config.trap_sl_price;
 
-                    // Absolute Safety Net: If the DB columns are missing or the AI hallucinates
                     if (!trapTpPrice || !trapSlPrice) {
                         const slP = params.sl_percent || 0.01; const tpP = params.tp_percent || 0.02;
                         trapTpPrice = config.trap_side === 'BUY' ? currentPrice * (1 + tpP) : currentPrice * (1 - tpP);
                         trapSlPrice = config.trap_side === 'BUY' ? currentPrice * (1 - slP) : currentPrice * (1 + slP);
-                        console.log(`[SNIPER] Legacy trap detected (missing AI targets). Falling back to static percentages.`);
-                    } else {
-                        console.log(`[SNIPER] Utilizing AI pre-calculated armor (TP: $${trapTpPrice}, SL: $${trapSlPrice}).`);
-                    }
+                    } 
 
                     const { tickSize } = getAssetMetrics(config.asset);
 
@@ -321,10 +331,13 @@ export async function startSniper() {
 
                 let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
 
+                // 🟢 THE FIX: Dump the macro data straight to the database for the UI Audit view
                 decision.telemetry = { 
                     ...decision.telemetry, 
                     macro_poc: microstructure.indicators.macro_poc, upper_macro_node: microstructure.indicators.upper_macro_node, lower_macro_node: microstructure.indicators.lower_macro_node,
                     macro_cvd: microstructure.indicators.macro_cvd, cvd: microstructure.indicators.current_cvd, 
+                    sp500: microstructure.crossAsset?.sp500 || "N/A", // LOG TO DATABASE
+                    dxy: microstructure.crossAsset?.dxy || "N/A",     // LOG TO DATABASE
                     bids: microstructure.orderBook.bids_50_levels || 0, asks: microstructure.orderBook.asks_50_levels || 0, premium: microstructure.derivativesData.basis_premium_percent || 0,
                     open_position: openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : "NONE",
                     open_tp: openTrade?.tp_price || "NONE",
@@ -341,11 +354,13 @@ export async function startSniper() {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
                         console.log(`[SNIPER] Math signal detected for ${config.asset}. Waking Hermes...`);
                         
+                        // 🟢 THE FIX: Pass the config.active_thesis into the LLM as the Rolling Ledger memory base
                         await pingHermes({
                             asset: config.asset,
                             mode: "ENTRY",
                             message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}. Please fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
                             openTrade: openTrade || null,
+                            previous_thesis: config.active_thesis || "No previous thesis recorded.",
                             candles: triggerCandles.slice(-50),
                             indicators: microstructure.indicators,
                             macro_tf: macroTf,
