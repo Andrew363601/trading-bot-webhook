@@ -2,7 +2,7 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { buildRadarChartUrl } from '../lib/discord-chart.js';
+import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -28,18 +28,14 @@ function generateCoinbaseToken(method, path, apiKey, apiSecret) {
 }
 
 const getAssetMetrics = (symbol) => {
-    let multiplier = 1.0;
-    let tickSize = 0.01;
-    
+    let multiplier = 1.0; let tickSize = 0.01;
     if (symbol.includes('ETP') || symbol.includes('ETH')) { multiplier = 0.1; tickSize = 0.50; }
-    // 🟢 THE FIX: Coinbase requires exactly $5.00 increments for BTC/BIP Futures
     else if (symbol.includes('BIT') || symbol.includes('BIP') || symbol.includes('BTC')) { multiplier = 0.01; tickSize = 5.00; }
     else if (symbol.includes('SLP') || symbol.includes('SOL')) { multiplier = 5.0; tickSize = 0.01; }
     else if (symbol.includes('DOP') || symbol.includes('DOGE')) { multiplier = 1000.0; tickSize = 0.0001; }
     else if (symbol.includes('LCP') || symbol.includes('LTC')) { multiplier = 1.0; tickSize = 0.01; }
     else if (symbol.includes('AVP') || symbol.includes('AVAX')) { multiplier = 1.0; tickSize = 0.01; }
     else if (symbol.includes('LNP') || symbol.includes('LINK')) { multiplier = 1.0; tickSize = 0.001; }
-    
     return { multiplier, tickSize };
 };
 
@@ -172,7 +168,9 @@ export async function startWatchdog() {
                     // 🧹 NATIVE EXCHANGE CLOSE SWEEP
                     if (!activePosition && !entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
-                        if (minutesOpen > 2) {
+                        
+                        // 🟢 THE FIX: Lowered the grace period from 2 minutes down to 30 seconds for immediate manual UI sync
+                        if (minutesOpen > 0.5) {
                             let wasCanceled = false; let wasFilled = false;
                             const histPath = `/api/v3/brokerage/orders/historical/batch?order_status=CANCELLED&product_id=${coinbaseProduct}`;
                             const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
@@ -221,7 +219,6 @@ export async function startWatchdog() {
                                 
                                 const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
 
-                                // 🟢 THE FIX: Appended TP and SL values to the native exit receipt in Discord
                                 const entryText = openTrade.entry_price ? `\n**Entry Price:** $${openTrade.entry_price}` : '';
                                 const tpText = openTrade.tp_price ? `\n**Target TP:** $${openTrade.tp_price}` : '';
                                 const slText = openTrade.sl_price ? `\n**Target SL:** $${openTrade.sl_price}` : '';
