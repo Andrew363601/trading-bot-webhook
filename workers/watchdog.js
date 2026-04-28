@@ -98,6 +98,28 @@ export async function startWatchdog() {
                 const currentPrice = parseFloat(tickerData.price);
                 if (!currentPrice) continue;
 
+                // 🟢 THE FIX: Self-Healing Protocol for $0 Entry Prices
+                if (!openTrade.entry_price || openTrade.entry_price === 0) {
+                     console.log(`[WATCHDOG] Missing entry price detected for trade ${openTrade.id}. Attempting to self-heal...`);
+                     const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
+                     try {
+                         const fillResp = await fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, apiKeyName, apiSecret)}` } });
+                         if (fillResp.ok) {
+                             const fillData = await fillResp.json();
+                             const entryOrder = fillData.orders?.find(o => o.client_order_id === `nx_entry_${openTrade.id}`);
+                             if (entryOrder && entryOrder.average_filled_price) {
+                                 const trueEntryPrice = parseFloat(entryOrder.average_filled_price);
+                                 await supabase.from('trade_logs').update({ entry_price: trueEntryPrice }).eq('id', openTrade.id);
+                                 openTrade.entry_price = trueEntryPrice;
+                                 console.log(`[WATCHDOG] Successfully healed entry price for trade ${openTrade.id} to $${trueEntryPrice}`);
+                             }
+                         }
+                     } catch(e) { console.error("[WATCHDOG SELF-HEAL FAULT]", e.message); }
+                     
+                     // Skip further processing for this cycle if we couldn't heal it yet
+                     if (!openTrade.entry_price || openTrade.entry_price === 0) continue; 
+                }
+
                 let activePosition = null;
                 let openOrders = [];
                 
@@ -121,7 +143,6 @@ export async function startWatchdog() {
 
                     const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
                     
-                    // 🟢 THE FIX: Deterministic Identity Tagging
                     let entryClientId = `nx_entry_${openTrade.id}`;
                     let ocoClientId = `nx_oco_${openTrade.id}`;
 
@@ -130,7 +151,6 @@ export async function startWatchdog() {
                         (o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2))
                     );
 
-                    // 🧹 PARTIAL FILL SWEEP
                     if (activePosition && entryOrderExists) {
                         const activeQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                         const expectedQty = Math.abs(parseFloat(openTrade.qty));
@@ -148,7 +168,6 @@ export async function startWatchdog() {
                         }
                     }
 
-                    // 🧹 STALE LIMIT SWEEP
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
                         let totalAllowedMinutes = 15; 
@@ -166,7 +185,6 @@ export async function startWatchdog() {
                         continue; 
                     }
 
-                    // 🟢 THE FIX: 1-to-1 Deterministic Resolution
                     if (!activePosition && !entryOrderExists) {
                         let wasCanceled = false; let wasFilled = false;
                         let exactExitPrice = currentPrice;
@@ -222,14 +240,17 @@ export async function startWatchdog() {
                                 else { assumedReason = 'STOP_LOSS (NATIVE_SYNC)'; }
                             }
 
-                            const rawPnl = openTrade.side === 'BUY' ? (exactExitPrice - openTrade.entry_price) * openTrade.qty * multiplier : (openTrade.entry_price - exactExitPrice) * openTrade.qty * multiplier;
+                            // 🟢 Final layer of protection against NaN calculations
+                            const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
+                            const safeExitPrice = exactExitPrice || 0;
+                            const rawPnl = openTrade.side === 'BUY' ? (safeExitPrice - safeEntryPrice) * openTrade.qty * multiplier : (safeEntryPrice - safeExitPrice) * openTrade.qty * multiplier;
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                             
-                            await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                             
                             const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
 
-                            const entryText = openTrade.entry_price ? `\n**Entry Price:** $${openTrade.entry_price}` : '';
+                            const entryText = safeEntryPrice ? `\n**Entry Price:** $${safeEntryPrice}` : '';
                             const tpText = openTrade.tp_price ? `\n**Target TP:** $${openTrade.tp_price}` : '';
                             const slText = openTrade.sl_price ? `\n**Target SL:** $${openTrade.sl_price}` : '';
 
@@ -243,7 +264,6 @@ export async function startWatchdog() {
                         }
                     }
 
-                    // 🧹 MISSING BRACKET SWEEP (Watchdog Safety Net)
                     if (activePosition) {
                         const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc);
 
