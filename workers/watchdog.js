@@ -2,7 +2,7 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { buildRadarChartUrl } from '../lib/discord-chart.js'; // 🟢 THE FIX: Imported the visual engine
+import { buildRadarChartUrl } from '../lib/discord-chart.js';
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -39,7 +39,6 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
-// 🟢 THE FIX: Standalone chart generator for Watchdog sweeps
 async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, openTrade = null) {
     try {
         let telemetry = {};
@@ -192,7 +191,6 @@ export async function startWatchdog() {
                                 const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
                                 await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                                 
-                                // 🟢 THE FIX: Visual chart generated for manual limit cancels
                                 const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
                                 await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: chartUrl });
                                 continue; 
@@ -217,9 +215,19 @@ export async function startWatchdog() {
                                 
                                 await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                                 
-                                // 🟢 THE FIX: Visual chart generated for Native Stop Loss or Take Profit hits
                                 const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
-                                await sendDiscordAlert({ title: `🏁 Position Closed Natively: ${asset}`, description: `**Trigger:** ${assumedReason}\n**Realized PnL:** $${rawPnl.toFixed(4)}`, color: rawPnl >= 0 ? 5763719 : 15548997, imageUrl: chartUrl });
+
+                                // 🟢 THE FIX: Appended TP and SL values to the native exit receipt in Discord
+                                const entryText = openTrade.entry_price ? `\n**Entry Price:** $${openTrade.entry_price}` : '';
+                                const tpText = openTrade.tp_price ? `\n**Target TP:** $${openTrade.tp_price}` : '';
+                                const slText = openTrade.sl_price ? `\n**Target SL:** $${openTrade.sl_price}` : '';
+
+                                await sendDiscordAlert({ 
+                                    title: `🏁 Position Closed Natively: ${asset}`, 
+                                    description: `**Trigger:** ${assumedReason}\n**Realized PnL:** $${rawPnl.toFixed(4)}${entryText}${tpText}${slText}`, 
+                                    color: rawPnl >= 0 ? 5763719 : 15548997, 
+                                    imageUrl: chartUrl 
+                                });
                                 continue; 
                             }
                         }
