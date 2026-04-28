@@ -2,7 +2,7 @@
 import express from 'express';
 import fs from 'fs';
 import { buildRadarChartUrl } from './lib/discord-chart.js';
-import { createClient } from '@supabase/supabase-js'; // 🟢 THE FIX: Added Supabase for Memory & Ghost Orders
+import { createClient } from '@supabase/supabase-js'; 
 
 const app = express();
 app.use(express.json());
@@ -22,7 +22,6 @@ async function sendDiscordAlert({ title, description, color, fields = [], imageU
 }
 
 app.post('/api/wake', async (req, res) => {
-    // 🟢 THE FIX: Added previous_thesis to the incoming payload
     const { asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis } = req.body;
     console.log(`[AGENT CORTEX] Awakened by Sniper. Asset: ${asset} | Mode: ${mode}`);
     
@@ -45,7 +44,6 @@ app.post('/api/wake', async (req, res) => {
         console.log(`[AGENT CORTEX] X-Ray Data acquired. Booting Gemini inference engine...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`;
         
-        // 🟢 THE FIX: Forcing the AI to use Persistent Memory and Multi-TF logic
         const payload = {
             systemInstruction: { parts: [{ text: skillMemory }] },
             contents: [{
@@ -70,7 +68,6 @@ app.post('/api/wake', async (req, res) => {
         console.log(`[AGENT CORTEX] Decision Matrix:`, decisionJson.action || "APPROVE_EXECUTION");
         console.log(`[AGENT RATIONALE]:`, decisionJson.working_thesis || "Executing protocol.");
 
-        // 🟢 THE FIX: Permanently save Memory & write Ghost Orders to Supabase
         if (decisionJson.working_thesis || decisionJson.trap_price) {
             const updatePayload = { active_thesis: decisionJson.working_thesis };
             
@@ -120,8 +117,10 @@ app.post('/api/wake', async (req, res) => {
             imageUrl: chartUrl
         });
 
-        // Only fire the physical tool for APPROVE or REVERSE (not VETO or VIRTUAL_TRAP)
-        if (!isVeto && !isTrap && decisionJson.price) {
+        // 🟢 THE FIX: Replaced strict price check with Action intent check to allow Market Orders
+        const isApproveOrReverse = decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE";
+        
+        if (isApproveOrReverse) {
             console.log(`[AGENT CORTEX] Triggering execute_order tool...`);
             
             decisionJson.symbol = asset;
