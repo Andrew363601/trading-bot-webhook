@@ -217,6 +217,21 @@ export async function startWatchdog() {
                             }
                         }
 
+                        // 🟢 THE FIX: Brute Force Reconciliation 
+                        // If the physical position is 0, and we couldn't match any historical tags, 
+                        // you modified the order manually and wiped our identity tags. Force the close.
+                        if (!wasCanceled && !wasFilled) {
+                            const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
+                            if (openTrade.order_type === 'LIMIT' && minutesOpen < 5) {
+                                wasCanceled = true; // Assume a manual limit cancel
+                            } else {
+                                console.log(`[WATCHDOG BRUTE FORCE] Position missing for ${asset} with no tagged receipts. Assuming manual UI close.`);
+                                wasFilled = true;
+                                exactExitPrice = currentPrice; // Lock in the ticker price at the moment we realize it's gone
+                                assumedReason = 'MANUAL_UI_INTERVENTION (TAGS_WIPED)';
+                            }
+                        }
+
                         if (wasCanceled || (openTrade.order_type === 'LIMIT' && !wasFilled)) {
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
                             await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
@@ -230,7 +245,7 @@ export async function startWatchdog() {
                                 await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                             }
 
-                            if (wasFilled && openTrade.tp_price && openTrade.sl_price) {
+                            if (wasFilled && openTrade.tp_price && openTrade.sl_price && assumedReason !== 'MANUAL_UI_INTERVENTION (TAGS_WIPED)') {
                                 const distToTp = Math.abs(exactExitPrice - openTrade.tp_price);
                                 const distToSl = Math.abs(exactExitPrice - openTrade.sl_price);
                                 
@@ -239,7 +254,7 @@ export async function startWatchdog() {
                             }
 
                             const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
-                            const safeExitPrice = exactExitPrice || 0;
+                            const safeExitPrice = exactExitPrice || currentPrice || 0;
                             const rawPnl = openTrade.side === 'BUY' ? (safeExitPrice - safeEntryPrice) * openTrade.qty * multiplier : (safeEntryPrice - safeExitPrice) * openTrade.qty * multiplier;
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                             
@@ -282,7 +297,6 @@ export async function startWatchdog() {
                                 const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
                                 const ocoResult = await ocoResp.json();
                                 
-                                // 🟢 THE FIX: The Scream Protocol
                                 if (!ocoResp.ok || ocoResult.success === false) {
                                     const ocoErrMsg = ocoResult.error_response?.preview_failure_reason || ocoResult.error_response?.error || ocoResult.failure_reason?.error_message || JSON.stringify(ocoResult);
                                     console.error(`[WATCHDOG BRACKET REJECT] OCO Failed:`, ocoErrMsg);

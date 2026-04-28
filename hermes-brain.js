@@ -48,7 +48,7 @@ app.post('/api/wake', async (req, res) => {
             systemInstruction: { parts: [{ text: skillMemory }] },
             contents: [{
                 role: "user",
-                parts: [{ text: `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\nLIVE MULTI-TF MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\nAnalyze the CVD and Level 2 Intent. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, or set a VIRTUAL_TRAP. Output ONLY raw, valid JSON.` }]
+                parts: [{ text: `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\nLIVE MULTI-TF MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\nAnalyze the CVD and Level 2 Intent. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Output ONLY raw, valid JSON.` }]
             }],
             generationConfig: { responseMimeType: "application/json" }
         };
@@ -68,9 +68,7 @@ app.post('/api/wake', async (req, res) => {
         console.log(`[AGENT CORTEX] Decision Matrix:`, decisionJson.action || "APPROVE_EXECUTION");
         console.log(`[AGENT RATIONALE]:`, decisionJson.working_thesis || "Executing protocol.");
 
-        // 🟢 THE FIX: The Rolling Ledger Logic
         if (decisionJson.working_thesis) {
-            // 1. Update the Strategy Config (Memory for the next iteration)
             const updatePayload = { active_thesis: decisionJson.working_thesis };
             
             if (decisionJson.action === "VIRTUAL_TRAP" && decisionJson.trap_price && decisionJson.side) {
@@ -87,7 +85,6 @@ app.post('/api/wake', async (req, res) => {
                 .eq('strategy', strategy_id || 'MANUAL')
                 .eq('asset', asset);
                 
-            // 2. Append the AI's thoughts chronologically to the physical Open Trade in the database
             if (openTrade) {
                 const timeStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
                 const newLogEntry = `\n[${timeStr}Z] [${decisionJson.action}]: ${decisionJson.working_thesis}`;
@@ -111,6 +108,7 @@ app.post('/api/wake', async (req, res) => {
         const isReversal = decisionJson.action === "REVERSE";
         const isTrap = decisionJson.action === "VIRTUAL_TRAP";
         const isHold = decisionJson.action === "HOLD"; 
+        const isClose = decisionJson.action === "CLOSE"; // 🟢 Added CLOSE logic
         
         let alertTitle = `🧠 Agent APPROVED: ${asset}`;
         let alertColor = 3447003;
@@ -127,6 +125,9 @@ app.post('/api/wake', async (req, res) => {
         } else if (isHold) {
             alertTitle = `🛡️ Agent HOLDING: ${asset}`;
             alertColor = 11184810; 
+        } else if (isClose) {
+            alertTitle = `🛑 Agent CLOSED: ${asset}`; // 🟢 Specific alert for closing
+            alertColor = 16753920; 
         }
 
         await sendDiscordAlert({
@@ -136,17 +137,20 @@ app.post('/api/wake', async (req, res) => {
             imageUrl: chartUrl
         });
 
-        const isApproveOrReverse = decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE";
+        // 🟢 THE FIX: Included "CLOSE" so it physically hits the execution endpoint
+        const isActionableExecution = decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE" || decisionJson.action === "CLOSE";
         
-        if (isApproveOrReverse) {
-            console.log(`[AGENT CORTEX] Triggering execute_order tool...`);
+        if (isActionableExecution) {
+            console.log(`[AGENT CORTEX] Triggering execute_order tool for action: ${decisionJson.action}`);
             
             decisionJson.symbol = asset;
             decisionJson.execution_mode = execution_mode || 'PAPER';
             decisionJson.strategy_id = strategy_id || 'MANUAL';
             decisionJson.version = version || 'v1.0';
             decisionJson.working_thesis = decisionJson.working_thesis || 'Autonomous Execution';
-            decisionJson.reason = decisionJson.working_thesis; 
+            
+            // 🟢 Tag 'CLOSE' explicitly so execute-trade-mcp.js forces the exit loop
+            decisionJson.reason = decisionJson.action === "CLOSE" ? `[CLOSE] ${decisionJson.working_thesis}` : decisionJson.working_thesis; 
 
             await fetch(mcpUrl, {
                 method: 'POST', 
