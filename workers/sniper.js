@@ -22,7 +22,6 @@ const getAssetMetrics = (symbol) => {
     let tickSize = 0.01;
     
     if (symbol.includes('ETP') || symbol.includes('ETH')) { multiplier = 0.1; tickSize = 0.50; }
-    // 🟢 THE FIX: Coinbase requires exactly $5.00 increments for BTC/BIP Futures
     else if (symbol.includes('BIT') || symbol.includes('BIP') || symbol.includes('BTC')) { multiplier = 0.01; tickSize = 5.00; }
     else if (symbol.includes('SLP') || symbol.includes('SOL')) { multiplier = 5.0; tickSize = 0.01; }
     else if (symbol.includes('DOP') || symbol.includes('DOGE')) { multiplier = 1000.0; tickSize = 0.0001; }
@@ -56,7 +55,6 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
     const end = Math.floor(Date.now() / 1000);
 
-    // 🟢 THE FIX: Dynamic timeframe handling to prevent 400 errors
     let secondsPerCandle = 3600;
     if (safeGranularity === 'ONE_MINUTE') secondsPerCandle = 60;
     else if (safeGranularity === 'FIVE_MINUTE') secondsPerCandle = 300;
@@ -240,7 +238,8 @@ export async function startSniper() {
 
                 if (Date.now() > expiresAt) {
                     config.trap_side = null; 
-                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_expires_at: null }).eq('id', config.id);
+                    // 🟢 THE FIX: Clear all ghost order metadata on expiration
+                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id);
                 } else if (config.trap_side === 'BUY' && currentPrice <= config.trap_price) {
                     trapSprung = true;
                 } else if (config.trap_side === 'SELL' && currentPrice >= config.trap_price) {
@@ -250,7 +249,9 @@ export async function startSniper() {
                 if (trapSprung) {
                     console.log(`[SNIPER] LIGHTNING TRAP SPRUNG for ${config.asset} at $${currentPrice}!`);
                     config.trap_side = null; 
-                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_expires_at: null }).eq('id', config.id);
+                    
+                    // 🟢 THE FIX: Clear DB state instantly to prevent double-firing
+                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id);
 
                     let finalQty = params.qty || 1;
                     if (params.target_usd) {
@@ -258,9 +259,20 @@ export async function startSniper() {
                         finalQty = Math.max(1, Math.round(params.target_usd / (currentPrice * multiplier)));
                     }
 
-                    const slP = params.sl_percent || 0.01; const tpP = params.tp_percent || 0.02;
-                    const trapTpPrice = config.trap_side === 'BUY' ? currentPrice * (1 + tpP) : currentPrice * (1 - tpP);
-                    const trapSlPrice = config.trap_side === 'BUY' ? currentPrice * (1 - slP) : currentPrice * (1 + slP);
+                    // 🟢 THE FIX: Extracts AI's pre-calculated armored targets
+                    let trapTpPrice = config.trap_tp_price;
+                    let trapSlPrice = config.trap_sl_price;
+
+                    // Absolute Safety Net: If the DB columns are missing or the AI hallucinates
+                    if (!trapTpPrice || !trapSlPrice) {
+                        const slP = params.sl_percent || 0.01; const tpP = params.tp_percent || 0.02;
+                        trapTpPrice = config.trap_side === 'BUY' ? currentPrice * (1 + tpP) : currentPrice * (1 - tpP);
+                        trapSlPrice = config.trap_side === 'BUY' ? currentPrice * (1 - slP) : currentPrice * (1 + slP);
+                        console.log(`[SNIPER] Legacy trap detected (missing AI targets). Falling back to static percentages.`);
+                    } else {
+                        console.log(`[SNIPER] Utilizing AI pre-calculated armor (TP: $${trapTpPrice}, SL: $${trapSlPrice}).`);
+                    }
+
                     const { tickSize } = getAssetMetrics(config.asset);
 
                     const trapPayload = {
@@ -269,7 +281,7 @@ export async function startSniper() {
                         tp_price: parseFloat((Math.round(trapTpPrice / tickSize) * tickSize).toFixed(4)), 
                         sl_price: parseFloat((Math.round(trapSlPrice / tickSize) * tickSize).toFixed(4)),
                         execution_mode: config.execution_mode || 'PAPER', leverage: params.leverage || 1,
-                        market_type: params.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)), reason: `[VIRTUAL TRAP SPRUNG]: Lightning WS Execution at $${currentPrice}`
+                        market_type: params.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)), reason: `[VIRTUAL TRAP SPRUNG]: AI Pre-calculated R:R executed at $${currentPrice}`
                     };
                     
                     executeTradeMCP(trapPayload).catch(e => console.error("[TRAP EXECUTION FATAL]:", e.message));
@@ -329,7 +341,6 @@ export async function startSniper() {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
                         console.log(`[SNIPER] Math signal detected for ${config.asset}. Waking Hermes...`);
                         
-                        // 🟢 THE FIX: Packaging the missing meta-data labels
                         await pingHermes({
                             asset: config.asset,
                             mode: "ENTRY",

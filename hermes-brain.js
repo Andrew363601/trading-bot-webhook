@@ -44,7 +44,6 @@ app.post('/api/wake', async (req, res) => {
         console.log(`[AGENT CORTEX] X-Ray Data acquired. Booting Gemini inference engine...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`;
         
-        // 🟢 THE FIX: Injected "openTrade" into the Prompt to enable the HOLD Protocol
         const payload = {
             systemInstruction: { parts: [{ text: skillMemory }] },
             contents: [{
@@ -75,8 +74,11 @@ app.post('/api/wake', async (req, res) => {
             if (decisionJson.action === "VIRTUAL_TRAP" && decisionJson.trap_price && decisionJson.side) {
                 updatePayload.trap_side = decisionJson.side;
                 updatePayload.trap_price = decisionJson.trap_price;
+                // 🟢 THE FIX: Extracts the pre-calculated armor from the AI
+                updatePayload.trap_tp_price = decisionJson.trap_tp_price || decisionJson.tp_price; 
+                updatePayload.trap_sl_price = decisionJson.trap_sl_price || decisionJson.sl_price;
                 updatePayload.trap_expires_at = new Date(Date.now() + 3600000).toISOString(); 
-                console.log(`[AGENT CORTEX] 👻 GHOST ORDER SET: ${decisionJson.side} at $${decisionJson.trap_price}`);
+                console.log(`[AGENT CORTEX] 👻 GHOST ORDER SET: ${decisionJson.side} at $${decisionJson.trap_price} | TP: $${updatePayload.trap_tp_price} | SL: $${updatePayload.trap_sl_price}`);
             }
 
             await supabase.from('strategy_config')
@@ -96,7 +98,7 @@ app.post('/api/wake', async (req, res) => {
         const isVeto = decisionJson.action === "VETO";
         const isReversal = decisionJson.action === "REVERSE";
         const isTrap = decisionJson.action === "VIRTUAL_TRAP";
-        const isHold = decisionJson.action === "HOLD"; // 🟢 THE FIX: Intercept the new HOLD action
+        const isHold = decisionJson.action === "HOLD"; 
         
         let alertTitle = `🧠 Agent APPROVED: ${asset}`;
         let alertColor = 3447003;
@@ -112,7 +114,7 @@ app.post('/api/wake', async (req, res) => {
             alertColor = 10181046; 
         } else if (isHold) {
             alertTitle = `🛡️ Agent HOLDING: ${asset}`;
-            alertColor = 11184810; // Slate Gray for passive holds
+            alertColor = 11184810; 
         }
 
         await sendDiscordAlert({
@@ -122,7 +124,6 @@ app.post('/api/wake', async (req, res) => {
             imageUrl: chartUrl
         });
 
-        // The execution gate ignores HOLD, silently terminating the duplicate execution attempt
         const isApproveOrReverse = decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE";
         
         if (isApproveOrReverse) {
