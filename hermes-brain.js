@@ -44,11 +44,12 @@ app.post('/api/wake', async (req, res) => {
         console.log(`[AGENT CORTEX] X-Ray Data acquired. Booting Gemini inference engine...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`;
         
+        // 🟢 THE FIX: Injected "openTrade" into the Prompt to enable the HOLD Protocol
         const payload = {
             systemInstruction: { parts: [{ text: skillMemory }] },
             contents: [{
                 role: "user",
-                parts: [{ text: `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nLIVE MULTI-TF MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\nAnalyze the 1H vs 15M vs 5M CVD. Do not let micro 5M absorption trick you if the 1H macro CVD is dumping. Update your working thesis to reflect the new data. Determine if you APPROVE, REVERSE, VETO, or set a VIRTUAL_TRAP (Ghost Order). Output ONLY raw, valid JSON.` }]
+                parts: [{ text: `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\nLIVE MULTI-TF MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\nAnalyze the CVD and Level 2 Intent. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, or set a VIRTUAL_TRAP. Output ONLY raw, valid JSON.` }]
             }],
             generationConfig: { responseMimeType: "application/json" }
         };
@@ -74,7 +75,7 @@ app.post('/api/wake', async (req, res) => {
             if (decisionJson.action === "VIRTUAL_TRAP" && decisionJson.trap_price && decisionJson.side) {
                 updatePayload.trap_side = decisionJson.side;
                 updatePayload.trap_price = decisionJson.trap_price;
-                updatePayload.trap_expires_at = new Date(Date.now() + 3600000).toISOString(); // 1 hour expiry
+                updatePayload.trap_expires_at = new Date(Date.now() + 3600000).toISOString(); 
                 console.log(`[AGENT CORTEX] 👻 GHOST ORDER SET: ${decisionJson.side} at $${decisionJson.trap_price}`);
             }
 
@@ -95,6 +96,7 @@ app.post('/api/wake', async (req, res) => {
         const isVeto = decisionJson.action === "VETO";
         const isReversal = decisionJson.action === "REVERSE";
         const isTrap = decisionJson.action === "VIRTUAL_TRAP";
+        const isHold = decisionJson.action === "HOLD"; // 🟢 THE FIX: Intercept the new HOLD action
         
         let alertTitle = `🧠 Agent APPROVED: ${asset}`;
         let alertColor = 3447003;
@@ -107,7 +109,10 @@ app.post('/api/wake', async (req, res) => {
             alertColor = 15548997; 
         } else if (isTrap) {
             alertTitle = `👻 Agent GHOST ORDER SET: ${asset}`;
-            alertColor = 10181046; // Purple/Greyish
+            alertColor = 10181046; 
+        } else if (isHold) {
+            alertTitle = `🛡️ Agent HOLDING: ${asset}`;
+            alertColor = 11184810; // Slate Gray for passive holds
         }
 
         await sendDiscordAlert({
@@ -117,7 +122,7 @@ app.post('/api/wake', async (req, res) => {
             imageUrl: chartUrl
         });
 
-        // 🟢 THE FIX: Replaced strict price check with Action intent check to allow Market Orders
+        // The execution gate ignores HOLD, silently terminating the duplicate execution attempt
         const isApproveOrReverse = decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE";
         
         if (isApproveOrReverse) {

@@ -6,7 +6,6 @@ import { buildRadarChartUrl } from '../lib/discord-chart.js';
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// --- HELPER FUNCTIONS ---
 async function sendDiscordAlert({ title, description, color, fields = [], imageUrl = null }) {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) return;
@@ -153,84 +152,58 @@ export async function startWatchdog() {
 
                         if (minutesOpen > totalAllowedMinutes && !openTrade.reason?.includes('[HERMES_NOTIFIED]')) {
                             console.log(`[WATCHDOG] Stale limit detected on ${asset}. Waking Hermes Agent...`);
-                            
                             await pingHermes({
-                                asset: asset,
-                                mode: "PENDING_REVIEW",
+                                asset: asset, mode: "PENDING_REVIEW",
                                 message: `Your limit order for ${asset} at $${openTrade.entry_price} has sat unfilled for ${Math.round(minutesOpen)}m. Current price is $${currentPrice}. Use get_market_state to evaluate if you should hold, adjust, or cancel.`
                             });
-
                             await supabase.from('trade_logs').update({ reason: `${openTrade.reason || ''}\n\n[HERMES_NOTIFIED]: Reviewing Stale Limit` }).eq('id', openTrade.id);
                         }
                         continue; 
                     }
 
-                    // 🧹 NATIVE EXCHANGE CLOSE SWEEP
+                    // 🟢 THE FIX: ABSOLUTE TRUTH RECONCILIATION SWEEP
                     if (!activePosition && !entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
                         
-                        // 🟢 THE FIX: Lowered the grace period from 2 minutes down to 30 seconds for immediate manual UI sync
                         if (minutesOpen > 0.5) {
-                            let wasCanceled = false; let wasFilled = false;
-                            const histPath = `/api/v3/brokerage/orders/historical/batch?order_status=CANCELLED&product_id=${coinbaseProduct}`;
-                            const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
+                            if (openOrders.length > 0) {
+                                const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                            }
+
+                            let exactExitPrice = currentPrice;
+                            let assumedReason = 'MANUAL_EXCHANGE_CLOSE';
+
+                            if (openTrade.order_type === 'LIMIT' && minutesOpen < 5) {
+                                exactExitPrice = openTrade.entry_price;
+                                assumedReason = 'LIMIT_CANCELED_BY_EXCHANGE';
+                            } else if (openTrade.tp_price && openTrade.sl_price) {
+                                const distToTp = Math.abs(currentPrice - openTrade.tp_price);
+                                const distToSl = Math.abs(currentPrice - openTrade.sl_price);
+                                
+                                // Identify if it was a physical stop out or a manual UI click
+                                if (distToTp < (tickSize * 20)) { exactExitPrice = openTrade.tp_price; assumedReason = 'TAKE_PROFIT (NATIVE_SYNC)'; } 
+                                else if (distToSl < (tickSize * 20)) { exactExitPrice = openTrade.sl_price; assumedReason = 'STOP_LOSS (NATIVE_SYNC)'; }
+                            }
+
+                            const rawPnl = openTrade.side === 'BUY' ? (exactExitPrice - openTrade.entry_price) * openTrade.qty * multiplier : (openTrade.entry_price - exactExitPrice) * openTrade.qty * multiplier;
+                            const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                             
-                            const [histResp, fillResp] = await Promise.all([
-                                fetch(`https://api.coinbase.com${histPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', histPath, apiKeyName, apiSecret)}` } }),
-                                fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, apiKeyName, apiSecret)}` } })
-                            ]);
+                            await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            
+                            const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
 
-                            if (histResp.ok) {
-                                const histData = await histResp.json();
-                                wasCanceled = histData.orders?.some(o => o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2));
-                            }
-                            if (fillResp.ok) {
-                                const fillData = await fillResp.json();
-                                wasFilled = fillData.orders?.some(o => o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || o.average_filled_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2));
-                            }
+                            const entryText = openTrade.entry_price ? `\n**Entry Price:** $${openTrade.entry_price}` : '';
+                            const tpText = openTrade.tp_price ? `\n**Target TP:** $${openTrade.tp_price}` : '';
+                            const slText = openTrade.sl_price ? `\n**Target SL:** $${openTrade.sl_price}` : '';
 
-                            if (wasCanceled || (openTrade.order_type === 'LIMIT' && !wasFilled)) {
-                                const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
-                                await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
-                                
-                                const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
-                                await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: chartUrl });
-                                continue; 
-                            } else {
-                                if (openOrders.length > 0) {
-                                    const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
-                                }
-
-                                let exactExitPrice = currentPrice;
-                                let assumedReason = 'EXCHANGE_NATIVE_CLOSE';
-
-                                if (openTrade.tp_price && openTrade.sl_price) {
-                                    const distToTp = Math.abs(currentPrice - openTrade.tp_price);
-                                    const distToSl = Math.abs(currentPrice - openTrade.sl_price);
-                                    if (distToTp < distToSl) { exactExitPrice = openTrade.tp_price; assumedReason = 'TAKE_PROFIT (NATIVE_SYNC)'; } 
-                                    else { exactExitPrice = openTrade.sl_price; assumedReason = 'STOP_LOSS (NATIVE_SYNC)'; }
-                                }
-
-                                const rawPnl = openTrade.side === 'BUY' ? (exactExitPrice - openTrade.entry_price) * openTrade.qty * multiplier : (openTrade.entry_price - exactExitPrice) * openTrade.qty * multiplier;
-                                const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
-                                
-                                await supabase.from('trade_logs').update({ exit_price: exactExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
-                                
-                                const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
-
-                                const entryText = openTrade.entry_price ? `\n**Entry Price:** $${openTrade.entry_price}` : '';
-                                const tpText = openTrade.tp_price ? `\n**Target TP:** $${openTrade.tp_price}` : '';
-                                const slText = openTrade.sl_price ? `\n**Target SL:** $${openTrade.sl_price}` : '';
-
-                                await sendDiscordAlert({ 
-                                    title: `🏁 Position Closed Natively: ${asset}`, 
-                                    description: `**Trigger:** ${assumedReason}\n**Realized PnL:** $${rawPnl.toFixed(4)}${entryText}${tpText}${slText}`, 
-                                    color: rawPnl >= 0 ? 5763719 : 15548997, 
-                                    imageUrl: chartUrl 
-                                });
-                                continue; 
-                            }
+                            await sendDiscordAlert({ 
+                                title: `🏁 Position Sync: ${asset}`, 
+                                description: `**Trigger:** ${assumedReason}\n**Realized PnL:** $${rawPnl.toFixed(4)}${entryText}${tpText}${slText}`, 
+                                color: rawPnl >= 0 ? 5763719 : 15548997, 
+                                imageUrl: chartUrl 
+                            });
+                            continue; 
                         }
                     }
 
