@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import WebSocket from 'ws'; 
 import { evaluateStrategy } from '../lib/strategy-router.js';
-import { executeTradeMCP } from '../lib/execute-trade-mcp.js'; // 🟢 THE FIX: Imported local execution
+import { executeTradeMCP } from '../lib/execute-trade-mcp.js'; 
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -29,7 +29,6 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
-// 🟢 THE HTTP FLARE TO HERMES
 async function pingHermes(payload) {
     const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
     try {
@@ -52,7 +51,18 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     }
     const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
     const end = Math.floor(Date.now() / 1000);
-    const secondsPerCandle = safeGranularity === 'ONE_HOUR' ? 3600 : 300;
+
+    // 🟢 THE FIX: Dynamic timeframe handling to prevent 400 errors
+    let secondsPerCandle = 3600;
+    if (safeGranularity === 'ONE_MINUTE') secondsPerCandle = 60;
+    else if (safeGranularity === 'FIVE_MINUTE') secondsPerCandle = 300;
+    else if (safeGranularity === 'FIFTEEN_MINUTE') secondsPerCandle = 900;
+    else if (safeGranularity === 'THIRTY_MINUTE') secondsPerCandle = 1800;
+    else if (safeGranularity === 'ONE_HOUR') secondsPerCandle = 3600;
+    else if (safeGranularity === 'TWO_HOUR') secondsPerCandle = 7200;
+    else if (safeGranularity === 'SIX_HOUR') secondsPerCandle = 21600;
+    else if (safeGranularity === 'ONE_DAY') secondsPerCandle = 86400;
+
     const start = end - (secondsPerCandle * 300); 
     const token = generateCoinbaseToken('GET', path, apiKey, secret);
 
@@ -161,31 +171,45 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
 }
 
 const RAM = { configs: [], lastMathRun: {}, isProcessingMath: {} };
+let activeProductIds = []; 
 
 export async function startSniper() {
     console.log(`[SNIPER] Booting WebSocket Spinal Cord...`);
     const apiKeyName = process.env.COINBASE_API_KEY; const apiSecret = process.env.COINBASE_API_SECRET;
+    
+    let ws = new WebSocket('wss://advanced-trade-ws.coinbase.com');
 
     const syncConfigs = async () => {
         try {
             const { data } = await supabase.from('strategy_config').select('*').eq('is_active', true);
-            if (data) RAM.configs = data;
-        } catch (e) {}
+            if (data) {
+                RAM.configs = data;
+                
+                const newProductIds = [...new Set(data.map(c => {
+                    let p = c.asset.toUpperCase().trim();
+                    if (!p.includes('-')) p = p.replace('PERP', '-PERP').replace('USD', '-USD');
+                    return p;
+                }))];
+
+                const needsSubscription = newProductIds.some(id => !activeProductIds.includes(id));
+
+                if (needsSubscription && ws.readyState === WebSocket.OPEN) {
+                    console.log(`[SNIPER] New assets detected in database. Hot-wiring WebSocket subscriptions...`);
+                    ws.send(JSON.stringify({ type: 'subscribe', product_ids: newProductIds, channel: 'ticker' }));
+                    activeProductIds = newProductIds;
+                }
+            }
+        } catch (e) { console.error("[RAM SYNC FAULT]", e.message); }
     };
+    
     await syncConfigs();
     setInterval(syncConfigs, 30000); 
 
-    const ws = new WebSocket('wss://advanced-trade-ws.coinbase.com');
-
     ws.on('open', () => {
         console.log(`[SNIPER] WebSocket connected. Subscribing to live tape...`);
-        const productIds = [...new Set(RAM.configs.map(c => {
-            let p = c.asset.toUpperCase().trim();
-            if (!p.includes('-')) p = p.replace('PERP', '-PERP').replace('USD', '-USD');
-            return p;
-        }))];
-
-        if (productIds.length > 0) ws.send(JSON.stringify({ type: 'subscribe', product_ids: productIds, channel: 'ticker' }));
+        if (activeProductIds.length > 0) {
+            ws.send(JSON.stringify({ type: 'subscribe', product_ids: activeProductIds, channel: 'ticker' }));
+        }
     });
 
     ws.on('message', async (data) => {
@@ -244,13 +268,11 @@ export async function startSniper() {
                         market_type: params.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)), reason: `[VIRTUAL TRAP SPRUNG]: Lightning WS Execution at $${currentPrice}`
                     };
                     
-                    // 🟢 THE FIX: Replaced dead Vercel HTTP hit with direct local execution. Zero latency.
                     executeTradeMCP(trapPayload).catch(e => console.error("[TRAP EXECUTION FATAL]:", e.message));
                     continue; 
                 }
             }
 
-            // 🟢 THE FIX: Lock memory by unique database ID, not the strategy name
             const now = Date.now();
             const lastRun = RAM.lastMathRun[config.id] || 0;
             const isProcessing = RAM.isProcessingMath[config.id] || false;
@@ -303,6 +325,7 @@ export async function startSniper() {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
                         console.log(`[SNIPER] Math signal detected for ${config.asset}. Waking Hermes...`);
                         
+                        // 🟢 THE FIX: Packaging the missing meta-data labels
                         await pingHermes({
                             asset: config.asset,
                             mode: "ENTRY",
@@ -311,7 +334,10 @@ export async function startSniper() {
                             candles: triggerCandles.slice(-50),
                             indicators: microstructure.indicators,
                             macro_tf: macroTf,
-                            trigger_tf: triggerTf
+                            trigger_tf: triggerTf,
+                            execution_mode: config.execution_mode,
+                            strategy_id: config.strategy,
+                            version: config.version
                         });
 
                         await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('id', config.id);
@@ -327,7 +353,6 @@ export async function startSniper() {
 
             } catch (e) { console.error(`[ASSET ERROR] ${config.asset}:`, e.message); }
             finally {
-                // 🟢 THE FIX: Release the specific database ID lock
                 RAM.isProcessingMath[config.id] = false;
                 await supabase.from('strategy_config').update({ is_processing: false }).eq('id', config.id);
             }
