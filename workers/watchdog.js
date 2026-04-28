@@ -120,9 +120,14 @@ export async function startWatchdog() {
                     }
 
                     const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
+                    
+                    // 🟢 THE FIX: Deterministic Identity Tagging
+                    let entryClientId = `nx_entry_${openTrade.id}`;
+                    let ocoClientId = `nx_oco_${openTrade.id}`;
+
                     let entryOrderExists = openOrders.some(o => 
-                        o.side.toUpperCase() === openTrade.side.toUpperCase() && 
-                        Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)
+                        o.client_order_id === entryClientId || 
+                        (o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2))
                     );
 
                     // 🧹 PARTIAL FILL SWEEP
@@ -131,7 +136,7 @@ export async function startWatchdog() {
                         const expectedQty = Math.abs(parseFloat(openTrade.qty));
                         
                         if (activeQty < expectedQty) {
-                            const targetOrder = openOrders.find(o => o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2));
+                            const targetOrder = openOrders.find(o => o.client_order_id === entryClientId || (o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)));
                             if (targetOrder) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                 await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] }) });
@@ -145,7 +150,7 @@ export async function startWatchdog() {
 
                     // 🧹 STALE LIMIT SWEEP
                     if (!activePosition && entryOrderExists) {
-                        const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
+                        const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
                         let totalAllowedMinutes = 15; 
                         const initialMatch = openTrade.reason?.match(/Fill:\s*(\d+)m/i);
                         if (initialMatch) totalAllowedMinutes = parseInt(initialMatch[1]);
@@ -161,29 +166,60 @@ export async function startWatchdog() {
                         continue; 
                     }
 
-                    // 🟢 THE FIX: ABSOLUTE TRUTH RECONCILIATION SWEEP
+                    // 🟢 THE FIX: 1-to-1 Deterministic Resolution
                     if (!activePosition && !entryOrderExists) {
-                        const minutesOpen = (Date.now() - new Date(openTrade.created_at).getTime()) / 60000;
+                        let wasCanceled = false; let wasFilled = false;
+                        let exactExitPrice = currentPrice;
+                        let assumedReason = 'MANUAL_EXCHANGE_CLOSE';
+
+                        const histPath = `/api/v3/brokerage/orders/historical/batch?order_status=CANCELLED&product_id=${coinbaseProduct}`;
+                        const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
                         
-                        if (minutesOpen > 0.5) {
+                        const [histResp, fillResp] = await Promise.all([
+                            fetch(`https://api.coinbase.com${histPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', histPath, apiKeyName, apiSecret)}` } }),
+                            fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, apiKeyName, apiSecret)}` } })
+                        ]);
+
+                        if (histResp.ok) {
+                            const histData = await histResp.json();
+                            wasCanceled = histData.orders?.some(o => o.client_order_id === entryClientId || (o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)));
+                        }
+                        
+                        if (fillResp.ok) {
+                            const fillData = await fillResp.json();
+                            const filledOco = fillData.orders?.find(o => o.client_order_id === ocoClientId);
+                            
+                            if (filledOco) {
+                                wasFilled = true;
+                                exactExitPrice = parseFloat(filledOco.average_filled_price || filledOco.order_configuration?.trigger_bracket_gtc?.limit_price || filledOco.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || currentPrice);
+                            } else {
+                                const legacyFill = fillData.orders?.find(o => o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || o.average_filled_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2));
+                                if (legacyFill) {
+                                    wasFilled = true;
+                                    exactExitPrice = parseFloat(legacyFill.average_filled_price || currentPrice);
+                                }
+                            }
+                        }
+
+                        if (wasCanceled || (openTrade.order_type === 'LIMIT' && !wasFilled)) {
+                            const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
+                            await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            
+                            const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
+                            await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: chartUrl });
+                            continue; 
+                        } else {
                             if (openOrders.length > 0) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                 await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                             }
 
-                            let exactExitPrice = currentPrice;
-                            let assumedReason = 'MANUAL_EXCHANGE_CLOSE';
-
-                            if (openTrade.order_type === 'LIMIT' && minutesOpen < 5) {
-                                exactExitPrice = openTrade.entry_price;
-                                assumedReason = 'LIMIT_CANCELED_BY_EXCHANGE';
-                            } else if (openTrade.tp_price && openTrade.sl_price) {
-                                const distToTp = Math.abs(currentPrice - openTrade.tp_price);
-                                const distToSl = Math.abs(currentPrice - openTrade.sl_price);
+                            if (wasFilled && openTrade.tp_price && openTrade.sl_price) {
+                                const distToTp = Math.abs(exactExitPrice - openTrade.tp_price);
+                                const distToSl = Math.abs(exactExitPrice - openTrade.sl_price);
                                 
-                                // Identify if it was a physical stop out or a manual UI click
-                                if (distToTp < (tickSize * 20)) { exactExitPrice = openTrade.tp_price; assumedReason = 'TAKE_PROFIT (NATIVE_SYNC)'; } 
-                                else if (distToSl < (tickSize * 20)) { exactExitPrice = openTrade.sl_price; assumedReason = 'STOP_LOSS (NATIVE_SYNC)'; }
+                                if (distToTp < distToSl) { assumedReason = 'TAKE_PROFIT (NATIVE_SYNC)'; } 
+                                else { assumedReason = 'STOP_LOSS (NATIVE_SYNC)'; }
                             }
 
                             const rawPnl = openTrade.side === 'BUY' ? (exactExitPrice - openTrade.entry_price) * openTrade.qty * multiplier : (openTrade.entry_price - exactExitPrice) * openTrade.qty * multiplier;
@@ -209,23 +245,18 @@ export async function startWatchdog() {
 
                     // 🧹 MISSING BRACKET SWEEP (Watchdog Safety Net)
                     if (activePosition) {
-                        const physicalTP = openOrders.find(o => o.order_configuration?.limit_limit_gtc);
-                        const physicalSL = openOrders.find(o => o.order_configuration?.stop_limit_stop_limit_gtc);
-                        const physicalBracket = openOrders.find(o => o.order_configuration?.trigger_bracket_gtc);
+                        const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc);
 
-                        const hasTP = physicalBracket || physicalTP;
-                        const hasSL = physicalBracket || physicalSL;
-
-                        if (!hasTP && !hasSL && openTrade.tp_price && openTrade.sl_price) {
+                        if (!hasBracket && openTrade.tp_price && openTrade.sl_price) {
                             const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
                             const orderQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                             const safeSlPrice = (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(4);
                             const safeTpPrice = (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(4);
 
-                            console.log(`[WATCHDOG] Missing OCO Brackets for ${asset}. Deploying safety net...`);
+                            console.log(`[WATCHDOG] Missing OCO Brackets for ${asset}. Deploying deterministic safety net...`);
                             const executePath = '/api/v3/brokerage/orders';
                             const ocoPayload = {
-                                client_order_id: `nx_oco_wd_${Date.now()}`, product_id: coinbaseProduct, side: closingSide,
+                                client_order_id: ocoClientId, product_id: coinbaseProduct, side: closingSide,
                                 order_configuration: { trigger_bracket_gtc: { limit_price: safeTpPrice, stop_trigger_price: safeSlPrice, base_size: orderQty.toString() } }
                             };
                             await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
