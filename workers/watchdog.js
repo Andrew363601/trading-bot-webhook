@@ -28,14 +28,18 @@ function generateCoinbaseToken(method, path, apiKey, apiSecret) {
 }
 
 const getAssetMetrics = (symbol) => {
-    let multiplier = 1.0; let tickSize = 0.01;
+    let multiplier = 1.0;
+    let tickSize = 0.01;
+    
     if (symbol.includes('ETP') || symbol.includes('ETH')) { multiplier = 0.1; tickSize = 0.50; }
-    else if (symbol.includes('BIT') || symbol.includes('BIP') || symbol.includes('BTC')) { multiplier = 0.01; tickSize = 1.00; }
+    // 🟢 THE FIX: Coinbase requires exactly $5.00 increments for BTC/BIP Futures
+    else if (symbol.includes('BIT') || symbol.includes('BIP') || symbol.includes('BTC')) { multiplier = 0.01; tickSize = 5.00; }
     else if (symbol.includes('SLP') || symbol.includes('SOL')) { multiplier = 5.0; tickSize = 0.01; }
     else if (symbol.includes('DOP') || symbol.includes('DOGE')) { multiplier = 1000.0; tickSize = 0.0001; }
     else if (symbol.includes('LCP') || symbol.includes('LTC')) { multiplier = 1.0; tickSize = 0.01; }
     else if (symbol.includes('AVP') || symbol.includes('AVAX')) { multiplier = 1.0; tickSize = 0.01; }
     else if (symbol.includes('LNP') || symbol.includes('LINK')) { multiplier = 1.0; tickSize = 0.001; }
+    
     return { multiplier, tickSize };
 };
 
