@@ -250,14 +250,15 @@ export async function startSniper() {
                 }
             }
 
+            // 🟢 THE FIX: Lock memory by unique database ID, not the strategy name
             const now = Date.now();
-            const lastRun = RAM.lastMathRun[config.strategy] || 0;
-            const isProcessing = RAM.isProcessingMath[config.strategy] || false;
+            const lastRun = RAM.lastMathRun[config.id] || 0;
+            const isProcessing = RAM.isProcessingMath[config.id] || false;
 
             if (isProcessing || (now - lastRun < 60000)) continue; 
 
-            RAM.isProcessingMath[config.strategy] = true;
-            RAM.lastMathRun[config.strategy] = now;
+            RAM.isProcessingMath[config.id] = true;
+            RAM.lastMathRun[config.id] = now;
             await supabase.from('strategy_config').update({ is_processing: true }).eq('id', config.id);
 
             try {
@@ -326,7 +327,8 @@ export async function startSniper() {
 
             } catch (e) { console.error(`[ASSET ERROR] ${config.asset}:`, e.message); }
             finally {
-                RAM.isProcessingMath[config.strategy] = false;
+                // 🟢 THE FIX: Release the specific database ID lock
+                RAM.isProcessingMath[config.id] = false;
                 await supabase.from('strategy_config').update({ is_processing: false }).eq('id', config.id);
             }
         }
