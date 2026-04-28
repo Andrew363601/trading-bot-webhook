@@ -21,8 +21,9 @@ async function sendDiscordAlert({ title, description, color, fields = [], imageU
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
 
+// 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
-    const { asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis } = req.body;
+    const { asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty } = req.body;
     console.log(`[AGENT CORTEX] Awakened by Sniper. Asset: ${asset} | Mode: ${mode}`);
     
     res.status(200).json({ status: "Agent Awakened. Initiating analysis." });
@@ -108,7 +109,7 @@ app.post('/api/wake', async (req, res) => {
         const isReversal = decisionJson.action === "REVERSE";
         const isTrap = decisionJson.action === "VIRTUAL_TRAP";
         const isHold = decisionJson.action === "HOLD"; 
-        const isClose = decisionJson.action === "CLOSE"; // 🟢 Added CLOSE logic
+        const isClose = decisionJson.action === "CLOSE"; 
         
         let alertTitle = `🧠 Agent APPROVED: ${asset}`;
         let alertColor = 3447003;
@@ -126,7 +127,7 @@ app.post('/api/wake', async (req, res) => {
             alertTitle = `🛡️ Agent HOLDING: ${asset}`;
             alertColor = 11184810; 
         } else if (isClose) {
-            alertTitle = `🛑 Agent CLOSED: ${asset}`; // 🟢 Specific alert for closing
+            alertTitle = `🛑 Agent CLOSED: ${asset}`; 
             alertColor = 16753920; 
         }
 
@@ -137,7 +138,6 @@ app.post('/api/wake', async (req, res) => {
             imageUrl: chartUrl
         });
 
-        // 🟢 THE FIX: Included "CLOSE" so it physically hits the execution endpoint
         const isActionableExecution = decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE" || decisionJson.action === "CLOSE";
         
         if (isActionableExecution) {
@@ -148,8 +148,9 @@ app.post('/api/wake', async (req, res) => {
             decisionJson.strategy_id = strategy_id || 'MANUAL';
             decisionJson.version = version || 'v1.0';
             decisionJson.working_thesis = decisionJson.working_thesis || 'Autonomous Execution';
+            // 🟢 The 10 Contract Fix: Force the true parameter QTY
+            decisionJson.qty = decisionJson.qty || qty || 1;
             
-            // 🟢 Tag 'CLOSE' explicitly so execute-trade-mcp.js forces the exit loop
             decisionJson.reason = decisionJson.action === "CLOSE" ? `[CLOSE] ${decisionJson.working_thesis}` : decisionJson.working_thesis; 
 
             await fetch(mcpUrl, {
@@ -161,6 +162,66 @@ app.post('/api/wake', async (req, res) => {
 
     } catch (error) {
         console.error(`[AGENT FATAL]:`, error.message);
+    }
+});
+
+// 🟢 THE EVOLUTION ENDPOINT (Agentic Reflection Loop)
+app.post('/api/autopsy', async (req, res) => {
+    const { asset, entry_price, exit_price, pnl, rolling_ledger, trigger } = req.body;
+    console.log(`[AGENT CORTEX] Initiating Autopsy for ${asset}. PnL: $${pnl}`);
+    
+    res.status(200).json({ status: "Autopsy initiated." });
+
+    try {
+        const geminiKey = process.env.GEMINI_API_KEY;
+        if (!geminiKey) throw new Error("Missing Gemini API Key.");
+
+        const winLoss = parseFloat(pnl) >= 0 ? "WIN" : "LOSS";
+
+        const autopsyPrompt = `
+        You are the Hermes Quantitative Reflection Engine.
+        A trade just closed for ${asset}.
+        Entry: $${entry_price} | Exit: $${exit_price} | PnL: $${pnl} (${winLoss})
+        Exit Trigger: ${trigger}
+        
+        ROLLING LEDGER (Your thoughts during the trade):
+        ${rolling_ledger || "No ledger recorded."}
+        
+        Analyze this trade. What validator tools were mentioned in the ledger? Why did it win or lose?
+        Extract ONE concise, quantitative behavioral rule to improve future performance for this specific asset. Do not give generic advice. Give hard mathematical/structural rules based on the ledger context.
+        
+        Output raw JSON format exactly:
+        {
+          "tools_used": "Comma separated list of tools mentioned (e.g., Fibonacci, Fractals, Volume Nodes, None)",
+          "lesson_learned": "The specific quantitative rule extracted."
+        }
+        `;
+
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`;
+        const payload = {
+            systemInstruction: { parts: [{ text: "You are an AI post-mortem trading analyzer. Output ONLY raw, valid JSON." }] },
+            contents: [{ role: "user", parts: [{ text: autopsyPrompt }] }],
+            generationConfig: { responseMimeType: "application/json" }
+        };
+
+        const llmResp = await fetch(geminiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if (!llmResp.ok) throw new Error(`Gemini API Error: ${await llmResp.text()}`);
+
+        const llmData = await llmResp.json();
+        let agentOutput = llmData.candidates[0].content.parts[0].text.replace(/```json/g, '').replace(/```/g, '').trim();
+        const autopsyJson = JSON.parse(agentOutput);
+
+        console.log(`[AUTOPSY COMPLETE] ${asset} | Rule: ${autopsyJson.lesson_learned}`);
+
+        await supabase.from('hermes_core_memory').insert([{
+            asset: asset,
+            win_loss: winLoss,
+            tools_used: autopsyJson.tools_used || "None",
+            lesson_learned: autopsyJson.lesson_learned
+        }]);
+
+    } catch (error) {
+        console.error(`[AUTOPSY FATAL]:`, error.message);
     }
 });
 

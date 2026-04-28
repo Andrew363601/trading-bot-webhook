@@ -217,17 +217,14 @@ export async function startWatchdog() {
                             }
                         }
 
-                        // 🟢 THE FIX: Brute Force Reconciliation 
-                        // If the physical position is 0, and we couldn't match any historical tags, 
-                        // you modified the order manually and wiped our identity tags. Force the close.
                         if (!wasCanceled && !wasFilled) {
                             const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
                             if (openTrade.order_type === 'LIMIT' && minutesOpen < 5) {
-                                wasCanceled = true; // Assume a manual limit cancel
+                                wasCanceled = true;
                             } else {
-                                console.log(`[WATCHDOG BRUTE FORCE] Position missing for ${asset} with no tagged receipts. Assuming manual UI close.`);
+                                console.log(`[WATCHDOG BRUTE FORCE] Position missing for ${asset}. Assuming manual UI close.`);
                                 wasFilled = true;
-                                exactExitPrice = currentPrice; // Lock in the ticker price at the moment we realize it's gone
+                                exactExitPrice = currentPrice; 
                                 assumedReason = 'MANUAL_UI_INTERVENTION (TAGS_WIPED)';
                             }
                         }
@@ -238,6 +235,17 @@ export async function startWatchdog() {
                             
                             const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
                             await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: chartUrl });
+                            
+                            // 🟢 THE FIX: Trigger Autopsy on Limit Cancel
+                            try {
+                                const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
+                                const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
+                                await fetch(autopsyUrl, {
+                                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ asset: asset, entry_price: openTrade.entry_price, exit_price: openTrade.entry_price, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'LIMIT_CANCELED' })
+                                });
+                            } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
+
                             continue; 
                         } else {
                             if (openOrders.length > 0) {
@@ -272,11 +280,21 @@ export async function startWatchdog() {
                                 color: rawPnl >= 0 ? 5763719 : 15548997, 
                                 imageUrl: chartUrl 
                             });
+
+                            // 🟢 THE FIX: Trigger Autopsy on Trade Close
+                            try {
+                                const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
+                                const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
+                                await fetch(autopsyUrl, {
+                                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ asset: asset, entry_price: safeEntryPrice, exit_price: safeExitPrice, pnl: rawPnl.toFixed(4), rolling_ledger: updatedReason, trigger: assumedReason })
+                                });
+                            } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
+
                             continue; 
                         }
                     }
 
-                    // 🧹 MISSING BRACKET SWEEP (Watchdog Safety Net)
                     if (activePosition) {
                         const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc);
 

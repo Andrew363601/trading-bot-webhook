@@ -174,7 +174,6 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
             } catch (err) {}
         }
 
-        // 🟢 THE FIX: Fetch Macro context on the fly so it gets dumped straight to the database
         const [sp500, dxy] = await Promise.all([fetchMacroAsset('%5EGSPC'), fetchMacroAsset('DX-Y.NYB')]);
 
         return { 
@@ -183,7 +182,7 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                 macro_cvd: macro_cvd.toFixed(2), macro_poc: macro_poc.toFixed(2),
                 upper_macro_node: upper_macro_node ? upper_macro_node.toFixed(2) : "None", lower_macro_node: lower_macro_node ? lower_macro_node.toFixed(2) : "None"
             }, 
-            crossAsset: { sp500, dxy }, // 🟢 Added to return object
+            crossAsset: { sp500, dxy }, 
             orderBook: orderBookData, derivativesData: { spot_price: spotPrice.toFixed(2), futures_price: currentPrice.toFixed(2), basis_premium_percent: basisPremium.toFixed(4) } 
         };
     } catch (e) { return { indicators: {}, crossAsset: {}, orderBook: {}, derivativesData: {} }; }
@@ -331,13 +330,12 @@ export async function startSniper() {
 
                 let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
 
-                // 🟢 THE FIX: Dump the macro data straight to the database for the UI Audit view
                 decision.telemetry = { 
                     ...decision.telemetry, 
                     macro_poc: microstructure.indicators.macro_poc, upper_macro_node: microstructure.indicators.upper_macro_node, lower_macro_node: microstructure.indicators.lower_macro_node,
                     macro_cvd: microstructure.indicators.macro_cvd, cvd: microstructure.indicators.current_cvd, 
-                    sp500: microstructure.crossAsset?.sp500 || "N/A", // LOG TO DATABASE
-                    dxy: microstructure.crossAsset?.dxy || "N/A",     // LOG TO DATABASE
+                    sp500: microstructure.crossAsset?.sp500 || "N/A", 
+                    dxy: microstructure.crossAsset?.dxy || "N/A",     
                     bids: microstructure.orderBook.bids_50_levels || 0, asks: microstructure.orderBook.asks_50_levels || 0, premium: microstructure.derivativesData.basis_premium_percent || 0,
                     open_position: openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : "NONE",
                     open_tp: openTrade?.tp_price || "NONE",
@@ -352,13 +350,27 @@ export async function startSniper() {
                         decision.telemetry.oracle_reasoning = `System in penalty box. Ignoring ${decision.signal} signal.`;
                     } else {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
-                        console.log(`[SNIPER] Math signal detected for ${config.asset}. Waking Hermes...`);
+                        console.log(`[SNIPER] Math signal detected for ${config.asset}. Fetching Core Memory & Waking Hermes...`);
                         
-                        // 🟢 THE FIX: Pass the config.active_thesis into the LLM as the Rolling Ledger memory base
+                        // 🟢 THE FIX: Fetch Agentic Reflection Memories
+                        let memoryString = "No core memory available for this asset.";
+                        try {
+                            const { data: memories } = await supabase
+                                .from('hermes_core_memory')
+                                .select('win_loss, tools_used, lesson_learned')
+                                .eq('asset', config.asset)
+                                .order('created_at', { ascending: false })
+                                .limit(3);
+                            
+                            if (memories && memories.length > 0) {
+                                memoryString = memories.map(m => `[Past ${m.win_loss} | Tools: ${m.tools_used}]: ${m.lesson_learned}`).join('\n');
+                            }
+                        } catch(e) { console.error("[MEMORY FETCH ERROR]", e.message); }
+
                         await pingHermes({
                             asset: config.asset,
                             mode: "ENTRY",
-                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}. Please fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
+                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
                             openTrade: openTrade || null,
                             previous_thesis: config.active_thesis || "No previous thesis recorded.",
                             candles: triggerCandles.slice(-50),
@@ -367,7 +379,8 @@ export async function startSniper() {
                             trigger_tf: triggerTf,
                             execution_mode: config.execution_mode,
                             strategy_id: config.strategy,
-                            version: config.version
+                            version: config.version,
+                            qty: params.qty || 1 // 🟢 FIX: Forces your DB qty parameters natively so it never guesses 10
                         });
 
                         await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('id', config.id);
