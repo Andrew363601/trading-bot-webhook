@@ -95,9 +95,11 @@ export async function startWatchdog() {
                 const tickerPath = `/api/v3/brokerage/products/${coinbaseProduct}/ticker`;
                 const tickerResp = await fetch(`https://api.coinbase.com${tickerPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tickerPath, apiKeyName, apiSecret)}` } });
                 const tickerData = await tickerResp.json();
+                
                 const currentPrice = parseFloat(tickerData.trades?.[0]?.price || tickerData.best_bid || tickerData.best_ask);
                 
                 if (!currentPrice || isNaN(currentPrice)) {
+                    console.log(`[WATCHDOG WAIT] Ticker failed to fetch valid price for ${asset}.`);
                     continue;
                 }
 
@@ -172,7 +174,6 @@ export async function startWatchdog() {
                         }
                     }
 
-                    // 🟢 THE HARVEST PROTOCOL
                     if (activePosition && openTrade.entry_price) {
                         const { data: configData, error: configErr } = await supabase
                             .from('strategy_config')
@@ -403,7 +404,7 @@ export async function startWatchdog() {
                     }
 
                     if (activePosition) {
-                        const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc);
+                        const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc || o.client_order_id?.startsWith('nx_wd_oco_'));
 
                         if (!hasBracket && openTrade.tp_price && openTrade.sl_price) {
                             const closingSide = (openTrade.side || '').toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
