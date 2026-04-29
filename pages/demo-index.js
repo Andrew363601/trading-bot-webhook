@@ -40,7 +40,6 @@ export default function LandingPage() {
 
       {/* Hero Section */}
       <div className="relative pt-32 pb-20 sm:pt-40 sm:pb-24 lg:pb-32 overflow-hidden">
-        {/* Abstract Background Gradients */}
         <div className="absolute top-0 left-1/2 w-full -translate-x-1/2 h-full overflow-hidden -z-10 pointer-events-none">
           <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-cyan-500/20 rounded-full blur-[100px]"></div>
           <div className="absolute top-1/3 right-1/4 w-96 h-96 bg-purple-600/20 rounded-full blur-[100px]"></div>
@@ -54,7 +53,7 @@ export default function LandingPage() {
             </span>
           </h1>
           <p className="mt-4 max-w-2xl text-lg md:text-xl text-slate-400 mx-auto mb-10">
-            The world’s first autonomous, self-learning quantitative trading agent built for the retail trader. Don't just automate your strategy. Arm it with institutional-grade AI.
+            The world&apos;s first autonomous, self-learning quantitative trading agent built for the retail trader. Don&apos;t just automate your strategy. Arm it with institutional-grade AI.
           </p>
           <div className="flex flex-col sm:flex-row justify-center gap-4">
             <a href="#pricing" className="bg-white text-slate-950 px-8 py-4 rounded-full font-bold text-lg transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)]">
@@ -73,12 +72,12 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <h2 className="text-3xl font-bold mb-4">Retail Trading is Broken.</h2>
           <p className="text-slate-400 max-w-3xl mx-auto text-lg mb-12 leading-relaxed">
-            You spend hours backtesting the perfect script. The signal fires—but the S&P 500 is tanking, the Dollar is surging, and whales are spoofing the order book. Your script blindly buys into a brick wall, and you get stopped out. <strong className="text-white">You don't need another indicator. You need an execution desk.</strong>
+            You spend hours backtesting the perfect script. The signal fires—but the S&amp;P 500 is tanking, the Dollar is surging, and whales are spoofing the order book. Your script blindly buys into a brick wall, and you get stopped out. <strong className="text-white">You don&apos;t need another indicator. You need an execution desk.</strong>
           </p>
         </div>
       </div>
 
-      {/* Features / The Solution */}
+      {/* Features */}
       <div id="features" className="py-24 relative">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
@@ -119,13 +118,12 @@ export default function LandingPage() {
         </div>
       </div>
 
-      {/* How It Works */}
+      {/* Architecture */}
       <div id="architecture" className="py-24 bg-slate-900 border-y border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col lg:flex-row items-center gap-16">
             <div className="w-full lg:w-1/2">
               <h2 className="text-4xl font-extrabold mb-6">From Backtest to Bank Account.</h2>
-              
               <div className="space-y-8 mt-10">
                 <div className="flex gap-4">
                   <div className="flex-shrink-0 w-10 h-10 rounded-full bg-cyan-500/20 flex items-center justify-center text-cyan-400 font-bold border border-cyan-500/30">1</div>
@@ -145,14 +143,13 @@ export default function LandingPage() {
                   <div className="flex-shrink-0 w-10 h-10 rounded-full bg-cyan-500/20 flex items-center justify-center text-cyan-400 font-bold border border-cyan-500/30">3</div>
                   <div>
                     <h4 className="text-xl font-bold">Flip the Switch to LIVE</h4>
-                    <p className="text-slate-400 mt-1">Connect your "Trade Only" API keys. Allocate capital. Go to sleep. Wake up to Discord push notifications of secured profit.</p>
+                    <p className="text-slate-400 mt-1">Connect your &quot;Trade Only&quot; API keys. Allocate capital. Go to sleep. Wake up to Discord push notifications of secured profit.</p>
                   </div>
                 </div>
               </div>
             </div>
             
             <div className="w-full lg:w-1/2">
-              {/* Mock Terminal / UI Window */}
               <div className="bg-slate-950 rounded-xl overflow-hidden border border-slate-700 shadow-2xl">
                 <div className="bg-slate-900 px-4 py-3 border-b border-slate-700 flex gap-2">
                   <div className="w-3 h-3 rounded-full bg-red-500"></div>
@@ -161,7 +158,7 @@ export default function LandingPage() {
                 </div>
                 <div className="p-6 font-mono text-sm text-slate-300 space-y-2">
                   <p className="text-cyan-400">&gt; [SNIPER] Math signal detected for ETH-PERP.</p>
-                  <p>&gt; [SNIPER] Fetching Core Memory & Waking Hermes...</p>
+                  <p>&gt; [SNIPER] Fetching Core Memory &amp; Waking Hermes...</p>
                   <p className="mt-4 text-purple-400">&gt; [AGENT CORTEX] Analyzing Multi-TF X-Ray...</p>
                   <p>&gt; [AGENT CORTEX] 1H Macro Trend: -98,720 (Bearish)</p>
                   <p>&gt; [AGENT CORTEX] 5M Micro Ripple: +5,550 (Bullish Trap)</p>
@@ -174,7 +171,7 @@ export default function LandingPage() {
         </div>
       </div>
 
-      {/* The Lifestyle / Black Card */}
+      {/* Black Card */}
       <div className="py-24 relative overflow-hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <svg className="w-20 h-20 text-slate-600 mx-auto mb-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -196,7 +193,6 @@ export default function LandingPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto">
-            {/* Retail Tier */}
             <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl flex flex-col">
               <h3 className="text-2xl font-bold text-slate-300">Retail</h3>
               <div className="mt-4 mb-8">
@@ -211,7 +207,6 @@ export default function LandingPage() {
               <button className="w-full text-center bg-slate-800 border border-slate-700 py-3 rounded-lg hover:bg-slate-700 transition font-bold">Start Retail</button>
             </div>
 
-            {/* Pro Tier (Highlighted) */}
             <div className="bg-slate-900/60 backdrop-blur-md p-8 rounded-2xl flex flex-col relative transform md:-translate-y-4 ring-2 ring-cyan-400 shadow-[0_0_30px_rgba(34,211,238,0.15)]">
               <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-4 py-1 rounded-full text-sm font-bold shadow-lg">MOST POPULAR</div>
               <h3 className="text-2xl font-bold text-white">Pro</h3>
@@ -228,7 +223,6 @@ export default function LandingPage() {
               <button className="w-full text-center bg-white text-slate-950 py-3 rounded-lg transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)] font-bold">Deploy Pro Agent</button>
             </div>
 
-            {/* Institutional Tier */}
             <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl flex flex-col">
               <h3 className="text-2xl font-bold text-slate-300">Institutional</h3>
               <div className="mt-4 mb-8">
