@@ -98,6 +98,7 @@ export async function startWatchdog() {
                 const currentPrice = parseFloat(tickerData.price);
                 if (!currentPrice) continue;
 
+                // 🟢 THE FIX: Eliminate the Infinite Skip Trap
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
                      console.log(`[WATCHDOG] Missing entry price detected for trade ${openTrade.id}. Attempting to self-heal...`);
                      const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
@@ -115,7 +116,11 @@ export async function startWatchdog() {
                          }
                      } catch(e) { console.error("[WATCHDOG SELF-HEAL FAULT]", e.message); }
                      
-                     if (!openTrade.entry_price || openTrade.entry_price === 0) continue; 
+                     if (!openTrade.entry_price || openTrade.entry_price === 0) {
+                         // Force heal to unstick the trade from the UI
+                         openTrade.entry_price = currentPrice;
+                         await supabase.from('trade_logs').update({ entry_price: currentPrice }).eq('id', openTrade.id);
+                     }
                 }
 
                 let activePosition = null;
@@ -146,7 +151,7 @@ export async function startWatchdog() {
 
                     let entryOrderExists = openOrders.some(o => 
                         o.client_order_id === entryClientId || 
-                        (o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2))
+                        ((o.side || '').toUpperCase() === (openTrade.side || '').toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2))
                     );
 
                     if (activePosition && entryOrderExists) {
@@ -154,7 +159,7 @@ export async function startWatchdog() {
                         const expectedQty = Math.abs(parseFloat(openTrade.qty));
                         
                         if (activeQty < expectedQty) {
-                            const targetOrder = openOrders.find(o => o.client_order_id === entryClientId || (o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)));
+                            const targetOrder = openOrders.find(o => (o.side || '').toUpperCase() === (openTrade.side || '').toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2));
                             if (targetOrder) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                 await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] }) });
@@ -166,12 +171,12 @@ export async function startWatchdog() {
                         }
                     }
 
-                    // 🟢 THE HARVEST PROTOCOL (Tripwire & Trailing Stop Logic)
+                    // 🟢 THE HARVEST PROTOCOL
                     if (activePosition && openTrade.entry_price) {
                         const { data: configData } = await supabase.from('strategy_config').select('*').eq('strategy', openTrade.strategy_id).eq('asset', asset).single();
                         const params = configData?.parameters || {};
                         
-                        const pnlPercent = openTrade.side === 'BUY' 
+                        const pnlPercent = (openTrade.side || '').toUpperCase() === 'BUY' 
                             ? (currentPrice - openTrade.entry_price) / openTrade.entry_price 
                             : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
                             
@@ -179,11 +184,10 @@ export async function startWatchdog() {
                         const trailStep = parseFloat(params.trail_step_percent || 0) / 100;
                         const trailActivation = parseFloat(params.trail_activation_percent || params.tripwire_percent || 0) / 100;
 
-                        // 1. TRIPWIRE SECURE (Move to Break Even & Ping Hermes)
                         if (tripwire > 0 && pnlPercent >= tripwire && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
                             console.log(`[WATCHDOG] Tripwire hit for ${asset} at ${(pnlPercent*100).toFixed(2)}% profit. Securing capital...`);
                             
-                            const breakEvenSL = openTrade.side === 'BUY' ? openTrade.entry_price * 1.001 : openTrade.entry_price * 0.999;
+                            const breakEvenSL = (openTrade.side || '').toUpperCase() === 'BUY' ? openTrade.entry_price * 1.001 : openTrade.entry_price * 0.999;
                             const safeBreakEvenSL = parseFloat((Math.round(breakEvenSL / tickSize) * tickSize).toFixed(4));
                             
                             if (openOrders.length > 0) {
@@ -209,14 +213,13 @@ export async function startWatchdog() {
                             });
                         }
 
-                        // 2. AUTOMATED STEP TRAILING STOP
                         if (trailStep > 0 && trailActivation > 0 && pnlPercent >= trailActivation) {
-                            const dynamicSL = openTrade.side === 'BUY' ? currentPrice * (1 - trailStep) : currentPrice * (1 + trailStep);
+                            const dynamicSL = (openTrade.side || '').toUpperCase() === 'BUY' ? currentPrice * (1 - trailStep) : currentPrice * (1 + trailStep);
                             const safeDynamicSL = parseFloat((Math.round(dynamicSL / tickSize) * tickSize).toFixed(4));
                             
                             let shouldMoveSL = false;
-                            if (openTrade.side === 'BUY' && safeDynamicSL > openTrade.sl_price) shouldMoveSL = true;
-                            if (openTrade.side === 'SELL' && safeDynamicSL < openTrade.sl_price && openTrade.sl_price !== 0) shouldMoveSL = true;
+                            if ((openTrade.side || '').toUpperCase() === 'BUY' && safeDynamicSL > openTrade.sl_price) shouldMoveSL = true;
+                            if ((openTrade.side || '').toUpperCase() === 'SELL' && safeDynamicSL < openTrade.sl_price && openTrade.sl_price !== 0) shouldMoveSL = true;
                             
                             const diff = Math.abs(safeDynamicSL - openTrade.sl_price);
                             if (shouldMoveSL && diff > (tickSize * 10)) {
@@ -267,7 +270,7 @@ export async function startWatchdog() {
 
                         if (histResp.ok) {
                             const histData = await histResp.json();
-                            wasCanceled = histData.orders?.some(o => o.client_order_id === entryClientId || (o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)));
+                            wasCanceled = histData.orders?.some(o => o.client_order_id === entryClientId || ((o.side || '').toUpperCase() === (openTrade.side || '').toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)));
                         }
                         
                         if (fillResp.ok) {
@@ -275,23 +278,23 @@ export async function startWatchdog() {
                             const filledOco = fillData.orders?.find(o => o.client_order_id === ocoClientId);
                             
                             // 🟢 THE FIX: Correctly identify the Closing Side
-                            const closingSide = openTrade.side.toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
+                            const closingSide = (openTrade.side || 'BUY').toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
                             
                             if (filledOco) {
                                 wasFilled = true;
                                 exactExitPrice = parseFloat(filledOco.average_filled_price || filledOco.order_configuration?.trigger_bracket_gtc?.limit_price || filledOco.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || currentPrice);
                             } else {
-                                // 🟢 THE FIX: Look for fills matching the exact opposite direction (e.g. A BUY order to close a SELL)
+                                // 🟢 THE FIX: Look for fills matching the exact opposite direction and widen slippage tolerance
                                 const legacyFill = fillData.orders?.find(o => 
-                                    o.side.toUpperCase() === closingSide && 
+                                    (o.side || '').toUpperCase() === closingSide && 
                                     (
-                                        (openTrade.tp_price && Math.abs(parseFloat(o.average_filled_price || 0) - openTrade.tp_price) < (tickSize * 10)) ||
-                                        (openTrade.sl_price && Math.abs(parseFloat(o.average_filled_price || 0) - openTrade.sl_price) < (tickSize * 10))
+                                        (openTrade.tp_price && Math.abs(parseFloat(o.average_filled_price || 0) - openTrade.tp_price) < (tickSize * 50)) ||
+                                        (openTrade.sl_price && Math.abs(parseFloat(o.average_filled_price || 0) - openTrade.sl_price) < (tickSize * 50))
                                     )
                                 );
                                 
                                 // 🟢 THE FIX: If tags and limits were wiped by UI interaction, just grab the most recent closing order
-                                const fallbackFill = fillData.orders?.find(o => o.side.toUpperCase() === closingSide);
+                                const fallbackFill = fillData.orders?.find(o => (o.side || '').toUpperCase() === closingSide);
 
                                 if (legacyFill) {
                                     wasFilled = true;
@@ -353,7 +356,7 @@ export async function startWatchdog() {
                             const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
                             const safeExitPrice = parseFloat(exactExitPrice) || parseFloat(currentPrice) || 0;
                             const safeQty = parseFloat(openTrade.qty) || 1;
-                            const rawPnl = openTrade.side === 'BUY' ? (safeExitPrice - safeEntryPrice) * safeQty * multiplier : (safeEntryPrice - safeExitPrice) * safeQty * multiplier;
+                            const rawPnl = (openTrade.side || '').toUpperCase() === 'BUY' ? (safeExitPrice - safeEntryPrice) * safeQty * multiplier : (safeEntryPrice - safeExitPrice) * safeQty * multiplier;
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                             
                             const { error: updateErr } = await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
@@ -394,7 +397,7 @@ export async function startWatchdog() {
                         const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc);
 
                         if (!hasBracket && openTrade.tp_price && openTrade.sl_price) {
-                            const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
+                            const closingSide = (openTrade.side || '').toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
                             const orderQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                             const safeSlPrice = (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(4);
                             const safeTpPrice = (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(4);
