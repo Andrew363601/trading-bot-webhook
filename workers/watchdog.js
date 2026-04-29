@@ -166,6 +166,74 @@ export async function startWatchdog() {
                         }
                     }
 
+                    // 🟢 THE HARVEST PROTOCOL (Tripwire & Trailing Stop Logic)
+                    if (activePosition && openTrade.entry_price) {
+                        const { data: configData } = await supabase.from('strategy_config').select('*').eq('strategy', openTrade.strategy_id).eq('asset', asset).single();
+                        const params = configData?.parameters || {};
+                        
+                        const pnlPercent = openTrade.side === 'BUY' 
+                            ? (currentPrice - openTrade.entry_price) / openTrade.entry_price 
+                            : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
+                            
+                        const tripwire = parseFloat(params.tripwire_percent || 0) / 100;
+                        const trailStep = parseFloat(params.trail_step_percent || 0) / 100;
+                        const trailActivation = parseFloat(params.trail_activation_percent || params.tripwire_percent || 0) / 100;
+
+                        // 1. TRIPWIRE SECURE (Move to Break Even & Ping Hermes)
+                        if (tripwire > 0 && pnlPercent >= tripwire && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
+                            console.log(`[WATCHDOG] Tripwire hit for ${asset} at ${(pnlPercent*100).toFixed(2)}% profit. Securing capital...`);
+                            
+                            const breakEvenSL = openTrade.side === 'BUY' ? openTrade.entry_price * 1.001 : openTrade.entry_price * 0.999;
+                            const safeBreakEvenSL = parseFloat((Math.round(breakEvenSL / tickSize) * tickSize).toFixed(4));
+                            
+                            if (openOrders.length > 0) {
+                                const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                                openOrders = []; 
+                            }
+
+                            const updatedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_ACTIVATED]: Profit reached ${(pnlPercent*100).toFixed(2)}%. SL moved to Break-Even.`;
+                            await supabase.from('trade_logs').update({ sl_price: safeBreakEvenSL, reason: updatedReason }).eq('id', openTrade.id);
+                            openTrade.sl_price = safeBreakEvenSL;
+                            openTrade.reason = updatedReason;
+
+                            await pingHermes({
+                                asset: asset, 
+                                mode: "TRIPWIRE_HIT",
+                                message: `TRIPWIRE HIT! Trade is currently at ${(pnlPercent*100).toFixed(2)}% profit. Stop Loss has been automatically moved to break-even to secure capital. Review the live tape and Macro levels. Output action "HOLD" if the trend is still explosive, or "CLOSE" to secure profit now.`,
+                                openTrade: openTrade,
+                                strategy_id: openTrade.strategy_id,
+                                macro_tf: params.macro_tf || 'ONE_HOUR',
+                                trigger_tf: params.trigger_tf || 'THIRTY_MINUTE',
+                                previous_thesis: configData?.active_thesis
+                            });
+                        }
+
+                        // 2. AUTOMATED STEP TRAILING STOP
+                        if (trailStep > 0 && trailActivation > 0 && pnlPercent >= trailActivation) {
+                            const dynamicSL = openTrade.side === 'BUY' ? currentPrice * (1 - trailStep) : currentPrice * (1 + trailStep);
+                            const safeDynamicSL = parseFloat((Math.round(dynamicSL / tickSize) * tickSize).toFixed(4));
+                            
+                            let shouldMoveSL = false;
+                            if (openTrade.side === 'BUY' && safeDynamicSL > openTrade.sl_price) shouldMoveSL = true;
+                            if (openTrade.side === 'SELL' && safeDynamicSL < openTrade.sl_price && openTrade.sl_price !== 0) shouldMoveSL = true;
+                            
+                            const diff = Math.abs(safeDynamicSL - openTrade.sl_price);
+                            if (shouldMoveSL && diff > (tickSize * 10)) {
+                                console.log(`[WATCHDOG] Trailing SL triggered for ${asset}. Moving SL up to $${safeDynamicSL}`);
+                                
+                                if (openOrders.length > 0) {
+                                    const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                                    openOrders = []; 
+                                }
+
+                                await supabase.from('trade_logs').update({ sl_price: safeDynamicSL }).eq('id', openTrade.id);
+                                openTrade.sl_price = safeDynamicSL; 
+                            }
+                        }
+                    }
+
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
                         let totalAllowedMinutes = 15; 
@@ -183,6 +251,7 @@ export async function startWatchdog() {
                         continue; 
                     }
 
+                    // 🟢 THE FIX: Bulletproof Math Fallback & Audit UI Sync
                     if (!activePosition && !entryOrderExists) {
                         let wasCanceled = false; let wasFilled = false;
                         let exactExitPrice = currentPrice;
@@ -222,7 +291,7 @@ export async function startWatchdog() {
                             if (openTrade.order_type === 'LIMIT' && minutesOpen < 5) {
                                 wasCanceled = true;
                             } else {
-                                console.log(`[WATCHDOG BRUTE FORCE] Position missing for ${asset}. Assuming manual UI close.`);
+                                console.log(`[WATCHDOG BRUTE FORCE] Position missing for ${asset}. Tags wiped. Assuming manual UI close.`);
                                 wasFilled = true;
                                 exactExitPrice = currentPrice; 
                                 assumedReason = 'MANUAL_UI_INTERVENTION (TAGS_WIPED)';
@@ -231,18 +300,22 @@ export async function startWatchdog() {
 
                         if (wasCanceled || (openTrade.order_type === 'LIMIT' && !wasFilled)) {
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
-                            await supabase.from('trade_logs').update({ exit_price: openTrade.entry_price, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            const safeExitPrice = parseFloat(openTrade.entry_price) || 0;
                             
+                            await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            
+                            // 🟢 UI Audit Sync
+                            await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CANCELED', telemetry: { macro_regime_oracle: `ORDER CANCELED`, oracle_reasoning: updatedReason, open_position: "NONE" } }]);
+
                             const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
                             await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: chartUrl });
                             
-                            // 🟢 THE FIX: Trigger Autopsy on Limit Cancel
                             try {
                                 const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
                                 const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
                                 await fetch(autopsyUrl, {
                                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ asset: asset, entry_price: openTrade.entry_price, exit_price: openTrade.entry_price, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'LIMIT_CANCELED' })
+                                    body: JSON.stringify({ asset: asset, entry_price: safeExitPrice, exit_price: safeExitPrice, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'LIMIT_CANCELED' })
                                 });
                             } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
 
@@ -261,13 +334,22 @@ export async function startWatchdog() {
                                 else { assumedReason = 'STOP_LOSS (NATIVE_SYNC)'; }
                             }
 
+                            // 🟢 Bulletproof Math (Prevents Supabase NaN Rejection)
                             const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
-                            const safeExitPrice = exactExitPrice || currentPrice || 0;
-                            const rawPnl = openTrade.side === 'BUY' ? (safeExitPrice - safeEntryPrice) * openTrade.qty * multiplier : (safeEntryPrice - safeExitPrice) * openTrade.qty * multiplier;
+                            const safeExitPrice = parseFloat(exactExitPrice) || parseFloat(currentPrice) || 0;
+                            const safeQty = parseFloat(openTrade.qty) || 1;
+                            const rawPnl = openTrade.side === 'BUY' ? (safeExitPrice - safeEntryPrice) * safeQty * multiplier : (safeEntryPrice - safeExitPrice) * safeQty * multiplier;
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                             
-                            await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            const { error: updateErr } = await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                             
+                            if (updateErr) {
+                                console.error("[TRADE LOG UPDATE FAILED]:", updateErr.message);
+                            } else {
+                                // 🟢 UI Audit Sync
+                                await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CLOSED', telemetry: { macro_regime_oracle: `POSITION CLOSED`, oracle_reasoning: updatedReason, open_pnl: rawPnl.toFixed(4), open_position: "NONE" } }]);
+                            }
+
                             const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
 
                             const entryText = safeEntryPrice ? `\n**Entry Price:** $${safeEntryPrice}` : '';
@@ -281,7 +363,6 @@ export async function startWatchdog() {
                                 imageUrl: chartUrl 
                             });
 
-                            // 🟢 THE FIX: Trigger Autopsy on Trade Close
                             try {
                                 const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
                                 const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');

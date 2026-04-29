@@ -45,11 +45,20 @@ app.post('/api/wake', async (req, res) => {
         console.log(`[AGENT CORTEX] X-Ray Data acquired. Booting Gemini inference engine...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`;
         
+        // 🟢 THE FIX: Dynamic Prompting based on the Agent's current mission
+        let instructionText = `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\nLIVE MULTI-TF MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\n`;
+        
+        if (mode === "TRIPWIRE_HIT") {
+            instructionText += `THE HARVEST PROTOCOL IS ACTIVE. You are currently in profit and your Stop Loss is secured at Break-Even. Analyze the CVD and Level 2 Intent. If the momentum is still explosive and the runway is clear, output action "HOLD" to let the profit run. If the tape is stalling, absorption is failing, or a major structural wall is approaching, output action "CLOSE" to harvest the profit immediately. Output ONLY raw, valid JSON.`;
+        } else {
+            instructionText += `Analyze the CVD and Level 2 Intent. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Output ONLY raw, valid JSON.`;
+        }
+
         const payload = {
             systemInstruction: { parts: [{ text: skillMemory }] },
             contents: [{
                 role: "user",
-                parts: [{ text: `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\nLIVE MULTI-TF MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\nAnalyze the CVD and Level 2 Intent. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Output ONLY raw, valid JSON.` }]
+                parts: [{ text: instructionText }]
             }],
             generationConfig: { responseMimeType: "application/json" }
         };
@@ -124,10 +133,10 @@ app.post('/api/wake', async (req, res) => {
             alertTitle = `👻 Agent GHOST ORDER SET: ${asset}`;
             alertColor = 10181046; 
         } else if (isHold) {
-            alertTitle = `🛡️ Agent HOLDING: ${asset}`;
-            alertColor = 11184810; 
+            alertTitle = mode === "TRIPWIRE_HIT" ? `📈 Agent HARVESTING (HOLD): ${asset}` : `🛡️ Agent HOLDING: ${asset}`;
+            alertColor = mode === "TRIPWIRE_HIT" ? 5763719 : 11184810; 
         } else if (isClose) {
-            alertTitle = `🛑 Agent CLOSED: ${asset}`; 
+            alertTitle = mode === "TRIPWIRE_HIT" ? `💰 Agent SECURED PROFIT: ${asset}` : `🛑 Agent CLOSED: ${asset}`; 
             alertColor = 16753920; 
         }
 
@@ -140,7 +149,6 @@ app.post('/api/wake', async (req, res) => {
 
         const isActionableExecution = decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE" || decisionJson.action === "CLOSE";
         
-        // 🟢 THE FIX: Force Hermes to log VETOs and HOLDs to the UI Audit Table
         if (!isActionableExecution) {
             console.log(`[AGENT CORTEX] Logging non-execution action (${decisionJson.action}) to UI Audit...`);
             await supabase.from('scan_results').insert([{
@@ -164,7 +172,6 @@ app.post('/api/wake', async (req, res) => {
             decisionJson.strategy_id = strategy_id || 'MANUAL';
             decisionJson.version = version || 'v1.0';
             decisionJson.working_thesis = decisionJson.working_thesis || 'Autonomous Execution';
-            // 🟢 The 10 Contract Fix: Force the true parameter QTY
             decisionJson.qty = decisionJson.qty || qty || 1;
             
             decisionJson.reason = decisionJson.action === "CLOSE" ? `[CLOSE] ${decisionJson.working_thesis}` : decisionJson.working_thesis; 
