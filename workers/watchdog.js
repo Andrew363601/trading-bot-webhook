@@ -96,6 +96,7 @@ export async function startWatchdog() {
                 const tickerResp = await fetch(`https://api.coinbase.com${tickerPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tickerPath, apiKeyName, apiSecret)}` } });
                 const tickerData = await tickerResp.json();
                 
+                // 🟢 THE FIX: Correctly parse Coinbase v3 API Ticker response
                 const currentPrice = parseFloat(tickerData.trades?.[0]?.price || tickerData.best_bid || tickerData.best_ask);
                 
                 if (!currentPrice || isNaN(currentPrice)) {
@@ -174,15 +175,20 @@ export async function startWatchdog() {
                         }
                     }
 
+                    // 🟢 THE HARVEST PROTOCOL
                     if (activePosition && openTrade.entry_price) {
-                        const { data: configData, error: configErr } = await supabase
+                        // 🟢 THE FIX: Reverted to querying 'strategy' text column, but with limit(1) to avoid duplicate crashes
+                        const { data: configRows, error: configErr } = await supabase
                             .from('strategy_config')
                             .select('*')
-                            .eq('id', openTrade.strategy_id)
-                            .single();
+                            .eq('strategy', openTrade.strategy_id)
+                            .eq('asset', asset)
+                            .order('id', { ascending: false })
+                            .limit(1);
                             
                         if (configErr) console.error(`[WATCHDOG CONFIG FETCH] ERROR:`, configErr.message);
 
+                        const configData = configRows && configRows.length > 0 ? configRows[0] : {};
                         const params = configData?.parameters || {};
                         
                         const pnlPercent = (openTrade.side || '').toUpperCase() === 'BUY' 
@@ -194,6 +200,7 @@ export async function startWatchdog() {
                         const trailStep = parseFloat(params.trail_step_percent || 0) / 100;
                         const trailActivation = parseFloat(params.trail_activation_percent || rawTripwire || 0) / 100;
 
+                        // Diagnostics will now actually print
                         if (!openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]') && tripwire > 0) {
                             console.log(`[HARVEST DIAGNOSTICS] ${asset} | Live PnL: ${(pnlPercent * 100).toFixed(2)}% | Tripwire Target: ${(tripwire * 100).toFixed(2)}% | Trail Step: ${(trailStep * 100).toFixed(2)}%`);
                         }
