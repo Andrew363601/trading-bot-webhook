@@ -140,6 +140,22 @@ app.post('/api/wake', async (req, res) => {
 
         const isActionableExecution = decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE" || decisionJson.action === "CLOSE";
         
+        // 🟢 THE FIX: Force Hermes to log VETOs and HOLDs to the UI Audit Table
+        if (!isActionableExecution) {
+            console.log(`[AGENT CORTEX] Logging non-execution action (${decisionJson.action}) to UI Audit...`);
+            await supabase.from('scan_results').insert([{
+                strategy: strategy_id || 'MANUAL',
+                asset: asset,
+                status: decisionJson.action,
+                telemetry: {
+                    macro_regime_oracle: `AGENT ${decisionJson.action}`,
+                    oracle_reasoning: decisionJson.working_thesis,
+                    cvd: marketState?.multi_timeframe_cvd?.["5M_Micro_Ripple"] || 0,
+                    open_position: openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : "NONE"
+                }
+            }]);
+        }
+        
         if (isActionableExecution) {
             console.log(`[AGENT CORTEX] Triggering execute_order tool for action: ${decisionJson.action}`);
             
