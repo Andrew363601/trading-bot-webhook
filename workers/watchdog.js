@@ -98,7 +98,6 @@ export async function startWatchdog() {
                 const currentPrice = parseFloat(tickerData.price);
                 if (!currentPrice) continue;
 
-                // 🟢 THE FIX: Eliminate the Infinite Skip Trap
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
                      console.log(`[WATCHDOG] Missing entry price detected for trade ${openTrade.id}. Attempting to self-heal...`);
                      const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
@@ -117,7 +116,6 @@ export async function startWatchdog() {
                      } catch(e) { console.error("[WATCHDOG SELF-HEAL FAULT]", e.message); }
                      
                      if (!openTrade.entry_price || openTrade.entry_price === 0) {
-                         // Force heal to unstick the trade from the UI
                          openTrade.entry_price = currentPrice;
                          await supabase.from('trade_logs').update({ entry_price: currentPrice }).eq('id', openTrade.id);
                      }
@@ -173,16 +171,30 @@ export async function startWatchdog() {
 
                     // 🟢 THE HARVEST PROTOCOL
                     if (activePosition && openTrade.entry_price) {
-                        const { data: configData } = await supabase.from('strategy_config').select('*').eq('strategy', openTrade.strategy_id).eq('asset', asset).single();
+                        // 🟢 THE FIX: Strictly reference the unique config row by its ID (.single() is completely safe here)
+                        const { data: configData, error: configErr } = await supabase
+                            .from('strategy_config')
+                            .select('*')
+                            .eq('id', openTrade.strategy_id)
+                            .single();
+                            
+                        if (configErr) console.error(`[WATCHDOG CONFIG FETCH] ERROR:`, configErr.message);
+
                         const params = configData?.parameters || {};
                         
                         const pnlPercent = (openTrade.side || '').toUpperCase() === 'BUY' 
                             ? (currentPrice - openTrade.entry_price) / openTrade.entry_price 
                             : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
                             
-                        const tripwire = parseFloat(params.tripwire_percent || 0) / 100;
+                        // Note: If you enter "0.5" in DB, this math divides it to 0.005 (which matches pnlPercent logic)
+                        const rawTripwire = params.tripwire_percent || params.tp_tripwire_percent || 0;
+                        const tripwire = parseFloat(rawTripwire) / 100;
                         const trailStep = parseFloat(params.trail_step_percent || 0) / 100;
-                        const trailActivation = parseFloat(params.trail_activation_percent || params.tripwire_percent || 0) / 100;
+                        const trailActivation = parseFloat(params.trail_activation_percent || rawTripwire || 0) / 100;
+
+                        if (!openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]') && tripwire > 0) {
+                            console.log(`[HARVEST DIAGNOSTICS] ${asset} | Live PnL: ${(pnlPercent * 100).toFixed(2)}% | Tripwire Target: ${(tripwire * 100).toFixed(2)}% | Trail Step: ${(trailStep * 100).toFixed(2)}%`);
+                        }
 
                         if (tripwire > 0 && pnlPercent >= tripwire && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
                             console.log(`[WATCHDOG] Tripwire hit for ${asset} at ${(pnlPercent*100).toFixed(2)}% profit. Securing capital...`);
@@ -254,7 +266,6 @@ export async function startWatchdog() {
                         continue; 
                     }
 
-                    // 🟢 THE FIX: Bulletproof Exit Matching
                     if (!activePosition && !entryOrderExists) {
                         let wasCanceled = false; let wasFilled = false;
                         let exactExitPrice = currentPrice;
@@ -277,14 +288,12 @@ export async function startWatchdog() {
                             const fillData = await fillResp.json();
                             const filledOco = fillData.orders?.find(o => o.client_order_id === ocoClientId);
                             
-                            // 🟢 THE FIX: Correctly identify the Closing Side
                             const closingSide = (openTrade.side || 'BUY').toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
                             
                             if (filledOco) {
                                 wasFilled = true;
                                 exactExitPrice = parseFloat(filledOco.average_filled_price || filledOco.order_configuration?.trigger_bracket_gtc?.limit_price || filledOco.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || currentPrice);
                             } else {
-                                // 🟢 THE FIX: Look for fills matching the exact opposite direction and widen slippage tolerance
                                 const legacyFill = fillData.orders?.find(o => 
                                     (o.side || '').toUpperCase() === closingSide && 
                                     (
@@ -293,7 +302,6 @@ export async function startWatchdog() {
                                     )
                                 );
                                 
-                                // 🟢 THE FIX: If tags and limits were wiped by UI interaction, just grab the most recent closing order
                                 const fallbackFill = fillData.orders?.find(o => (o.side || '').toUpperCase() === closingSide);
 
                                 if (legacyFill) {
