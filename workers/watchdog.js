@@ -95,12 +95,9 @@ export async function startWatchdog() {
                 const tickerPath = `/api/v3/brokerage/products/${coinbaseProduct}/ticker`;
                 const tickerResp = await fetch(`https://api.coinbase.com${tickerPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tickerPath, apiKeyName, apiSecret)}` } });
                 const tickerData = await tickerResp.json();
-                
-                // 🟢 THE FIX: Correctly parse Coinbase v3 API Ticker response
                 const currentPrice = parseFloat(tickerData.trades?.[0]?.price || tickerData.best_bid || tickerData.best_ask);
                 
                 if (!currentPrice || isNaN(currentPrice)) {
-                    console.log(`[WATCHDOG WAIT] Ticker failed to fetch valid price for ${asset}.`);
                     continue;
                 }
 
@@ -177,16 +174,14 @@ export async function startWatchdog() {
 
                     // 🟢 THE HARVEST PROTOCOL
                     if (activePosition && openTrade.entry_price) {
-                        // 🟢 THE FIX: Bulletproof Config Query
-                        const { data: configRows } = await supabase
+                        const { data: configData, error: configErr } = await supabase
                             .from('strategy_config')
                             .select('*')
-                            .eq('strategy', openTrade.strategy_id)
-                            .eq('asset', asset)
-                            .order('id', { ascending: false })
-                            .limit(1);
+                            .eq('id', openTrade.strategy_id)
+                            .single();
+                            
+                        if (configErr) console.error(`[WATCHDOG CONFIG FETCH] ERROR:`, configErr.message);
 
-                        const configData = configRows && configRows.length > 0 ? configRows[0] : {};
                         const params = configData?.parameters || {};
                         
                         const pnlPercent = (openTrade.side || '').toUpperCase() === 'BUY' 
@@ -198,7 +193,6 @@ export async function startWatchdog() {
                         const trailStep = parseFloat(params.trail_step_percent || 0) / 100;
                         const trailActivation = parseFloat(params.trail_activation_percent || rawTripwire || 0) / 100;
 
-                        // Diagnostics will now actually print
                         if (!openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]') && tripwire > 0) {
                             console.log(`[HARVEST DIAGNOSTICS] ${asset} | Live PnL: ${(pnlPercent * 100).toFixed(2)}% | Tripwire Target: ${(tripwire * 100).toFixed(2)}% | Trail Step: ${(trailStep * 100).toFixed(2)}%`);
                         }
@@ -419,8 +413,12 @@ export async function startWatchdog() {
 
                             console.log(`[WATCHDOG] Missing OCO Brackets for ${asset}. Deploying deterministic safety net...`);
                             const executePath = '/api/v3/brokerage/orders';
+                            
+                            // 🟢 THE FIX: DYNAMIC CLIENT ORDER ID FOR SAFETY NET
+                            const dynamicSafetyNetId = `nx_wd_oco_${Date.now()}`;
+                            
                             const ocoPayload = {
-                                client_order_id: ocoClientId, product_id: coinbaseProduct, side: closingSide,
+                                client_order_id: dynamicSafetyNetId, product_id: coinbaseProduct, side: closingSide,
                                 order_configuration: { trigger_bracket_gtc: { limit_price: safeTpPrice, stop_trigger_price: safeSlPrice, base_size: orderQty.toString() } }
                             };
                             
@@ -433,6 +431,7 @@ export async function startWatchdog() {
                                     console.error(`[WATCHDOG BRACKET REJECT] OCO Failed:`, ocoErrMsg);
                                     await sendDiscordAlert({ title: `⚠️ Watchdog Bracket Failed: ${asset}`, description: `**Action:** Attempted to deploy missing TP/SL protection!\n**Details:** ${ocoErrMsg}`, color: 15548997 });
                                 } else {
+                                    console.log(`[WATCHDOG] Successfully deployed new brackets for ${asset}.`);
                                     await sendDiscordAlert({ title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046 });
                                 }
                             } catch (error) {
