@@ -95,8 +95,14 @@ export async function startWatchdog() {
                 const tickerPath = `/api/v3/brokerage/products/${coinbaseProduct}/ticker`;
                 const tickerResp = await fetch(`https://api.coinbase.com${tickerPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tickerPath, apiKeyName, apiSecret)}` } });
                 const tickerData = await tickerResp.json();
-                const currentPrice = parseFloat(tickerData.price);
-                if (!currentPrice) continue;
+                
+                // 🟢 THE FIX: Correctly parse Coinbase v3 API Ticker response
+                const currentPrice = parseFloat(tickerData.trades?.[0]?.price || tickerData.best_bid || tickerData.best_ask);
+                
+                if (!currentPrice || isNaN(currentPrice)) {
+                    console.log(`[WATCHDOG WAIT] Ticker failed to fetch valid price for ${asset}.`);
+                    continue;
+                }
 
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
                      console.log(`[WATCHDOG] Missing entry price detected for trade ${openTrade.id}. Attempting to self-heal...`);
@@ -171,27 +177,28 @@ export async function startWatchdog() {
 
                     // 🟢 THE HARVEST PROTOCOL
                     if (activePosition && openTrade.entry_price) {
-                        // 🟢 THE FIX: Strictly reference the unique config row by its ID (.single() is completely safe here)
-                        const { data: configData, error: configErr } = await supabase
+                        // 🟢 THE FIX: Bulletproof Config Query
+                        const { data: configRows } = await supabase
                             .from('strategy_config')
                             .select('*')
-                            .eq('id', openTrade.strategy_id)
-                            .single();
-                            
-                        if (configErr) console.error(`[WATCHDOG CONFIG FETCH] ERROR:`, configErr.message);
+                            .eq('strategy', openTrade.strategy_id)
+                            .eq('asset', asset)
+                            .order('id', { ascending: false })
+                            .limit(1);
 
+                        const configData = configRows && configRows.length > 0 ? configRows[0] : {};
                         const params = configData?.parameters || {};
                         
                         const pnlPercent = (openTrade.side || '').toUpperCase() === 'BUY' 
                             ? (currentPrice - openTrade.entry_price) / openTrade.entry_price 
                             : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
                             
-                        // Note: If you enter "0.5" in DB, this math divides it to 0.005 (which matches pnlPercent logic)
                         const rawTripwire = params.tripwire_percent || params.tp_tripwire_percent || 0;
                         const tripwire = parseFloat(rawTripwire) / 100;
                         const trailStep = parseFloat(params.trail_step_percent || 0) / 100;
                         const trailActivation = parseFloat(params.trail_activation_percent || rawTripwire || 0) / 100;
 
+                        // Diagnostics will now actually print
                         if (!openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]') && tripwire > 0) {
                             console.log(`[HARVEST DIAGNOSTICS] ${asset} | Live PnL: ${(pnlPercent * 100).toFixed(2)}% | Tripwire Target: ${(tripwire * 100).toFixed(2)}% | Trail Step: ${(trailStep * 100).toFixed(2)}%`);
                         }
