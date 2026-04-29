@@ -251,7 +251,7 @@ export async function startWatchdog() {
                         continue; 
                     }
 
-                    // 🟢 THE FIX: Bulletproof Math Fallback & Audit UI Sync
+                    // 🟢 THE FIX: Bulletproof Exit Matching
                     if (!activePosition && !entryOrderExists) {
                         let wasCanceled = false; let wasFilled = false;
                         let exactExitPrice = currentPrice;
@@ -274,14 +274,31 @@ export async function startWatchdog() {
                             const fillData = await fillResp.json();
                             const filledOco = fillData.orders?.find(o => o.client_order_id === ocoClientId);
                             
+                            // 🟢 THE FIX: Correctly identify the Closing Side
+                            const closingSide = openTrade.side.toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
+                            
                             if (filledOco) {
                                 wasFilled = true;
                                 exactExitPrice = parseFloat(filledOco.average_filled_price || filledOco.order_configuration?.trigger_bracket_gtc?.limit_price || filledOco.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || currentPrice);
                             } else {
-                                const legacyFill = fillData.orders?.find(o => o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || o.average_filled_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2));
+                                // 🟢 THE FIX: Look for fills matching the exact opposite direction (e.g. A BUY order to close a SELL)
+                                const legacyFill = fillData.orders?.find(o => 
+                                    o.side.toUpperCase() === closingSide && 
+                                    (
+                                        (openTrade.tp_price && Math.abs(parseFloat(o.average_filled_price || 0) - openTrade.tp_price) < (tickSize * 10)) ||
+                                        (openTrade.sl_price && Math.abs(parseFloat(o.average_filled_price || 0) - openTrade.sl_price) < (tickSize * 10))
+                                    )
+                                );
+                                
+                                // 🟢 THE FIX: If tags and limits were wiped by UI interaction, just grab the most recent closing order
+                                const fallbackFill = fillData.orders?.find(o => o.side.toUpperCase() === closingSide);
+
                                 if (legacyFill) {
                                     wasFilled = true;
                                     exactExitPrice = parseFloat(legacyFill.average_filled_price || currentPrice);
+                                } else if (fallbackFill) {
+                                    wasFilled = true;
+                                    exactExitPrice = parseFloat(fallbackFill.average_filled_price || currentPrice);
                                 }
                             }
                         }
@@ -304,7 +321,6 @@ export async function startWatchdog() {
                             
                             await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                             
-                            // 🟢 UI Audit Sync
                             await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CANCELED', telemetry: { macro_regime_oracle: `ORDER CANCELED`, oracle_reasoning: updatedReason, open_position: "NONE" } }]);
 
                             const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
@@ -334,7 +350,6 @@ export async function startWatchdog() {
                                 else { assumedReason = 'STOP_LOSS (NATIVE_SYNC)'; }
                             }
 
-                            // 🟢 Bulletproof Math (Prevents Supabase NaN Rejection)
                             const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
                             const safeExitPrice = parseFloat(exactExitPrice) || parseFloat(currentPrice) || 0;
                             const safeQty = parseFloat(openTrade.qty) || 1;
@@ -346,7 +361,6 @@ export async function startWatchdog() {
                             if (updateErr) {
                                 console.error("[TRADE LOG UPDATE FAILED]:", updateErr.message);
                             } else {
-                                // 🟢 UI Audit Sync
                                 await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CLOSED', telemetry: { macro_regime_oracle: `POSITION CLOSED`, oracle_reasoning: updatedReason, open_pnl: rawPnl.toFixed(4), open_position: "NONE" } }]);
                             }
 
