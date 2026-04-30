@@ -94,7 +94,14 @@ export async function startWatchdog() {
 
                 const tickerPath = `/api/v3/brokerage/products/${coinbaseProduct}/ticker`;
                 const tickerResp = await fetch(`https://api.coinbase.com${tickerPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tickerPath, apiKeyName, apiSecret)}` } });
-                const tickerData = await tickerResp.json();
+                
+                let tickerData;
+                try {
+                    tickerData = await tickerResp.json();
+                } catch (jsonErr) {
+                    console.error(`[WATCHDOG API FAULT] Coinbase returned non-JSON data for ${asset}. Skipping tick...`);
+                    continue; // Skip this loop safely instead of crashing
+                }
                 
                 // 🟢 THE FIX: Correctly parse Coinbase v3 API Ticker response
                 const currentPrice = parseFloat(tickerData.trades?.[0]?.price || tickerData.best_bid || tickerData.best_ask);
