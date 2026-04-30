@@ -32,6 +32,24 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
+// 🟢 THE UPGRADE: Sequence Generator for the LLM
+const getCVDSequence = (candles, sequenceLength = 5) => {
+    if (!candles || candles.length === 0) return [];
+    const seq = [];
+    const targetCandles = candles.slice(-sequenceLength);
+    for (let i = 0; i < targetCandles.length; i++) {
+        const c = targetCandles[i];
+        const range = c.high - c.low;
+        let openPrice = c.open !== undefined && !isNaN(c.open) ? c.open : c.close; 
+        let cvd = 0;
+        if (range > 0) {
+            cvd = c.volume * ((c.close - openPrice) / range);
+        }
+        seq.push(parseFloat(cvd.toFixed(2)));
+    }
+    return seq;
+};
+
 async function pingHermes(payload) {
     const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
     try {
@@ -157,9 +175,32 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                 if (bookResp.ok) {
                     const bookJson = await bookResp.json();
                     const bids = bookJson.pricebook?.bids || []; const asks = bookJson.pricebook?.asks || [];
-                    let totalBidSize = bids.reduce((sum, b) => sum + parseFloat(b.size || 0), 0);
-                    let totalAskSize = asks.reduce((sum, a) => sum + parseFloat(a.size || 0), 0);
-                    orderBookData = { bids_50_levels: (totalBidSize || 0).toFixed(2), asks_50_levels: (totalAskSize || 0).toFixed(2), imbalance: totalBidSize > totalAskSize ? "BULLISH" : "BEARISH" };
+                    
+                    // 🟢 THE UPGRADE: Order Book X-Ray to find the exact Liquidity Walls
+                    let largestBid = { price: 0, size: 0 };
+                    let largestAsk = { price: 0, size: 0 };
+                    
+                    let totalBidSize = 0;
+                    bids.forEach(b => {
+                        let sz = parseFloat(b.size || 0);
+                        totalBidSize += sz;
+                        if (sz > largestBid.size) { largestBid.size = sz; largestBid.price = parseFloat(b.price); }
+                    });
+                    
+                    let totalAskSize = 0;
+                    asks.forEach(a => {
+                        let sz = parseFloat(a.size || 0);
+                        totalAskSize += sz;
+                        if (sz > largestAsk.size) { largestAsk.size = sz; largestAsk.price = parseFloat(a.price); }
+                    });
+
+                    orderBookData = { 
+                        bids_50_levels: (totalBidSize || 0).toFixed(2), 
+                        asks_50_levels: (totalAskSize || 0).toFixed(2), 
+                        imbalance: totalBidSize > totalAskSize ? "BULLISH" : "BEARISH",
+                        largest_bid_wall: largestBid,
+                        largest_ask_wall: largestAsk
+                    };
                 }
             } catch (err) {}
 
@@ -316,12 +357,30 @@ export async function startSniper() {
                 const macroTf = params.macro_tf || 'ONE_HOUR';
                 const triggerTf = params.trigger_tf || 'FIVE_MINUTE';
 
-                const [macroCandles, triggerCandles] = await Promise.all([
+                // 🟢 THE UPGRADE: The Fractal Fetcher
+                const [macroCandles, triggerCandles, candles15M, candles30M, candles6H, candles5M, candles1H] = await Promise.all([
                     fetchCoinbaseData(config.asset, macroTf, apiKeyName, apiSecret),
-                    fetchCoinbaseData(config.asset, triggerTf, apiKeyName, apiSecret)
+                    fetchCoinbaseData(config.asset, triggerTf, apiKeyName, apiSecret),
+                    fetchCoinbaseData(config.asset, 'FIFTEEN_MINUTE', apiKeyName, apiSecret).catch(() => []),
+                    fetchCoinbaseData(config.asset, 'THIRTY_MINUTE', apiKeyName, apiSecret).catch(() => []),
+                    fetchCoinbaseData(config.asset, 'SIX_HOUR', apiKeyName, apiSecret).catch(() => []),
+                    triggerTf === 'FIVE_MINUTE' ? Promise.resolve(null) : fetchCoinbaseData(config.asset, 'FIVE_MINUTE', apiKeyName, apiSecret).catch(() => []),
+                    macroTf === 'ONE_HOUR' ? Promise.resolve(null) : fetchCoinbaseData(config.asset, 'ONE_HOUR', apiKeyName, apiSecret).catch(() => [])
                 ]);
 
                 if (!macroCandles || !triggerCandles) continue;
+
+                // Map to ensure we always have 5M and 1H even if the strategy defaults are different
+                const c5m = triggerTf === 'FIVE_MINUTE' ? triggerCandles : candles5M;
+                const c1h = macroTf === 'ONE_HOUR' ? macroCandles : candles1H;
+
+                const momentumMatrix = {
+                    '5M_Seq': getCVDSequence(c5m, 5),
+                    '15M_Seq': getCVDSequence(candles15M, 5),
+                    '30M_Seq': getCVDSequence(candles30M, 5),
+                    '1H_Seq': getCVDSequence(c1h, 5),
+                    '6H_Seq': getCVDSequence(candles6H, 5)
+                };
 
                 const microstructure = await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
                 
@@ -352,7 +411,6 @@ export async function startSniper() {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
                         console.log(`[SNIPER] Math signal detected for ${config.asset}. Fetching Core Memory & Waking Hermes...`);
                         
-                        // 🟢 THE FIX: Fetch Agentic Reflection Memories
                         let memoryString = "No core memory available for this asset.";
                         try {
                             const { data: memories } = await supabase
@@ -367,10 +425,11 @@ export async function startSniper() {
                             }
                         } catch(e) { console.error("[MEMORY FETCH ERROR]", e.message); }
 
+                        // 🟢 THE UPGRADE: Injecting the new Matrix and Liquidity map directly into the Cortex
                         await pingHermes({
                             asset: config.asset,
                             mode: "ENTRY",
-                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
+                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Walls):\nLargest Bid Wall: ${microstructure.orderBook.largest_bid_wall?.size || 0} contracts @ $${microstructure.orderBook.largest_bid_wall?.price || 0}\nLargest Ask Wall: ${microstructure.orderBook.largest_ask_wall?.size || 0} contracts @ $${microstructure.orderBook.largest_ask_wall?.price || 0}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
                             openTrade: openTrade || null,
                             previous_thesis: config.active_thesis || "No previous thesis recorded.",
                             candles: triggerCandles.slice(-50),
@@ -380,7 +439,7 @@ export async function startSniper() {
                             execution_mode: config.execution_mode,
                             strategy_id: config.strategy,
                             version: config.version,
-                            qty: params.qty || 1 // 🟢 FIX: Forces your DB qty parameters natively so it never guesses 10
+                            qty: params.qty || 1 
                         });
 
                         await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('id', config.id);

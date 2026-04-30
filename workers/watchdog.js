@@ -182,7 +182,6 @@ export async function startWatchdog() {
                     }
 
                     if (activePosition && openTrade.entry_price) {
-                        // 🟢 THE FIX: Query matching strategy text AND asset to target the unique row perfectly
                         const { data: configData, error: configErr } = await supabase
                             .from('strategy_config')
                             .select('*')
@@ -265,16 +264,39 @@ export async function startWatchdog() {
                     if (!activePosition && entryOrderExists) {
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
                         let totalAllowedMinutes = 15; 
-                        const initialMatch = openTrade.reason?.match(/Fill:\s*(\d+)m/i);
+                        
+                        // 🟢 THE UPGRADE: Dynamic Holographic TTL Parsing
+                        const initialMatch = openTrade.reason?.match(/(?:Fill|TTL|Trap TTL|Trap):\s*(\d+)m/i);
                         if (initialMatch) totalAllowedMinutes = parseInt(initialMatch[1]);
 
-                        if (minutesOpen > totalAllowedMinutes && !openTrade.reason?.includes('[HERMES_NOTIFIED]')) {
-                            console.log(`[WATCHDOG] Stale limit detected on ${asset}. Waking Hermes Agent...`);
-                            await pingHermes({
-                                asset: asset, mode: "PENDING_REVIEW",
-                                message: `Your limit order for ${asset} at $${openTrade.entry_price} has sat unfilled for ${Math.round(minutesOpen)}m. Current price is $${currentPrice}. Use get_market_state to evaluate if you should hold, adjust, or cancel.`
-                            });
-                            await supabase.from('trade_logs').update({ reason: `${openTrade.reason || ''}\n\n[HERMES_NOTIFIED]: Reviewing Stale Limit` }).eq('id', openTrade.id);
+                        if (minutesOpen > totalAllowedMinutes) {
+                            console.log(`[WATCHDOG] Holographic Trap for ${asset} exceeded ${totalAllowedMinutes}m TTL. Fading trap...`);
+                            
+                            const targetOrder = openOrders.find(o => o.client_order_id === entryClientId || ((o.side || '').toUpperCase() === (openTrade.side || '').toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)));
+                            
+                            if (targetOrder) {
+                                const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] }) });
+                            }
+
+                            const updatedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE EXPIRED]: Holographic Trap faded after ${Math.round(minutesOpen)}m. Momentum shift assumed.`;
+                            const safeExitPrice = parseFloat(openTrade.entry_price) || 0;
+
+                            await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            
+                            await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CANCELED', telemetry: { macro_regime_oracle: `TRAP FADED`, oracle_reasoning: updatedReason, open_position: "NONE" } }]);
+
+                            const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
+                            await sendDiscordAlert({ title: `👻 Trap Faded: ${asset}`, description: `**Action:** Limit order vanished from the exchange.\n**Reason:** Exceeded ${totalAllowedMinutes}m Time-To-Live (TTL).\n**Status:** Capital secured.`, color: 16776960, imageUrl: chartUrl });
+                            
+                            try {
+                                const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
+                                const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
+                                await fetch(autopsyUrl, {
+                                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ asset: asset, entry_price: safeExitPrice, exit_price: safeExitPrice, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'TRAP_FADED' })
+                                });
+                            } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
                         }
                         continue; 
                     }
