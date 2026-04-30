@@ -100,10 +100,9 @@ export async function startWatchdog() {
                     tickerData = await tickerResp.json();
                 } catch (jsonErr) {
                     console.error(`[WATCHDOG API FAULT] Coinbase returned non-JSON data for ${asset}. Skipping tick...`);
-                    continue; // Skip this loop safely instead of crashing
+                    continue; 
                 }
                 
-                // 🟢 THE FIX: Correctly parse Coinbase v3 API Ticker response
                 const currentPrice = parseFloat(tickerData.trades?.[0]?.price || tickerData.best_bid || tickerData.best_ask);
                 
                 if (!currentPrice || isNaN(currentPrice)) {
@@ -182,20 +181,15 @@ export async function startWatchdog() {
                         }
                     }
 
-                    // 🟢 THE HARVEST PROTOCOL
                     if (activePosition && openTrade.entry_price) {
-                        // 🟢 THE FIX: Reverted to querying 'strategy' text column, but with limit(1) to avoid duplicate crashes
-                        const { data: configRows, error: configErr } = await supabase
+                        const { data: configData, error: configErr } = await supabase
                             .from('strategy_config')
                             .select('*')
-                            .eq('strategy', openTrade.strategy_id)
-                            .eq('asset', asset)
-                            .order('id', { ascending: false })
-                            .limit(1);
+                            .eq('id', openTrade.strategy_id)
+                            .single();
                             
                         if (configErr) console.error(`[WATCHDOG CONFIG FETCH] ERROR:`, configErr.message);
 
-                        const configData = configRows && configRows.length > 0 ? configRows[0] : {};
                         const params = configData?.parameters || {};
                         
                         const pnlPercent = (openTrade.side || '').toUpperCase() === 'BUY' 
@@ -207,7 +201,6 @@ export async function startWatchdog() {
                         const trailStep = parseFloat(params.trail_step_percent || 0) / 100;
                         const trailActivation = parseFloat(params.trail_activation_percent || rawTripwire || 0) / 100;
 
-                        // Diagnostics will now actually print
                         if (!openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]') && tripwire > 0) {
                             console.log(`[HARVEST DIAGNOSTICS] ${asset} | Live PnL: ${(pnlPercent * 100).toFixed(2)}% | Tripwire Target: ${(tripwire * 100).toFixed(2)}% | Trail Step: ${(trailStep * 100).toFixed(2)}%`);
                         }
@@ -222,6 +215,8 @@ export async function startWatchdog() {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                 await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                                 openOrders = []; 
+                                // 🟢 THE FIX: 2-second exchange clearing breath
+                                await new Promise(resolve => setTimeout(resolve, 2000));
                             }
 
                             const updatedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_ACTIVATED]: Profit reached ${(pnlPercent*100).toFixed(2)}%. SL moved to Break-Even.`;
@@ -257,6 +252,8 @@ export async function startWatchdog() {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                     await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                                     openOrders = []; 
+                                    // 🟢 THE FIX: 2-second exchange clearing breath
+                                    await new Promise(resolve => setTimeout(resolve, 2000));
                                 }
 
                                 await supabase.from('trade_logs').update({ sl_price: safeDynamicSL }).eq('id', openTrade.id);
@@ -429,7 +426,6 @@ export async function startWatchdog() {
                             console.log(`[WATCHDOG] Missing OCO Brackets for ${asset}. Deploying deterministic safety net...`);
                             const executePath = '/api/v3/brokerage/orders';
                             
-                            // 🟢 THE FIX: DYNAMIC CLIENT ORDER ID FOR SAFETY NET
                             const dynamicSafetyNetId = `nx_wd_oco_${Date.now()}`;
                             
                             const ocoPayload = {
@@ -439,7 +435,15 @@ export async function startWatchdog() {
                             
                             try {
                                 const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
-                                const ocoResult = await ocoResp.json();
+                                
+                                // 🟢 THE FIX: Wrap JSON parse in try/catch to shield from Cloudflare HTML errors
+                                let ocoResult;
+                                try {
+                                    ocoResult = await ocoResp.json();
+                                } catch (jsonErr) {
+                                    console.error(`[WATCHDOG OCO FAULT] Exchange returned invalid data. Delaying bracket deployment...`);
+                                    continue; 
+                                }
                                 
                                 if (!ocoResp.ok || ocoResult.success === false) {
                                     const ocoErrMsg = ocoResult.error_response?.preview_failure_reason || ocoResult.error_response?.error || ocoResult.failure_reason?.error_message || JSON.stringify(ocoResult);
