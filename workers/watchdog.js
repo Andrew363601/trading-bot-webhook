@@ -182,10 +182,12 @@ export async function startWatchdog() {
                     }
 
                     if (activePosition && openTrade.entry_price) {
+                        // 🟢 THE FIX: Query matching strategy text AND asset to target the unique row perfectly
                         const { data: configData, error: configErr } = await supabase
                             .from('strategy_config')
                             .select('*')
-                            .eq('id', openTrade.strategy_id)
+                            .eq('strategy', openTrade.strategy_id)
+                            .eq('asset', asset)
                             .single();
                             
                         if (configErr) console.error(`[WATCHDOG CONFIG FETCH] ERROR:`, configErr.message);
@@ -215,7 +217,6 @@ export async function startWatchdog() {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                 await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                                 openOrders = []; 
-                                // 🟢 THE FIX: 2-second exchange clearing breath
                                 await new Promise(resolve => setTimeout(resolve, 2000));
                             }
 
@@ -252,7 +253,6 @@ export async function startWatchdog() {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                     await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                                     openOrders = []; 
-                                    // 🟢 THE FIX: 2-second exchange clearing breath
                                     await new Promise(resolve => setTimeout(resolve, 2000));
                                 }
 
@@ -436,7 +436,6 @@ export async function startWatchdog() {
                             try {
                                 const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
                                 
-                                // 🟢 THE FIX: Wrap JSON parse in try/catch to shield from Cloudflare HTML errors
                                 let ocoResult;
                                 try {
                                     ocoResult = await ocoResp.json();
