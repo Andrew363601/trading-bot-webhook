@@ -32,7 +32,6 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
-// 🟢 THE UPGRADE: Sequence Generator for the LLM
 const getCVDSequence = (candles, sequenceLength = 5) => {
     if (!candles || candles.length === 0) return [];
     const seq = [];
@@ -176,7 +175,6 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                     const bookJson = await bookResp.json();
                     const bids = bookJson.pricebook?.bids || []; const asks = bookJson.pricebook?.asks || [];
                     
-                    // 🟢 THE UPGRADE: Order Book X-Ray to find the exact Liquidity Walls
                     let largestBid = { price: 0, size: 0 };
                     let largestAsk = { price: 0, size: 0 };
                     
@@ -304,10 +302,8 @@ export async function startSniper() {
 
                 if (trapSprung) {
                     console.log(`[SNIPER] LIGHTNING TRAP SPRUNG for ${config.asset} at $${currentPrice}!`);
-                    config.trap_side = null; 
                     
-                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id);
-
+                    // 🟢 THE FIX 1: Passing the original thesis into the Execution Pipeline
                     let finalQty = params.qty || 1;
                     if (params.target_usd) {
                         const { multiplier } = getAssetMetrics(config.asset);
@@ -331,9 +327,14 @@ export async function startSniper() {
                         tp_price: parseFloat((Math.round(trapTpPrice / tickSize) * tickSize).toFixed(4)), 
                         sl_price: parseFloat((Math.round(trapSlPrice / tickSize) * tickSize).toFixed(4)),
                         execution_mode: config.execution_mode || 'PAPER', leverage: params.leverage || 1,
-                        market_type: params.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)), reason: `[VIRTUAL TRAP SPRUNG]: AI Pre-calculated R:R executed at $${currentPrice}`
+                        market_type: params.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)), 
+                        reason: `[VIRTUAL TRAP SPRUNG]: AI Pre-calculated R:R executed at $${currentPrice}\n\n**Original Thesis:** ${config.active_thesis || 'None Recorded'}`,
+                        working_thesis: config.active_thesis
                     };
                     
+                    config.trap_side = null; 
+                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id);
+
                     executeTradeMCP(trapPayload).catch(e => console.error("[TRAP EXECUTION FATAL]:", e.message));
                     continue; 
                 }
@@ -387,7 +388,6 @@ export async function startSniper() {
 
                 let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
 
-                // 🟢 THE FIX: Trap Display Logic in Telemetry
                 decision.telemetry = { 
                     ...decision.telemetry, 
                     macro_poc: microstructure.indicators.macro_poc, upper_macro_node: microstructure.indicators.upper_macro_node, lower_macro_node: microstructure.indicators.lower_macro_node,
@@ -424,7 +424,6 @@ export async function startSniper() {
                             }
                         } catch(e) { console.error("[MEMORY FETCH ERROR]", e.message); }
 
-                        // 🟢 THE FIX: Trap Memory Injection payload
                         let activeTrapMessage = "";
                         if (!openTrade && config.trap_side && config.trap_price) {
                             const timeRemaining = Math.max(0, Math.round((new Date(config.trap_expires_at).getTime() - Date.now()) / 60000));
@@ -455,7 +454,10 @@ export async function startSniper() {
                     }
                 }
 
-                const finalStatus = decision.statusOverride || (decision.signal ? "RESONANT" : "STABLE");
+                // 🟢 THE FIX 2: UI Status Override Pinning
+                let baseStatus = (config.trap_side && config.trap_price) ? "TRAP_ACTIVE" : "STABLE";
+                const finalStatus = decision.statusOverride || (decision.signal ? "RESONANT" : baseStatus);
+                
                 await supabase.from('scan_results').insert([{ strategy: config.strategy, asset: config.asset, telemetry: decision.telemetry, status: finalStatus }]);
 
             } catch (e) { console.error(`[ASSET ERROR] ${config.asset}:`, e.message); }

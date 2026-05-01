@@ -45,7 +45,6 @@ app.post('/api/wake', async (req, res) => {
         console.log(`[AGENT CORTEX] X-Ray Data acquired. Booting Gemini inference engine...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`;
         
-        // 🟢 THE FIX: Dynamic Prompting based on the Agent's current mission
         let instructionText = `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\nLIVE MULTI-TF MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\n`;
         
         if (mode === "TRIPWIRE_HIT") {
@@ -106,19 +105,22 @@ app.post('/api/wake', async (req, res) => {
             }
         }
 
-        let chartUrl = null;
-        if (candles && indicators) {
-            chartUrl = await buildRadarChartUrl({
-                asset, candles, poc: indicators.macro_poc, upperNode: indicators.upper_macro_node, lowerNode: indicators.lower_macro_node,
-                currentPrice: candles[candles.length - 1]?.close, openTrade
-            });
-        }
-
+        // 🟢 THE FIX 1: Move Action Booleans UP to intercept Trap Data for the Chart
         const isVeto = decisionJson.action === "VETO";
         const isReversal = decisionJson.action === "REVERSE";
         const isTrap = decisionJson.action === "VIRTUAL_TRAP";
         const isHold = decisionJson.action === "HOLD"; 
         const isClose = decisionJson.action === "CLOSE"; 
+
+        let chartUrl = null;
+        if (candles && indicators) {
+            chartUrl = await buildRadarChartUrl({
+                asset, candles, poc: indicators.macro_poc, upperNode: indicators.upper_macro_node, lowerNode: indicators.lower_macro_node,
+                currentPrice: candles[candles.length - 1]?.close, openTrade,
+                trapPrice: isTrap ? decisionJson.trap_price : null,
+                trapSide: isTrap ? decisionJson.side : null
+            });
+        }
         
         let alertTitle = `🧠 Agent APPROVED: ${asset}`;
         let alertColor = 3447003;
@@ -151,15 +153,25 @@ app.post('/api/wake', async (req, res) => {
         
         if (!isActionableExecution) {
             console.log(`[AGENT CORTEX] Logging non-execution action (${decisionJson.action}) to UI Audit...`);
+            
+            // 🟢 THE FIX 2: Telemetry Injection & UI Pinning
+            let finalStatus = decisionJson.action;
+            let displayPosition = openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : "NONE";
+            
+            if (isTrap) {
+                finalStatus = "TRAP_ACTIVE";
+                displayPosition = `TRAP ${decisionJson.side} @ $${decisionJson.trap_price}`;
+            }
+
             await supabase.from('scan_results').insert([{
                 strategy: strategy_id || 'MANUAL',
                 asset: asset,
-                status: decisionJson.action,
+                status: finalStatus,
                 telemetry: {
                     macro_regime_oracle: `AGENT ${decisionJson.action}`,
                     oracle_reasoning: decisionJson.working_thesis,
                     cvd: marketState?.multi_timeframe_cvd?.["5M_Micro_Ripple"] || 0,
-                    open_position: openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : "NONE"
+                    open_position: displayPosition
                 }
             }]);
         }
