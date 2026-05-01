@@ -43,7 +43,7 @@ app.post('/api/wake', async (req, res) => {
         const marketState = await stateResp.json();
 
         console.log(`[AGENT CORTEX] X-Ray Data acquired. Booting Gemini inference engine...`);
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`;
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
         
         let instructionText = `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\nLIVE MULTI-TF MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\n`;
         
@@ -232,7 +232,7 @@ app.post('/api/autopsy', async (req, res) => {
         }
         `;
 
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${geminiKey}`;
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
         const payload = {
             systemInstruction: { parts: [{ text: "You are an AI post-mortem trading analyzer. Output ONLY raw, valid JSON." }] },
             contents: [{ role: "user", parts: [{ text: autopsyPrompt }] }],
