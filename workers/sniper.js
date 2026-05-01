@@ -175,29 +175,19 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                     const bookJson = await bookResp.json();
                     const bids = bookJson.pricebook?.bids || []; const asks = bookJson.pricebook?.asks || [];
                     
-                    let largestBid = { price: 0, size: 0 };
-                    let largestAsk = { price: 0, size: 0 };
+                    // 🟢 THE UPGRADE: Deep X-Ray Vision (Top 3 Walls)
+                    const parsedBids = bids.map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size || 0) })).sort((a, b) => b.size - a.size);
+                    const parsedAsks = asks.map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size || 0) })).sort((a, b) => b.size - a.size);
                     
-                    let totalBidSize = 0;
-                    bids.forEach(b => {
-                        let sz = parseFloat(b.size || 0);
-                        totalBidSize += sz;
-                        if (sz > largestBid.size) { largestBid.size = sz; largestBid.price = parseFloat(b.price); }
-                    });
-                    
-                    let totalAskSize = 0;
-                    asks.forEach(a => {
-                        let sz = parseFloat(a.size || 0);
-                        totalAskSize += sz;
-                        if (sz > largestAsk.size) { largestAsk.size = sz; largestAsk.price = parseFloat(a.price); }
-                    });
+                    let totalBidSize = bids.reduce((sum, b) => sum + parseFloat(b.size || 0), 0);
+                    let totalAskSize = asks.reduce((sum, a) => sum + parseFloat(a.size || 0), 0);
 
                     orderBookData = { 
-                        bids_50_levels: (totalBidSize || 0).toFixed(2), 
-                        asks_50_levels: (totalAskSize || 0).toFixed(2), 
+                        bids_50_levels: totalBidSize.toFixed(2), 
+                        asks_50_levels: totalAskSize.toFixed(2), 
                         imbalance: totalBidSize > totalAskSize ? "BULLISH" : "BEARISH",
-                        largest_bid_wall: largestBid,
-                        largest_ask_wall: largestAsk
+                        largest_bid_walls: parsedBids.slice(0, 3),
+                        largest_ask_walls: parsedAsks.slice(0, 3)
                     };
                 }
             } catch (err) {}
@@ -303,7 +293,6 @@ export async function startSniper() {
                 if (trapSprung) {
                     console.log(`[SNIPER] LIGHTNING TRAP SPRUNG for ${config.asset} at $${currentPrice}!`);
                     
-                    // 🟢 THE FIX 1: Passing the original thesis into the Execution Pipeline
                     let finalQty = params.qty || 1;
                     if (params.target_usd) {
                         const { multiplier } = getAssetMetrics(config.asset);
@@ -430,10 +419,14 @@ export async function startSniper() {
                             activeTrapMessage = `\n\n⚠️ ACTIVE GHOST TRAP ALERT:\nYou currently have an open VIRTUAL_TRAP set to ${config.trap_side} at $${config.trap_price} with ${timeRemaining}m remaining. Your previous working thesis was: "${config.active_thesis || 'None'}". Evaluate this new math signal against your previous thesis and decide if you should HOLD the existing trap, UPDATE it to a new level, or VETO to cancel the trap completely.`;
                         }
 
+                        // 🟢 THE UPGRADE: Injecting Top 3 Walls into the Hermes Prompt
+                        const bidWallsText = microstructure.orderBook.largest_bid_walls?.map((w, i) => `#${i+1}: ${w.size} contracts @ $${w.price}`).join('\n') || "None";
+                        const askWallsText = microstructure.orderBook.largest_ask_walls?.map((w, i) => `#${i+1}: ${w.size} contracts @ $${w.price}`).join('\n') || "None";
+
                         await pingHermes({
                             asset: config.asset,
                             mode: "ENTRY",
-                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Walls):\nLargest Bid Wall: ${microstructure.orderBook.largest_bid_wall?.size || 0} contracts @ $${microstructure.orderBook.largest_bid_wall?.price || 0}\nLargest Ask Wall: ${microstructure.orderBook.largest_ask_wall?.size || 0} contracts @ $${microstructure.orderBook.largest_ask_wall?.price || 0}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
+                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Top 3 Walls):\nBIDS:\n${bidWallsText}\n\nASKS:\n${askWallsText}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
                             openTrade: openTrade || null,
                             previous_thesis: config.active_thesis || "No previous thesis recorded.",
                             candles: triggerCandles.slice(-50),
@@ -454,7 +447,6 @@ export async function startSniper() {
                     }
                 }
 
-                // 🟢 THE FIX 2: UI Status Override Pinning
                 let baseStatus = (config.trap_side && config.trap_price) ? "TRAP_ACTIVE" : "STABLE";
                 const finalStatus = decision.statusOverride || (decision.signal ? "RESONANT" : baseStatus);
                 
