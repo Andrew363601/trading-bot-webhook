@@ -168,6 +168,7 @@ export async function startWatchdog() {
 
                     // 🟢 THE HARVEST PROTOCOL (Tripwire & Trailing Stop Logic)
                     if (activePosition && openTrade.entry_price) {
+                        // Flawless isolation: Unique fingerprint uses Strategy String + Asset String
                         const { data: configData } = await supabase.from('strategy_config').select('*').eq('strategy', openTrade.strategy_id).eq('asset', asset).single();
                         const params = configData?.parameters || {};
                         
@@ -190,6 +191,8 @@ export async function startWatchdog() {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                 await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                                 openOrders = []; 
+                                // 🟢 THE FIX: 2-second exchange clearing breath
+                                await new Promise(resolve => setTimeout(resolve, 2000));
                             }
 
                             const updatedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_ACTIVATED]: Profit reached ${(pnlPercent*100).toFixed(2)}%. SL moved to Break-Even.`;
@@ -226,6 +229,8 @@ export async function startWatchdog() {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                     await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                                     openOrders = []; 
+                                    // 🟢 THE FIX: 2-second exchange clearing breath
+                                    await new Promise(resolve => setTimeout(resolve, 2000));
                                 }
 
                                 await supabase.from('trade_logs').update({ sl_price: safeDynamicSL }).eq('id', openTrade.id);
@@ -377,7 +382,8 @@ export async function startWatchdog() {
                     }
 
                     if (activePosition) {
-                        const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc);
+                        // 🟢 THE FIX: Re-added dynamic ID detection
+                        const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc || o.client_order_id?.startsWith('nx_wd_oco_'));
 
                         if (!hasBracket && openTrade.tp_price && openTrade.sl_price) {
                             const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
@@ -387,14 +393,25 @@ export async function startWatchdog() {
 
                             console.log(`[WATCHDOG] Missing OCO Brackets for ${asset}. Deploying deterministic safety net...`);
                             const executePath = '/api/v3/brokerage/orders';
+                            
+                            // 🟢 THE FIX: Re-added dynamic OCO client ID to bypass idempotency errors
+                            const dynamicSafetyNetId = `nx_wd_oco_${Date.now()}`;
                             const ocoPayload = {
-                                client_order_id: ocoClientId, product_id: coinbaseProduct, side: closingSide,
+                                client_order_id: dynamicSafetyNetId, product_id: coinbaseProduct, side: closingSide,
                                 order_configuration: { trigger_bracket_gtc: { limit_price: safeTpPrice, stop_trigger_price: safeSlPrice, base_size: orderQty.toString() } }
                             };
                             
                             try {
                                 const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
-                                const ocoResult = await ocoResp.json();
+                                
+                                // 🟢 THE FIX: Re-added JSON try/catch shield
+                                let ocoResult;
+                                try {
+                                    ocoResult = await ocoResp.json();
+                                } catch (jsonErr) {
+                                    console.error(`[WATCHDOG OCO FAULT] Exchange returned invalid data. Delaying bracket deployment...`);
+                                    continue; 
+                                }
                                 
                                 if (!ocoResp.ok || ocoResult.success === false) {
                                     const ocoErrMsg = ocoResult.error_response?.preview_failure_reason || ocoResult.error_response?.error || ocoResult.failure_reason?.error_message || JSON.stringify(ocoResult);
