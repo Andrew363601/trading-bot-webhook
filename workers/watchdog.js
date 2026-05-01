@@ -77,7 +77,6 @@ async function pingHermes(payload) {
     }
 }
 
-// 🟢 THE UPGRADE: Added Heartbeat Tracker state
 const heartbeatTracker = {};
 
 export async function startWatchdog() {
@@ -92,6 +91,14 @@ export async function startWatchdog() {
 
             for (const openTrade of openTrades) {
                 const asset = openTrade.symbol;
+                
+                // 🟢 THE FIX: The 15-Second Grace Period for API Sync
+                const tradeAgeMs = Date.now() - new Date(openTrade.created_at || Date.now()).getTime();
+                if (tradeAgeMs < 15000) {
+                    console.log(`[WATCHDOG] Trade ${openTrade.id} is pending exchange propagation (${Math.round(tradeAgeMs/1000)}s). Yielding...`);
+                    continue; 
+                }
+
                 let coinbaseProduct = asset.toUpperCase().trim();
                 if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP'); 
 
@@ -184,7 +191,6 @@ export async function startWatchdog() {
                         const { data: configData } = await supabase.from('strategy_config').select('*').eq('strategy', openTrade.strategy_id).eq('asset', asset).single();
                         const params = configData?.parameters || {};
                         
-                        // 🟢 THE FIX 1 & 2: Added Leverage ROE Math & Removed Double-Dip
                         const leverage = parseFloat(openTrade.leverage || 1);
                         const rawPriceMove = openTrade.side === 'BUY' 
                             ? (currentPrice - openTrade.entry_price) / openTrade.entry_price 
@@ -196,7 +202,6 @@ export async function startWatchdog() {
                         const trailStep = parseFloat(params.trail_step_percent || 0);
                         const trailActivation = parseFloat(params.trail_activation_percent || params.tripwire_percent || 0);
 
-                        // 🟢 THE FIX 3: 60-Second Radar Log
                         const now = Date.now();
                         if (!heartbeatTracker[openTrade.id] || now - heartbeatTracker[openTrade.id] >= 60000) {
                             console.log(`[WATCHDOG RADAR] Asset: ${asset} | Live ROE: ${(pnlPercent * 100).toFixed(2)}% | Tripwire: ${(tripwire * 100).toFixed(2)}%`);
@@ -233,7 +238,6 @@ export async function startWatchdog() {
                         }
 
                         if (trailStep > 0 && trailActivation > 0 && pnlPercent >= trailActivation) {
-                            // Convert the ROE trail step back to raw asset price difference for the SL placement
                             const assetTrailStep = trailStep / leverage; 
                             const dynamicSL = openTrade.side === 'BUY' ? currentPrice * (1 - assetTrailStep) : currentPrice * (1 + assetTrailStep);
                             const safeDynamicSL = parseFloat((Math.round(dynamicSL / tickSize) * tickSize).toFixed(4));
