@@ -1,4 +1,4 @@
-// workers/sniper.js
+// hard push workers/sniper.js
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
