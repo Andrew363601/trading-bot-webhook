@@ -1,4 +1,4 @@
-// hard push workers/sniper.js
+// workers/sniper.js
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
@@ -357,7 +357,6 @@ export async function startSniper() {
                 const macroTf = params.macro_tf || 'ONE_HOUR';
                 const triggerTf = params.trigger_tf || 'FIVE_MINUTE';
 
-                // 🟢 THE UPGRADE: The Fractal Fetcher
                 const [macroCandles, triggerCandles, candles15M, candles30M, candles6H, candles5M, candles1H] = await Promise.all([
                     fetchCoinbaseData(config.asset, macroTf, apiKeyName, apiSecret),
                     fetchCoinbaseData(config.asset, triggerTf, apiKeyName, apiSecret),
@@ -370,7 +369,6 @@ export async function startSniper() {
 
                 if (!macroCandles || !triggerCandles) continue;
 
-                // Map to ensure we always have 5M and 1H even if the strategy defaults are different
                 const c5m = triggerTf === 'FIVE_MINUTE' ? triggerCandles : candles5M;
                 const c1h = macroTf === 'ONE_HOUR' ? macroCandles : candles1H;
 
@@ -389,6 +387,7 @@ export async function startSniper() {
 
                 let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
 
+                // 🟢 THE FIX: Trap Display Logic in Telemetry
                 decision.telemetry = { 
                     ...decision.telemetry, 
                     macro_poc: microstructure.indicators.macro_poc, upper_macro_node: microstructure.indicators.upper_macro_node, lower_macro_node: microstructure.indicators.lower_macro_node,
@@ -396,7 +395,7 @@ export async function startSniper() {
                     sp500: microstructure.crossAsset?.sp500 || "N/A", 
                     dxy: microstructure.crossAsset?.dxy || "N/A",     
                     bids: microstructure.orderBook.bids_50_levels || 0, asks: microstructure.orderBook.asks_50_levels || 0, premium: microstructure.derivativesData.basis_premium_percent || 0,
-                    open_position: openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : "NONE",
+                    open_position: openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : (config.trap_side ? `TRAP ${config.trap_side} @ $${config.trap_price}` : "NONE"),
                     open_tp: openTrade?.tp_price || "NONE",
                     open_sl: openTrade?.sl_price || "NONE",
                     open_pnl: openTrade ? (openTrade.pnl || 0) : 0,
@@ -425,11 +424,17 @@ export async function startSniper() {
                             }
                         } catch(e) { console.error("[MEMORY FETCH ERROR]", e.message); }
 
-                        // 🟢 THE UPGRADE: Injecting the new Matrix and Liquidity map directly into the Cortex
+                        // 🟢 THE FIX: Trap Memory Injection payload
+                        let activeTrapMessage = "";
+                        if (!openTrade && config.trap_side && config.trap_price) {
+                            const timeRemaining = Math.max(0, Math.round((new Date(config.trap_expires_at).getTime() - Date.now()) / 60000));
+                            activeTrapMessage = `\n\n⚠️ ACTIVE GHOST TRAP ALERT:\nYou currently have an open VIRTUAL_TRAP set to ${config.trap_side} at $${config.trap_price} with ${timeRemaining}m remaining. Your previous working thesis was: "${config.active_thesis || 'None'}". Evaluate this new math signal against your previous thesis and decide if you should HOLD the existing trap, UPDATE it to a new level, or VETO to cancel the trap completely.`;
+                        }
+
                         await pingHermes({
                             asset: config.asset,
                             mode: "ENTRY",
-                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Walls):\nLargest Bid Wall: ${microstructure.orderBook.largest_bid_wall?.size || 0} contracts @ $${microstructure.orderBook.largest_bid_wall?.price || 0}\nLargest Ask Wall: ${microstructure.orderBook.largest_ask_wall?.size || 0} contracts @ $${microstructure.orderBook.largest_ask_wall?.price || 0}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
+                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Walls):\nLargest Bid Wall: ${microstructure.orderBook.largest_bid_wall?.size || 0} contracts @ $${microstructure.orderBook.largest_bid_wall?.price || 0}\nLargest Ask Wall: ${microstructure.orderBook.largest_ask_wall?.size || 0} contracts @ $${microstructure.orderBook.largest_ask_wall?.price || 0}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
                             openTrade: openTrade || null,
                             previous_thesis: config.active_thesis || "No previous thesis recorded.",
                             candles: triggerCandles.slice(-50),
