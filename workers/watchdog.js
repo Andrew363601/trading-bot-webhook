@@ -78,6 +78,8 @@ async function pingHermes(payload) {
 }
 
 const heartbeatTracker = {};
+// 🟢 THE FIX: The Ceasefire Tracker to prevent Robotic Crossfire
+const missingBracketTracker = {};
 
 export async function startWatchdog() {
     console.log(`[WATCHDOG] Physical Exchange Janitor online. Sweeping orders...`);
@@ -92,7 +94,6 @@ export async function startWatchdog() {
             for (const openTrade of openTrades) {
                 const asset = openTrade.symbol;
                 
-                // 🟢 THE FIX: The 15-Second Grace Period for API Sync
                 const tradeAgeMs = Date.now() - new Date(openTrade.created_at || Date.now()).getTime();
                 if (tradeAgeMs < 15000) {
                     console.log(`[WATCHDOG] Trade ${openTrade.id} is pending exchange propagation (${Math.round(tradeAgeMs/1000)}s). Yielding...`);
@@ -396,7 +397,8 @@ export async function startWatchdog() {
                                 });
                             } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
 
-                            delete heartbeatTracker[openTrade.id]; // Clean up heartbeat tracker
+                            delete heartbeatTracker[openTrade.id]; 
+                            if (missingBracketTracker[openTrade.id]) delete missingBracketTracker[openTrade.id]; // Clean up tracker on close
                             continue; 
                         }
                     }
@@ -404,13 +406,32 @@ export async function startWatchdog() {
                     if (activePosition) {
                         const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc || o.client_order_id?.startsWith('nx_wd_oco_'));
 
+                        // Clear the tracker if brackets are found
+                        if (hasBracket && missingBracketTracker[openTrade.id]) {
+                            delete missingBracketTracker[openTrade.id];
+                        }
+
                         if (!hasBracket && openTrade.tp_price && openTrade.sl_price) {
+                            
+                            // 🟢 THE FIX: 10-Second Ceasefire Protocol
+                            const now = Date.now();
+                            if (!missingBracketTracker[openTrade.id]) {
+                                missingBracketTracker[openTrade.id] = now;
+                                console.log(`[WATCHDOG] Missing OCO Brackets detected for ${asset}. Yielding 10s for potential Hermes execution...`);
+                                continue;
+                            }
+                            
+                            // If it has been less than 10 seconds, do nothing and wait for the next sweep
+                            if (now - missingBracketTracker[openTrade.id] < 10000) {
+                                continue;
+                            }
+
                             const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
                             const orderQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                             const safeSlPrice = (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(4);
                             const safeTpPrice = (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(4);
 
-                            console.log(`[WATCHDOG] Missing OCO Brackets for ${asset}. Deploying deterministic safety net...`);
+                            console.log(`[WATCHDOG] Missing OCO Brackets for ${asset} exceeded grace period. Deploying deterministic safety net...`);
                             const executePath = '/api/v3/brokerage/orders';
                             const dynamicSafetyNetId = `nx_wd_oco_${Date.now()}`;
                             const ocoPayload = {
@@ -435,6 +456,8 @@ export async function startWatchdog() {
                                     await sendDiscordAlert({ title: `⚠️ Watchdog Bracket Failed: ${asset}`, description: `**Action:** Attempted to deploy missing TP/SL protection!\n**Details:** ${ocoErrMsg}`, color: 15548997 });
                                 } else {
                                     await sendDiscordAlert({ title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046 });
+                                    // Clean up tracker upon successful deployment
+                                    delete missingBracketTracker[openTrade.id];
                                 }
                             } catch (error) {
                                 console.error("[WATCHDOG BRACKET FATAL]:", error.message);
