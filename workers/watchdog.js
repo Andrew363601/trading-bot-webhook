@@ -294,14 +294,14 @@ export async function startWatchdog() {
 
                         if (histResp.ok) {
                             const histData = await histResp.json();
-                            wasCanceled = histData.orders?.some(o => o.client_order_id === entryClientId || (o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)));
+                            // 🟢 THE FIX 1: Strict ID Matching only. No fuzzy math catching old trades!
+                            wasCanceled = histData.orders?.some(o => o.client_order_id === entryClientId);
                         }
                         
                         if (fillResp.ok) {
                             const fillData = await fillResp.json();
                             const closingSide = openTrade.side.toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
                             
-                            // 🟢 THE FIX: The Upgraded Autopsy Search Party
                             // 1. Search for the original OCO Bracket
                             let targetFill = fillData.orders?.find(o => o.client_order_id === ocoClientId);
                             
@@ -317,16 +317,10 @@ export async function startWatchdog() {
                                 if (targetFill) assumedReason = 'HERMES_MARKET_SWEEP_OR_UI_CLOSE';
                             }
                             
+                            // 🟢 THE FIX 2: Removed the broken Legacy Fallback that was grabbing the entry order
                             if (targetFill) {
                                 wasFilled = true;
                                 exactExitPrice = parseFloat(targetFill.average_filled_price || targetFill.order_configuration?.trigger_bracket_gtc?.limit_price || targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || currentPrice);
-                            } else {
-                                // 4. Legacy fallback for old limit-based exits
-                                const legacyFill = fillData.orders?.find(o => o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || o.average_filled_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2));
-                                if (legacyFill) {
-                                    wasFilled = true;
-                                    exactExitPrice = parseFloat(legacyFill.average_filled_price || currentPrice);
-                                }
                             }
                         }
 
@@ -422,12 +416,14 @@ export async function startWatchdog() {
                     if (activePosition) {
                         const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc || o.client_order_id?.startsWith('nx_wd_oco_'));
 
+                        // Clear the tracker if brackets are found
                         if (hasBracket && missingBracketTracker[openTrade.id]) {
                             delete missingBracketTracker[openTrade.id];
                         }
 
                         if (!hasBracket && openTrade.tp_price && openTrade.sl_price) {
                             
+                            // 🟢 THE FIX: 10-Second Ceasefire Protocol
                             const now = Date.now();
                             if (!missingBracketTracker[openTrade.id]) {
                                 missingBracketTracker[openTrade.id] = now;
@@ -435,6 +431,7 @@ export async function startWatchdog() {
                                 continue;
                             }
                             
+                            // If it has been less than 10 seconds, do nothing and wait for the next sweep
                             if (now - missingBracketTracker[openTrade.id] < 10000) {
                                 continue;
                             }
@@ -469,6 +466,7 @@ export async function startWatchdog() {
                                     await sendDiscordAlert({ title: `⚠️ Watchdog Bracket Failed: ${asset}`, description: `**Action:** Attempted to deploy missing TP/SL protection!\n**Details:** ${ocoErrMsg}`, color: 15548997 });
                                 } else {
                                     await sendDiscordAlert({ title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046 });
+                                    // Clean up tracker upon successful deployment
                                     delete missingBracketTracker[openTrade.id];
                                 }
                             } catch (error) {
