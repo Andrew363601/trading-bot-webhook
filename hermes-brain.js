@@ -98,8 +98,19 @@ app.post('/api/wake', async (req, res) => {
         if (!llmResp.ok) throw new Error(`Gemini API Error: ${await llmResp.text()}`);
 
         const llmData = await llmResp.json();
-        let agentOutput = llmData.candidates[0].content.parts[0].text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const decisionJson = JSON.parse(agentOutput);
+        let rawText = llmData.candidates[0].content.parts[0].text;
+        
+        // 🟢 THE FIX: Aggressive JSON Extractor to prevent trailing bracket crashes
+        const firstBrace = rawText.indexOf('{');
+        const lastBrace = rawText.lastIndexOf('}');
+        
+        if (firstBrace !== -1 && lastBrace !== -1) {
+            rawText = rawText.substring(firstBrace, lastBrace + 1);
+        } else {
+            throw new Error("No valid JSON object found in agent response.");
+        }
+        
+        const decisionJson = JSON.parse(rawText);
 
         console.log(`[AGENT CORTEX] Decision Matrix:`, decisionJson.action || "APPROVE_EXECUTION");
         console.log(`[AGENT RATIONALE]:`, decisionJson.working_thesis || "Executing protocol.");
@@ -268,8 +279,19 @@ app.post('/api/autopsy', async (req, res) => {
         if (!llmResp.ok) throw new Error(`Gemini API Error: ${await llmResp.text()}`);
 
         const llmData = await llmResp.json();
-        let agentOutput = llmData.candidates[0].content.parts[0].text.replace(/```json/g, '').replace(/```/g, '').trim();
-        const autopsyJson = JSON.parse(agentOutput);
+        let rawText = llmData.candidates[0].content.parts[0].text;
+        
+        // 🟢 THE FIX: Aggressive JSON Extractor for Autopsy
+        const firstBrace = rawText.indexOf('{');
+        const lastBrace = rawText.lastIndexOf('}');
+        
+        if (firstBrace !== -1 && lastBrace !== -1) {
+            rawText = rawText.substring(firstBrace, lastBrace + 1);
+        } else {
+            throw new Error("No valid JSON object found in autopsy response.");
+        }
+        
+        const autopsyJson = JSON.parse(rawText);
 
         console.log(`[AUTOPSY COMPLETE] ${asset} | Rule: ${autopsyJson.lesson_learned}`);
 
