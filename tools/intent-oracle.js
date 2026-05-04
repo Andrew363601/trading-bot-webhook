@@ -1,4 +1,4 @@
-import fetch from 'node-fetch';
+// tools/intent-oracle.js
 
 // ---------------------------------------------------------
 // 1. OPEN INTEREST FLOW (The Momentum Validator)
