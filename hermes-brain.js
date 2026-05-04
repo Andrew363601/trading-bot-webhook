@@ -34,23 +34,50 @@ app.post('/api/wake', async (req, res) => {
 
         if (!mcpUrl || !geminiKey) throw new Error("Missing MCP Gateway URL or Gemini API Key.");
 
-        console.log(`[AGENT CORTEX] Pulling get_market_state tool...`);
-        const stateResp = await fetch(mcpUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tool: 'get_market_state', arguments: { symbol: asset, macro_tf, trigger_tf } })
-        });
-        const marketState = await stateResp.json();
+        console.log(`[AGENT CORTEX] Pulling X-Ray Telemetry & Institutional Intent Tools...`);
+        
+        // 🟢 THE UPGRADE: Parallel fetching of all market psychology tools including multi-TF arguments
+        const [stateResp, liqResp, oiResp, fundingResp] = await Promise.all([
+            fetch(mcpUrl, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tool: 'get_market_state', arguments: { symbol: asset, macro_tf, trigger_tf } })
+            }).catch(() => ({ json: () => ({ error: "Market State offline" }) })),
+            fetch(mcpUrl, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tool: 'get_liquidation_map', arguments: { symbol: asset, macro_tf, trigger_tf } })
+            }).catch(() => ({ json: () => ({ error: "Liquidation Map offline" }) })),
+            fetch(mcpUrl, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tool: 'get_open_interest_flow', arguments: { symbol: asset, macro_tf, trigger_tf } })
+            }).catch(() => ({ json: () => ({ error: "OI Flow offline" }) })),
+            fetch(mcpUrl, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tool: 'get_funding_rates', arguments: { symbol: asset } })
+            }).catch(() => ({ json: () => ({ error: "Funding Rates offline" }) }))
+        ]);
 
-        console.log(`[AGENT CORTEX] X-Ray Data acquired. Booting Gemini inference engine...`);
+        const marketState = await stateResp.json();
+        const liquidationMap = await liqResp.json();
+        const oiFlow = await oiResp.json();
+        const fundingRates = await fundingResp.json();
+
+        console.log(`[AGENT CORTEX] Data acquired. Booting Gemini inference engine...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`;
         
-        let instructionText = `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\nLIVE MULTI-TF MARKET STATE:\n${JSON.stringify(marketState, null, 2)}\n\n`;
+        let instructionText = `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\n`;
+        
+        instructionText += `--- LIVE MULTI-TF MARKET STATE ---\n${JSON.stringify(marketState, null, 2)}\n\n`;
+        
+        // 🟢 THE UPGRADE: Injecting the Truth Serum into the prompt
+        instructionText += `--- INSTITUTIONAL INTENT & PSYCHOLOGY ---\n`;
+        instructionText += `LIQUIDATION MAP (Fuel Targets): ${JSON.stringify(liquidationMap)}\n`;
+        instructionText += `OPEN INTEREST FLOW (Multi-TF): ${JSON.stringify(oiFlow)}\n`;
+        instructionText += `FUNDING RATES (Crowdedness): ${JSON.stringify(fundingRates)}\n\n`;
         
         if (mode === "TRIPWIRE_HIT") {
-            instructionText += `THE HARVEST PROTOCOL IS ACTIVE. You are currently in profit and your Stop Loss is secured at Break-Even. Analyze the CVD and Level 2 Intent. If the momentum is still explosive and the runway is clear, output action "HOLD" to let the profit run. If the tape is stalling, absorption is failing, or a major structural wall is approaching, output action "CLOSE" to harvest the profit immediately. Output ONLY raw, valid JSON.`;
+            instructionText += `THE HARVEST PROTOCOL IS ACTIVE. You are currently in profit and your Stop Loss is secured at Break-Even. Analyze the CVD, Level 2 Intent, Open Interest, and Liquidation clusters. If the momentum is explosive and the runway is clear toward a liquidation cluster, output action "HOLD". If OI is dropping, absorption is failing, or funding is extremely skewed against you, output action "CLOSE" to harvest the profit immediately. Output ONLY raw, valid JSON.`;
         } else {
-            instructionText += `Analyze the CVD and Level 2 Intent. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Output ONLY raw, valid JSON.`;
+            instructionText += `Analyze the CVD, Level 2 Intent, Open Interest, and Liquidation targets. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Output ONLY raw, valid JSON.`;
         }
 
         const payload = {
@@ -105,7 +132,6 @@ app.post('/api/wake', async (req, res) => {
             }
         }
 
-        // 🟢 THE FIX 1: Move Action Booleans UP to intercept Trap Data for the Chart
         const isVeto = decisionJson.action === "VETO";
         const isReversal = decisionJson.action === "REVERSE";
         const isTrap = decisionJson.action === "VIRTUAL_TRAP";
@@ -154,7 +180,6 @@ app.post('/api/wake', async (req, res) => {
         if (!isActionableExecution) {
             console.log(`[AGENT CORTEX] Logging non-execution action (${decisionJson.action}) to UI Audit...`);
             
-            // 🟢 THE FIX 2: Telemetry Injection & UI Pinning
             let finalStatus = decisionJson.action;
             let displayPosition = openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : "NONE";
             
@@ -227,7 +252,7 @@ app.post('/api/autopsy', async (req, res) => {
         
         Output raw JSON format exactly:
         {
-          "tools_used": "Comma separated list of tools mentioned (e.g., Fibonacci, Fractals, Volume Nodes, None)",
+          "tools_used": "Comma separated list of tools mentioned (e.g., Fibonacci, Fractals, Volume Nodes, Liquidation Map)",
           "lesson_learned": "The specific quantitative rule extracted."
         }
         `;
