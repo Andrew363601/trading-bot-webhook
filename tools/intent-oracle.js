@@ -1,6 +1,9 @@
 // tools/intent-oracle.js
 
-// 🟢 THE FIX: Translate Coinbase Testnet tickers into Global Market Tickers
+// 🟢 THE FIX 1: Delay helper to stagger concurrent requests
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Translate Coinbase Testnet tickers into Global Market Tickers
 function getStandardSymbol(coinbaseSymbol) {
     if (coinbaseSymbol.includes('BIP') || coinbaseSymbol.includes('BTC')) return 'BTC';
     if (coinbaseSymbol.includes('ETP') || coinbaseSymbol.includes('ETH')) return 'ETH';
@@ -16,20 +19,22 @@ function getStandardSymbol(coinbaseSymbol) {
 // 1. OPEN INTEREST FLOW (The Momentum Validator)
 // ---------------------------------------------------------
 export async function get_open_interest_flow({ symbol, macro_tf, trigger_tf }) {
+    const realSymbol = getStandardSymbol(symbol);
+    const apiSymbol = `${realSymbol}USDT`; // 🟢 THE FIX 2: Append USDT for Coinglass
+
     try {
-        const realSymbol = getStandardSymbol(symbol); 
-        
-        const oiResp = await fetch(`https://open-api.coinglass.com/public/v2/open_interest?symbol=${realSymbol}`, {
+        // Fires immediately (0ms delay)
+        const oiResp = await fetch(`https://open-api.coinglass.com/public/v2/open_interest?symbol=${apiSymbol}`, {
             headers: { 'coinglassSecret': process.env.COINGLASS_API_KEY }
         });
         
-        if (!oiResp.ok) throw new Error("Failed to fetch OI");
+        if (!oiResp.ok) throw new Error(`API Rejected: ${oiResp.status}`);
         const oiData = await oiResp.json();
+        if (!oiData || !oiData.data || !oiData.data[0]) throw new Error("Invalid API Data Structure");
         
-        // Calculate the Delta (Are positions opening or closing?)
         const currentOI = oiData.data[0]?.openInterest || 0;
-        const oneHourAgoOI = oiData.data[0]?.h1OpenInterest || currentOI; // Fallback to current if missing
-        const oiDeltaPercent = ((currentOI - oneHourAgoOI) / oneHourAgoOI) * 100;
+        const oneHourAgoOI = oiData.data[0]?.h1OpenInterest || currentOI; 
+        const oiDeltaPercent = oneHourAgoOI > 0 ? ((currentOI - oneHourAgoOI) / oneHourAgoOI) * 100 : 0;
 
         let flowIntent = "NEUTRAL";
         if (oiDeltaPercent > 1.5) flowIntent = "NEW_MONEY_ENTERING (TREND CONFIRMED)";
@@ -44,7 +49,14 @@ export async function get_open_interest_flow({ symbol, macro_tf, trigger_tf }) {
         };
     } catch (error) {
         console.error("[OI ORACLE FAULT]", error.message);
-        return { error: "Open Interest Flow Unavailable" };
+        // 🟢 THE FIX 3: Shock Absorbers (Safe Neutral Fallback)
+        return {
+            symbol: realSymbol,
+            current_open_interest: 0,
+            one_hour_delta_percent: "0.00",
+            flow_intent: "UNKNOWN (API RATE LIMITED)",
+            timestamp: new Date().toISOString()
+        };
     }
 }
 
@@ -52,20 +64,23 @@ export async function get_open_interest_flow({ symbol, macro_tf, trigger_tf }) {
 // 2. FUNDING RATES (The Rubber Band Gauge)
 // ---------------------------------------------------------
 export async function get_funding_rates({ symbol }) {
+    const realSymbol = getStandardSymbol(symbol);
+    const apiSymbol = `${realSymbol}USDT`; 
+
     try {
-        const realSymbol = getStandardSymbol(symbol); 
+        await delay(1000); // 🟢 THE FIX 1: Space out by 1 second
         
-        const fundingResp = await fetch(`https://open-api.coinglass.com/public/v2/funding?symbol=${realSymbol}`, {
+        const fundingResp = await fetch(`https://open-api.coinglass.com/public/v2/funding?symbol=${apiSymbol}`, {
             headers: { 'coinglassSecret': process.env.COINGLASS_API_KEY }
         });
         
-        if (!fundingResp.ok) throw new Error("Failed to fetch Funding Rates");
+        if (!fundingResp.ok) throw new Error(`API Rejected: ${fundingResp.status}`);
         const fundingData = await fundingResp.json();
+        if (!fundingData || !fundingData.data) throw new Error("Invalid API Data Structure");
 
-        // Average out the funding rate across major exchanges
         const rates = fundingData.data || [];
         const avgFunding = rates.reduce((acc, curr) => acc + (curr.fundingRate || 0), 0) / (rates.length || 1);
-        const annualizedRate = avgFunding * 3 * 365 * 100; // 8-hour intervals
+        const annualizedRate = avgFunding * 3 * 365 * 100; 
 
         let sentiment = "NEUTRAL";
         if (annualizedRate > 40) sentiment = "EXTREME_LONG_CROWDED (LOOK TO FADE / SHORT)";
@@ -79,7 +94,12 @@ export async function get_funding_rates({ symbol }) {
         };
     } catch (error) {
         console.error("[FUNDING ORACLE FAULT]", error.message);
-        return { error: "Funding Rates Unavailable" };
+        return {
+            symbol: realSymbol,
+            current_8h_funding: "0.000000",
+            annualized_funding_percent: "0.00",
+            crowdedness_sentiment: "UNKNOWN (API RATE LIMITED)"
+        };
     }
 }
 
@@ -87,18 +107,20 @@ export async function get_funding_rates({ symbol }) {
 // 3. LIQUIDATION MAP (The Magnet Tracker)
 // ---------------------------------------------------------
 export async function get_liquidation_map({ symbol }) {
+    const realSymbol = getStandardSymbol(symbol);
+    const apiSymbol = `${realSymbol}USDT`; 
+
     try {
-        const realSymbol = getStandardSymbol(symbol);
+        await delay(2000); // 🟢 THE FIX 1: Space out by 2 seconds
         
-        // Fetch liquidation heatmap data
-        const liqResp = await fetch(`https://open-api.coinglass.com/public/v2/liquidation_map?symbol=${realSymbol}`, {
+        const liqResp = await fetch(`https://open-api.coinglass.com/public/v2/liquidation_map?symbol=${apiSymbol}`, {
             headers: { 'coinglassSecret': process.env.COINGLASS_API_KEY }
         });
         
-        if (!liqResp.ok) throw new Error("Failed to fetch Liquidation Map");
+        if (!liqResp.ok) throw new Error(`API Rejected: ${liqResp.status}`);
         const liqData = await liqResp.json();
+        if (!liqData || !liqData.data) throw new Error("Invalid API Data Structure");
 
-        // Extract the largest clusters above and below current price
         const upperMagnet = liqData.data?.upper_cluster || { price: 0, leverage_volume: 0 };
         const lowerMagnet = liqData.data?.lower_cluster || { price: 0, leverage_volume: 0 };
 
@@ -117,6 +139,10 @@ export async function get_liquidation_map({ symbol }) {
         };
     } catch (error) {
         console.error("[LIQ MAP ORACLE FAULT]", error.message);
-        return { error: "Liquidation Map Unavailable" };
+        return {
+            symbol: realSymbol,
+            upper_liquidation_magnet: { target_price: 0, estimated_liquidation_volume: 0, action: "UNKNOWN (API RATE LIMITED)" },
+            lower_liquidation_magnet: { target_price: 0, estimated_liquidation_volume: 0, action: "UNKNOWN (API RATE LIMITED)" }
+        };
     }
 }
