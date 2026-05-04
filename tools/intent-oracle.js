@@ -1,15 +1,25 @@
 // tools/intent-oracle.js
 
+// 🟢 THE FIX: Translate Coinbase Testnet tickers into Global Market Tickers
+function getStandardSymbol(coinbaseSymbol) {
+    if (coinbaseSymbol.includes('BIP') || coinbaseSymbol.includes('BTC')) return 'BTC';
+    if (coinbaseSymbol.includes('ETP') || coinbaseSymbol.includes('ETH')) return 'ETH';
+    if (coinbaseSymbol.includes('SLP') || coinbaseSymbol.includes('SOL')) return 'SOL';
+    if (coinbaseSymbol.includes('DOP') || coinbaseSymbol.includes('DOGE')) return 'DOGE';
+    if (coinbaseSymbol.includes('LCP') || coinbaseSymbol.includes('LTC')) return 'LTC';
+    if (coinbaseSymbol.includes('LNP') || coinbaseSymbol.includes('LINK')) return 'LINK';
+    if (coinbaseSymbol.includes('AVP') || coinbaseSymbol.includes('AVAX')) return 'AVAX';
+    return coinbaseSymbol.split('-')[0]; // Fallback
+}
+
 // ---------------------------------------------------------
 // 1. OPEN INTEREST FLOW (The Momentum Validator)
 // ---------------------------------------------------------
 export async function get_open_interest_flow({ symbol, macro_tf, trigger_tf }) {
     try {
-        const cleanSymbol = symbol.split('-')[0]; // Converts ETP-20DEC30-CDE to ETP or ETH
+        const realSymbol = getStandardSymbol(symbol); 
         
-        // Fetch current OI and historical OI from aggregator or exchange
-        // Coinglass / Binance standard endpoint for OI derivatives
-        const oiResp = await fetch(`https://open-api.coinglass.com/public/v2/open_interest?symbol=${cleanSymbol}`, {
+        const oiResp = await fetch(`https://open-api.coinglass.com/public/v2/open_interest?symbol=${realSymbol}`, {
             headers: { 'coinglassSecret': process.env.COINGLASS_API_KEY }
         });
         
@@ -26,7 +36,7 @@ export async function get_open_interest_flow({ symbol, macro_tf, trigger_tf }) {
         if (oiDeltaPercent < -1.5) flowIntent = "POSITIONS_CLOSING (SQUEEZE / EXHAUSTION)";
 
         return {
-            symbol: cleanSymbol,
+            symbol: realSymbol,
             current_open_interest: currentOI,
             one_hour_delta_percent: oiDeltaPercent.toFixed(2),
             flow_intent: flowIntent,
@@ -43,9 +53,9 @@ export async function get_open_interest_flow({ symbol, macro_tf, trigger_tf }) {
 // ---------------------------------------------------------
 export async function get_funding_rates({ symbol }) {
     try {
-        const cleanSymbol = symbol.split('-')[0]; 
+        const realSymbol = getStandardSymbol(symbol); 
         
-        const fundingResp = await fetch(`https://open-api.coinglass.com/public/v2/funding?symbol=${cleanSymbol}`, {
+        const fundingResp = await fetch(`https://open-api.coinglass.com/public/v2/funding?symbol=${realSymbol}`, {
             headers: { 'coinglassSecret': process.env.COINGLASS_API_KEY }
         });
         
@@ -62,7 +72,7 @@ export async function get_funding_rates({ symbol }) {
         if (annualizedRate < -40) sentiment = "EXTREME_SHORT_CROWDED (ANTICIPATE LONG SQUEEZE)";
 
         return {
-            symbol: cleanSymbol,
+            symbol: realSymbol,
             current_8h_funding: avgFunding.toFixed(6),
             annualized_funding_percent: annualizedRate.toFixed(2),
             crowdedness_sentiment: sentiment
@@ -78,11 +88,10 @@ export async function get_funding_rates({ symbol }) {
 // ---------------------------------------------------------
 export async function get_liquidation_map({ symbol }) {
     try {
-        const cleanSymbol = symbol.split('-')[0];
+        const realSymbol = getStandardSymbol(symbol);
         
-        // Fetch liquidation heatmap data (Simulated structure for standard aggregator)
-        // Aggregators provide clusters of high-leverage liquidations
-        const liqResp = await fetch(`https://open-api.coinglass.com/public/v2/liquidation_map?symbol=${cleanSymbol}`, {
+        // Fetch liquidation heatmap data
+        const liqResp = await fetch(`https://open-api.coinglass.com/public/v2/liquidation_map?symbol=${realSymbol}`, {
             headers: { 'coinglassSecret': process.env.COINGLASS_API_KEY }
         });
         
@@ -94,7 +103,7 @@ export async function get_liquidation_map({ symbol }) {
         const lowerMagnet = liqData.data?.lower_cluster || { price: 0, leverage_volume: 0 };
 
         return {
-            symbol: cleanSymbol,
+            symbol: realSymbol,
             upper_liquidation_magnet: {
                 target_price: upperMagnet.price,
                 estimated_liquidation_volume: upperMagnet.leverage_volume,
