@@ -294,7 +294,7 @@ export async function startWatchdog() {
 
                         if (histResp.ok) {
                             const histData = await histResp.json();
-                            // 🟢 THE FIX 1: Strict ID Matching only. No fuzzy math catching old trades!
+                            // 🟢 Strict ID Matching only
                             wasCanceled = histData.orders?.some(o => o.client_order_id === entryClientId);
                         }
                         
@@ -302,22 +302,24 @@ export async function startWatchdog() {
                             const fillData = await fillResp.json();
                             const closingSide = openTrade.side.toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
                             
+                            // 🟢 THE FIX: Force strict chronological sorting so we grab the newest trade, not the oldest!
+                            const sortedFills = (fillData.orders || []).sort((a, b) => new Date(b.created_time || 0).getTime() - new Date(a.created_time || 0).getTime());
+                            
                             // 1. Search for the original OCO Bracket
-                            let targetFill = fillData.orders?.find(o => o.client_order_id === ocoClientId);
+                            let targetFill = sortedFills.find(o => o.client_order_id === ocoClientId);
                             
                             // 2. Search for the Watchdog's Safety Net Bracket
                             if (!targetFill) {
-                                targetFill = fillData.orders?.find(o => o.client_order_id?.startsWith('nx_wd_oco_') && o.side.toUpperCase() === closingSide);
+                                targetFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_oco_') && o.side.toUpperCase() === closingSide);
                                 if (targetFill) assumedReason = 'WATCHDOG_SAFETY_NET_TRIGGERED';
                             }
                             
                             // 3. Search for a Hermes Market Sweep or Manual UI Close
                             if (!targetFill) {
-                                targetFill = fillData.orders?.find(o => o.side.toUpperCase() === closingSide);
+                                targetFill = sortedFills.find(o => o.side.toUpperCase() === closingSide);
                                 if (targetFill) assumedReason = 'HERMES_MARKET_SWEEP_OR_UI_CLOSE';
                             }
                             
-                            // 🟢 THE FIX 2: Removed the broken Legacy Fallback that was grabbing the entry order
                             if (targetFill) {
                                 wasFilled = true;
                                 exactExitPrice = parseFloat(targetFill.average_filled_price || targetFill.order_configuration?.trigger_bracket_gtc?.limit_price || targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || currentPrice);
