@@ -3,9 +3,6 @@ import express from 'express';
 import { executeTradeMCP } from './lib/execute-trade-mcp.js';
 import { getMarketStateMCP } from './lib/get-market-state-mcp.js';
 
-// 🟢 THE NEW TRUTH SERUM IMPORTS
-import { get_open_interest_flow, get_funding_rates, get_liquidation_map } from './tools/intent-oracle.js';
-
 const app = express();
 app.use(express.json());
 
@@ -28,27 +25,6 @@ const TOOLS = {
         description: "Fetch live X-Ray telemetry, Micro/Macro CVD, and historical nodes to evaluate a setup.",
         parameters: { 
             symbol: "string (e.g., ETH-PERP)" 
-        }
-    },
-    // 🟢 THE NEW INTENT TOOLS
-    get_open_interest_flow: {
-        description: "Fetch Open Interest data to determine if a move is driven by new money (trend) or squeezed positions (exhaustion).",
-        parameters: {
-            symbol: "string (e.g., ETH-PERP)",
-            macro_tf: "string",
-            trigger_tf: "string"
-        }
-    },
-    get_funding_rates: {
-        description: "Fetch 8-hour and annualized funding rates to determine retail crowdedness and potential squeeze setups.",
-        parameters: {
-            symbol: "string (e.g., ETH-PERP)"
-        }
-    },
-    get_liquidation_map: {
-        description: "Fetch the exact price clusters where high-leverage traders will be liquidated. Use as God-Tier Take Profit targets.",
-        parameters: {
-            symbol: "string (e.g., ETH-PERP)"
         }
     }
 };
@@ -73,25 +49,6 @@ app.post('/mcp/execute', async (req, res) => {
             console.log(`[MCP GATEWAY] Hermes Agent analyzing market state for ${args.symbol}`);
             const result = await getMarketStateMCP(args); 
             return res.json({ result });                  
-        }
-
-        // 🟢 ROUTING THE NEW TRUTH SERUM TOOLS
-        if (tool === 'get_open_interest_flow') {
-            console.log(`[MCP GATEWAY] Hermes Agent checking OI Flow for ${args.symbol}`);
-            const result = await get_open_interest_flow(args);
-            return res.json({ result });
-        }
-
-        if (tool === 'get_funding_rates') {
-            console.log(`[MCP GATEWAY] Hermes Agent checking Funding Rates for ${args.symbol}`);
-            const result = await get_funding_rates(args);
-            return res.json({ result });
-        }
-
-        if (tool === 'get_liquidation_map') {
-            console.log(`[MCP GATEWAY] Hermes Agent sweeping Liquidation Map for ${args.symbol}`);
-            const result = await get_liquidation_map(args);
-            return res.json({ result });
         }
 
         return res.status(404).json({ error: `[MCP FAULT] Tool ${tool} not recognized by Gateway.` });
