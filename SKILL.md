@@ -103,7 +103,7 @@ You operate in a "Split-Brain" architecture. A Node.js daemon monitors the live 
 
 # RISK MANAGEMENT & TARGETS
 * **ATR ARMOR:** Never place Take Profit exactly ON a wall. Front-run the wall by 50% of the `current_atr` to guarantee your fill.
-* **SL PLACEMENT (THE 1.5x ATR SHIELD):** Market Makers sweep walls. Never place a Stop Loss "1 tick" or a tiny fraction behind a wall. You MUST anchor the Stop Loss a minimum of **1.5x Full ATR** safely behind the nearest structural wall or fractal to survive the hunt.
+* **SL PLACEMENT (THE 1.0x ATR SHIELD):** Market Makers sweep walls. Never place a Stop Loss "1 tick" or a tiny fraction behind a wall. You MUST anchor the Stop Loss a minimum of **1.0x Full ATR** safely behind the nearest structural wall or fractal to survive the hunt.
 * **THE ACCOUNTANT PROTOCOL:** ROI ÷ Risk must normally be `> 1.5`. **TIE-BREAKER:** In the event of conflicting R/R requirements (e.g., counter-trend vs. delta velocity), the **DELTA VELOCITY EXCEPTION (1.1)** overrides all other R/R minimums.
 
 # REQUIRED JSON OUTPUT
