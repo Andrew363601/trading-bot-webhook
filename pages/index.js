@@ -4,7 +4,7 @@ import { useChat } from '@ai-sdk/react';
 import Link from 'next/link'; 
 import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers, HistogramSeries } from 'lightweight-charts';
 import { 
-  Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
+  Database, BarChart3, Cpu, Terminal as TerminalIcon, 
   Send, Activity, PieChart, Shield, Zap, TrendingUp, TrendingDown,
   Target, AlertTriangle, ArrowRight, RefreshCw, Layers, BrainCircuit,
   Settings, LogOut, Clock, Crosshair, ChevronRight, Menu, X, PlusCircle
