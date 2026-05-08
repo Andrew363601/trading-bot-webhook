@@ -149,7 +149,7 @@ function DashboardContent() {
       }
   };
 
-  const filteredSearch = MASTER_ASSETS.filter(a => a.toLowerCase().includes(searchAsset.toLowerCase()));
+  const filteredSearch = assetsList.filter(a => a.toLowerCase().includes(searchAsset.toLowerCase()));
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 

@@ -15,7 +15,7 @@ export default function AuthPage() {
 
   useEffect(() => {
     if (session) {
-      router.replace('/');
+      router.replace('/index');
     }
   }, [session, router]);
 
