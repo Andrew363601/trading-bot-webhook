@@ -7,7 +7,8 @@ import {
   Database, BarChart3, Cpu, Terminal as TerminalIcon, 
   Send, Activity, PieChart, Shield, Zap, TrendingUp, TrendingDown,
   Target, AlertTriangle, ArrowRight, RefreshCw, Layers, BrainCircuit,
-  Settings, LogOut, Clock, Crosshair, ChevronRight, Menu, X, PlusCircle
+  Settings, LogOut, Clock, Crosshair, ChevronRight, Menu, X, PlusCircle,
+  Search, AlertOctagon, Eye, Minimize2, Maximize2, Flame, Power
 } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
 
