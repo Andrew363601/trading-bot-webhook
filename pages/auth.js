@@ -24,7 +24,7 @@ export default function AuthPage() {
     setLoading(true);
     const { error } = await supabase.auth.signInWithOtp({ 
         email,
-        options: { emailRedirectTo: window.location.origin } 
+        options: { emailRedirectTo: `${window.location.origin}/auth` } 
     });
     if (error) setMessage(error.message);
     else setMessage('Check your email for the magic login link!');
@@ -35,7 +35,7 @@ export default function AuthPage() {
     await supabase.auth.signInWithOAuth({ 
       provider, 
       options: { 
-        redirectTo: window.location.origin 
+        redirectTo: `${window.location.origin}/auth` 
       } 
     });
   };
