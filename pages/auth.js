@@ -33,8 +33,16 @@ export default function AuthPage() {
   };
 
   const handleSocialLogin = async (provider) => {
-    await supabase.auth.signInWithOAuth({ provider, options: { redirectTo: `${window.location.origin}/` } });
-  };
+  // Use a hardcoded string for testing to bypass any window logic issues
+  const targetUrl = 'https://trading-bot-webhook-jgc11a1qo-andrew363601s-projects.vercel.app/';
+  
+  await supabase.auth.signInWithOAuth({ 
+    provider, 
+    options: { 
+      redirectTo: targetUrl 
+    } 
+  });
+};
 
   return (
     <div className="flex min-h-screen bg-slate-950 items-center justify-center p-6">
