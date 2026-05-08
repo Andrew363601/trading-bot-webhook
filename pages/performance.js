@@ -5,6 +5,7 @@ import { createChart, AreaSeries } from 'lightweight-charts';
 import { 
   BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers
 } from 'lucide-react';
+import AuthGuard from '../components/AuthGuard';
 
 const getEnv = (key, fallback) => {
     if (typeof process !== 'undefined' && process.env) return process.env[key] || fallback;
@@ -16,6 +17,14 @@ const SUPABASE_ANON_KEY = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', "sb_publishabl
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export default function PerformanceLog() {
+  return (
+    <AuthGuard>
+      <PerformanceLogContent />
+    </AuthGuard>
+  );
+}
+
+function PerformanceLogContent() {
   const [isMounted, setIsMounted] = useState(false);
   const [loading, setLoading] = useState(true);
   

@@ -220,15 +220,15 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
 const RAM = { configs: [], lastMathRun: {}, isProcessingMath: {} };
 let activeProductIds = []; 
 
-export async function startSniper() {
-    console.log(`[SNIPER] Booting WebSocket Spinal Cord...`);
+export async function startSniper(tenantId) {
+    console.log(`[SNIPER-${tenantId}] Booting WebSocket Spinal Cord...`);
     const apiKeyName = process.env.COINBASE_API_KEY; const apiSecret = process.env.COINBASE_API_SECRET;
     
     let ws = new WebSocket('wss://advanced-trade-ws.coinbase.com');
 
     const syncConfigs = async () => {
         try {
-            const { data } = await supabase.from('strategy_config').select('*').eq('is_active', true);
+            const { data } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).eq('is_active', true);
             if (data) {
                 RAM.configs = data;
                 
@@ -283,7 +283,7 @@ export async function startSniper() {
 
                 if (Date.now() > expiresAt) {
                     config.trap_side = null; 
-                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id);
+                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id).eq('tenant_id', tenantId);
                 } else if (config.trap_side === 'BUY' && currentPrice <= config.trap_price) {
                     trapSprung = true;
                 } else if (config.trap_side === 'SELL' && currentPrice >= config.trap_price) {
@@ -311,6 +311,7 @@ export async function startSniper() {
                     const { tickSize } = getAssetMetrics(config.asset);
 
                     const trapPayload = {
+                        tenant_id: tenantId,
                         symbol: config.asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: config.trap_side,
                         order_type: 'MARKET', price: currentPrice, 
                         tp_price: parseFloat((Math.round(trapTpPrice / tickSize) * tickSize).toFixed(4)), 
@@ -322,9 +323,9 @@ export async function startSniper() {
                     };
                     
                     config.trap_side = null; 
-                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id);
+                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id).eq('tenant_id', tenantId);
 
-                    executeTradeMCP(trapPayload).catch(e => console.error("[TRAP EXECUTION FATAL]:", e.message));
+                    executeTradeMCP(trapPayload).catch(e => console.error(`[SNIPER-${tenantId}] TRAP EXECUTION FATAL:`, e.message));
                     continue; 
                 }
             }
@@ -337,7 +338,7 @@ export async function startSniper() {
 
             RAM.isProcessingMath[config.id] = true;
             RAM.lastMathRun[config.id] = now;
-            await supabase.from('strategy_config').update({ is_processing: true }).eq('id', config.id);
+            await supabase.from('strategy_config').update({ is_processing: true }).eq('id', config.id).eq('tenant_id', tenantId);
 
             try {
                 const cooldownMins = params.veto_cooldown_minutes || 15;
@@ -372,7 +373,7 @@ export async function startSniper() {
 
                 const microstructure = await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
                 
-                const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).is('exit_price', null).limit(1);
+                const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).eq('tenant_id', tenantId).is('exit_price', null).limit(1);
                 const openTrade = openTrades?.[0];
 
                 let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
@@ -397,7 +398,7 @@ export async function startSniper() {
                         decision.telemetry.oracle_reasoning = `System in penalty box. Ignoring ${decision.signal} signal.`;
                     } else {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
-                        console.log(`[SNIPER] Math signal detected for ${config.asset}. Fetching Core Memory & Waking Hermes...`);
+                        console.log(`[SNIPER-${tenantId}] Math signal detected for ${config.asset}. Fetching Core Memory & Waking Hermes...`);
                         
                         let memoryString = "No core memory available for this asset.";
                         try {
@@ -405,13 +406,14 @@ export async function startSniper() {
                                 .from('hermes_core_memory')
                                 .select('win_loss, tools_used, lesson_learned')
                                 .eq('asset', config.asset)
+                                .eq('tenant_id', tenantId)
                                 .order('created_at', { ascending: false })
                                 .limit(3);
                             
                             if (memories && memories.length > 0) {
                                 memoryString = memories.map(m => `[Past ${m.win_loss} | Tools: ${m.tools_used}]: ${m.lesson_learned}`).join('\n');
                             }
-                        } catch(e) { console.error("[MEMORY FETCH ERROR]", e.message); }
+                        } catch(e) { console.error(`[SNIPER-${tenantId}] MEMORY FETCH ERROR`, e.message); }
 
                         let activeTrapMessage = "";
                         if (!openTrade && config.trap_side && config.trap_price) {
@@ -424,6 +426,7 @@ export async function startSniper() {
                         const askWallsText = microstructure.orderBook.largest_ask_walls?.map((w, i) => `#${i+1}: ${w.size} contracts @ $${w.price}`).join('\n') || "None";
 
                         await pingHermes({
+                            tenant_id: tenantId,
                             asset: config.asset,
                             mode: "ENTRY",
                             message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Top 3 Walls):\nBIDS:\n${bidWallsText}\n\nASKS:\n${askWallsText}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.`,
@@ -439,7 +442,7 @@ export async function startSniper() {
                             qty: params.qty || 1 
                         });
 
-                        await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('id', config.id);
+                        await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('id', config.id).eq('tenant_id', tenantId);
 
                         decision.statusOverride = 'HERMES_NOTIFIED';
                         decision.telemetry.oracle_reasoning = "Ping sent to Agent Cortex. Awaiting autonomous execution or veto.";
@@ -450,16 +453,16 @@ export async function startSniper() {
                 let baseStatus = (config.trap_side && config.trap_price) ? "TRAP_ACTIVE" : "STABLE";
                 const finalStatus = decision.statusOverride || (decision.signal ? "RESONANT" : baseStatus);
                 
-                await supabase.from('scan_results').insert([{ strategy: config.strategy, asset: config.asset, telemetry: decision.telemetry, status: finalStatus }]);
+                await supabase.from('scan_results').insert([{ tenant_id: tenantId, strategy: config.strategy, asset: config.asset, telemetry: decision.telemetry, status: finalStatus }]);
 
-            } catch (e) { console.error(`[ASSET ERROR] ${config.asset}:`, e.message); }
+            } catch (e) { console.error(`[SNIPER-${tenantId}] ASSET ERROR ${config.asset}:`, e.message); }
             finally {
                 RAM.isProcessingMath[config.id] = false;
-                await supabase.from('strategy_config').update({ is_processing: false }).eq('id', config.id);
+                await supabase.from('strategy_config').update({ is_processing: false }).eq('id', config.id).eq('tenant_id', tenantId);
             }
         }
     });
 
-    ws.on('close', () => { setTimeout(startSniper, 5000); });
-    ws.on('error', (err) => { console.error('[SNIPER] WebSocket Error:', err.message); });
+    ws.on('close', () => { setTimeout(() => startSniper(tenantId), 5000); });
+    ws.on('error', (err) => { console.error(`[SNIPER-${tenantId}] WebSocket Error:`, err.message); });
 }

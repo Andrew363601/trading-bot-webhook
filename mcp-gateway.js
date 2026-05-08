@@ -2,6 +2,7 @@
 import express from 'express';
 import { executeTradeMCP } from './lib/execute-trade-mcp.js';
 import { getMarketStateMCP } from './lib/get-market-state-mcp.js';
+import { getAtrLevels } from './lib/get-atr-levels-mcp.js';
 
 const app = express();
 app.use(express.json());
@@ -26,6 +27,14 @@ const TOOLS = {
         parameters: { 
             symbol: "string (e.g., ETH-PERP)" 
         }
+    },
+    get_atr_levels: {
+        description: "Calculate ATR-based Stop Loss and Take Profit levels with 50% ATR front-run protection.",
+        parameters: {
+            triggerCandles: "array of {open, high, low, close, volume} (trigger TF)",
+            triggerTimeframe: "string (e.g., '5M', '15M', '1H')",
+            options: "object {regime: 'TREND'|'CHOP', macroCandles: [], sweepLow: number, targetPrice: number, side: 'BUY'|'SELL'}"
+        }
     }
 };
 
@@ -49,6 +58,12 @@ app.post('/mcp/execute', async (req, res) => {
             console.log(`[MCP GATEWAY] Hermes Agent analyzing market state for ${args.symbol}`);
             const result = await getMarketStateMCP(args); 
             return res.json({ result });                  
+        }
+
+        if (tool === 'get_atr_levels') {
+            console.log(`[MCP GATEWAY] Hermes Agent calculating ATR levels`);
+            const result = await getAtrLevels(args.triggerCandles, args.triggerTimeframe, args.options);
+            return res.json({ result });
         }
 
         return res.status(404).json({ error: `[MCP FAULT] Tool ${tool} not recognized by Gateway.` });

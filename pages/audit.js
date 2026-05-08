@@ -1,12 +1,21 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { Activity, Filter, RefreshCw, CheckCircle2, Zap, BrainCircuit, Server, Crosshair, Target, Loader2, Clock, XCircle } from 'lucide-react';
+import AuthGuard from '../components/AuthGuard';
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 export default function AuditLog() {
+  return (
+    <AuthGuard>
+      <AuditLogContent />
+    </AuthGuard>
+  );
+}
+
+function AuditLogContent() {
   const [pipelines, setPipelines] = useState([]);
   const [loading, setLoading] = useState(true);
   const [reviewingId, setReviewingId] = useState(null); 

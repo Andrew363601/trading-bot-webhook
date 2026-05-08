@@ -80,14 +80,14 @@ async function pingHermes(payload) {
 const heartbeatTracker = {};
 const missingBracketTracker = {};
 
-export async function startWatchdog() {
-    console.log(`[WATCHDOG] Physical Exchange Janitor online. Sweeping orders...`);
+export async function startWatchdog(tenantId) {
+    console.log(`[WATCHDOG-${tenantId}] Physical Exchange Janitor online. Sweeping orders...`);
     const apiKeyName = process.env.COINBASE_API_KEY;
     const apiSecret = process.env.COINBASE_API_SECRET;
 
     setInterval(async () => {
         try {
-            const { data: openTrades } = await supabase.from('trade_logs').select('*').is('exit_price', null);
+            const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('tenant_id', tenantId).is('exit_price', null);
             if (!openTrades || openTrades.length === 0) return;
 
             for (const openTrade of openTrades) {
@@ -95,7 +95,7 @@ export async function startWatchdog() {
                 
                 const tradeAgeMs = Date.now() - new Date(openTrade.created_at || Date.now()).getTime();
                 if (tradeAgeMs < 15000) {
-                    console.log(`[WATCHDOG] Trade ${openTrade.id} is pending exchange propagation (${Math.round(tradeAgeMs/1000)}s). Yielding...`);
+                    console.log(`[WATCHDOG-${tenantId}] Trade ${openTrade.id} is pending exchange propagation (${Math.round(tradeAgeMs/1000)}s). Yielding...`);
                     continue; 
                 }
 

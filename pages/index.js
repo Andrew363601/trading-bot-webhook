@@ -5,42 +5,33 @@ import Link from 'next/link';
 import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers, HistogramSeries } from 'lightweight-charts';
 import { 
   Database, BarChart3, Clock, Cpu, Terminal as TerminalIcon, 
-  Send, Activity, Layers, TrendingUp, Target, Shield, Wallet,
-  Eye, Zap, AlertOctagon, BarChart2, Search, Maximize2, Minimize2, Flame, Power, AlertTriangle
+  Send, Activity, PieChart, Shield, Zap, TrendingUp, TrendingDown,
+  Target, AlertTriangle, ArrowRight, RefreshCw, Layers, BrainCircuit,
+  Settings, LogOut, Clock, Crosshair, ChevronRight, Menu, X, PlusCircle
 } from 'lucide-react';
+import AuthGuard from '../components/AuthGuard';
 
-// 🟢 THE NUCLEAR FIX: Global Polyfill for crypto.randomUUID to prevent StackBlitz iframe crashes
-if (typeof window !== 'undefined') {
-    if (!window.crypto) window.crypto = {};
-    if (!window.crypto.randomUUID) {
-        window.crypto.randomUUID = () => {
-            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-                const r = Math.random() * 16 | 0;
-                const v = c === 'x' ? r : (r & 0x3 | 0x8);
-                return v.toString(16);
-            });
-        };
-    }
-}
-
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-const MASTER_ASSETS = [
-    'BTC-PERP-INTX', 'ETH-PERP-INTX', 'ETP-20DEC30-CDE', 'SOL-PERP-INTX', 
-    'DOGE-PERP-INTX', 'AVP-20DEC30-CDE', 'WLD-PERP-INTX', 'XRP-PERP-INTX', 
-    'ADA-PERP-INTX', 'BNB-PERP-INTX', 'LINK-PERP-INTX', 'MATIC-PERP-INTX',
-    'AVAX-PERP-INTX', 'LTC-PERP-INTX', 'BCH-PERP-INTX', 'APT-PERP-INTX',
-    'SLP-20DEC30-CDE'
-];
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co",
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb"
+);
 
 export default function Dashboard() {
+  return (
+    <AuthGuard>
+      <DashboardContent />
+    </AuthGuard>
+  );
+}
+
+function DashboardContent() {
+  const [activeAsset, setActiveAsset] = useState('ETH-PERP');
+  const [activeTab, setActiveTab] = useState('ANALYTICS');
+  
   const [assetsList, setAssetsList] = useState(['ETP-20DEC30-CDE', 'BTC-PERP-INTX', 'SOL-PERP-INTX', 'SLP-20DEC30-CDE']);
   const [searchAsset, setSearchAsset] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   
-  const [activeAsset, setActiveAsset] = useState('ETP-20DEC30-CDE');
   const [livePrice, setLivePrice] = useState(0); 
   const [tradeLogs, setTradeLogs] = useState([]);
   const [activeStrategies, setActiveStrategies] = useState([]);
@@ -50,8 +41,6 @@ export default function Dashboard() {
   
   const [livePositions, setLivePositions] = useState([]);
   const [liveOrders, setLiveOrders] = useState([]);
-  const [activeTab, setActiveTab] = useState('POSITIONS');
-  
   const [isChartMaximized, setIsChartMaximized] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [isDefconActive, setIsDefconActive] = useState(false);
