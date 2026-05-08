@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { useSupabaseClient } from '@supabase/auth-helpers-react';
 import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
 import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers, HistogramSeries } from 'lightweight-charts';
@@ -12,11 +12,6 @@ import {
 } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co",
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb"
-);
-
 export default function Dashboard() {
   return (
     <AuthGuard>
@@ -26,6 +21,7 @@ export default function Dashboard() {
 }
 
 function DashboardContent() {
+  const supabase = useSupabaseClient();
   const [activeAsset, setActiveAsset] = useState('ETH-PERP');
   const [activeTab, setActiveTab] = useState('ANALYTICS');
   
@@ -58,6 +54,12 @@ function DashboardContent() {
 
   const { messages, append, error: sdkError, isLoading } = useChat({
     api: '/api/chat',
+    headers: async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      return {
+        Authorization: session ? `Bearer ${session.access_token}` : '',
+      };
+    },
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
   

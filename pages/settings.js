@@ -1,15 +1,10 @@
 // pages/settings.js
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
-import { createClient } from '@supabase/supabase-js';
 import { Shield, Key, CheckCircle2, AlertCircle, ArrowLeft, Save } from 'lucide-react';
 import Link from 'next/link';
 import AuthGuard from '../components/AuthGuard';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
+import { useSupabaseClient } from '@supabase/auth-helpers-react';
 
 export default function Settings() {
     return (
@@ -20,6 +15,7 @@ export default function Settings() {
 }
 
 function SettingsContent() {
+    const supabase = useSupabaseClient();
     const [exchange, setExchange] = useState('COINBASE');
     const [apiKey, setApiKey] = useState('');
     const [apiSecret, setApiSecret] = useState('');

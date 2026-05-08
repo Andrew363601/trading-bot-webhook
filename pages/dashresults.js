@@ -1,18 +1,19 @@
 // pages/dashresults.js (or wherever your dashboard component is located)
 
 import { useEffect, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
-
-// FIX: Explicitly define variables from process.env before createClient
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-// Initialize Supabase client for client-side fetches
-// FIX: Pass explicit variables
-const supabase = createClient(supabaseUrl, supabaseKey);
-
+import { useSupabaseClient } from '@supabase/auth-helpers-react';
+import AuthGuard from '../components/AuthGuard';
 
 export default function DashResults() {
+  return (
+    <AuthGuard>
+      <DashResultsContent />
+    </AuthGuard>
+  );
+}
+
+function DashResultsContent() {
+  const supabase = useSupabaseClient();
   const [backtestResults, setBacktestResults] = useState([]);
   const [tradeLogs, setTradeLogs] = useState([]); // New state for trade logs
   const [activeStrategy, setActiveStrategy] = useState(null); // Updated state for active strategy

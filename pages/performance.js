@@ -1,20 +1,11 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { createClient } from '@supabase/supabase-js';
 // 🟢 THE FIX: Explicitly import AreaSeries for V5 compatibility
 import { createChart, AreaSeries } from 'lightweight-charts';
 import { 
   BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers
 } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
-
-const getEnv = (key, fallback) => {
-    if (typeof process !== 'undefined' && process.env) return process.env[key] || fallback;
-    return fallback;
-};
-
-const SUPABASE_URL = getEnv('NEXT_PUBLIC_SUPABASE_URL', "https://wsrioyxzhxxrtzjncfvn.supabase.co");
-const SUPABASE_ANON_KEY = getEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb");
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+import { useSupabaseClient } from '@supabase/auth-helpers-react';
 
 export default function PerformanceLog() {
   return (
@@ -27,6 +18,7 @@ export default function PerformanceLog() {
 function PerformanceLogContent() {
   const [isMounted, setIsMounted] = useState(false);
   const [loading, setLoading] = useState(true);
+  const supabase = useSupabaseClient();
   
   const [allValidTrades, setAllValidTrades] = useState([]);
   

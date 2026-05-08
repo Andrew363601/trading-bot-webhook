@@ -1,49 +1,44 @@
 // pages/auth.js
 import React, { useState, useEffect } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { Zap, Mail, Github, Chrome } from 'lucide-react';
-
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 
 export default function AuthPage() {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const router = useRouter();
+  const supabase = useSupabaseClient();
+  const session = useSession();
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) router.replace('/');
-    });
-  }, [router]);
+    if (session) {
+      router.replace('/');
+    }
+  }, [session, router]);
 
   const handleMagicLink = async (e) => {
-// ...existing code...
     e.preventDefault();
     setLoading(true);
     const { error } = await supabase.auth.signInWithOtp({ 
         email,
-        options: { emailRedirectTo: `${window.location.origin}/` } 
+        options: { emailRedirectTo: window.location.origin } 
     });
     if (error) setMessage(error.message);
     else setMessage('Check your email for the magic login link!');
     setLoading(false);
   };
 
-const handleSocialLogin = async (provider) => {
-  // window.location.origin will be "trading-bot-webhook.vercel.app" on prod
-  // and "localhost:3000" during development.
-  const origin = window.location.origin;
-  
-  await supabase.auth.signInWithOAuth({ 
-    provider, 
-    options: { 
-      redirectTo: `${origin}/` 
-    } 
-  });
-};
+  const handleSocialLogin = async (provider) => {
+    await supabase.auth.signInWithOAuth({ 
+      provider, 
+      options: { 
+        redirectTo: window.location.origin 
+      } 
+    });
+  };
 
   return (
     <div className="flex min-h-screen bg-slate-950 items-center justify-center p-6">

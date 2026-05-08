@@ -42,14 +42,39 @@ export default async function handler(req, res) {
       apiKey: process.env.GEMINI_API_KEY,
     });
 
+    const authHeader = req.headers.authorization;
+    let tenantId = null;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-supabase-jwt-secret');
+      
+      const { data: userLink } = await supabase
+        .from('tenant_users')
+        .select('tenant_id')
+        .eq('auth_user_id', decoded.sub)
+        .single();
+      
+      tenantId = userLink?.tenant_id;
+    }
+
+    let strategyQuery = supabase.from('strategy_config').select('*');
+    let tradeLogQuery = supabase.from('trade_logs').select('*').is('exit_price', null);
+    let recentLogQuery = supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5);
+
+    if (tenantId) {
+      strategyQuery = strategyQuery.eq('tenant_id', tenantId);
+      tradeLogQuery = tradeLogQuery.eq('tenant_id', tenantId);
+      recentLogQuery = recentLogQuery.eq('tenant_id', tenantId);
+    }
+
     const [
       { data: allConfigs },
       { data: openTrades },
       { data: recentClosedLogs }
     ] = await Promise.all([
-      supabase.from('strategy_config').select('*'),
-      supabase.from('trade_logs').select('*').is('exit_price', null),
-      supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5)
+      strategyQuery,
+      tradeLogQuery,
+      recentLogQuery
     ]);
     
     let livePrices = {};

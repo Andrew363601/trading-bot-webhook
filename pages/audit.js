@@ -1,11 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { createClient } from '@supabase/supabase-js';
 import { Activity, Filter, RefreshCw, CheckCircle2, Zap, BrainCircuit, Server, Crosshair, Target, Loader2, Clock, XCircle } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
-
-const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
-const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "sb_publishable_urfO8raB60QtvBa89wHp3w_bw3wXdMb";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+import { useSupabaseClient } from '@supabase/auth-helpers-react';
 
 export default function AuditLog() {
   return (
@@ -22,6 +18,7 @@ function AuditLogContent() {
   const [closingId, setClosingId] = useState(null); // 🟢 THE FIX: Tracks which trade is being canceled
   const [assetFilter, setAssetFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
+  const supabase = useSupabaseClient();
   
   const [liveState, setLiveState] = useState({ scanning: false, oracle: false, executing: false, resting: false, progress: 0 });
 
