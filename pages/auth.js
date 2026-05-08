@@ -9,15 +9,32 @@ export default function AuthPage() {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [sessionCheckComplete, setSessionCheckComplete] = useState(false);
   const router = useRouter();
   const supabase = useSupabaseClient();
   const session = useSession();
 
   useEffect(() => {
-    if (session) {
-      router.replace('/index');
-    }
-  }, [session, router]);
+    // Wait for Supabase to process OAuth callback
+    const checkSession = async () => {
+      try {
+        const { data: { session: activeSession } } = await supabase.auth.getSession();
+        
+        if (activeSession) {
+          // Session exists, redirect to dashboard
+          router.replace('/index');
+        } else {
+          // No session after callback processing
+          setSessionCheckComplete(true);
+        }
+      } catch (err) {
+        console.error('Session check error:', err);
+        setSessionCheckComplete(true);
+      }
+    };
+
+    checkSession();
+  }, [supabase, router]);
 
   const handleMagicLink = async (e) => {
     e.preventDefault();
