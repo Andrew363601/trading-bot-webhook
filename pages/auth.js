@@ -32,11 +32,15 @@ export default function AuthPage() {
   };
 
   const handleSocialLogin = async (provider) => {
+    // Use production domain if deployed, otherwise localhost
+    const isProduction = window.location.hostname !== 'localhost';
+    const redirectTo = isProduction 
+      ? 'https://trading-bot-webhook.vercel.app/auth'
+      : `${window.location.origin}/auth`;
+    
     await supabase.auth.signInWithOAuth({ 
       provider, 
-      options: { 
-        redirectTo: `${window.location.origin}/auth` 
-      } 
+      options: { redirectTo } 
     });
   };
 
