@@ -22,7 +22,7 @@ export default function AuthPage() {
         
         if (activeSession) {
           // Session exists, redirect to dashboard
-          router.replace('/index');
+          router.replace('/');
         } else {
           // No session after callback processing
           setSessionCheckComplete(true);
