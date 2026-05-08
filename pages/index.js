@@ -526,10 +526,13 @@ function DashboardContent() {
         <div className="flex items-center gap-4">
             <h1 className="text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Command</h1>
             <Link href="/audit" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
-               <Activity size={12} /> Audit Log
+              <Shield className="w-3 h-3" /> Audit
+            </Link>
+            <Link href="/settings" className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+              <Settings className="w-3 h-3" /> Settings
             </Link>
             <Link href="/performance" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
-               <BarChart3 size={12} /> Performance
+              <Activity className="w-3 h-3" /> Performance
             </Link>
         </div>
         <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2"><Database size={12} /> Sync: wsrioyxzhxxrtzjncfvn</div>
