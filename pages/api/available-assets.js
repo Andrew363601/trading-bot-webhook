@@ -15,12 +15,21 @@ export default async function handler(req, res) {
 
   try {
     const token = authHeader.split(' ')[1];
+    // Log part of the token to verify it's being received
+    console.log("[AVAILABLE ASSETS DEBUG]: Received JWT token (first 50 chars):", token.substring(0, 50)); 
+    // Indicate if JWT_SECRET is set in the environment
+    console.log("[AVAILABLE ASSETS DEBUG]: JWT_SECRET used for verification:", process.env.JWT_SECRET ? "SET" : "NOT SET (using default 'your-supabase-jwt-secret')"); 
+
     jwt.verify(token, process.env.JWT_SECRET || 'your-supabase-jwt-secret');
+    console.log("[AVAILABLE ASSETS INFO]: JWT token verified successfully.");
   } catch (err) {
     console.error("[AVAILABLE ASSETS ERROR]: JWT verification failed:", err.message);
-    return res.status(401).json({ error: 'Invalid token' });
+    // Log the full error object for detailed insights
+    console.error("[AVAILABLE ASSETS ERROR]: JWT full error object:", err);
+    return res.status(401).json({ error: 'Invalid token', details: err.message });
   }
 
+  // ... (rest of your API route code from the previous interaction remains here)
   try {
     // Top 15 Perpetual Futures assets (Hardcoded fallback for speed)
     const topAssets = [
