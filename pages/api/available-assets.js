@@ -1,6 +1,4 @@
 // pages/api/available-assets.js
-// Fetch all available FUTURES trading pairs from Coinbase
-
 import jwt from 'jsonwebtoken';
 
 export default async function handler(req, res) {
@@ -11,6 +9,7 @@ export default async function handler(req, res) {
   // Verify JWT from Authorization header
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    console.error("[AVAILABLE ASSETS ERROR]: Missing or invalid Authorization header.");
     return res.status(401).json({ error: 'Missing or invalid Authorization header' });
   }
 
@@ -18,6 +17,7 @@ export default async function handler(req, res) {
     const token = authHeader.split(' ')[1];
     jwt.verify(token, process.env.JWT_SECRET || 'your-supabase-jwt-secret');
   } catch (err) {
+    console.error("[AVAILABLE ASSETS ERROR]: JWT verification failed:", err.message);
     return res.status(401).json({ error: 'Invalid token' });
   }
 
@@ -30,7 +30,6 @@ export default async function handler(req, res) {
       'UNI-PERP-INTX', 'SHIB-PERP-INTX', 'NEAR-PERP-INTX'
     ];
 
-    // Try to fetch from Coinbase but don't block if it fails
     let futuresProducts = [];
     try {
       const response = await fetch('https://api.exchange.coinbase.com/products', {
@@ -38,6 +37,8 @@ export default async function handler(req, res) {
         next: { revalidate: 3600 } // Cache for 1 hour
       });
       
+      console.log(`[AVAILABLE ASSETS INFO]: Coinbase /products API response status: ${response.status} (${response.statusText})`);
+
       if (response.ok) {
         const allProducts = await response.json();
         futuresProducts = allProducts
@@ -53,9 +54,14 @@ export default async function handler(req, res) {
             volume_24h: parseFloat(p.volume_24h) || 0,
             price_percentage_change_24h: parseFloat(p.price_percentage_change_24h) || 0
           }));
+        console.log(`[AVAILABLE ASSETS INFO]: Successfully fetched ${futuresProducts.length} futures products from Coinbase.`);
+      } else {
+        const errorText = await response.text();
+        console.error(`[AVAILABLE ASSETS ERROR]: Coinbase /products API call failed with status ${response.status}: ${errorText}`);
       }
     } catch (e) {
-      console.warn('[AVAILABLE ASSETS] Coinbase fetch failed, using fallback');
+      console.error('[AVAILABLE ASSETS ERROR]: Coinbase fetch exception:', e.message);
+      console.warn('[AVAILABLE ASSETS WARN]: Coinbase fetch failed, using hardcoded fallback assets.');
     }
 
     // Combine and deduplicate
@@ -66,7 +72,6 @@ export default async function handler(req, res) {
       }
     });
 
-    // Just return the top 20 for performance as requested
     const finalSelection = combined
       .sort((a, b) => (b.volume_24h || 0) - (a.volume_24h || 0))
       .slice(0, 20);
@@ -76,7 +81,7 @@ export default async function handler(req, res) {
       products: finalSelection
     });
   } catch (error) {
-    console.error('[AVAILABLE ASSETS ERROR]:', error.message);
+    console.error('[AVAILABLE ASSETS FATAL ERROR]: Uncaught error in available-assets API:', error.message);
     return res.status(500).json({ error: error.message });
   }
 }
