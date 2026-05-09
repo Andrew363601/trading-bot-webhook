@@ -770,17 +770,17 @@ function DashboardContent() {
                <button 
                   onClick={() => setActiveTab('MARKET_SCANNER')} 
                   className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'MARKET_SCANNER' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
-               activeTab === 'MARKET_SCANNER' ? (
-                <div className="p-6">
-                  <MarketScanner />
-                </div>
-              ) : >
+               >
                   Market Scanner
                </button>
             </div>
 
             <div className="overflow-y-auto custom-scrollbar flex-grow">
-              {displayLogs.length === 0 ? (
+              {activeTab === 'MARKET_SCANNER' ? (
+                <div className="p-6">
+                  <MarketScanner />
+                </div>
+              ) : displayLogs.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12">
                   <Layers size={24} className="mb-2 opacity-50" />
                   <p className="text-[11px] font-bold uppercase tracking-widest">No data available</p>
