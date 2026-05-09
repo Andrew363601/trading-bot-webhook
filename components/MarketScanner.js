@@ -48,7 +48,7 @@ export default function MarketScanner() {
         const { data: users } = await supabase
           .from('tenant_users')
           .select('tenant_id')
-          .eq('user_id', session.user.id)
+          .eq('auth_user_id', session.user.id)
           .single();
 
         if (!users) return;
@@ -92,7 +92,7 @@ export default function MarketScanner() {
       const { data: users } = await supabase
         .from('tenant_users')
         .select('tenant_id')
-        .eq('user_id', session.user.id)
+        .eq('auth_user_id', session.user.id)
         .single();
 
       if (favorites.includes(assetName)) {

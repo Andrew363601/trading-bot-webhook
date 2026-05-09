@@ -15,7 +15,7 @@ ALTER TABLE favorite_assets ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policy: Users can only see their tenant's favorites
 CREATE POLICY favorite_assets_tenant_isolation ON favorite_assets
-  USING (tenant_id = (SELECT tenant_id FROM tenant_users WHERE user_id = auth.uid() LIMIT 1));
+  USING (tenant_id = (SELECT tenant_id FROM tenant_users WHERE auth_user_id = auth.uid() LIMIT 1));
 
 -- Index for fast lookups
 CREATE INDEX IF NOT EXISTS idx_favorite_assets_tenant ON favorite_assets(tenant_id);

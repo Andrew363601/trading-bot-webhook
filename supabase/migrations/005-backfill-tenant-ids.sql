@@ -7,13 +7,13 @@ BEGIN;
 ALTER TABLE trade_logs ADD COLUMN IF NOT EXISTS tenant_id UUID;
 
 -- Step 2: Backfill trade_logs with tenant_id
--- For each trade, find its associated tenant via the user_id or other identifier
--- Assuming there's a user_id or created_by field in trade_logs
+-- For each trade, find its associated tenant via the auth_user_id or other identifier
+-- Assuming there's a auth_user_id or created_by field in trade_logs
 UPDATE trade_logs tl
 SET tenant_id = (
   SELECT tu.tenant_id
   FROM tenant_users tu
-  WHERE tu.user_id = (
+  WHERE tu.auth_user_id = (
     SELECT id FROM auth.users 
     LIMIT 1  -- You may need to adjust this based on your actual user association
   )
@@ -26,7 +26,7 @@ WHERE tl.tenant_id IS NULL;
 -- SET tenant_id = (
 --   SELECT tu.tenant_id
 --   FROM tenant_users tu
---   WHERE tu.user_id = tl.created_by
+--   WHERE tu.auth_user_id = tl.created_by
 --   LIMIT 1
 -- )
 -- WHERE tl.tenant_id IS NULL;

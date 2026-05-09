@@ -40,7 +40,7 @@ export default async function handler(req, res) {
     const { data: tenantUser, error: tuError } = await supabase
       .from('tenant_users')
       .select('tenant_id')
-      .eq('user_id', tenantId)
+      .eq('auth_user_id', tenantId)
       .single();
 
     if (tuError || !tenantUser) {
