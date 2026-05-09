@@ -954,7 +954,7 @@ function DashboardContent() {
                   value={localInput} 
                   onChange={(e) => setLocalInput(e.target.value)} 
                   placeholder="Command Nexus..." 
-              />
+                />
               <button type="submit" disabled={!localInput?.trim() || isLoading} className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}>
                   {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
               </button>
