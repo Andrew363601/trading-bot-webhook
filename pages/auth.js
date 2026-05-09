@@ -101,7 +101,7 @@ export default function AuthPage() {
           <div className="relative flex justify-center text-[10px] font-black uppercase tracking-widest bg-slate-950 px-2 text-slate-500">OR CONTINUE WITH</div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <button onClick={() => handleSocialLogin('google')} className="flex items-center justify-center gap-2 bg-slate-950 border border-white/5 hover:bg-slate-900 py-3 rounded-xl transition-colors">
             <Chrome className="w-4 h-4 text-white" />
             <span className="text-xs font-bold text-white uppercase">Google</span>

@@ -45,6 +45,7 @@ function DashboardContent() {
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [isDefconActive, setIsDefconActive] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
 
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -559,23 +560,25 @@ function DashboardContent() {
          </div>
       )}
 
-      <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
-        <div className="flex items-center gap-4">
-            <h1 className="text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Command</h1>
-            <div className="h-6 w-[1px] bg-white/10 mx-2" />
-            <Link href="/audit" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
-              <Shield className="w-3 h-3" /> Audit
-            </Link>
-            <Link href="/settings" className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
-              <Settings className="w-3 h-3" /> Settings
-            </Link>
-            <Link href="/performance" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
-              <Activity className="w-3 h-3" /> Performance
-            </Link>
+      <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4 px-4 sm:px-0">
+        <div className="flex items-center gap-2 sm:gap-4">
+            <h1 className="text-lg sm:text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus</h1>
+            <div className="hidden sm:block h-6 w-[1px] bg-white/10 mx-2" />
+            <div className="hidden sm:flex items-center gap-2">
+                <Link href="/audit" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+                  <Shield className="w-3 h-3" /> Audit
+                </Link>
+                <Link href="/settings" className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+                  <Settings className="w-3 h-3" /> Settings
+                </Link>
+                <Link href="/performance" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+                  <Activity className="w-3 h-3" /> Performance
+                </Link>
+            </div>
         </div>
         
-        <div className="flex items-center gap-8">
-            <div className="flex items-center gap-6">
+        <div className="flex items-center gap-2 sm:gap-8">
+            <div className="hidden md:flex items-center gap-6">
                 <div className="flex flex-col items-end">
                     <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest flex items-center gap-1"><Shield size={8} className="text-emerald-400"/> Live Equity</span>
                     <span className="text-sm font-black font-mono text-white">${portfolio.live?.balance?.toFixed(2) || '0.00'}</span>
@@ -585,32 +588,61 @@ function DashboardContent() {
                     <span className="text-sm font-black font-mono text-slate-300">${portfolio.paper?.balance?.toFixed(2) || '5000.00'}</span>
                 </div>
             </div>
-            <div className="text-[9px] font-bold text-slate-600 uppercase tracking-[0.2em] flex items-center gap-2 bg-white/5 px-3 py-2 rounded-lg border border-white/5"><Database size={10} /> Sync: wsrioyxzhxxrtzjncfvn</div>
+            <div className="hidden sm:flex text-[9px] font-bold text-slate-600 uppercase tracking-[0.2em] items-center gap-2 bg-white/5 px-3 py-2 rounded-lg border border-white/5"><Database size={10} /> Sync</div>
+            <button onClick={() => setShowMobileMenu(!showMobileMenu)} className="sm:hidden p-2 rounded-lg hover:bg-white/5 transition-colors">
+                {showMobileMenu ? <X size={18} /> : <Menu size={18} />}
+            </button>
         </div>
       </header>
 
+      {showMobileMenu && (
+        <div className="sm:hidden bg-slate-900/50 border-b border-white/5 p-4 space-y-3 z-40 flex flex-col">
+          <Link href="/audit" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
+            <Shield className="w-3 h-3" /> Audit
+          </Link>
+          <Link href="/settings" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-300 border border-white/5 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
+            <Settings className="w-3 h-3" /> Settings
+          </Link>
+          <Link href="/performance" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
+            <Activity className="w-3 h-3" /> Performance
+          </Link>
+          <div className="border-t border-white/5 pt-3 mt-3">
+            <div className="flex flex-col gap-2">
+              <div className="flex justify-between">
+                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Live:</span>
+                <span className="text-[9px] font-black font-mono text-emerald-400">${portfolio.live?.balance?.toFixed(2) || '0.00'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest">Paper:</span>
+                <span className="text-[9px] font-black font-mono text-indigo-400">${portfolio.paper?.balance?.toFixed(2) || '5000.00'}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 🔴 NEW COINBASE STYLE TICKER BAR */}
-      <div className="max-w-[1800px] w-full mx-auto bg-slate-900/40 border border-white/5 rounded-2xl p-2 px-6 flex items-center justify-between backdrop-blur-md relative z-40">
-        <div className="flex items-center gap-8">
+      <div className="max-w-[1800px] w-full mx-auto bg-slate-900/40 border border-white/5 rounded-2xl p-2 px-4 sm:px-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-0 backdrop-blur-md relative z-40">
+        <div className="w-full sm:w-auto flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-8">
           {/* Asset Selector Pop-out Trigger */}
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <button 
               onClick={() => setShowScanner(!showScanner)}
-              className="flex items-center gap-3 group px-4 py-2 rounded-xl hover:bg-white/5 transition-all"
+              className="w-full sm:w-auto flex items-center gap-2 sm:gap-3 group px-3 sm:px-4 py-2 rounded-xl hover:bg-white/5 transition-all"
             >
-              <div className="flex flex-col items-start">
-                <span className="text-[8px] font-black text-indigo-500 uppercase tracking-widest">Market</span>
-                <div className="flex items-center gap-2">
-                  <span className="text-lg font-black text-white italic tracking-tighter uppercase">{activeAsset}</span>
-                  <ChevronDown size={14} className={`text-slate-500 transition-transform ${showScanner ? 'rotate-180' : ''}`} />
+              <div className="flex flex-col items-start w-full">
+                <span className="text-[7px] sm:text-[8px] font-black text-indigo-500 uppercase tracking-widest">Market</span>
+                <div className="flex items-center gap-2 w-full">
+                  <span className="text-base sm:text-lg font-black text-white italic tracking-tighter uppercase truncate">{activeAsset}</span>
+                  <ChevronDown size={14} className={`text-slate-500 transition-transform flex-shrink-0 ${showScanner ? 'rotate-180' : ''}`} />
                 </div>
               </div>
             </button>
 
             {showScanner && (
-              <div className="absolute top-full left-0 mt-2 w-80 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2">
+              <div className="absolute top-full left-0 mt-2 w-full sm:w-80 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-64 sm:max-h-none">
                 <div className="flex items-center justify-between p-3 border-b border-white/5">
-                   <span className="text-[10px] font-black uppercase text-indigo-400 tracking-widest">Select Asset Matrix</span>
+                   <span className="text-[9px] sm:text-[10px] font-black uppercase text-indigo-400 tracking-widest">Select Asset</span>
                    <button onClick={() => setShowScanner(false)} className="text-slate-500 hover:text-white"><X size={14}/></button>
                 </div>
                 <div className="p-2">
@@ -627,50 +659,50 @@ function DashboardContent() {
             )}
           </div>
 
-          <div className="h-8 w-[1px] bg-white/5" />
+          <div className="hidden sm:block h-8 w-[1px] bg-white/5" />
 
           {/* Live Price */}
-          <div className="flex flex-col">
-            <span className="text-[8px] font-black text-emerald-500/60 uppercase tracking-widest">Market Feed</span>
-            <div className="flex items-baseline gap-2">
-              <span className={`text-xl font-mono font-black tracking-tighter ${livePrice > 0 ? 'text-emerald-400' : 'text-slate-700'}`}>
+          <div className="flex-1 sm:flex-none flex flex-col">
+            <span className="text-[7px] sm:text-[8px] font-black text-emerald-500/60 uppercase tracking-widest">Market Feed</span>
+            <div className="flex items-baseline gap-1 sm:gap-2">
+              <span className={`text-lg sm:text-xl font-mono font-black tracking-tighter ${livePrice > 0 ? 'text-emerald-400' : 'text-slate-700'}`}>
                 ${livePrice > 0 ? livePrice.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '---'}
               </span>
-              <span className="text-[9px] font-bold text-slate-500 uppercase">USD</span>
+              <span className="text-[8px] sm:text-[9px] font-bold text-slate-500 uppercase">USD</span>
             </div>
           </div>
 
-          <div className="h-8 w-[1px] bg-white/5" />
+          <div className="hidden sm:block h-8 w-[1px] bg-white/5" />
 
-          {/* Sonar Data Inline */}
-          <div className="flex items-center gap-6">
+          {/* Sonar Data Inline - Responsive */}
+          <div className="w-full sm:w-auto flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-6">
              <div className="flex flex-col">
-                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Oracle CVD</span>
-                <span className={`text-sm font-mono font-bold ${cvd !== 0 ? (cvd > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-500'}`}>
+                <span className="text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest">CVD</span>
+                <span className={`text-xs sm:text-sm font-mono font-bold ${cvd !== 0 ? (cvd > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-500'}`}>
                     {cvd > 0 ? '+' : ''}{cvd.toFixed(0)}
                 </span>
              </div>
              <div className="flex flex-col">
-                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Oracle Score</span>
-                <span className="text-sm font-mono font-bold text-indigo-400">{latestScan?.telemetry?.oracle_score || '--'}</span>
+                <span className="text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest">Score</span>
+                <span className="text-xs sm:text-sm font-mono font-bold text-indigo-400">{latestScan?.telemetry?.oracle_score || '--'}</span>
              </div>
-             <div className="flex flex-col min-w-[80px]">
-                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Regime</span>
+             <div className="flex flex-col">
+                <span className="text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest">Regime</span>
                 {latestScan?.telemetry?.macro_regime_oracle && (
-                    <span className={`text-[10px] font-black uppercase tracking-widest ${latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'text-emerald-400' : (latestScan.telemetry.macro_regime_oracle === 'CHOP' ? 'text-amber-400' : 'text-slate-500')}`}>
+                    <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest ${latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'text-emerald-400' : (latestScan.telemetry.macro_regime_oracle === 'CHOP' ? 'text-amber-400' : 'text-slate-500')}`}>
                         {latestScan.telemetry.macro_regime_oracle}
                     </span>
                 )}
              </div>
           </div>
 
-          <div className="h-8 w-[1px] bg-white/5" />
+          <div className="hidden sm:block h-8 w-[1px] bg-white/5" />
 
-          {/* Heatmap/Liquidity Bar Inline */}
-          <div className="flex flex-col w-48">
+          {/* Heatmap/Liquidity Bar */}
+          <div className="w-full sm:w-48 flex flex-col">
               <div className="flex justify-between items-center mb-1">
-                  <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Liquidity Matrix</span>
-                  <div className="flex gap-2 text-[8px] font-mono">
+                  <span className="text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest">Liquidity</span>
+                  <div className="flex gap-1 sm:gap-2 text-[7px] sm:text-[8px] font-mono">
                       <span className="text-emerald-400">B:{bids.toFixed(0)}</span>
                       <span className="text-red-400">A:{asks.toFixed(0)}</span>
                   </div>
@@ -684,7 +716,7 @@ function DashboardContent() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-4">
              <div className={`px-3 py-1.5 rounded-lg border flex items-center gap-2 transition-all ${isResonant ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 animate-pulse shadow-[0_0_15px_-3px_rgba(16,185,129,0.4)]' : (isVeto ? 'bg-red-500/10 text-red-400 border-red-500/20' : 'bg-slate-800/50 text-slate-600 border-white/5')}`}>
                 <div className={`h-1.5 w-1.5 rounded-full ${isResonant ? 'bg-emerald-400' : (isVeto ? 'bg-red-400' : 'bg-slate-600')}`} />
                 <span className="text-[9px] font-black uppercase tracking-widest">{latestScan?.status || 'IDLE'}</span>
@@ -699,9 +731,9 @@ function DashboardContent() {
         </div>
       </div>
 
-      <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
+      <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 md:gap-6 grow overflow-hidden px-4 sm:px-0">
         
-        <div className="lg:col-span-9 flex flex-col gap-6 min-h-0 h-[calc(100vh-180px)]">
+        <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-[calc(100vh-280px)] sm:h-[calc(100vh-240px)] md:h-[calc(100vh-200px)] lg:h-[calc(100vh-180px)]">
           
           <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
             
@@ -784,86 +816,138 @@ function DashboardContent() {
                   <p className="text-[11px] font-bold uppercase tracking-widest">No data available</p>
                 </div>
               ) : (
-                <table className="w-full text-left table-fixed">
-                      <thead className="bg-slate-950/40 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
-                        <tr>
-                          <th className="px-4 py-3 w-24">Date</th>
-                          <th className="px-4 py-3 text-center">Context</th>
-                          <th className="px-4 py-3 text-center w-20">Vector</th>
-                          <th className="px-4 py-3 text-center">Entry</th>
-                          <th className="px-4 py-3 text-center">Targets</th>
-                          <th className="px-4 py-3">Status</th>
-                          <th className="px-4 py-3 text-right">PnL</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
-                        {displayLogs.map((log, i) => {
-                          const isShadow = log.execution_mode === 'SHADOW';
-                          const isReversal = log.reason && log.reason.includes('[REVERSAL');
-                          const isTripwire = log.reason && log.reason.includes('[TRIPWIRE');
-                          
-                          let pnlDisplay = '--';
-                          if (isShadow) {
-                              pnlDisplay = <span className="text-slate-600">VETO</span>;
-                          } else if (log.exit_price) {
-                              pnlDisplay = <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span>;
-                          } else if (log.execution_mode === 'LIVE (EXCHANGE)') {
-                              pnlDisplay = <span className={log.pnl >= 0 ? 'text-cyan-400 animate-pulse' : 'text-amber-400 animate-pulse'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)} (U)</span>;
-                          } else if (livePrice > 0 && activeTab === 'POSITIONS') {
-                              const paperPnl = (log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1);
-                              pnlDisplay = <span className={`animate-pulse ${paperPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${paperPnl.toFixed(4)} (U)</span>;
-                          }
-                          
-                          const timestamp = log.created_at || log.exit_time;
-                          const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
-
-                          return (
-                          <tr key={i} className={`hover:bg-white/[0.02] transition-colors ${isShadow ? 'opacity-50' : ''}`}>
-                            <td className="px-4 py-3 text-[9px] text-slate-500">
-                                <div className="flex flex-col"><span className="text-[10px] font-bold text-slate-400">{formattedTime}</span></div>
-                            </td>
-                            <td className="px-4 py-3 text-center">
-                                <div className="flex flex-col items-center gap-1">
-                                    <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded border bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10">
-                                        {log.strategy_id?.replace('_V1', '')}
-                                    </span>
-                                    {isShadow && <span className="text-[7px] bg-red-500/20 text-red-300 px-1 rounded uppercase tracking-widest">SHADOW VETO</span>}
-                                    {isReversal && !isShadow && <span className="text-[7px] bg-purple-500/20 text-purple-300 px-1 rounded uppercase tracking-widest">REVERSAL</span>}
-                                    {isTripwire && !isShadow && <span className="text-[7px] bg-amber-500/20 text-amber-300 px-1 rounded uppercase tracking-widest">TRIPWIRE</span>}
-                                </div>
-                            </td>
-                            <td className="px-4 py-3 text-center">
-                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${isShadow ? 'bg-slate-800 text-slate-500' : (log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400')}`}>
-                                    {log.side} {log.qty > 0 ? `(${log.qty})` : ''}
-                                </span>
-                            </td>
-                            <td className="px-4 py-3 text-slate-300 text-[10px] text-center">${log.entry_price}</td>
-                            <td className="px-4 py-3 text-center">
-                                {isShadow ? <span className="text-slate-700 italic text-[9px]">Rejected</span> : 
-                                 (log.tp_price || log.sl_price ? (
-                                    <div className="flex flex-col text-[8px] tracking-tighter uppercase">
-                                        <span className="text-emerald-500/60">TP: ${log.tp_price}</span>
-                                        <span className="text-red-500/60">SL: ${log.sl_price}</span>
-                                    </div>
-                                ) : <span className="text-slate-700 italic text-[9px]">Dynamic</span>)}
-                            </td>
-                            <td className="px-4 py-3">
-                                {isShadow ? <span className="text-[9px] text-red-400 font-bold">VETOED</span> :
-                                (log.exit_price ? <span className="text-[10px] text-slate-400">${log.exit_price}</span> : 
-                                 <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
-                                 <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">X</button></>)}
-                            </td>
-                            <td className="px-4 py-3 text-right font-black text-[10px]">{pnlDisplay}</td>
+                <>
+                  {/* Desktop Table View - Hidden on md and below */}
+                  <table className="w-full text-left table-fixed hidden lg:table">
+                        <thead className="bg-slate-950/40 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
+                          <tr>
+                            <th className="px-4 py-3 w-24">Date</th>
+                            <th className="px-4 py-3 text-center">Context</th>
+                            <th className="px-4 py-3 text-center w-20">Vector</th>
+                            <th className="px-4 py-3 text-center">Entry</th>
+                            <th className="px-4 py-3 text-center">Targets</th>
+                            <th className="px-4 py-3">Status</th>
+                            <th className="px-4 py-3 text-right">PnL</th>
                           </tr>
-                        )})}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
+                          {displayLogs.map((log, i) => {
+                            const isShadow = log.execution_mode === 'SHADOW';
+                            const isReversal = log.reason && log.reason.includes('[REVERSAL');
+                            const isTripwire = log.reason && log.reason.includes('[TRIPWIRE');
+                            
+                            let pnlDisplay = '--';
+                            if (isShadow) {
+                                pnlDisplay = <span className="text-slate-600">VETO</span>;
+                            } else if (log.exit_price) {
+                                pnlDisplay = <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span>;
+                            } else if (log.execution_mode === 'LIVE (EXCHANGE)') {
+                                pnlDisplay = <span className={log.pnl >= 0 ? 'text-cyan-400 animate-pulse' : 'text-amber-400 animate-pulse'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)} (U)</span>;
+                            } else if (livePrice > 0 && activeTab === 'POSITIONS') {
+                                const paperPnl = (log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1);
+                                pnlDisplay = <span className={`animate-pulse ${paperPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${paperPnl.toFixed(4)} (U)</span>;
+                            }
+                            
+                            const timestamp = log.created_at || log.exit_time;
+                            const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
+
+                            return (
+                            <tr key={i} className={`hover:bg-white/[0.02] transition-colors ${isShadow ? 'opacity-50' : ''}`}>
+                              <td className="px-4 py-3 text-[9px] text-slate-500">
+                                  <div className="flex flex-col"><span className="text-[10px] font-bold text-slate-400">{formattedTime}</span></div>
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                  <div className="flex flex-col items-center gap-1">
+                                      <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded border bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10">
+                                          {log.strategy_id?.replace('_V1', '')}
+                                      </span>
+                                      {isShadow && <span className="text-[7px] bg-red-500/20 text-red-300 px-1 rounded uppercase tracking-widest">SHADOW VETO</span>}
+                                      {isReversal && !isShadow && <span className="text-[7px] bg-purple-500/20 text-purple-300 px-1 rounded uppercase tracking-widest">REVERSAL</span>}
+                                      {isTripwire && !isShadow && <span className="text-[7px] bg-amber-500/20 text-amber-300 px-1 rounded uppercase tracking-widest">TRIPWIRE</span>}
+                                  </div>
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${isShadow ? 'bg-slate-800 text-slate-500' : (log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400')}`}>
+                                      {log.side} {log.qty > 0 ? `(${log.qty})` : ''}
+                                  </span>
+                              </td>
+                              <td className="px-4 py-3 text-slate-300 text-[10px] text-center">${log.entry_price}</td>
+                              <td className="px-4 py-3 text-center">
+                                  {isShadow ? <span className="text-slate-700 italic text-[9px]">Rejected</span> : 
+                                   (log.tp_price || log.sl_price ? (
+                                      <div className="flex flex-col text-[8px] tracking-tighter uppercase">
+                                          <span className="text-emerald-500/60">TP: ${log.tp_price}</span>
+                                          <span className="text-red-500/60">SL: ${log.sl_price}</span>
+                                      </div>
+                                  ) : <span className="text-slate-700 italic text-[9px]">Dynamic</span>)}
+                              </td>
+                              <td className="px-4 py-3">
+                                  {isShadow ? <span className="text-[9px] text-red-400 font-bold">VETOED</span> :
+                                  (log.exit_price ? <span className="text-[10px] text-slate-400">${log.exit_price}</span> : 
+                                   <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
+                                   <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">X</button></>)}
+                              </td>
+                              <td className="px-4 py-3 text-right font-black text-[10px]">{pnlDisplay}</td>
+                            </tr>
+                          )})}
+                        </tbody>
+                      </table>
+
+                  {/* Mobile Card View - Shown on lg and below */}
+                  <div className="lg:hidden grid grid-cols-1 md:grid-cols-2 gap-3 p-2">
+                    {displayLogs.map((log, i) => {
+                      const isShadow = log.execution_mode === 'SHADOW';
+                      const isReversal = log.reason && log.reason.includes('[REVERSAL');
+                      const isTripwire = log.reason && log.reason.includes('[TRIPWIRE');
+                      
+                      let pnlDisplay = '--';
+                      if (isShadow) {
+                          pnlDisplay = <span className="text-slate-600">VETO</span>;
+                      } else if (log.exit_price) {
+                          pnlDisplay = <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span>;
+                      } else if (log.execution_mode === 'LIVE (EXCHANGE)') {
+                          pnlDisplay = <span className={log.pnl >= 0 ? 'text-cyan-400 animate-pulse' : 'text-amber-400 animate-pulse'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)} (U)</span>;
+                      } else if (livePrice > 0 && activeTab === 'POSITIONS') {
+                          const paperPnl = (log.side === 'BUY' ? livePrice - log.entry_price : log.entry_price - livePrice) * (log.qty || 1);
+                          pnlDisplay = <span className={`animate-pulse ${paperPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${paperPnl.toFixed(4)} (U)</span>;
+                      }
+                      
+                      const timestamp = log.created_at || log.exit_time;
+                      const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
+
+                      return (
+                        <div key={i} className={`bg-slate-950/40 border border-white/5 rounded-xl p-3 text-xs font-mono space-y-2 ${isShadow ? 'opacity-50' : ''}`}>
+                          <div className="flex justify-between items-start">
+                            <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded border bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10">{log.strategy_id?.replace('_V1', '')}</span>
+                            <span className="text-[9px] text-slate-500">{formattedTime}</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className={`px-2 py-0.5 rounded-full text-[8px] font-black ${isShadow ? 'bg-slate-800 text-slate-500' : (log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400')}`}>
+                              {log.side} {log.qty > 0 ? `(${log.qty})` : ''}
+                            </span>
+                            <span className="font-black text-[9px]">{pnlDisplay}</span>
+                          </div>
+                          <div className="flex justify-between text-[8px] text-slate-400">
+                            <span>Entry: ${log.entry_price}</span>
+                            <span>{isShadow ? 'REJECTED' : (log.exit_price ? `Exit: $${log.exit_price}` : log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE')}</span>
+                          </div>
+                          {(isReversal || isTripwire) && (
+                            <div className="flex gap-1">
+                              {isReversal && !isShadow && <span className="text-[7px] bg-purple-500/20 text-purple-300 px-1 rounded uppercase">REVERSAL</span>}
+                              {isTripwire && !isShadow && <span className="text-[7px] bg-amber-500/20 text-amber-300 px-1 rounded uppercase">TRIPWIRE</span>}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
               )}
             </div>
           </div>
         </div>
 
-        <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-180px)] overflow-hidden resize-y pb-2">
+        <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-hidden lg:resize-y pb-2">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
             <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between"><span>Active Matrix</span><span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span></h3>
             <div className="flex flex-col gap-3">
