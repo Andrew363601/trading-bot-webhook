@@ -24,10 +24,13 @@ export default function Dashboard() {
 function DashboardContent() {
   const supabase = useSupabaseClient();
   const session = useSession();
-  const [activeAsset, setActiveAsset] = useState('ETH-PERP');
+  const [activeAsset, setActiveAsset] = useState('BTC-PERP-INTX');
   const [activeTab, setActiveTab] = useState('ANALYTICS');
   
-  const [assetsList, setAssetsList] = useState(['ETP-20DEC30-CDE', 'BTC-PERP-INTX', 'SOL-PERP-INTX', 'SLP-20DEC30-CDE']);
+  const [assetsList, setAssetsList] = useState([
+    'BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-INTX',
+    'LINK-PERP-INTX', 'AVAX-PERP-INTX', 'LTC-PERP-INTX', 'BCH-PERP-INTX'
+  ]);
   
   const [livePrice, setLivePrice] = useState(0); 
   const [tradeLogs, setTradeLogs] = useState([]);
@@ -58,11 +61,20 @@ function DashboardContent() {
 
   const { messages, append, error: sdkError, isLoading } = useChat({
     api: '/api/chat',
-    id: 'nexus-main-chat',
-    headers: chatHeaders,
-    onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
+    headers: {
+      Authorization: session?.access_token ? `Bearer ${session.access_token}` : '',
+    },
+    onResponse: (response) => {
+        console.log("[NEXUS CHAT] Response received:", response.status);
+    },
+    onFinish: (message) => {
+        console.log("[NEXUS CHAT] Message finished:", message.content.substring(0, 20) + "...");
+    },
+    onError: (err) => {
+      console.error("[NEXUS AGENT FATAL]:", err);
+    }
   });
-  
+
   const chatEndRef = useRef(null);
 
   useEffect(() => {
@@ -659,34 +671,6 @@ function DashboardContent() {
                 {isChartMaximized ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
             </button>
 
-            <div className="absolute top-4 left-6 z-20 flex gap-2 items-center">
-                {['1m', '5m', '15m', '1h', '4h'].map(tf => (
-                    <button 
-                        key={tf} 
-                        onClick={() => setChartTimeframe(tf)}
-                        className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border transition-all ${chartTimeframe === tf ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30' : 'bg-slate-950/80 text-slate-500 border-white/5 hover:bg-white/5'}`}
-                    >
-                        {tf}
-                    </button>
-                ))}
-                
-                <button 
-                    onClick={() => setShowHeatmap(!showHeatmap)}
-                    className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border transition-all flex items-center gap-1 ${showHeatmap ? 'bg-amber-500/30 text-amber-300 border-amber-500/50 shadow-[0_0_10px_-2px_rgba(245,158,11,0.4)]' : 'bg-slate-950/80 text-slate-500 border-white/5 hover:bg-amber-500/10'}`}
-                >
-                    <Flame size={12} className={showHeatmap ? 'text-amber-400 animate-pulse' : 'text-slate-500'} />
-                    Heatmap {showHeatmap ? 'ON' : 'OFF'}
-                </button>
-                
-                {/* 🟢 THE FIX: The Regime HUD Badge */}
-                {latestScan?.telemetry?.macro_regime_oracle && (
-                    <div className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border flex items-center gap-1 shadow-lg backdrop-blur-md ${latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50' : (latestScan.telemetry.macro_regime_oracle === 'CHOP' ? 'bg-amber-500/20 text-amber-300 border-amber-500/50' : 'bg-slate-500/20 text-slate-400 border-slate-500/50')}`}>
-                        <Target size={12} />
-                        REGIME: {latestScan.telemetry.macro_regime_oracle}
-                    </div>
-                )}
-            </div>
-
             <div className="absolute top-16 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {openPositions.slice(0, 3).map((log, i) => {
                  const displayPnl = log.execution_mode.includes('LIVE') ? log.pnl : 
@@ -735,7 +719,25 @@ function DashboardContent() {
                 </div>
               </div>
 
-              <div className="flex bg-black/40 p-1 rounded-xl border border-white/5">
+              <div className="flex items-center gap-3">
+                {latestScan?.telemetry?.macro_regime_oracle && (
+                    <div className={`px-3 py-1.5 rounded-lg border flex items-center gap-2 backdrop-blur-md transition-all ${latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-[0_0_15px_-3px_rgba(16,185,129,0.3)]' : (latestScan.telemetry.macro_regime_oracle === 'CHOP' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20 shadow-[0_0_15px_-3px_rgba(245,158,11,0.3)]' : 'bg-slate-800/50 text-slate-500 border-white/5')}`}>
+                        <Target size={12} className={latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'animate-pulse' : ''} />
+                        <span className="text-[10px] font-black uppercase tracking-[0.1em]">{latestScan.telemetry.macro_regime_oracle} PHASE</span>
+                    </div>
+                )}
+
+                <div className="flex bg-black/40 p-1 rounded-xl border border-white/5 gap-1">
+                <button 
+                    onClick={() => setShowHeatmap(!showHeatmap)}
+                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1.5 ${showHeatmap ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 shadow-[0_0_10px_-2px_rgba(245,158,11,0.4)]' : 'text-slate-600 hover:text-slate-400 hover:bg-white/5'}`}
+                    title="Toggle Heatmap"
+                >
+                    <Flame size={12} className={showHeatmap ? 'animate-pulse' : ''} />
+                </button>
+
+                <div className="w-[1px] h-4 bg-white/5 self-center mx-1" />
+
                 {['1m', '5m', '15m', '1h', '4h'].map(tf => (
                   <button 
                     key={tf} 

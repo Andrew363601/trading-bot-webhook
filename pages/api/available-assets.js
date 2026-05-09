@@ -22,37 +22,58 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Fetch all products from Coinbase
-    const response = await fetch('https://api.exchange.coinbase.com/products');
-    
-    if (!response.ok) {
-      throw new Error(`Coinbase API returned ${response.status}`);
+    // Top 15 Perpetual Futures assets (Hardcoded fallback for speed)
+    const topAssets = [
+      'BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-INTX',
+      'LINK-PERP-INTX', 'AVAX-PERP-INTX', 'LTC-PERP-INTX', 'BCH-PERP-INTX',
+      'XRP-PERP-INTX', 'ADA-PERP-INTX', 'DOT-PERP-INTX', 'MATIC-PERP-INTX',
+      'UNI-PERP-INTX', 'SHIB-PERP-INTX', 'NEAR-PERP-INTX'
+    ];
+
+    // Try to fetch from Coinbase but don't block if it fails
+    let futuresProducts = [];
+    try {
+      const response = await fetch('https://api.exchange.coinbase.com/products', {
+        headers: { 'User-Agent': 'Nexus-Terminal' },
+        next: { revalidate: 3600 } // Cache for 1 hour
+      });
+      
+      if (response.ok) {
+        const allProducts = await response.json();
+        futuresProducts = allProducts
+          .filter(p => 
+            (p.product_type === 'PERPETUAL_FUTURES' || p.id.includes('PERP')) && 
+            !p.trading_disabled
+          )
+          .map(p => ({
+            id: p.id,
+            name: p.id,
+            base: p.base_currency,
+            price: parseFloat(p.price) || 0,
+            volume_24h: parseFloat(p.volume_24h) || 0,
+            price_percentage_change_24h: parseFloat(p.price_percentage_change_24h) || 0
+          }));
+      }
+    } catch (e) {
+      console.warn('[AVAILABLE ASSETS] Coinbase fetch failed, using fallback');
     }
 
-    const allProducts = await response.json();
+    // Combine and deduplicate
+    const combined = [...futuresProducts];
+    topAssets.forEach(id => {
+      if (!combined.find(p => p.id === id)) {
+        combined.push({ id, name: id, base: id.split('-')[0], price: 0, volume_24h: 0, price_percentage_change_24h: 0 });
+      }
+    });
 
-    // Filter for FUTURES products only
-    const futuresProducts = allProducts
-      .filter(p => 
-        p.product_type === 'PERPETUAL_FUTURES' && 
-        p.quote_currency === 'USD' &&
-        p.trading_disabled === false
-      )
-      .map(p => ({
-        id: p.id,
-        name: p.id,
-        base: p.base_currency,
-        quote: p.quote_currency,
-        price: parseFloat(p.price) || 0,
-        volume_24h: parseFloat(p.volume_24h) || 0,
-        price_percentage_change_24h: parseFloat(p.price_percentage_change_24h) || 0,
-        product_type: p.product_type
-      }))
-      .sort((a, b) => b.volume_24h - a.volume_24h); // Sort by volume descending
+    // Just return the top 20 for performance as requested
+    const finalSelection = combined
+      .sort((a, b) => (b.volume_24h || 0) - (a.volume_24h || 0))
+      .slice(0, 20);
 
     return res.status(200).json({
-      count: futuresProducts.length,
-      products: futuresProducts
+      count: finalSelection.length,
+      products: finalSelection
     });
   } catch (error) {
     console.error('[AVAILABLE ASSETS ERROR]:', error.message);

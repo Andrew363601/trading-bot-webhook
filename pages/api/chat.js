@@ -57,6 +57,8 @@ export default async function handler(req, res) {
       tenantId = userLink?.tenant_id;
     }
 
+    console.log(`[CHAT API] Request for tenant: ${tenantId || 'GLOBAL'}. Message count: ${safeMessages.length}`);
+
     let strategyQuery = supabase.from('strategy_config').select('*');
     let tradeLogQuery = supabase.from('trade_logs').select('*').is('exit_price', null);
     let recentLogQuery = supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5);
@@ -165,7 +167,7 @@ export default async function handler(req, res) {
     `;
 
     const result = await streamText({
-      model: google('models/gemini-3-flash-preview'), 
+      model: google('gemini-1.5-flash'), 
       system: systemPrompt,
       messages: safeMessages, 
       maxSteps: 5,
