@@ -8,7 +8,7 @@ import {
   Zap, Lock, AlertCircle
 } from 'lucide-react';
 
-export default function MarketScanner() {
+export default function MarketScanner({ onSelectAsset, currentAsset }) {
   const supabase = useSupabaseClient();
   const session = useSession();
   const token = session?.access_token;
@@ -22,6 +22,14 @@ export default function MarketScanner() {
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedStrategyId, setExpandedStrategyId] = useState(null);
   const [strategyParams, setStrategyParams] = useState({});
+
+  // Sync selectedAsset with currentAsset if provided
+  useEffect(() => {
+    if (currentAsset && (!selectedAsset || selectedAsset.id !== currentAsset)) {
+        const asset = allAssets.find(a => a.id === currentAsset);
+        if (asset) setSelectedAsset(asset);
+    }
+  }, [currentAsset, allAssets]);
 
   // Fetch all available FUTURES assets
   useEffect(() => {
@@ -151,51 +159,51 @@ export default function MarketScanner() {
   ).filter(a => a.id.toLowerCase().includes(searchTerm.toLowerCase()));
 
   return (
-    <div className="bg-slate-900/30 border border-white/5 rounded-2xl p-6 space-y-6">
+    <div className="bg-slate-900/30 border border-white/5 rounded-2xl p-4 space-y-4 max-h-screen overflow-y-auto custom-scrollbar">
       {/* Tabs */}
-      <div className="flex gap-4 border-b border-white/10">
+      <div className="flex gap-2 border-b border-white/10 overflow-x-auto no-scrollbar">
         <button
           onClick={() => setActiveTab('FAVORITES')}
-          className={`px-4 py-2 font-bold uppercase text-xs tracking-widest transition-colors ${
+          className={`px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
             activeTab === 'FAVORITES'
               ? 'text-indigo-400 border-b-2 border-indigo-400'
               : 'text-slate-500 hover:text-slate-300'
           }`}
         >
-          <Star className="w-4 h-4 inline mr-2" />
-          Favorites
+          <Star className="w-3 h-3 inline mr-1" />
+          Favs
         </button>
         <button
           onClick={() => setActiveTab('BROWSE')}
-          className={`px-4 py-2 font-bold uppercase text-xs tracking-widest transition-colors ${
+          className={`px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
             activeTab === 'BROWSE'
               ? 'text-emerald-400 border-b-2 border-emerald-400'
               : 'text-slate-500 hover:text-slate-300'
           }`}
         >
-          <Search className="w-4 h-4 inline mr-2" />
-          Browse All
+          <Search className="w-3 h-3 inline mr-1" />
+          All
         </button>
       </div>
 
       {/* Search */}
       <div className="relative">
-        <Search className="absolute left-3 top-3 w-4 h-4 text-slate-500" />
+        <Search className="absolute left-3 top-2.5 w-3 h-3 text-slate-500" />
         <input
           type="text"
-          placeholder="Search assets..."
+          placeholder="Search..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full bg-slate-950 border border-white/5 rounded-xl pl-10 pr-4 py-2 text-white text-sm placeholder-slate-600 focus:ring-2 focus:ring-indigo-500/50 outline-none"
+          className="w-full bg-slate-950 border border-white/5 rounded-xl pl-8 pr-3 py-1.5 text-white text-[10px] placeholder-slate-600 focus:ring-2 focus:ring-indigo-500/50 outline-none uppercase"
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="flex flex-col gap-4">
         {/* Asset List */}
-        <div className="lg:col-span-1 space-y-2 max-h-96 overflow-y-auto">
+        <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
           {filteredAssets.length === 0 ? (
-            <div className="text-center py-8 text-slate-500">
-              No {activeTab === 'FAVORITES' ? 'favorite' : ''} assets found
+            <div className="text-center py-4 text-[10px] text-slate-500 uppercase tracking-widest font-black">
+              Empty Matrix
             </div>
           ) : (
             filteredAssets.map(asset => (
@@ -204,41 +212,32 @@ export default function MarketScanner() {
                 onClick={() => {
                   setSelectedAsset(asset);
                   setStrategyParams({});
+                  if (onSelectAsset) onSelectAsset(asset.id);
                 }}
-                className={`w-full text-left px-4 py-3 rounded-lg transition-all border ${
+                className={`w-full text-left px-3 py-2 rounded-xl transition-all border ${
                   selectedAsset?.id === asset.id
                     ? 'bg-indigo-500/20 border-indigo-500/50'
-                    : 'bg-slate-950 border-white/5 hover:border-white/10'
+                    : 'bg-slate-950/50 border-white/5 hover:border-white/10'
                 }`}
               >
                 <div className="flex justify-between items-start">
                   <div>
-                    <div className="font-bold text-white">{asset.id}</div>
-                    <div className="text-xs text-slate-400">${asset.price?.toFixed(2)}</div>
+                    <div className="font-black text-[10px] text-white uppercase tracking-tighter">{asset.id}</div>
+                    <div className="text-[9px] text-slate-500 font-mono">${asset.price?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
                   </div>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       toggleFavorite(asset.id);
                     }}
-                    className={`transition-colors ${
+                    className={`transition-colors p-1 ${
                       favorites.includes(asset.id)
                         ? 'text-yellow-400'
-                        : 'text-slate-600 hover:text-slate-400'
+                        : 'text-slate-700 hover:text-slate-500'
                     }`}
                   >
-                    <Star className="w-4 h-4" fill="currentColor" />
+                    <Star className="w-3 h-3" fill={favorites.includes(asset.id) ? "currentColor" : "none"} />
                   </button>
-                </div>
-                <div className={`text-xs mt-1 flex items-center gap-1 ${
-                  asset.price_percentage_change_24h >= 0 ? 'text-green-400' : 'text-red-400'
-                }`}>
-                  {asset.price_percentage_change_24h >= 0 ? (
-                    <TrendingUp className="w-3 h-3" />
-                  ) : (
-                    <TrendingDown className="w-3 h-3" />
-                  )}
-                  {asset.price_percentage_change_24h?.toFixed(2)}%
                 </div>
               </button>
             ))
@@ -246,47 +245,45 @@ export default function MarketScanner() {
         </div>
 
         {/* Strategy Discovery */}
-        <div className="lg:col-span-2">
+        <div className="border-t border-white/5 pt-4">
           {!selectedAsset ? (
-            <div className="flex flex-col items-center justify-center h-full py-12 text-slate-500">
-              <Search className="w-12 h-12 mb-4 opacity-50" />
-              <p className="font-bold">Select an asset to view available strategies</p>
+            <div className="flex flex-col items-center justify-center py-4 text-slate-600">
+              <Zap className="w-6 h-6 mb-2 opacity-20" />
+              <p className="text-[9px] font-black uppercase tracking-widest text-center">Select Asset<br/>to Deploy</p>
             </div>
           ) : (
-            <div className="space-y-4">
-              <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-lg p-4">
-                <h3 className="font-bold text-white mb-2">Strategies for {selectedAsset.id}</h3>
-                <p className="text-xs text-slate-400">
-                  Click to view parameters and subscribe
-                </p>
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="h-1 w-1 rounded-full bg-indigo-500 animate-pulse" />
+                <h3 className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Deploy Matrix: {selectedAsset.id}</h3>
               </div>
 
               {loading ? (
-                <div className="flex justify-center py-8">
-                  <div className="w-6 h-6 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin" />
+                <div className="flex justify-center py-4">
+                  <div className="w-4 h-4 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin" />
                 </div>
               ) : availableStrategies.length === 0 ? (
-                <div className="text-center py-8 text-slate-500">
-                  No strategies available for this asset
+                <div className="text-center py-4 text-[9px] text-slate-600 uppercase font-bold">
+                  No strategies mapped
                 </div>
               ) : (
                 availableStrategies.map(strategy => (
                   <div
                     key={strategy.id}
-                    className="bg-slate-950 border border-white/5 rounded-lg p-4 space-y-3"
+                    className="bg-slate-950 border border-white/5 rounded-xl p-3 space-y-2"
                   >
                     <button
                       onClick={() => setExpandedStrategyId(
                         expandedStrategyId === strategy.id ? null : strategy.id
                       )}
-                      className="w-full flex justify-between items-center hover:opacity-80 transition-opacity"
+                      className="w-full flex justify-between items-center group"
                     >
                       <div className="text-left">
-                        <h4 className="font-bold text-white">{strategy.name}</h4>
-                        <p className="text-xs text-slate-400">{strategy.description}</p>
+                        <h4 className="font-black text-[10px] text-white uppercase tracking-tighter group-hover:text-indigo-300 transition-colors">{strategy.name}</h4>
+                        <p className="text-[8px] text-slate-600 uppercase font-bold">{strategy.description}</p>
                       </div>
                       <ChevronDown
-                        className={`w-4 h-4 text-slate-400 transition-transform ${
+                        className={`w-3 h-3 text-slate-500 transition-transform ${
                           expandedStrategyId === strategy.id ? 'rotate-180' : ''
                         }`}
                       />
@@ -295,10 +292,10 @@ export default function MarketScanner() {
                     {expandedStrategyId === strategy.id && (
                       <div className="space-y-3 border-t border-white/5 pt-3">
                         {/* Parameters */}
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-2">
                           {Object.entries(strategy.parameters).map(([key, param]) => (
                             <div key={key} className="space-y-1">
-                              <label className="text-xs font-bold text-slate-400 uppercase">
+                              <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">
                                 {param.label}
                               </label>
                               <input
@@ -313,7 +310,7 @@ export default function MarketScanner() {
                                     }
                                   }))
                                 }
-                                className="w-full bg-slate-900 border border-white/5 rounded px-2 py-1 text-white text-sm focus:ring-2 focus:ring-indigo-500/50 outline-none"
+                                className="w-full bg-slate-900 border border-white/5 rounded-lg px-2 py-1 text-white text-[9px] focus:ring-1 focus:ring-indigo-500/50 outline-none"
                               />
                             </div>
                           ))}
@@ -322,10 +319,10 @@ export default function MarketScanner() {
                         {/* Subscribe Button */}
                         <button
                           onClick={() => subscribeToStrategy(strategy)}
-                          className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
+                          className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[9px] uppercase tracking-widest py-2 rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/20"
                         >
-                          <Plus className="w-4 h-4" />
-                          Subscribe to {strategy.name}
+                          <Plus className="w-3 h-3" />
+                          Initialize
                         </button>
                       </div>
                     )}
