@@ -19,6 +19,7 @@ export default async function handler(req, res) {
     console.log("[AVAILABLE ASSETS DEBUG]: Received JWT token (first 50 chars):", token.substring(0, 50)); 
     // Indicate if JWT_SECRET is set in the environment
     console.log("[AVAILABLE ASSETS DEBUG]: JWT_SECRET used for verification:", process.env.JWT_SECRET ? "SET" : "NOT SET (using default 'your-supabase-jwt-secret')"); 
+    console.log("[AVAILABLE ASSETS DEBUG]: JWT_SECRET value start (first 20 chars):", (process.env.JWT_SECRET || '').substring(0, 20));
 
     jwt.verify(token, process.env.JWT_SECRET || 'your-supabase-jwt-secret');
     console.log("[AVAILABLE ASSETS INFO]: JWT token verified successfully.");
