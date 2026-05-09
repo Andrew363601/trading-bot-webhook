@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useSupabaseClient } from '@supabase/auth-helpers-react';
+import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
 import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers, HistogramSeries } from 'lightweight-charts';
@@ -23,6 +23,7 @@ export default function Dashboard() {
 
 function DashboardContent() {
   const supabase = useSupabaseClient();
+  const session = useSession();
   const [activeAsset, setActiveAsset] = useState('ETH-PERP');
   const [activeTab, setActiveTab] = useState('ANALYTICS');
   
@@ -51,14 +52,14 @@ function DashboardContent() {
 
   const [localInput, setLocalInput] = useState('');
 
+  const chatHeaders = useMemo(() => ({
+    Authorization: session?.access_token ? `Bearer ${session.access_token}` : '',
+  }), [session?.access_token]);
+
   const { messages, append, error: sdkError, isLoading } = useChat({
     api: '/api/chat',
-    headers: async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      return {
-        Authorization: session ? `Bearer ${session.access_token}` : '',
-      };
-    },
+    id: 'nexus-main-chat',
+    headers: chatHeaders,
     onError: (err) => console.error("[NEXUS AGENT FATAL]:", err)
   });
   
@@ -147,7 +148,10 @@ function DashboardContent() {
   };
 
 
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => {
+    console.log("[NEXUS DEBUG] Messages updated:", messages);
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); 
+  }, [messages]);
 
   const handleClosePosition = async (trade) => {
     const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id || 'Exchange'}?`);
@@ -708,7 +712,43 @@ function DashboardContent() {
                })}
             </div>
 
-            <div className="flex-grow w-full relative mt-12 mb-4 px-2 min-h-[300px]">
+            <div className="px-6 py-4 flex items-center justify-between border-b border-indigo-500/10 bg-indigo-500/5 backdrop-blur-md rounded-t-[2rem]">
+              <div className="flex items-center gap-6">
+                <div className="flex flex-col">
+                  <span className="text-[9px] font-black text-indigo-500/60 uppercase tracking-[0.2em] mb-0.5">Asset Matrix</span>
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse" />
+                    <span className="text-2xl font-black text-white italic tracking-tighter uppercase">{activeAsset}</span>
+                  </div>
+                </div>
+                
+                <div className="h-10 w-[1px] bg-white/10" />
+                
+                <div className="flex flex-col">
+                  <span className="text-[9px] font-black text-emerald-500/60 uppercase tracking-[0.2em] mb-0.5">Market Feed</span>
+                  <div className="flex items-baseline gap-1">
+                    <span className={`text-2xl font-mono font-black tracking-tighter ${livePrice > 0 ? 'text-emerald-400' : 'text-slate-700'}`}>
+                      ${livePrice > 0 ? livePrice.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '---'}
+                    </span>
+                    <span className="text-[10px] font-bold text-slate-500 uppercase">USD</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex bg-black/40 p-1 rounded-xl border border-white/5">
+                {['1m', '5m', '15m', '1h', '4h'].map(tf => (
+                  <button 
+                    key={tf} 
+                    onClick={() => setChartTimeframe(tf)}
+                    className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${chartTimeframe === tf ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-500 hover:text-slate-300'}`}
+                  >
+                    {tf}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex-grow w-full relative mt-0 mb-4 px-2 min-h-[300px]">
                 <div ref={chartContainerRef} className="absolute inset-0" />
             </div>
           </div>

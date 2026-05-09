@@ -187,7 +187,19 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
       </div>
 
       {/* Search */}
-      <div className="relative">
+      <form 
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (filteredAssets.length > 0) {
+            const asset = filteredAssets[0];
+            setSelectedAsset(asset);
+            setStrategyParams({});
+            if (onSelectAsset) onSelectAsset(asset.id);
+            setSearchTerm('');
+          }
+        }}
+        className="relative"
+      >
         <Search className="absolute left-3 top-2.5 w-3 h-3 text-slate-500" />
         <input
           type="text"
@@ -196,12 +208,17 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
           onChange={(e) => setSearchTerm(e.target.value)}
           className="w-full bg-slate-950 border border-white/5 rounded-xl pl-8 pr-3 py-1.5 text-white text-[10px] placeholder-slate-600 focus:ring-2 focus:ring-indigo-500/50 outline-none uppercase"
         />
-      </div>
+      </form>
 
       <div className="flex flex-col gap-4">
         {/* Asset List */}
         <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
-          {filteredAssets.length === 0 ? (
+          {allAssets.length === 0 && !loading ? (
+            <div className="text-center py-8">
+              <div className="text-indigo-500 animate-pulse text-[10px] font-black uppercase mb-2">Syncing with Coinbase...</div>
+              <div className="text-slate-600 text-[8px] uppercase">Attempting to map futures matrix</div>
+            </div>
+          ) : filteredAssets.length === 0 ? (
             <div className="text-center py-4 text-[10px] text-slate-500 uppercase tracking-widest font-black">
               Empty Matrix
             </div>
