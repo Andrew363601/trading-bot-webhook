@@ -4,15 +4,32 @@ import { createChart, AreaSeries } from 'lightweight-charts';
 import { 
   BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers
 } from 'lucide-react';
-import AuthGuard from '../components/AuthGuard';
-import { useSupabaseClient } from '@supabase/auth-helpers-react';
+import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
+import { createServerSupabaseClient } from '@supabase/auth-helpers-nextjs';
 
-export default function PerformanceLog() {
-  return (
-    <AuthGuard>
-      <PerformanceLogContent />
-    </AuthGuard>
-  );
+export default function PerformanceLog({ initialSession }) {
+  const session = useSession() || initialSession;
+  
+  if (!session) {
+    return (
+      <div className="min-h-screen bg-[#020617] flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  return <PerformanceLogContent />;
+}
+
+export async function getServerSideProps(context) {
+  const supabase = createServerSupabaseClient(context);
+  const { data: { session } } = await supabase.auth.getSession();
+  
+  if (!session) {
+    return { redirect: { destination: '/auth', permanent: false } };
+  }
+
+  return { props: { initialSession: session } };
 }
 
 function PerformanceLogContent() {
