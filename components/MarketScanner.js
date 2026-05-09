@@ -2,7 +2,7 @@
 // Advanced market scanner with favorites, asset browser, and strategy discovery
 
 import React, { useState, useEffect, useRef } from 'react';
-import { useSupabaseClient } from '@supabase/auth-helpers-react';
+import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { 
   Search, Star, Settings, Play, Plus, ChevronDown, TrendingUp, TrendingDown,
   Zap, Lock, AlertCircle
@@ -10,6 +10,9 @@ import {
 
 export default function MarketScanner() {
   const supabase = useSupabaseClient();
+  const session = useSession();
+  const token = session?.access_token;
+
   const [activeTab, setActiveTab] = useState('FAVORITES'); // FAVORITES, BROWSE
   const [allAssets, setAllAssets] = useState([]);
   const [favorites, setFavorites] = useState([]);
@@ -19,9 +22,6 @@ export default function MarketScanner() {
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedStrategyId, setExpandedStrategyId] = useState(null);
   const [strategyParams, setStrategyParams] = useState({});
-
-  const { data: { session } } = await supabase.auth.getSession();
-  const token = session?.access_token;
 
   // Fetch all available FUTURES assets
   useEffect(() => {
@@ -43,9 +43,8 @@ export default function MarketScanner() {
   // Load favorites from DB
   useEffect(() => {
     const loadFavorites = async () => {
-      if (!token) return;
+      if (!token || !session?.user?.id) return;
       try {
-        const { data: { session } } = await supabase.auth.getSession();
         const { data: users } = await supabase
           .from('tenant_users')
           .select('tenant_id')
@@ -65,7 +64,7 @@ export default function MarketScanner() {
       }
     };
     loadFavorites();
-  }, [token]);
+  }, [token, session, supabase]);
 
   // When asset selected, fetch applicable strategies
   useEffect(() => {
@@ -73,7 +72,7 @@ export default function MarketScanner() {
       if (!selectedAsset || !token) return;
       setLoading(true);
       try {
-        const res = await fetch(`/api/get-strategies-for-asset?asset=${selectedAsset.name}`, {
+        const res = await fetch(`/api/get-strategies-for-asset?asset=${selectedAsset.id}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         const data = await res.json();
@@ -88,9 +87,8 @@ export default function MarketScanner() {
   }, [selectedAsset, token]);
 
   const toggleFavorite = async (assetName) => {
-    if (!token) return;
+    if (!token || !session?.user?.id) return;
     try {
-      const { data: { session } } = await supabase.auth.getSession();
       const { data: users } = await supabase
         .from('tenant_users')
         .select('tenant_id')
@@ -125,7 +123,7 @@ export default function MarketScanner() {
           Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({
-          asset: selectedAsset.name,
+          asset: selectedAsset.id,
           strategy: strategy.id,
           exchange: 'COINBASE',
           product_type: 'FUTURES',

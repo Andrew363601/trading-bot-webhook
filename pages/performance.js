@@ -78,7 +78,7 @@ function PerformanceLogContent() {
     } finally {
       setLoading(false);
     }
-  }, [calendarDays]);
+  }, [calendarDays, supabase]);
 
   useEffect(() => { 
       if (isMounted) fetchPerformance(); 

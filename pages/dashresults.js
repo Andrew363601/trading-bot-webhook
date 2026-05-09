@@ -61,7 +61,7 @@ function DashResultsContent() {
     }
 
     fetchData();
-  }, []); // Empty dependency array means this runs once on component mount
+  }, [supabase]); // Run on mount and whenever supabase client changes
 
   // Function to promote a backtested config to the active strategy
   const deployToPaper = async (config) => {

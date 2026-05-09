@@ -11,6 +11,7 @@ import {
   Search, AlertOctagon, Eye, Minimize2, Maximize2, Flame, Power
 } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
+import MarketScanner from '../components/MarketScanner';
 
 export default function Dashboard() {
   return (
@@ -116,7 +117,7 @@ function DashboardContent() {
       console.error("[NEXUS FATAL] DB Fetch Error:", e); 
       setLoading(false); 
     }
-  }, [activeAsset]);
+  }, [activeAsset, supabase]);
 
   useEffect(() => {
     fetchData();
@@ -765,6 +766,16 @@ function DashboardContent() {
                   className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'TRADE_HISTORY' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
                >
                   Trade History
+               </button>
+               <button 
+                  onClick={() => setActiveTab('MARKET_SCANNER')} 
+                  className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'MARKET_SCANNER' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+               activeTab === 'MARKET_SCANNER' ? (
+                <div className="p-6">
+                  <MarketScanner />
+                </div>
+              ) : >
+                  Market Scanner
                </button>
             </div>
 
