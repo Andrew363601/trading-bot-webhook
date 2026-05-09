@@ -159,7 +159,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
   ).filter(a => a.id.toLowerCase().includes(searchTerm.toLowerCase()));
 
   return (
-    <div className="bg-slate-900/30 border border-white/5 rounded-2xl p-4 space-y-4 max-h-screen overflow-y-auto custom-scrollbar">
+    <div className="bg-slate-950/50 rounded-2xl p-3 space-y-4 max-h-[500px] overflow-y-auto custom-scrollbar">
       {/* Tabs */}
       <div className="flex gap-2 border-b border-white/10 overflow-x-auto no-scrollbar">
         <button

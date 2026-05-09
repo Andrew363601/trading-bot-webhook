@@ -44,6 +44,7 @@ function DashboardContent() {
   const [isChartMaximized, setIsChartMaximized] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [isDefconActive, setIsDefconActive] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
 
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -561,6 +562,7 @@ function DashboardContent() {
       <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4">
         <div className="flex items-center gap-4">
             <h1 className="text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Command</h1>
+            <div className="h-6 w-[1px] bg-white/10 mx-2" />
             <Link href="/audit" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
               <Shield className="w-3 h-3" /> Audit
             </Link>
@@ -571,129 +573,143 @@ function DashboardContent() {
               <Activity className="w-3 h-3" /> Performance
             </Link>
         </div>
-        <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2"><Database size={12} /> Sync: wsrioyxzhxxrtzjncfvn</div>
+        
+        <div className="flex items-center gap-8">
+            <div className="flex items-center gap-6">
+                <div className="flex flex-col items-end">
+                    <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest flex items-center gap-1"><Shield size={8} className="text-emerald-400"/> Live Equity</span>
+                    <span className="text-sm font-black font-mono text-white">${portfolio.live?.balance?.toFixed(2) || '0.00'}</span>
+                </div>
+                <div className="flex flex-col items-end">
+                    <span className="text-[8px] text-slate-500 uppercase font-black tracking-widest flex items-center gap-1"><Cpu size={8} className="text-indigo-400"/> Nexus Paper</span>
+                    <span className="text-sm font-black font-mono text-slate-300">${portfolio.paper?.balance?.toFixed(2) || '5000.00'}</span>
+                </div>
+            </div>
+            <div className="text-[9px] font-bold text-slate-600 uppercase tracking-[0.2em] flex items-center gap-2 bg-white/5 px-3 py-2 rounded-lg border border-white/5"><Database size={10} /> Sync: wsrioyxzhxxrtzjncfvn</div>
+        </div>
       </header>
 
-      <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
-        
-        <div className="lg:col-span-3 flex flex-col h-[calc(100vh-100px)] min-h-0 gap-6 resize-y overflow-auto pb-4">
-          <div className="bg-slate-900/50 p-5 rounded-[2rem] border border-white/10 flex-shrink-0 shadow-xl">
-            <div className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex justify-between mb-4">Capital Allocation <span className="text-cyan-400 animate-pulse">● LIVE</span></div>
-            <div className="space-y-4">
-              <div><div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Shield size={10} className="text-emerald-400 inline mr-1"/> Live Equity</div><div className="text-xl font-black font-mono text-white">${portfolio.live?.balance?.toFixed(2) || '0.00'}</div></div>
-              <div><div className="text-[9px] text-slate-400 uppercase font-bold flex items-center gap-1 mb-1"><Cpu size={10} className="text-indigo-400 inline mr-1"/> Nexus Paper</div><div className="text-lg font-black font-mono text-slate-300">${portfolio.paper?.balance?.toFixed(2) || '5000.00'}</div></div>
+      {/* 🔴 NEW COINBASE STYLE TICKER BAR */}
+      <div className="max-w-[1800px] w-full mx-auto bg-slate-900/40 border border-white/5 rounded-2xl p-2 px-6 flex items-center justify-between backdrop-blur-md relative z-40">
+        <div className="flex items-center gap-8">
+          {/* Asset Selector Pop-out Trigger */}
+          <div className="relative">
+            <button 
+              onClick={() => setShowScanner(!showScanner)}
+              className="flex items-center gap-3 group px-4 py-2 rounded-xl hover:bg-white/5 transition-all"
+            >
+              <div className="flex flex-col items-start">
+                <span className="text-[8px] font-black text-indigo-500 uppercase tracking-widest">Market</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-lg font-black text-white italic tracking-tighter uppercase">{activeAsset}</span>
+                  <ChevronDown size={14} className={`text-slate-500 transition-transform ${showScanner ? 'rotate-180' : ''}`} />
+                </div>
+              </div>
+            </button>
+
+            {showScanner && (
+              <div className="absolute top-full left-0 mt-2 w-80 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2">
+                <div className="flex items-center justify-between p-3 border-b border-white/5">
+                   <span className="text-[10px] font-black uppercase text-indigo-400 tracking-widest">Select Asset Matrix</span>
+                   <button onClick={() => setShowScanner(false)} className="text-slate-500 hover:text-white"><X size={14}/></button>
+                </div>
+                <div className="p-2">
+                  <MarketScanner 
+                    onSelectAsset={(assetId) => {
+                      setActiveAsset(assetId);
+                      handleAddAsset(assetId);
+                      setShowScanner(false);
+                    }}
+                    currentAsset={activeAsset}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="h-8 w-[1px] bg-white/5" />
+
+          {/* Live Price */}
+          <div className="flex flex-col">
+            <span className="text-[8px] font-black text-emerald-500/60 uppercase tracking-widest">Market Feed</span>
+            <div className="flex items-baseline gap-2">
+              <span className={`text-xl font-mono font-black tracking-tighter ${livePrice > 0 ? 'text-emerald-400' : 'text-slate-700'}`}>
+                ${livePrice > 0 ? livePrice.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '---'}
+              </span>
+              <span className="text-[9px] font-bold text-slate-500 uppercase">USD</span>
             </div>
           </div>
 
-          <div className="flex flex-col flex-shrink-0 px-2">
-            <div className="text-[10px] font-black uppercase text-slate-500 mb-3 tracking-widest flex items-center gap-2"><Target size={12}/> Market Navigator</div>
-            <MarketScanner 
-              onSelectAsset={(assetId) => {
-                setActiveAsset(assetId);
-                handleAddAsset(assetId);
-              }}
-              currentAsset={activeAsset}
-            />
+          <div className="h-8 w-[1px] bg-white/5" />
+
+          {/* Sonar Data Inline */}
+          <div className="flex items-center gap-6">
+             <div className="flex flex-col">
+                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Oracle CVD</span>
+                <span className={`text-sm font-mono font-bold ${cvd !== 0 ? (cvd > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-500'}`}>
+                    {cvd > 0 ? '+' : ''}{cvd.toFixed(0)}
+                </span>
+             </div>
+             <div className="flex flex-col">
+                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Oracle Score</span>
+                <span className="text-sm font-mono font-bold text-indigo-400">{latestScan?.telemetry?.oracle_score || '--'}</span>
+             </div>
+             <div className="flex flex-col min-w-[80px]">
+                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Regime</span>
+                {latestScan?.telemetry?.macro_regime_oracle && (
+                    <span className={`text-[10px] font-black uppercase tracking-widest ${latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'text-emerald-400' : (latestScan.telemetry.macro_regime_oracle === 'CHOP' ? 'text-amber-400' : 'text-slate-500')}`}>
+                        {latestScan.telemetry.macro_regime_oracle}
+                    </span>
+                )}
+             </div>
           </div>
 
-          <div className="mt-2 pt-4 border-t border-white/5 flex flex-col min-h-0 flex-grow px-2">
-              <h3 className="text-[10px] uppercase tracking-[0.2em] text-slate-500 font-black mb-3">Live Sonar Stream</h3>
-              <div className="space-y-2 overflow-y-auto pr-2 custom-scrollbar flex-grow">
-              {scanStream.map((scan, i) => (
-                      <div key={i} className="flex flex-col p-2 bg-slate-900/40 rounded border border-white/5 hover:bg-white/[0.02] transition-colors gap-1.5">
-                          <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                  <span className="text-[9px] text-slate-500 font-mono">{new Date(scan.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-                                  <span className="text-[10px] font-bold text-slate-300">{scan.asset}</span>
-                              </div>
-                              <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">{scan.strategy.replace('_V1', '')}</span>
-                          </div>
-                         <div className="flex items-center justify-between mt-1 pt-1 border-t border-white/5">
-                              <div className="flex flex-wrap gap-x-3 gap-y-1">
-                                  <span className="text-[9px] text-slate-400 font-mono">
-                                    <span className="text-slate-500 uppercase">CVD:</span> {parseFloat(scan.telemetry?.cvd || 0).toFixed(0)}
-                                  </span>
-                                  <span className="text-[9px] text-slate-400 font-mono">
-                                    <span className="text-slate-500 uppercase">SCORE:</span> {scan.telemetry?.oracle_score || '--'}
-                                  </span>
-                              </div>
-                              <span className={`text-[9px] font-black tracking-widest uppercase flex-shrink-0 ${scan.status === 'RESONANT' ? 'text-emerald-400 animate-pulse' : (scan.status === 'ORACLE VETO' ? 'text-red-400' : 'text-slate-600')}`}>{scan.status}</span>
-                          </div>
-                      </div>
-                  ))}
+          <div className="h-8 w-[1px] bg-white/5" />
+
+          {/* Heatmap/Liquidity Bar Inline */}
+          <div className="flex flex-col w-48">
+              <div className="flex justify-between items-center mb-1">
+                  <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Liquidity Matrix</span>
+                  <div className="flex gap-2 text-[8px] font-mono">
+                      <span className="text-emerald-400">B:{bids.toFixed(0)}</span>
+                      <span className="text-red-400">A:{asks.toFixed(0)}</span>
+                  </div>
               </div>
+              {totalLiquidity > 0 ? (
+                  <div className="w-full h-1.5 rounded-full overflow-hidden flex bg-slate-800">
+                      <div style={{ width: `${liveBidPercent}%` }} className="h-full bg-emerald-500/80 transition-all duration-500 ease-linear" />
+                      <div style={{ width: `${100 - liveBidPercent}%` }} className="h-full bg-red-500/80 transition-all duration-500 ease-linear" />
+                  </div>
+              ) : <div className="h-1.5 bg-slate-800 rounded-full animate-pulse w-full" />}
           </div>
         </div>
 
-        <div className="lg:col-span-6 flex flex-col gap-6 min-h-0 h-[calc(100vh-100px)]">
+        <div className="flex items-center gap-4">
+             <div className={`px-3 py-1.5 rounded-lg border flex items-center gap-2 transition-all ${isResonant ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 animate-pulse shadow-[0_0_15px_-3px_rgba(16,185,129,0.4)]' : (isVeto ? 'bg-red-500/10 text-red-400 border-red-500/20' : 'bg-slate-800/50 text-slate-600 border-white/5')}`}>
+                <div className={`h-1.5 w-1.5 rounded-full ${isResonant ? 'bg-emerald-400' : (isVeto ? 'bg-red-400' : 'bg-slate-600')}`} />
+                <span className="text-[9px] font-black uppercase tracking-widest">{latestScan?.status || 'IDLE'}</span>
+             </div>
+             
+             <button 
+                onClick={() => setShowHeatmap(!showHeatmap)}
+                className={`p-2 rounded-xl border transition-all ${showHeatmap ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' : 'bg-slate-800/50 text-slate-600 border-white/5 hover:text-slate-400'}`}
+             >
+                <Flame size={14} className={showHeatmap ? 'animate-pulse' : ''} />
+             </button>
+        </div>
+      </div>
+
+      <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6 grow overflow-hidden">
+        
+        <div className="lg:col-span-9 flex flex-col gap-6 min-h-0 h-[calc(100vh-180px)]">
           
-          <div className="bg-slate-900/50 border border-white/10 rounded-3xl p-4 flex flex-col gap-4 shadow-xl relative overflow-hidden flex-shrink-0">
-            <div className={`absolute inset-0 opacity-10 transition-colors duration-1000 ${isVeto ? 'bg-red-500' : (isResonant ? 'bg-emerald-500' : 'bg-indigo-500')} animate-pulse`} />
-            
-            <div className="relative z-10 flex items-center justify-between px-4">
-               <div className="flex flex-col items-center gap-2 w-20">
-                  <div className="w-10 h-10 rounded-full bg-indigo-500/20 border border-indigo-500/50 flex items-center justify-center text-indigo-400 shadow-[0_0_15px_-3px_rgba(99,102,241,0.4)]">
-                      <Target size={16} className="animate-spin-slow" />
-                  </div>
-                  <span className="text-[9px] font-black uppercase tracking-widest text-indigo-300">Scanner</span>
-               </div>
-               
-               <div className="flex-1 h-[2px] bg-indigo-500/20 relative overflow-hidden rounded-full mx-2">
-                  <div className="absolute inset-0 bg-indigo-500/50 w-full animate-pulse" />
-               </div>
-               
-               <div className="flex flex-col items-center gap-2 w-20">
-                  <div className={`w-10 h-10 rounded-full border flex items-center justify-center transition-all duration-500 ${isVeto ? 'bg-red-500/20 border-red-500/50 text-red-400 shadow-[0_0_15px_-3px_rgba(239,68,68,0.4)]' : (isResonant ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_-3px_rgba(16,185,129,0.4)]' : 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400 animate-pulse')}`}>
-                      {isVeto ? <AlertOctagon size={16} /> : <Cpu size={16} />}
-                  </div>
-                  <span className={`text-[9px] font-black uppercase tracking-widest ${isVeto ? 'text-red-400' : 'text-cyan-300'}`}>Oracle</span>
-               </div>
-               
-               <div className="flex-1 h-[2px] bg-slate-800 relative overflow-hidden rounded-full mx-2">
-                  <div className={`absolute inset-0 transition-all duration-1000 ${isResonant || isExchangeActive ? 'bg-emerald-500/50 w-full animate-pulse' : 'w-0'}`} />
-               </div>
-               
-               <div className="flex flex-col items-center gap-2 w-20">
-                  <div className={`w-10 h-10 rounded-full border flex items-center justify-center transition-all duration-500 ${isExchangeActive ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-[0_0_15px_-3px_rgba(16,185,129,0.4)]' : 'bg-slate-900 border-white/10 text-slate-600'}`}>
-                      <Zap size={16} className={isExchangeActive ? 'animate-pulse' : ''} />
-                  </div>
-                  <span className={`text-[9px] font-black uppercase tracking-widest ${isExchangeActive ? 'text-emerald-300' : 'text-slate-500'}`}>Exchange</span>
-               </div>
-            </div>
-
-            <div className="relative z-10 grid grid-cols-3 gap-4 pt-4 border-t border-white/5">
-                <div className="col-span-1 flex flex-col gap-2">
-                    <div className="text-[8px] font-black tracking-widest uppercase text-slate-500 flex items-center justify-between mb-1">
-                        <span className="flex items-center gap-1"><Eye size={10}/> Order Book Heatmap</span>
-                        <span className={`font-mono ${cvd !== 0 ? (cvd > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-500'}`}>CVD: {cvd.toFixed(0)}</span>
-                    </div>
-                    {totalLiquidity > 0 ? (
-                        <div className="w-full h-2 rounded-full overflow-hidden flex bg-slate-800">
-                            <div style={{ width: `${liveBidPercent}%` }} className="h-full bg-emerald-500/80 transition-all duration-500 ease-linear" />
-                            <div style={{ width: `${100 - liveBidPercent}%` }} className="h-full bg-red-500/80 transition-all duration-500 ease-linear" />
-                        </div>
-                    ) : <div className="text-[10px] font-mono text-slate-600">Awaiting Depth...</div>}
-                    <div className="flex justify-between text-[8px] font-mono text-slate-400">
-                        <span className="text-emerald-400">BIDS: {bids.toFixed(0)}</span>
-                        <span className="text-red-400">ASKS: {asks.toFixed(0)}</span>
-                    </div>
-                </div>
-                <div className="col-span-2 bg-black/40 rounded-lg p-2 border border-white/5 h-20 overflow-y-auto custom-scrollbar">
-                    <div className="text-[8px] font-black tracking-widest uppercase text-indigo-400 mb-1 flex items-center gap-1"><TerminalIcon size={10}/> Oracle Reasoning</div>
-                    <div className="text-[9px] font-mono text-slate-300 leading-relaxed italic">
-                        {latestScan?.telemetry?.oracle_reasoning || "Awaiting structural anomaly detection..."}
-                    </div>
-                </div>
-            </div>
-          </div>
-
-          <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col resize-y transition-all"}>
+          <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
             
             <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-4 right-4 z-50 bg-black/40 hover:bg-indigo-500/20 text-slate-400 hover:text-indigo-300 border border-white/10 hover:border-indigo-500/50 p-2 rounded-lg transition-colors backdrop-blur-md">
                 {isChartMaximized ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
             </button>
 
-            <div className="absolute top-16 right-6 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
+            <div className="absolute top-6 right-16 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {openPositions.slice(0, 3).map((log, i) => {
                  const displayPnl = log.execution_mode.includes('LIVE') ? log.pnl : 
                  ((log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1));
@@ -718,67 +734,28 @@ function DashboardContent() {
                })}
             </div>
 
-            <div className="px-6 py-4 flex items-center justify-between border-b border-indigo-500/10 bg-indigo-500/5 backdrop-blur-md rounded-t-[2rem]">
-              <div className="flex items-center gap-6">
-                <div className="flex flex-col">
-                  <span className="text-[9px] font-black text-indigo-500/60 uppercase tracking-[0.2em] mb-0.5">Asset Matrix</span>
-                  <div className="flex items-center gap-2">
-                    <div className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse" />
-                    <span className="text-2xl font-black text-white italic tracking-tighter uppercase">{activeAsset}</span>
-                  </div>
-                </div>
-                
-                <div className="h-10 w-[1px] bg-white/10" />
-                
-                <div className="flex flex-col">
-                  <span className="text-[9px] font-black text-emerald-500/60 uppercase tracking-[0.2em] mb-0.5">Market Feed</span>
-                  <div className="flex items-baseline gap-1">
-                    <span className={`text-2xl font-mono font-black tracking-tighter ${livePrice > 0 ? 'text-emerald-400' : 'text-slate-700'}`}>
-                      ${livePrice > 0 ? livePrice.toLocaleString(undefined, { minimumFractionDigits: 2 }) : '---'}
-                    </span>
-                    <span className="text-[10px] font-bold text-slate-500 uppercase">USD</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3">
-                {latestScan?.telemetry?.macro_regime_oracle && (
-                    <div className={`px-3 py-1.5 rounded-lg border flex items-center gap-2 backdrop-blur-md transition-all ${latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-[0_0_15px_-3px_rgba(16,185,129,0.3)]' : (latestScan.telemetry.macro_regime_oracle === 'CHOP' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20 shadow-[0_0_15px_-3px_rgba(245,158,11,0.3)]' : 'bg-slate-800/50 text-slate-500 border-white/5')}`}>
-                        <Target size={12} className={latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'animate-pulse' : ''} />
-                        <span className="text-[10px] font-black uppercase tracking-[0.1em]">{latestScan.telemetry.macro_regime_oracle} PHASE</span>
-                    </div>
-                )}
-
+            <div className="px-6 py-3 flex items-center justify-between border-b border-white/5 bg-black/20 backdrop-blur-md rounded-t-[2rem]">
+              <div className="flex items-center gap-4">
                 <div className="flex bg-black/40 p-1 rounded-xl border border-white/5 gap-1">
-                <button 
-                    onClick={() => setShowHeatmap(!showHeatmap)}
-                    className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all flex items-center gap-1.5 ${showHeatmap ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 shadow-[0_0_10px_-2px_rgba(245,158,11,0.4)]' : 'text-slate-600 hover:text-slate-400 hover:bg-white/5'}`}
-                    title="Toggle Heatmap"
-                >
-                    <Flame size={12} className={showHeatmap ? 'animate-pulse' : ''} />
-                </button>
-
-                <div className="w-[1px] h-4 bg-white/5 self-center mx-1" />
-
-                {['1m', '5m', '15m', '1h', '4h'].map(tf => (
-                  <button 
-                    key={tf} 
-                    onClick={() => setChartTimeframe(tf)}
-                    className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${chartTimeframe === tf ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                    {tf}
-                  </button>
-                ))}
+                  {['1m', '5m', '15m', '1h', '4h'].map(tf => (
+                    <button 
+                      key={tf} 
+                      onClick={() => setChartTimeframe(tf)}
+                      className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase transition-all ${chartTimeframe === tf ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-500 hover:text-slate-300'}`}
+                    >
+                      {tf}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
 
             <div className="flex-grow w-full relative mt-0 mb-4 px-2 min-h-[300px]">
                 <div ref={chartContainerRef} className="absolute inset-0" />
             </div>
           </div>
 
-          <div className="flex flex-col h-[35%] overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30 resize-y pb-2">
+          <div className="flex flex-col h-[35%] overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30 pb-2">
             <div className="flex items-center gap-6 px-6 pt-5 border-b border-white/5 bg-slate-950/80 sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
@@ -886,7 +863,7 @@ function DashboardContent() {
           </div>
         </div>
 
-        <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-100px)] overflow-hidden resize-y pb-2">
+        <div className="lg:col-span-3 flex flex-col gap-6 h-[calc(100vh-180px)] overflow-hidden resize-y pb-2">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
             <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between"><span>Active Matrix</span><span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span></h3>
             <div className="flex flex-col gap-3">
