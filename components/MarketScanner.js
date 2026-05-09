@@ -29,7 +29,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
         const asset = allAssets.find(a => a.id === currentAsset);
         if (asset) setSelectedAsset(asset);
     }
-  }, [currentAsset, allAssets]);
+  }, [currentAsset, allAssets, selectedAsset]);
 
   // Fetch all available FUTURES assets
   useEffect(() => {

@@ -771,6 +771,7 @@ function DashboardContent() {
                 ))}
               </div>
             </div>
+          </div>
 
             <div className="flex-grow w-full relative mt-0 mb-4 px-2 min-h-[300px]">
                 <div ref={chartContainerRef} className="absolute inset-0" />
