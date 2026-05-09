@@ -69,15 +69,15 @@ export default async function handler(req, res) {
       recentLogQuery = recentLogQuery.eq('tenant_id', tenantId);
     }
 
-    const [
-      { data: allConfigs },
-      { data: openTrades },
-      { data: recentClosedLogs }
-    ] = await Promise.all([
+    const [configsRes, tradesRes, closedRes] = await Promise.all([
       strategyQuery,
       tradeLogQuery,
       recentLogQuery
     ]);
+
+    const allConfigs = configsRes.data || [];
+    const openTrades = tradesRes.data || [];
+    const recentClosedLogs = closedRes.data || [];
     
     let livePrices = {};
     if (openTrades && openTrades.length > 0) {

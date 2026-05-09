@@ -59,8 +59,9 @@ function DashboardContent() {
     Authorization: session?.access_token ? `Bearer ${session.access_token}` : '',
   }), [session?.access_token]);
 
-  const { messages, append, error: sdkError, isLoading } = useChat({
+  const { messages, append, error: sdkError, isLoading, setMessages } = useChat({
     api: '/api/chat',
+    id: 'nexus-terminal-v1',
     headers: {
       Authorization: session?.access_token ? `Bearer ${session.access_token}` : '',
     },
@@ -74,6 +75,27 @@ function DashboardContent() {
       console.error("[NEXUS AGENT FATAL]:", err);
     }
   });
+
+  // Persist messages to session storage to avoid losing them on reload
+  useEffect(() => {
+    if (messages.length > 0) {
+      sessionStorage.setItem('nexus_chat_history', JSON.stringify(messages));
+    }
+  }, [messages]);
+
+  useEffect(() => {
+    const saved = sessionStorage.getItem('nexus_chat_history');
+    if (saved && messages.length === 0) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setMessages(parsed);
+        }
+      } catch (e) {
+        console.error("[NEXUS DEBUG] Failed to load chat history:", e);
+      }
+    }
+  }, [setMessages, messages.length]);
 
   const chatEndRef = useRef(null);
 
