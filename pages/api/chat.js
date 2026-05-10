@@ -8,7 +8,9 @@ import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
-import jwt from 'jsonwebtoken';
+import { jwtVerify, createRemoteJWKSet } from 'jose';
+
+const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
@@ -46,12 +48,12 @@ export default async function handler(req, res) {
     let tenantId = null;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       const token = authHeader.split(' ')[1];
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-supabase-jwt-secret');
+      const { payload } = await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
       
       const { data: userLink } = await supabase
         .from('tenant_users')
         .select('tenant_id')
-        .eq('auth_user_id', decoded.sub)
+        .eq('auth_user_id', payload.sub)
         .single();
       
       tenantId = userLink?.tenant_id;

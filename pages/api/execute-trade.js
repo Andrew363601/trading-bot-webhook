@@ -3,7 +3,7 @@ export const maxDuration = 300;
 
 // pages/api/execute-trade.js
 import { createClient } from '@supabase/supabase-js';
-import jwt from 'jsonwebtoken';
+import { jwtVerify, createRemoteJWKSet } from 'jose'; // Import jose for JWT verification
 import crypto from 'crypto';
 import { buildRadarChartUrl } from '../../lib/discord-chart.js';
 
@@ -49,10 +49,39 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
+...existing code...
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
+  let tenantId = null; // Declare tenantId here
+
   try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      console.error("[EXECUTE TRADE ERROR]: Missing or invalid Authorization header.");
+      return res.status(401).json({ error: 'Missing or invalid Authorization header' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
+
+    const { payload } = await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
+    const authUserId = payload.sub; // The user ID is in the 'sub' claim
+
+    const { data: tenantData, error: tenantError } = await supabase
+      .from('tenant_users')
+      .select('tenant_id')
+      .eq('auth_user_id', authUserId)
+      .single();
+
+    if (tenantError || !tenantData) {
+      console.error("[EXECUTE TRADE ERROR]: Could not find tenant for user:", authUserId, tenantError);
+      return res.status(403).json({ error: 'Tenant not found for authenticated user.' });
+    }
+    tenantId = tenantData.tenant_id; // Assign tenantId
+    console.log("[EXECUTE TRADE INFO]: Tenant ID found:", tenantId);
+
     let data = req.body;
 
     const mode = data.execution_mode || 'PAPER';
@@ -304,7 +333,7 @@ export default async function handler(req, res) {
       if (isForcedExit) return res.status(200).json({ status: "already_closed_natively", product: coinbaseProduct });
 
       const { error: insertError } = await supabase.from('trade_logs').insert([{
-        symbol: rawSymbol, side: side, entry_price: executionPrice, execution_mode: mode, strategy_id: strategyId, version: version, qty: orderQty, leverage: leverage, market_type: marketType, tp_price: tpPrice, sl_price: slPrice, reason: tradeReason 
+        symbol: rawSymbol, side: side, entry_price: executionPrice, execution_mode: mode, strategy_id: strategyId, version: version, qty: orderQty, leverage: leverage, market_type: marketType, tp_price: tpPrice, sl_price: slPrice, reason: tradeReason, tenant_id: tenantId
       }]);
 
       if (insertError) throw new Error(`Supabase Insert Error: ${insertError.message}`);

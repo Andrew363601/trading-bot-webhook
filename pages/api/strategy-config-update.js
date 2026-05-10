@@ -1,8 +1,10 @@
 // pages/api/strategy-config-update.js
 // Update strategy configuration parameters
 
-import jwt from 'jsonwebtoken';
+import { jwtVerify, createRemoteJWKSet } from 'jose';
 import { createClient } from '@supabase/supabase-js';
+
+const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -29,8 +31,8 @@ export default async function handler(req, res) {
   let tenantId;
   try {
     const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-supabase-jwt-secret');
-    tenantId = decoded.sub;
+    const { payload } = await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
+    tenantId = payload.sub;
   } catch (err) {
     return res.status(401).json({ error: 'Invalid token' });
   }

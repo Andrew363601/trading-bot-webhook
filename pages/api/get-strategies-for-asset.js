@@ -1,9 +1,11 @@
 // pages/api/get-strategies-for-asset.js
 // Get all available strategies that can be deployed for a given asset
 
-import jwt from 'jsonwebtoken';
+import { jwtVerify, createRemoteJWKSet } from 'jose';
 import fs from 'fs';
 import path from 'path';
+
+const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -24,7 +26,7 @@ export default async function handler(req, res) {
 
   try {
     const token = authHeader.split(' ')[1];
-    jwt.verify(token, process.env.JWT_SECRET || 'your-supabase-jwt-secret');
+    await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
   } catch (err) {
     return res.status(401).json({ error: 'Invalid token' });
   }

@@ -588,6 +588,7 @@ export default async function handler(req, res) {
                     decision.statusOverride = 'ORACLE VETO'; 
                     
                     const shadowTrade = {
+                        tenant_id: config.tenant_id,
                         symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', 
                         side: decision.signal, order_type: 'VETO', price: currentPrice, exit_price: currentPrice, 
                         exit_time: new Date().toISOString(), execution_mode: 'SHADOW', leverage: 1, 
