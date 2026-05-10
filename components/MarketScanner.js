@@ -23,12 +23,17 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
   const [expandedStrategyId, setExpandedStrategyId] = useState(null);
   const [strategyParams, setStrategyParams] = useState({});
   const [executionMode, setExecutionMode] = useState('PAPER'); // PAPER or LIVE
-  const [activeStrategies, setActiveStrategies] = useState([]);
+
+  // Helper to normalize asset symbols for consistent comparison
+  const normalizeAssetSymbol = (symbol) => {
+    if (!symbol) return '';
+    return symbol.replace(/(-PERP-INTX|-CDE|-PERP|-USD|-USDT)/g, '').toUpperCase();
+  };
 
   // Sync selectedAsset with currentAsset if provided
   useEffect(() => {
-    if (currentAsset && (!selectedAsset || selectedAsset.id !== currentAsset)) {
-        const asset = allAssets.find(a => a.id === currentAsset);
+    if (currentAsset && (!selectedAsset || normalizeAssetSymbol(selectedAsset.id) !== normalizeAssetSymbol(currentAsset))) {
+        const asset = allAssets.find(a => normalizeAssetSymbol(a.id) === normalizeAssetSymbol(currentAsset));
         if (asset) setSelectedAsset(asset);
     }
   }, [currentAsset, allAssets, selectedAsset]);
@@ -105,7 +110,10 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
         .eq('auth_user_id', session.user.id)
         .single();
 
+      if (!users) return;
+
       if (favorites.includes(assetName)) {
+        // Use await to ensure the delete completes
         await supabase
           .from('favorite_assets')
           .delete()
@@ -113,6 +121,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
           .eq('asset', assetName);
         setFavorites(fav => fav.filter(f => f !== assetName));
       } else {
+        // Use await to ensure the insert completes
         await supabase
           .from('favorite_assets')
           .insert([{ tenant_id: users.tenant_id, asset: assetName }]);
@@ -125,16 +134,6 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
 
   const subscribeToStrategy = async (strategy) => {
     if (!selectedAsset || !token) return;
-
-    // First, check if the strategy is already in our local state to prevent unnecessary API calls
-    const existingSubscription = activeStrategies.find(
-      s => s.asset === selectedAsset.id && s.strategy === strategy.id && s.is_active
-    );
-
-    if (existingSubscription) {
-      alert(`✅ Already subscribed to ${strategy.name} for ${selectedAsset.name}`);
-      return;
-    }
 
     try {
       const res = await fetch('/api/subscribe-strategy', {
@@ -151,22 +150,19 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
           parameters: {
             ...strategy.parameters,
             ...strategyParams[strategy.id],
-            execution_mode: executionMode
+            execution_mode: executionMode // Inject execution mode
           }
         })
       });
 
       if (res.ok) {
-        const data = await res.json();
-        // Add the new subscription to our local state to immediately reflect the change
-        if(data.config) {
-          setActiveStrategies(current => [...current, data.config]);
-        }
-        alert(`✅ Subscribed to ${strategy.name} for ${selectedAsset.name}`);
+        alert(`✅ Subscribed to ${strategy.name} for ${selectedAsset.id}`);
         setStrategyParams({});
+        // Call onSelectAsset if provided to refresh parent state
+        if (onSelectAsset) onSelectAsset(selectedAsset.id);
       } else {
-        const error = await res.json();
-        alert(`❌ ${error.error}`);
+        const errorData = await res.json();
+        alert(`❌ ${errorData.error || 'Failed to subscribe'}`);
       }
     } catch (err) {
       console.error('Failed to subscribe:', err);
@@ -175,12 +171,13 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
   };
 
   const filteredAssets = allAssets.filter(a => {
+    const normalizedId = normalizeAssetSymbol(a.id);
     // 1. Tab filtering
     if (activeTab === 'FAVORITES' && !favorites.includes(a.id)) return false;
     if (activeTab === 'PERPS' && !a.id.includes('PERP')) return false;
     if (activeTab === 'FUTURES' && !a.id.includes('-CDE')) return false;
-    // 2. Search filtering
-    if (searchTerm && !a.id.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+    // 2. Search filtering (using normalized ID)
+    if (searchTerm && !normalizedId.includes(searchTerm.toUpperCase())) return false;
     return true;
   });
 

@@ -26,6 +26,13 @@ export default function Dashboard() {
 function DashboardContent() {
   const supabase = useSupabaseClient();
   const session = useSession();
+
+  // Helper to normalize asset symbols for consistent comparison
+  const normalizeAssetSymbol = (symbol) => {
+    if (!symbol) return '';
+    return symbol.replace(/(-PERP-INTX|-CDE|-PERP|-USD|-USDT)/g, '').toUpperCase();
+  };
+
   const [activeAsset, setActiveAsset] = useState('BTC-PERP-INTX');
   const [activeTab, setActiveTab] = useState('ANALYTICS');
   
@@ -119,7 +126,7 @@ function DashboardContent() {
   const fetchData = useCallback(async () => {
     try {
       const [logsRes, configsRes, scansRes] = await Promise.all([
-          supabase.from('trade_logs').select('*').eq('symbol', activeAsset).order('id', { ascending: false }),
+          supabase.from('trade_logs').select('*').order('id', { ascending: false }),
           supabase.from('strategy_config').select('*'),
           supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25)
       ]);
@@ -239,7 +246,11 @@ function DashboardContent() {
     await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
   };
 
-  const currentAssetStrategies = activeStrategies.filter(s => s.asset === activeAsset);
+  // FIX: Filter strategies by normalized asset symbol for consistency
+  const currentAssetStrategies = useMemo(() => {
+    const normalizedActiveAsset = normalizeAssetSymbol(activeAsset);
+    return activeStrategies.filter(s => normalizeAssetSymbol(s.asset) === normalizedActiveAsset);
+  }, [activeStrategies, activeAsset]);
 
   const paperPositions = useMemo(() => tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER'), [tradeLogs]);
   
@@ -531,8 +542,34 @@ function DashboardContent() {
       return () => clearInterval(jitterInterval);
   }, [targetPercent, totalLiquidity]);
 
+  const latestScanForActiveAsset = scanStream.filter(s => s.asset === activeAsset);
+  const latestScan = latestScanForActiveAsset.length > 0 ? latestScanForActiveAsset[0] : null;
+
+  const bids = parseFloat(latestScan?.telemetry?.bids || 0);
+  const asks = parseFloat(latestScan?.telemetry?.asks || 0);
+  const cvd = parseFloat(latestScan?.telemetry?.cvd || 0);
+  const totalLiquidity = bids + asks;
+  const targetPercent = totalLiquidity > 0 ? (bids / totalLiquidity) * 100 : 50;
+
+  const [liveBidPercent, setLiveBidPercent] = useState(50);
+
+  useEffect(() => {
+      setLiveBidPercent(targetPercent); 
+      
+      if (totalLiquidity === 0) return; 
+
+      const jitterInterval = setInterval(() => {
+          const microJitter = (Math.random() - 0.5) * 2; 
+          setLiveBidPercent(prev => Math.max(1, Math.min(99, targetPercent + microJitter)));
+      }, 1200);
+
+      return () => clearInterval(jitterInterval);
+  }, [targetPercent, totalLiquidity]);
+
   const isVeto = latestScan?.status === 'ORACLE VETO';
   const isResonant = latestScan?.status === 'RESONANT';
+  const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
+
 
   let displayLogs = [];
   if (activeTab === 'POSITIONS') displayLogs = openPositions;
@@ -891,27 +928,39 @@ function DashboardContent() {
 
         <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-hidden lg:resize-y pb-2">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
-            <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between"><span>Active Matrix</span><span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full">{activeAsset}</span></h3>
-            <div className="flex flex-col gap-3">
-              {currentAssetStrategies.map(strat => {
-                const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy && l.execution_mode !== 'SHADOW');
-                const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
-                return (
-                  <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
-                    <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${strat.is_active ? 'bg-emerald-500' : 'bg-slate-700'}`} />
-                    <div className="flex justify-between items-center mb-1 pl-2">
-                        <span className={`text-xs font-black uppercase transition-colors ${strat.is_active ? 'text-white' : 'text-slate-500'}`}>{strat.strategy.replace('_V1','')}</span>
-                        <div 
-                            onClick={(e) => { e.stopPropagation(); handleToggleStrategy(strat.strategy, strat.is_active); }}
-                            className={`p-1.5 rounded-lg border transition-colors hover:cursor-pointer ${strat.is_active ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 hover:shadow-[0_0_10px_-2px_rgba(16,185,129,0.4)]' : 'bg-slate-800 border-white/5 text-slate-500 hover:bg-slate-700 hover:text-slate-300'}`}
-                        >
-                            <Power size={12} />
-                        </div>
-                    </div>
-                    <div className="text-[10px] text-slate-500 font-mono pl-2">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
-                  </button>
-                )
-              })}
+            <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between">
+              <span>Active Matrix</span>
+              <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full font-mono uppercase">
+                {normalizeAssetSymbol(activeAsset)}
+              </span>
+            </h3>
+            <div className="flex flex-col gap-3 max-h-48 overflow-y-auto custom-scrollbar">
+              {currentAssetStrategies.length === 0 ? (
+                <div className="text-center py-4 text-slate-600 text-[10px] uppercase font-bold">No Strategies</div>
+              ) : (
+                currentAssetStrategies.map(strat => {
+                  const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy && l.execution_mode !== 'SHADOW');
+                  const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
+                  return (
+                    <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
+                      <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${strat.is_active ? 'bg-emerald-500' : 'bg-slate-700'}`} />
+                      
+                      <div className="flex justify-between items-center mb-1 pl-2">
+                          <span className={`text-xs font-black uppercase transition-colors ${strat.is_active ? 'text-white' : 'text-slate-500'}`}>{strat.strategy.replace('_V1','')}</span>
+                          
+                          <div 
+                              onClick={(e) => { e.stopPropagation(); handleToggleStrategy(strat.strategy, strat.is_active); }}
+                              className={`p-1.5 rounded-lg border transition-colors hover:cursor-pointer ${strat.is_active ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 hover:shadow-[0_0_10px_-2px_rgba(16,185,129,0.4)]' : 'bg-slate-800 border-white/5 text-slate-500 hover:bg-slate-700 hover:text-slate-300'}`}
+                              title={strat.is_active ? "Pause Strategy" : "Activate Strategy"}
+                          >
+                              <Power size={12} />
+                          </div>
+                      </div>
+                      <div className="text-[10px] text-slate-500 font-mono pl-2">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
+                    </button>
+                  )
+                })
+              )}
             </div>
           </div>
           <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
