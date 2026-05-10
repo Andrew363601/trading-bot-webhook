@@ -2,6 +2,13 @@
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import { createClient } from '@supabase/supabase-js';
+import { retrieveAPIKey } from '../../lib/secrets-manager.js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -14,19 +21,20 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Missing or invalid Authorization header' });
   }
 
+  let tenantId = null;
   try {
     const token = authHeader.split(' ')[1];
-    console.log("[AVAILABLE ASSETS DEBUG]: Attempting ES256 JWT verification using JOSE and JWKS.");
-
     const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
-
-    // The 'jose' library automatically handles fetching and caching the public key from the JWKS.
-    await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
-
-    console.log("[AVAILABLE ASSETS INFO]: JWT token verified successfully with ES256 public key from JWKS.");
+    const { payload } = await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
+    
+    const { data: tenantData } = await supabase
+      .from('tenant_users')
+      .select('tenant_id')
+      .eq('auth_user_id', payload.sub)
+      .single();
+    
+    tenantId = tenantData?.tenant_id;
   } catch (err) {
-    console.error("[AVAILABLE ASSETS ERROR]: JWT verification failed:", err.message);
-    console.error("[AVAILABLE ASSETS ERROR]: JWT full error object:", err);
     return res.status(401).json({ error: 'Invalid token', details: err.message });
   }
 
@@ -66,8 +74,21 @@ export default async function handler(req, res) {
       }
 
       // 2. Fetch authenticated US Regulated Futures (CFM -CDE)
-      const apiKeyName = process.env.COINBASE_API_KEY;
+      let apiKeyName = process.env.COINBASE_API_KEY;
       let apiSecret = process.env.COINBASE_API_SECRET || "";
+
+      if (tenantId) {
+        try {
+          const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+          if (secrets && secrets.apiKey && secrets.apiSecret) {
+            apiKeyName = secrets.apiKey;
+            apiSecret = secrets.apiSecret;
+          }
+        } catch (e) {
+          console.log("[AVAILABLE ASSETS WARN]: Could not load tenant API key for CFM fetch. Falling back to global.");
+        }
+      }
+
       apiSecret = apiSecret.replace(/\\n/g, '\n');
       if (apiSecret.startsWith('"') && apiSecret.endsWith('"')) apiSecret = apiSecret.slice(1, -1);
       
