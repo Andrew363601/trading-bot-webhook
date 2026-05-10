@@ -51,7 +51,7 @@ export default async function handler(req, res) {
         const allProducts = await response.json();
         futuresProducts = allProducts
           .filter(p => 
-            (p.product_type === 'PERPETUAL_FUTURES' || p.id.includes('PERP')) && 
+            (p.product_type === 'PERPETUAL_FUTURES' || p.product_type === 'FUTURE' || p.id.includes('PERP') || p.id.includes('-CDE')) && 
             !p.trading_disabled
           )
           .map(p => ({
