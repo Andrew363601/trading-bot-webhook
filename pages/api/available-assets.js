@@ -102,8 +102,9 @@ export default async function handler(req, res) {
         }
 
         const path = '/api/v3/brokerage/products?product_type=FUTURE';
+        const uriPath = path.split('?')[0];
         const cbToken = jwt.sign(
-            { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `GET api.coinbase.com${path}` },
+            { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `GET api.coinbase.com${uriPath}` },
             privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
         );
 
