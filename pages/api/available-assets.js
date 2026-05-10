@@ -97,8 +97,7 @@ export default async function handler(req, res) {
         try {
           privateKey = crypto.createPrivateKey({ key: apiSecret.trim(), format: 'pem' });
         } catch (cryptoErr) {
-          console.error("[AVAILABLE ASSETS ERROR]: Failed to parse private key:", cryptoErr.message);
-          throw cryptoErr;
+          console.error("[AVAILABLE ASSETS ERROR]: Failed to parse private key (CFM fetch will be skipped):", cryptoErr.message);
         }
 
         const path = '/api/v3/brokerage/products?product_type=FUTURE';
