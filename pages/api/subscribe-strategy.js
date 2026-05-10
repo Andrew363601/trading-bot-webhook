@@ -51,43 +51,37 @@ export default async function handler(req, res) {
 
     const actualTenantId = tenantUser.tenant_id;
 
-    // Check if strategy_config already exists for this asset + strategy
-    const { data: existing } = await supabase
-      .from('strategy_config')
-      .select('id')
-      .eq('tenant_id', actualTenantId)
-      .eq('asset', asset)
-      .eq('strategy', strategy)
-      .single();
-
-    if (existing) {
-      return res.status(409).json({ 
-        error: 'Strategy already subscribed for this asset',
-        id: existing.id
-      });
-    }
-
-    // Create new strategy_config entry
-    const { data, error } = await supabase
-      .from('strategy_config')
-      .insert([{
+    // Construct the data for the strategy configuration
+    const configData = {
         tenant_id: actualTenantId,
         asset,
         strategy,
         exchange,
         product_type,
         parameters,
-        is_active: true,
-        created_at: new Date().toISOString()
-      }])
+        is_active: true
+    };
+
+    // Upsert the strategy configuration. This will insert a new row if one doesn't
+    // exist for the combination of asset, strategy, and tenant. If it does exist,
+    // it will be updated with the new parameters.
+    const { data, error } = await supabase
+      .from('strategy_config')
+      .upsert(configData, { onConflict: 'asset, strategy, tenant_id' })
       .select()
       .single();
 
     if (error) {
-      throw error;
+      // If the error is due to a constraint violation, it means the onConflict
+      // columns are likely incorrect. We log it for debugging.
+      console.error("Supabase subscribe error:", error.message);
+      return res.status(500).json({ error: "Failed to subscribe to strategy.", details: error.message });
     }
 
     return res.status(201).json({
+      message: "Successfully subscribed to strategy",
+      config: data
+    });
       message: 'Strategy subscribed successfully',
       config: data
     });

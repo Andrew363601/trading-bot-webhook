@@ -23,6 +23,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
   const [expandedStrategyId, setExpandedStrategyId] = useState(null);
   const [strategyParams, setStrategyParams] = useState({});
   const [executionMode, setExecutionMode] = useState('PAPER'); // PAPER or LIVE
+  const [activeStrategies, setActiveStrategies] = useState([]);
 
   // Sync selectedAsset with currentAsset if provided
   useEffect(() => {
@@ -124,6 +125,17 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
 
   const subscribeToStrategy = async (strategy) => {
     if (!selectedAsset || !token) return;
+
+    // First, check if the strategy is already in our local state to prevent unnecessary API calls
+    const existingSubscription = activeStrategies.find(
+      s => s.asset === selectedAsset.id && s.strategy === strategy.id && s.is_active
+    );
+
+    if (existingSubscription) {
+      alert(`✅ Already subscribed to ${strategy.name} for ${selectedAsset.name}`);
+      return;
+    }
+
     try {
       const res = await fetch('/api/subscribe-strategy', {
         method: 'POST',
@@ -146,6 +158,10 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
 
       if (res.ok) {
         const data = await res.json();
+        // Add the new subscription to our local state to immediately reflect the change
+        if(data.config) {
+          setActiveStrategies(current => [...current, data.config]);
+        }
         alert(`✅ Subscribed to ${strategy.name} for ${selectedAsset.name}`);
         setStrategyParams({});
       } else {
