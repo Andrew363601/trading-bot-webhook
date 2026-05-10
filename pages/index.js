@@ -1030,28 +1030,37 @@ function DashboardContent() {
   );
 }
 
-const ActiveMatrixCard = ({ strategies, onToggleStrategy }) => (
+const ActiveMatrixCard = ({ strategies, selectedAsset, onToggleStrategy }) => (
   <div className="bg-slate-950/50 rounded-2xl p-4 space-y-3">
-    <div className="flex items-center gap-2">
-      <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest">
-        Active Matrix
-      </h3>
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        <div className="h-2 w-2 rounded-full bg-green-500/80 animate-pulse" />
+        <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest">
+          Active Matrix
+        </h3>
+      </div>
+      <div className="text-[10px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full font-mono uppercase">
+        {selectedAsset}
+      </div>
     </div>
     <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
-      {strategies.filter(s => s.is_active).map(strategy => (
+      {strategies.filter(s => s.is_active && s.asset === selectedAsset).map(strategy => (
         <div key={strategy.id} className="flex items-center justify-between p-2 bg-slate-900 rounded-lg">
           <div>
-            <div className="font-bold text-xs uppercase">{strategy.asset}</div>
-            <div className="text-[10px] text-slate-500">{strategy.strategy}</div>
+            <div className="font-bold text-xs uppercase text-white">{strategy.strategy.replace('_v1', '')}</div>
+            <div className="text-[9px] text-slate-500">Active Mode</div>
           </div>
           <button
-            onClick={() => onToggleStrategy(strategy)}
-            className={`px-3 py-1 text-xs rounded-full ${strategy.is_active ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'}`}
+            onClick={() => onToggleStrategy(strategy.strategy, strategy.is_active)}
+            className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors"
           >
-            {strategy.is_active ? 'Active' : 'Inactive'}
+            <Power size={12} />
           </button>
         </div>
       ))}
+      {strategies.filter(s => s.is_active && s.asset === selectedAsset).length === 0 && (
+        <div className="text-center py-4 text-slate-600 text-[10px] uppercase font-bold">No Active Strategies</div>
+      )}
     </div>
   </div>
 );

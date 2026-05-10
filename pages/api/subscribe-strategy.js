@@ -82,9 +82,6 @@ export default async function handler(req, res) {
       message: "Successfully subscribed to strategy",
       config: data
     });
-      message: 'Strategy subscribed successfully',
-      config: data
-    });
   } catch (error) {
     console.error('[SUBSCRIBE STRATEGY ERROR]:', error.message);
     return res.status(500).json({ error: error.message });
