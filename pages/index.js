@@ -518,54 +518,6 @@ function DashboardContent() {
       }
   }, [tradeLogs, openPositions, activeAsset, chartTimeframe, activeStrategies, scanStream]);
 
-  const activeAssetScans = scanStream.filter(s => s.asset === activeAsset);
-  const latestScan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
-
-  const bids = parseFloat(latestScan?.telemetry?.bids || 0);
-  const asks = parseFloat(latestScan?.telemetry?.asks || 0);
-  const cvd = parseFloat(latestScan?.telemetry?.cvd || 0);
-  const totalLiquidity = bids + asks;
-  const targetPercent = totalLiquidity > 0 ? (bids / totalLiquidity) * 100 : 50;
-
-  const [liveBidPercent, setLiveBidPercent] = useState(50);
-
-  useEffect(() => {
-      setLiveBidPercent(targetPercent); 
-      
-      if (totalLiquidity === 0) return; 
-
-      const jitterInterval = setInterval(() => {
-          const microJitter = (Math.random() - 0.5) * 2; 
-          setLiveBidPercent(prev => Math.max(1, Math.min(99, targetPercent + microJitter)));
-      }, 1200);
-
-      return () => clearInterval(jitterInterval);
-  }, [targetPercent, totalLiquidity]);
-
-  const latestScanForActiveAsset = scanStream.filter(s => s.asset === activeAsset);
-  const latestScan = latestScanForActiveAsset.length > 0 ? latestScanForActiveAsset[0] : null;
-
-  const bids = parseFloat(latestScan?.telemetry?.bids || 0);
-  const asks = parseFloat(latestScan?.telemetry?.asks || 0);
-  const cvd = parseFloat(latestScan?.telemetry?.cvd || 0);
-  const totalLiquidity = bids + asks;
-  const targetPercent = totalLiquidity > 0 ? (bids / totalLiquidity) * 100 : 50;
-
-  const [liveBidPercent, setLiveBidPercent] = useState(50);
-
-  useEffect(() => {
-      setLiveBidPercent(targetPercent); 
-      
-      if (totalLiquidity === 0) return; 
-
-      const jitterInterval = setInterval(() => {
-          const microJitter = (Math.random() - 0.5) * 2; 
-          setLiveBidPercent(prev => Math.max(1, Math.min(99, targetPercent + microJitter)));
-      }, 1200);
-
-      return () => clearInterval(jitterInterval);
-  }, [targetPercent, totalLiquidity]);
-
   const isVeto = latestScan?.status === 'ORACLE VETO';
   const isResonant = latestScan?.status === 'RESONANT';
   const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;

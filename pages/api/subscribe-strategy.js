@@ -83,7 +83,7 @@ export default async function handler(req, res) {
       config: data
     });
   } catch (error) {
-    console.error('[SUBSCRIBE STRATEGY ERROR]:', error.message);
+    console.error('[SUBSCRIBE STRATEGY FATAL ERROR]: Uncaught error in subscribe-strategy API:', error.message);
     return res.status(500).json({ error: error.message });
   }
 }
