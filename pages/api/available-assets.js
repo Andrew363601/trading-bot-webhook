@@ -1,5 +1,7 @@
 // pages/api/available-assets.js force push
 import { jwtVerify, createRemoteJWKSet } from 'jose';
+import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -40,18 +42,17 @@ export default async function handler(req, res) {
 
     let futuresProducts = [];
     try {
+      // 1. Fetch unauthenticated PERP-INTX products
       const response = await fetch('https://api.exchange.coinbase.com/products', {
         headers: { 'User-Agent': 'Nexus-Terminal' },
         next: { revalidate: 3600 } // Cache for 1 hour
       });
-      
-      console.log(`[AVAILABLE ASSETS INFO]: Coinbase /products API response status: ${response.status} (${response.statusText})`);
 
       if (response.ok) {
         const allProducts = await response.json();
         futuresProducts = allProducts
           .filter(p => 
-            (p.product_type === 'PERPETUAL_FUTURES' || p.product_type === 'FUTURE' || p.id.includes('PERP') || p.id.includes('-CDE')) && 
+            (p.product_type === 'PERPETUAL_FUTURES' || p.id.includes('PERP')) && 
             !p.trading_disabled
           )
           .map(p => ({
@@ -62,14 +63,45 @@ export default async function handler(req, res) {
             volume_24h: parseFloat(p.volume_24h) || 0,
             price_percentage_change_24h: parseFloat(p.price_percentage_change_24h) || 0
           }));
-        console.log(`[AVAILABLE ASSETS INFO]: Successfully fetched ${futuresProducts.length} futures products from Coinbase.`);
-      } else {
-        const errorText = await response.text();
-        console.error(`[AVAILABLE ASSETS ERROR]: Coinbase /products API call failed with status ${response.status}: ${errorText}`);
+      }
+
+      // 2. Fetch authenticated US Regulated Futures (CFM -CDE)
+      const apiKeyName = process.env.COINBASE_API_KEY;
+      let apiSecret = process.env.COINBASE_API_SECRET || "";
+      apiSecret = apiSecret.replace(/\\n/g, '\n');
+      if (apiSecret.startsWith('"') && apiSecret.endsWith('"')) apiSecret = apiSecret.slice(1, -1);
+      
+      if (apiKeyName && apiSecret) {
+        const privateKey = crypto.createPrivateKey({ key: apiSecret.trim(), format: 'pem' });
+        const path = '/api/v3/brokerage/products?product_type=FUTURE';
+        const cbToken = jwt.sign(
+            { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `GET api.coinbase.com${path}` },
+            privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
+        );
+
+        const cfmResponse = await fetch(`https://api.coinbase.com${path}`, {
+          headers: { 'Authorization': `Bearer ${cbToken}` }
+        });
+
+        if (cfmResponse.ok) {
+          const cfmData = await cfmResponse.json();
+          const cfmProducts = (cfmData.products || [])
+            .filter(p => !p.trading_disabled && p.product_id.includes('-CDE'))
+            .map(p => ({
+              id: p.product_id,
+              name: p.product_id,
+              base: p.base_currency_id,
+              price: parseFloat(p.price) || 0,
+              volume_24h: parseFloat(p.volume_24h) || 0,
+              price_percentage_change_24h: parseFloat(p.price_percentage_change_24h) || 0
+            }));
+          
+          futuresProducts = [...futuresProducts, ...cfmProducts];
+          console.log(`[AVAILABLE ASSETS INFO]: Fetched ${cfmProducts.length} US Regulated (-CDE) products.`);
+        }
       }
     } catch (e) {
       console.error('[AVAILABLE ASSETS ERROR]: Coinbase fetch exception:', e.message);
-      console.warn('[AVAILABLE ASSETS WARN]: Coinbase fetch failed, using hardcoded fallback assets.');
     }
 
     // Combine and deduplicate
