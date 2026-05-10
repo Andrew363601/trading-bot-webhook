@@ -22,6 +22,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedStrategyId, setExpandedStrategyId] = useState(null);
   const [strategyParams, setStrategyParams] = useState({});
+  const [executionMode, setExecutionMode] = useState('PAPER'); // PAPER or LIVE
 
   // Sync selectedAsset with currentAsset if provided
   useEffect(() => {
@@ -135,7 +136,11 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
           strategy: strategy.id,
           exchange: 'COINBASE',
           product_type: 'FUTURES',
-          parameters: strategyParams[strategy.id] || strategy.parameters
+          parameters: {
+            ...strategy.parameters,
+            ...strategyParams[strategy.id],
+            execution_mode: executionMode
+          }
         })
       });
 
@@ -153,10 +158,15 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
     }
   };
 
-  const filteredAssets = (activeTab === 'FAVORITES' 
-    ? allAssets.filter(a => favorites.includes(a.id))
-    : allAssets
-  ).filter(a => a.id.toLowerCase().includes(searchTerm.toLowerCase()));
+  const filteredAssets = allAssets.filter(a => {
+    // 1. Tab filtering
+    if (activeTab === 'FAVORITES' && !favorites.includes(a.id)) return false;
+    if (activeTab === 'PERPS' && !a.id.includes('PERP')) return false;
+    if (activeTab === 'FUTURES' && !a.id.includes('-CDE')) return false;
+    // 2. Search filtering
+    if (searchTerm && !a.id.toLowerCase().includes(searchTerm.toLowerCase())) return false;
+    return true;
+  });
 
   return (
     <div className="bg-slate-950/50 rounded-2xl p-3 space-y-4 max-h-[500px] overflow-y-auto custom-scrollbar">
@@ -183,6 +193,28 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
         >
           <Search className="w-3 h-3 inline mr-1" />
           All
+        </button>
+        <button
+          onClick={() => setActiveTab('PERPS')}
+          className={`px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
+            activeTab === 'PERPS'
+              ? 'text-blue-400 border-b-2 border-blue-400'
+              : 'text-slate-500 hover:text-slate-300'
+          }`}
+        >
+          <TrendingUp className="w-3 h-3 inline mr-1" />
+          Perps
+        </button>
+        <button
+          onClick={() => setActiveTab('FUTURES')}
+          className={`px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
+            activeTab === 'FUTURES'
+              ? 'text-orange-400 border-b-2 border-orange-400'
+              : 'text-slate-500 hover:text-slate-300'
+          }`}
+        >
+          <TrendingDown className="w-3 h-3 inline mr-1" />
+          Futures
         </button>
       </div>
 
@@ -310,6 +342,19 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
                       <div className="space-y-3 border-t border-white/5 pt-3">
                         {/* Parameters */}
                         <div className="space-y-2">
+                          <div className="space-y-1">
+                            <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">
+                              Execution Mode
+                            </label>
+                            <select
+                              value={executionMode}
+                              onChange={(e) => setExecutionMode(e.target.value)}
+                              className="w-full bg-slate-900 border border-white/10 rounded p-1.5 text-white text-[10px] font-bold outline-none"
+                            >
+                              <option value="PAPER">Paper Trading</option>
+                              <option value="LIVE">Live Trading</option>
+                            </select>
+                          </div>
                           {Object.entries(strategy.parameters).map(([key, param]) => (
                             <div key={key} className="space-y-1">
                               <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">

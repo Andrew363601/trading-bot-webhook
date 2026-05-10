@@ -82,7 +82,7 @@ export default async function handler(req, res) {
 
     const finalSelection = combined
       .sort((a, b) => (b.volume_24h || 0) - (a.volume_24h || 0))
-      .slice(0, 20);
+      .slice(0, 100);
 
     return res.status(200).json({
       count: finalSelection.length,
