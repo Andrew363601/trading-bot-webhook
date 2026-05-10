@@ -1,4 +1,4 @@
-// pages/api/available-assets.js
+// pages/api/available-assets.js force push
 import jwt from 'jsonwebtoken';
 import { JwksClient } from 'jwks-rsa'; // Import jwks-rsa
 
