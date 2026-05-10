@@ -1,5 +1,6 @@
 // pages/api/available-assets.js
 import jwt from 'jsonwebtoken';
+import { JwksClient } from 'jwks-rsa'; // Import jwks-rsa
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -15,17 +16,44 @@ export default async function handler(req, res) {
 
   try {
     const token = authHeader.split(' ')[1];
-    // Log part of the token to verify it's being received
-    console.log("[AVAILABLE ASSETS DEBUG]: Received JWT token (first 50 chars):", token.substring(0, 50)); 
-    // Indicate if JWT_SECRET is set in the environment
-    console.log("[AVAILABLE ASSETS DEBUG]: JWT_SECRET used for verification:", process.env.JWT_SECRET ? "SET" : "NOT SET (using default 'your-supabase-jwt-secret')"); 
-    console.log("[AVAILABLE ASSETS DEBUG]: JWT_SECRET value start (first 20 chars):", (process.env.JWT_SECRET || '').substring(0, 20));
+    console.log("[AVAILABLE ASSETS DEBUG]: Attempting ES256 JWT verification using JWKS.");
 
-    jwt.verify(token, process.env.JWT_SECRET || 'your-supabase-jwt-secret');
-    console.log("[AVAILABLE ASSETS INFO]: JWT token verified successfully.");
+    // Initialize JwksClient with your Supabase Discovery URL
+    const jwksClient = new JwksClient({
+      jwksUri: 'https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json', // Your Supabase JWKS URL
+      cache: true,
+      rateLimit: true,
+      jwksRequestsPerMinute: 5, // Prevent abuse
+      cacheMaxEntries: 5, // Max number of keys to cache
+      cacheMaxAge: 600000 // Cache for 10 minutes
+    });
+
+    // Promisify the jwksClient.getSigningKey function for async/await
+    const getSigningKey = (kid) => {
+      return new Promise((resolve, reject) => {
+        jwksClient.getSigningKey(kid, (err, key) => {
+          if (err) {
+            return reject(err);
+          }
+          const signingKey = key.publicKey || key.rsaPublicKey;
+          resolve(signingKey);
+        });
+      });
+    };
+
+    // Decode the token to get the key ID (kid)
+    const decodedToken = jwt.decode(token, { complete: true });
+    if (!decodedToken || !decodedToken.header || !decodedToken.header.kid) {
+      console.error("[AVAILABLE ASSETS ERROR]: JWT token missing KID in header.");
+      return res.status(401).json({ error: 'Invalid token: missing key ID' });
+    }
+
+    const signingKey = await getSigningKey(decodedToken.header.kid);
+
+    jwt.verify(token, signingKey, { algorithms: ['ES256'] });
+    console.log("[AVAILABLE ASSETS INFO]: JWT token verified successfully with ES256 public key from JWKS.");
   } catch (err) {
     console.error("[AVAILABLE ASSETS ERROR]: JWT verification failed:", err.message);
-    // Log the full error object for detailed insights
     console.error("[AVAILABLE ASSETS ERROR]: JWT full error object:", err);
     return res.status(401).json({ error: 'Invalid token', details: err.message });
   }
