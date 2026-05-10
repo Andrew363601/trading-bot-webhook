@@ -23,8 +23,8 @@ async function sendDiscordAlert({ title, description, color, fields = [], imageU
 
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
-    const { asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty } = req.body;
-    console.log(`[AGENT CORTEX] Awakened by Sniper. Asset: ${asset} | Mode: ${mode}`);
+    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty } = req.body;
+    console.log(`[AGENT CORTEX] Awakened by Sniper. Tenant: ${tenant_id} | Asset: ${asset} | Mode: ${mode}`);
     
     res.status(200).json({ status: "Agent Awakened. Initiating analysis." });
 
@@ -178,6 +178,7 @@ app.post('/api/wake', async (req, res) => {
             }
 
             await supabase.from('scan_results').insert([{
+                tenant_id: tenant_id,
                 strategy: strategy_id || 'MANUAL',
                 asset: asset,
                 status: finalStatus,
@@ -193,6 +194,7 @@ app.post('/api/wake', async (req, res) => {
         if (isActionableExecution) {
             console.log(`[AGENT CORTEX] Triggering execute_order tool for action: ${decisionJson.action}`);
             
+            decisionJson.tenant_id = tenant_id; // Inject tenant ID for Multi-Tenant Gateway
             decisionJson.symbol = asset;
             decisionJson.execution_mode = execution_mode || 'PAPER';
             decisionJson.strategy_id = strategy_id || 'MANUAL';

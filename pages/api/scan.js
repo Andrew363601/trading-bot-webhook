@@ -8,6 +8,7 @@ import crypto from 'crypto';
 import { evaluateStrategy } from '../../lib/strategy-router.js';
 import { evaluateTradeIdea } from '../../lib/trade-oracle.js';
 import { buildRadarChartUrl } from '../../lib/discord-chart.js'; 
+import { executeTradeMCP } from '../../lib/execute-trade-mcp.js'; 
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -691,6 +692,7 @@ export default async function handler(req, res) {
 
             if (isExecutingReversal) {
                 const closePayload = {
+                    tenant_id: config.tenant_id,
                     symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: decision.signal,
                     order_type: 'MARKET', price: currentPrice, tp_price: null, sl_price: null,
                     execution_mode: config.execution_mode || 'PAPER', leverage: decision.leverage || 1,
@@ -698,16 +700,18 @@ export default async function handler(req, res) {
                     reason: `[REVERSAL CLOSE]: Executing AI Reversal to ${decision.signal}\n\nOracle Reasoning: ${decision.telemetry?.oracle_reasoning || 'Standard Reversal'}`
                 };
 
-                const closeResp = await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(closePayload) });
-                if (!closeResp.ok) {
-                    console.error(`[RACE CONDITION] Standard reversal failed to close existing trade for ${asset}`);
-                    await sendDiscordAlert({ title: `⚠️ Reversal Aborted: ${asset}`, description: `**Issue:** Failed to close existing position. Aborting new entry to prevent double exposure.`, color: 15548997 });
+                try {
+                    await executeTradeMCP(closePayload);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                } catch (e) {
+                    console.error(`[RACE CONDITION] Standard reversal failed to close existing trade for ${asset}`, e.message);
+                    await sendDiscordAlert({ title: `⚠️ Reversal Aborted: ${asset}`, description: `**Issue:** Failed to close existing position. Aborting new entry to prevent double exposure.\n\nError: ${e.message}`, color: 15548997 });
                     continue; 
                 }
-                await new Promise(resolve => setTimeout(resolve, 2000));
             }
             
             const tradePayload = {
+                tenant_id: config.tenant_id,
                 symbol: asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: decision.signal,
                 order_type: decision.orderType || 'MARKET', price: decision.entryPrice, tp_price: decision.tpPrice || null,
                 sl_price: decision.slPrice || null, execution_mode: config.execution_mode || 'PAPER', leverage: decision.leverage || 1,
@@ -715,7 +719,7 @@ export default async function handler(req, res) {
                 reason: decision.telemetry?.oracle_reasoning || null 
             };
             
-            await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tradePayload) });
+            await executeTradeMCP(tradePayload);
         }
 
       } catch (assetErr) { 
