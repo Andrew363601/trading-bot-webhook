@@ -93,7 +93,14 @@ export default async function handler(req, res) {
       if (apiSecret.startsWith('"') && apiSecret.endsWith('"')) apiSecret = apiSecret.slice(1, -1);
       
       if (apiKeyName && apiSecret) {
-        const privateKey = crypto.createPrivateKey({ key: apiSecret.trim(), format: 'pem' });
+        let privateKey;
+        try {
+          privateKey = crypto.createPrivateKey({ key: apiSecret.trim(), format: 'pem' });
+        } catch (cryptoErr) {
+          console.error("[AVAILABLE ASSETS ERROR]: Failed to parse private key:", cryptoErr.message);
+          throw cryptoErr;
+        }
+
         const path = '/api/v3/brokerage/products?product_type=FUTURE';
         const cbToken = jwt.sign(
             { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `GET api.coinbase.com${path}` },
@@ -107,7 +114,7 @@ export default async function handler(req, res) {
         if (cfmResponse.ok) {
           const cfmData = await cfmResponse.json();
           const cfmProducts = (cfmData.products || [])
-            .filter(p => !p.trading_disabled && p.product_id.includes('-CDE'))
+            .filter(p => !p.trading_disabled && p.product_id && p.product_id.includes('-CDE'))
             .map(p => ({
               id: p.product_id,
               name: p.product_id,
@@ -119,6 +126,9 @@ export default async function handler(req, res) {
           
           futuresProducts = [...futuresProducts, ...cfmProducts];
           console.log(`[AVAILABLE ASSETS INFO]: Fetched ${cfmProducts.length} US Regulated (-CDE) products.`);
+        } else {
+            const cfmErrorText = await cfmResponse.text();
+            console.error(`[AVAILABLE ASSETS ERROR]: CFM Fetch failed with status ${cfmResponse.status}:`, cfmErrorText);
         }
       }
     } catch (e) {
