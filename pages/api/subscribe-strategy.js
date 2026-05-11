@@ -152,7 +152,7 @@ export default async function handler(req, res) {
     }
 
     return res.status(201).json({
-      message: `Successfully ${operation === 'insert' ? 'subscribed to'' : 'activated'} strategy`,
+                  message: `Successfully ${operation === 'insert' ? 'subscribed to' : 'activated'} strategy`,
       config: resultData
     });
   } catch (error) {
