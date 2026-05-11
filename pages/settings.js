@@ -19,16 +19,59 @@ function SettingsContent() {
     const [exchange, setExchange] = useState('COINBASE');
     const [apiKey, setApiKey] = useState('');
     const [apiSecret, setApiSecret] = useState('');
+    const [discordWebhookUrl, setDiscordWebhookUrl] = useState(''); // New state for Discord webhook
     const [loading, setLoading] = useState(false);
     const [status, setStatus] = useState(null);
 
-    const handleSubmit = async (e) => {
+    // Fetch existing settings on component mount
+    useEffect(() => {
+        const fetchSettings = async () => {
+            setLoading(true);
+            try {
+                const { data: { session } } = await supabase.auth.getSession();
+                if (!session) return;
+
+                // Fetch API Keys
+                const { data: apiKeys, error: keysError } = await supabase
+                    .from('api_keys_vault')
+                    .select('exchange, key_encrypted, secret_encrypted')
+                    .eq('tenant_id', session.user.id) // Assuming tenant_id == auth_user_id for now
+                    .single();
+                if (keysError && keysError.code !== 'PGRST116') throw keysError; // PGRST116 means no rows found, which is fine
+                if (apiKeys) {
+                    setExchange(apiKeys.exchange);
+                }
+
+                // Fetch Tenant Settings for webhook URL
+                const { data: tenantSettings, error: settingsError } = await supabase
+                    .from('tenant_settings')
+                    .select('notification_webhook_url')
+                    .eq('tenant_id', session.user.id) // Assuming tenant_id == auth_user_id for now
+                    .single();
+                if (settingsError && settingsError.code !== 'PGRST116') throw settingsError;
+                if (tenantSettings) {
+                    setDiscordWebhookUrl(tenantSettings.notification_webhook_url || '');
+                }
+
+            } catch (err) {
+                console.error("Failed to fetch settings:", err.message);
+                setStatus({ type: 'error', message: `Failed to load settings: ${err.message}` });
+            } finally {
+                setLoading(false);
+            }
+        };
+        fetchSettings();
+    }, [supabase]);
+
+    // Handle API Key submission
+    const handleSubmitApiKeys = async (e) => {
         e.preventDefault();
         setLoading(true);
         setStatus(null);
 
         try {
             const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error("No active session");
             
             const response = await fetch('/api/configure-api-keys', {
                 method: 'POST',
@@ -54,6 +97,38 @@ function SettingsContent() {
         }
     };
 
+    // Handle Notification Settings submission
+    const handleSubmitNotifications = async (e) => {
+        e.preventDefault();
+        setLoading(true);
+        setStatus(null);
+
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error("No active session");
+
+            const response = await fetch('/api/configure-tenant-settings', { // New API endpoint for tenant settings
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${session.access_token}`
+                },
+                body: JSON.stringify({ notification_webhook_url: discordWebhookUrl })
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                setStatus({ type: 'success', message: 'Notification settings updated.' });
+            } else {
+                throw new Error(result.error || 'Failed to update notification settings');
+            }
+        } catch (err) {
+            setStatus({ type: 'error', message: err.message });
+        } finally {
+            setLoading(false);
+        }
+    };
+
     return (
         <div className="min-h-screen bg-slate-950 text-white p-8">
             <Head><title>Nexus | Security Vault</title></Head>
@@ -68,7 +143,12 @@ function SettingsContent() {
                     <p className="text-slate-400 mt-2">Configure your exchange credentials. All keys are AES-256 encrypted before storage.</p>
                 </header>
 
-                <form onSubmit={handleSubmit} className="bg-slate-900/50 border border-white/5 p-8 rounded-3xl space-y-6 backdrop-blur-xl">
+                <form onSubmit={handleSubmitApiKeys} className="bg-slate-900/50 border border-white/5 p-8 rounded-3xl space-y-6 backdrop-blur-xl">
+                    <div className="flex items-center gap-3 mb-2">
+                        <Key className="w-5 h-5 text-indigo-400" />
+                        <h2 className="text-xl font-black uppercase tracking-tight">Exchange Keys</h2>
+                    </div>
+                    
                     <div className="space-y-2">
                         <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Exchange Provider</label>
                         <select 
@@ -113,19 +193,48 @@ function SettingsContent() {
 
                     <button 
                         disabled={loading}
+                        type="submit"
                         className="w-full bg-white text-black hover:bg-slate-200 font-black py-4 rounded-xl transition-all flex items-center justify-center gap-2 uppercase text-xs tracking-widest"
                     >
                         {loading ? <div className="w-5 h-5 border-2 border-black/20 border-t-black rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
                         Commit Keys to Vault
                     </button>
-
-                    {status && (
-                        <div className={`p-4 rounded-xl border flex items-center gap-3 ${status.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
-                            {status.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
-                            <span className="text-xs font-bold uppercase tracking-wide">{status.message}</span>
-                        </div>
-                    )}
                 </form>
+
+                <form onSubmit={handleSubmitNotifications} className="bg-slate-900/50 border border-white/5 p-8 rounded-3xl space-y-6 backdrop-blur-xl">
+                    <div className="flex items-center gap-3 mb-2">
+                        <AlertCircle className="w-5 h-5 text-indigo-400" />
+                        <h2 className="text-xl font-black uppercase tracking-tight">Notifications</h2>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Discord Webhook URL</label>
+                        <input
+                            type="url"
+                            placeholder="https://discord.com/api/webhooks/..."
+                            value={discordWebhookUrl}
+                            onChange={(e) => setDiscordWebhookUrl(e.target.value)}
+                            className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
+                        />
+                        <p className="text-[9px] text-slate-500 ml-1 italic">Signals, Executions, and Autopsies will be pushed to this channel.</p>
+                    </div>
+
+                    <button 
+                        disabled={loading}
+                        type="submit"
+                        className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-4 rounded-xl transition-all flex items-center justify-center gap-2 uppercase text-xs tracking-widest shadow-lg shadow-indigo-500/20"
+                    >
+                        {loading ? <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                        Update Notifications
+                    </button>
+                </form>
+
+                {status && (
+                    <div className={`p-4 rounded-xl border flex items-center gap-3 ${status.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
+                        {status.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
+                        <span className="text-xs font-bold uppercase tracking-wide">{status.message}</span>
+                    </div>
+                )}
             </div>
         </div>
     );

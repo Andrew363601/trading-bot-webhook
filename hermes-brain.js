@@ -8,11 +8,39 @@ const app = express();
 app.use(express.json());
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+async function logAgentActivity(tenant_id, agent_name, asset, log_message) {
+    try {
+        const { error } = await supabase.from('hermes_core_memory').insert([
+            { tenant_id, agent_name, asset, log_message, timestamp: new Date().toISOString() }
+        ]);
+        if (error) {
+            console.error("[HERMES BRAIN LOGGING ERROR]: Failed to log agent activity:", error.message);
+        }
+    } catch (err) {
+        console.error("[HERMES BRAIN LOGGING FATAL]: Uncaught error in logAgentActivity:", err.message);
+    }
+}
+
 const skillMemory = fs.readFileSync('./SKILL.md', 'utf-8');
 
-async function sendDiscordAlert({ title, description, color, fields = [], imageUrl = null }) {
-    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-    if (!webhookUrl) return;
+async function sendDiscordAlert(tenant_id, { title, description, color, fields = [], imageUrl = null }) {
+    const { data: settings, error: settingsError } = await supabase
+        .from('tenant_settings')
+        .select('notification_webhook_url')
+        .eq('tenant_id', tenant_id)
+        .single();
+
+    if (settingsError) {
+        console.error("[DISCORD ALERT ERROR]: Failed to fetch webhook URL for tenant:", settingsError.message);
+        return;
+    }
+    const webhookUrl = settings?.notification_webhook_url;
+
+    if (!webhookUrl) {
+        console.warn("[DISCORD ALERT WARNING]: No Discord webhook URL configured for tenant", tenant_id);
+        return;
+    }
     try {
         const embed = { title, description, color, timestamp: new Date().toISOString() };
         if (fields.length > 0) embed.fields = fields;
@@ -24,7 +52,39 @@ async function sendDiscordAlert({ title, description, color, fields = [], imageU
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
     const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty } = req.body;
+    await logAgentActivity(tenant_id, "Agent Cortex", asset, `Awakened. Mode: ${mode}. Initial message: ${message.substring(0, 100)}...`);
     console.log(`[AGENT CORTEX] Awakened by Sniper. Tenant: ${tenant_id} | Asset: ${asset} | Mode: ${mode}`);
+    
+    // 🟢 THESIS INTEGRITY: Prevent new trades if one is already open for this asset
+    if (mode === "ENTRY") {
+        const { data: existingOpenTrades, error: openTradeError } = await supabase
+            .from('trade_logs')
+            .select('id, side, entry_price')
+            .eq('tenant_id', tenant_id)
+            .eq('symbol', asset)
+            .is('exit_price', null);
+
+        if (openTradeError) {
+            console.error("[AGENT CORTEX ERROR]: Failed to check for open trades:", openTradeError.message);
+            await logAgentActivity(tenant_id, "Agent Cortex", asset, `Error checking for open trades: ${openTradeError.message}`);
+            return res.status(500).json({ error: "Failed to check for open trades." });
+        }
+
+        if (existingOpenTrades && existingOpenTrades.length > 0) {
+            const activeTrade = existingOpenTrades[0];
+            const conflictMessage = `THESIS CONFLICT: Agent Cortex detected an active ${activeTrade.side} position for ${asset} at $${activeTrade.entry_price}. New entry signals or virtual traps will be ignored. Focus on managing the existing position.`;
+            
+            await logAgentActivity(tenant_id, "Agent Cortex", asset, conflictMessage);
+            
+            // Send a tailored response to Hermes/Sniper to indicate conflict
+            return res.status(200).json({
+                status: "Conflict Detected",
+                message: conflictMessage,
+                action_required: "MANAGE_EXISTING_POSITION",
+                open_trade_details: activeTrade
+            });
+        }
+    }
     
     res.status(200).json({ status: "Agent Awakened. Initiating analysis." });
 
@@ -165,7 +225,7 @@ app.post('/api/wake', async (req, res) => {
             alertColor = 16753920; 
         }
 
-        await sendDiscordAlert({
+        await sendDiscordAlert(tenant_id, {
             title: alertTitle,
             description: `**Conviction Score:** ${decisionJson.conviction_score || 'N/A'}/100\n**Action:** ${decisionJson.action}\n\n**Working Thesis:**\n_${decisionJson.working_thesis || 'No thesis provided'}_`,
             color: alertColor, 

@@ -104,7 +104,7 @@ export default async function handler(req, res) {
       existingStrategyId = existingStrategy.id;
       finalConfigData = {
         is_active: true,
-        last_updated: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
         // IMPORTANT: Retain existing parameters, do not overwrite with new 'parameters' from req.body
         // The front-end editor handles parameter changes for existing strategies.
         parameters: existingStrategy.parameters // Use existing parameters
@@ -118,9 +118,9 @@ export default async function handler(req, res) {
         strategy,
         exchange,
         product_type,
-        parameters, // Use new parameters for a new strategy
+        parameters: flattenParameters(parameters), // Flatten parameters before inserting
         is_active: true,
-        last_updated: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       };
     }
 
@@ -159,4 +159,19 @@ export default async function handler(req, res) {
     console.error('[SUBSCRIBE STRATEGY FATAL ERROR]: Uncaught error in subscribe-strategy API:', error.message);
     return res.status(500).json({ error: error.message });
   }
+}
+
+function flattenParameters(params) {
+  if (!params) return {};
+
+  const flattened = {};
+  for (const key in params) {
+    const value = params[key];
+    if (typeof value === 'object' && value !== null && ('default' in value || 'value' in value)) {
+      flattened[key] = value.value !== undefined ? value.value : value.default;
+    } else {
+      flattened[key] = value;
+    }
+  }
+  return flattened;
 }

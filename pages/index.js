@@ -178,7 +178,7 @@ function DashboardContent() {
       let logsQuery = supabase.from('trade_logs').select('*').order('created_at', { ascending: false });
       let configsQuery = supabase.from('strategy_config').select('*');
       let scansQuery = supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25);
-      let sessionLogsQuery = supabase.from('hermes_core_memory').select('*').order('timestamp', { ascending: false }).limit(50);
+      let sessionLogsQuery = supabase.from('agent_session_logs').select('*').order('timestamp', { ascending: false }).limit(50);
 
       // Add tenant_id filtering if available
       if (tenantId) {
@@ -324,7 +324,7 @@ function DashboardContent() {
 
   const openStrategyEditor = (strat) => {
     setEditingStrategy(strat);
-    setEditingParameters(strat.parameters || {});
+    setEditingParameters(normalizeParametersForEditor(strat.parameters));
     setEditingExecutionMode(strat.execution_mode || 'PAPER');
     setEditModalOpen(true);
   };
@@ -335,7 +335,7 @@ function DashboardContent() {
       const { error } = await supabase
         .from('strategy_config')
         .update({
-          parameters: editingParameters,
+          parameters: flattenParametersForSave(editingParameters),
           execution_mode: editingExecutionMode,
           updated_at: new Date().toISOString()
         })
@@ -1192,21 +1192,6 @@ function DashboardContent() {
                 );
             })()}
           </div>
-          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
-            <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
-            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-2 flex-grow min-h-[150px] text-slate-400">
-                {sessionLogs.length === 0 ? (
-                    <div className="text-slate-600 italic">Awaiting agent activity...</div>
-                ) : (
-                    sessionLogs.filter(log => normalizeAssetSymbol(log.asset) === normalizeAssetSymbol(activeAsset)).map((log, i) => (
-                        <div key={i} className="flex flex-col">
-                            <span className="text-[8px] font-black text-slate-500 uppercase">{new Date(log.timestamp).toLocaleTimeString()} - {log.agent_name}</span>
-                            <span className="text-[9px] text-white/80 whitespace-pre-wrap">{log.log_message}</span>
-                        </div>
-                    ))
-                )}
-            </div>
-          </div>
         </div>
       </main>
 
@@ -1262,14 +1247,14 @@ function DashboardContent() {
                       return (
                         <div key={key}>
                           <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest block mb-1">
-                            {key}
+                            {value.label || key}
                           </label>
                           {isTimeframe ? (
                             <select
-                              value={editingParameters[key]}
+                              value={editingParameters[key].default}
                               onChange={(e) => setEditingParameters(prev => ({
                                 ...prev,
-                                [key]: e.target.value
+                                [key]: { ...prev[key], default: e.target.value }
                               }))}
                               className="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
                             >
@@ -1280,11 +1265,11 @@ function DashboardContent() {
                             </select>
                           ) : (
                             <input
-                              type={typeof value === 'number' ? 'number' : 'text'}
-                              value={editingParameters[key]}
+                              type={value.type}
+                              value={editingParameters[key].default}
                               onChange={(e) => setEditingParameters(prev => ({
                                 ...prev,
-                                [key]: typeof value === 'number' ? parseFloat(e.target.value) || 0 : e.target.value
+                                [key]: { ...prev[key], default: value.type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value }
                               }))}
                               className="w-full bg-slate-800 border border-white/5 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
                             />
@@ -1322,3 +1307,46 @@ function DashboardContent() {
     </div>
   );
 }
+
+const normalizeParametersForEditor = useCallback((params) => {
+    if (!params) return {};
+
+    const normalized = {};
+    for (const key in params) {
+      const value = params[key];
+      if (typeof value === 'object' && value !== null && 'default' in value && 'type' in value) {
+        // Already in metadata format
+        normalized[key] = value;
+      } else {
+        // Assume flat format, convert to metadata format with reasonable defaults
+        normalized[key] = {
+          default: value,
+          type: typeof value === 'number' ? 'number' : 'text',
+          label: key.replace(/_/g, ' ').toUpperCase(),
+          // Add min/max for common numeric fields if not present (optional, can be refined)
+          ...(key.includes('leverage') && { min: 1, max: 10 }),
+          ...(key.includes('quantity') && { min: 0.001, max: 100 }),
+          ...(key.includes('stop_loss_pct') && { min: 0.1, max: 20 }),
+          ...(key.includes('take_profit_pct') && { min: 0.1, max: 50 }),
+        };
+      }
+    }
+    return normalized;
+  }, []);
+
+const flattenParametersForSave = useCallback((params) => {
+    if (!params) return {};
+
+    const flattened = {};
+    for (const key in params) {
+      const value = params[key];
+      // If it's an object with 'default' or 'value', extract it
+      if (typeof value === 'object' && value !== null && ('default' in value || 'value' in value)) {
+        flattened[key] = value.value !== undefined ? value.value : value.default;
+      } else {
+        // Otherwise, it's already a flat value
+        flattened[key] = value;
+      }
+    }
+    return flattened;
+  }, []);

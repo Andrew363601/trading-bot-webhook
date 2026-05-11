@@ -6,9 +6,23 @@ import { buildRadarChartUrl } from '../lib/discord-chart.js';
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-async function sendDiscordAlert({ title, description, color, fields = [], imageUrl = null }) {
-    const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
-    if (!webhookUrl) return;
+async function sendDiscordAlert(tenant_id, { title, description, color, fields = [], imageUrl = null }) {
+    const { data: settings, error: settingsError } = await supabase
+        .from('tenant_settings')
+        .select('notification_webhook_url')
+        .eq('tenant_id', tenant_id)
+        .single();
+
+    if (settingsError) {
+        console.error("[DISCORD ALERT ERROR]: Failed to fetch webhook URL for tenant:", settingsError.message);
+        return;
+    }
+    const webhookUrl = settings?.notification_webhook_url;
+
+    if (!webhookUrl) {
+        console.warn("[DISCORD ALERT WARNING]: No Discord webhook URL configured for tenant", tenant_id);
+        return;
+    }
     try {
         const embed = { title, description, color, timestamp: new Date().toISOString() };
         if (fields.length > 0) embed.fields = fields;
@@ -81,12 +95,14 @@ const heartbeatTracker = {};
 const missingBracketTracker = {};
 
 export async function startWatchdog(tenantId) {
+    await logAgentActivity(tenantId, "Watchdog", "N/A", "Watchdog worker started.");
     console.log(`[WATCHDOG-${tenantId}] Physical Exchange Janitor online. Sweeping orders...`);
     const apiKeyName = process.env.COINBASE_API_KEY;
     const apiSecret = process.env.COINBASE_API_SECRET;
 
     setInterval(async () => {
         try {
+            await logAgentActivity(tenantId, "Watchdog", "N/A", "Sweeping open trades and orders.");
             const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('tenant_id', tenantId).is('exit_price', null);
             if (!openTrades || openTrades.length === 0) return;
 
@@ -95,6 +111,7 @@ export async function startWatchdog(tenantId) {
                 
                 const tradeAgeMs = Date.now() - new Date(openTrade.created_at || Date.now()).getTime();
                 if (tradeAgeMs < 15000) {
+                    await logAgentActivity(tenantId, "Watchdog", asset, `Trade ${openTrade.id} is pending exchange propagation (${Math.round(tradeAgeMs/1000)}s).`);
                     console.log(`[WATCHDOG-${tenantId}] Trade ${openTrade.id} is pending exchange propagation (${Math.round(tradeAgeMs/1000)}s). Yielding...`);
                     continue; 
                 }
@@ -120,6 +137,7 @@ export async function startWatchdog(tenantId) {
                 }
 
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
+                     await logAgentActivity(tenantId, "Watchdog", asset, `Missing entry price for trade ${openTrade.id}. Attempting to self-heal.`);
                      console.log(`[WATCHDOG] Missing entry price detected for trade ${openTrade.id}. Attempting to self-heal...`);
                      const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
                      try {
@@ -131,6 +149,7 @@ export async function startWatchdog(tenantId) {
                                  const trueEntryPrice = parseFloat(entryOrder.average_filled_price);
                                  await supabase.from('trade_logs').update({ entry_price: trueEntryPrice }).eq('id', openTrade.id);
                                  openTrade.entry_price = trueEntryPrice;
+                                 await logAgentActivity(tenantId, "Watchdog", asset, `Successfully healed entry price for trade ${openTrade.id} to $${trueEntryPrice}`);
                                  console.log(`[WATCHDOG] Successfully healed entry price for trade ${openTrade.id} to $${trueEntryPrice}`);
                              }
                          }
@@ -204,11 +223,13 @@ export async function startWatchdog(tenantId) {
 
                         const now = Date.now();
                         if (!heartbeatTracker[openTrade.id] || now - heartbeatTracker[openTrade.id] >= 60000) {
+                            await logAgentActivity(tenantId, "Watchdog", asset, `Heartbeat: Live ROE: ${(pnlPercent * 100).toFixed(2)}% | Tripwire: ${(tripwire * 100).toFixed(2)}%.`);
                             console.log(`[WATCHDOG RADAR] Asset: ${asset} | Live ROE: ${(pnlPercent * 100).toFixed(2)}% | Tripwire: ${(tripwire * 100).toFixed(2)}%`);
                             heartbeatTracker[openTrade.id] = now;
                         }
 
                         if (tripwire > 0 && pnlPercent >= tripwire && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
+                            await logAgentActivity(tenantId, "Watchdog", asset, `Tripwire hit! Profit at ${(pnlPercent*100).toFixed(2)}%. Securing capital.`);
                             console.log(`[WATCHDOG] Tripwire hit for ${asset} at ${(pnlPercent*100).toFixed(2)}% profit. Securing capital...`);
                             
                             const breakEvenSL = openTrade.side === 'BUY' ? openTrade.entry_price * 1.001 : openTrade.entry_price * 0.999;
@@ -248,6 +269,7 @@ export async function startWatchdog(tenantId) {
                             
                             const diff = Math.abs(safeDynamicSL - openTrade.sl_price);
                             if (shouldMoveSL && diff > (tickSize * 10)) {
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Trailing SL triggered. Moving SL to $${safeDynamicSL}.`);
                                 console.log(`[WATCHDOG] Trailing SL triggered for ${asset}. Moving SL up to $${safeDynamicSL}`);
                                 
                                 if (openOrders.length > 0) {
@@ -269,6 +291,7 @@ export async function startWatchdog(tenantId) {
                         if (initialMatch) totalAllowedMinutes = parseInt(initialMatch[1]);
 
                         if (minutesOpen > totalAllowedMinutes && !openTrade.reason?.includes('[HERMES_NOTIFIED]')) {
+                            await logAgentActivity(tenantId, "Watchdog", asset, `Stale limit order for ${asset} detected (${Math.round(minutesOpen)}m unfilled). Waking Hermes Agent for review.`);
                             console.log(`[WATCHDOG] Stale limit detected on ${asset}. Waking Hermes Agent...`);
                             await pingHermes({
                                 asset: asset, mode: "PENDING_REVIEW",
@@ -347,7 +370,8 @@ export async function startWatchdog(tenantId) {
                             await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CANCELED', telemetry: { macro_regime_oracle: `ORDER CANCELED`, oracle_reasoning: updatedReason, open_position: "NONE" } }]);
 
                             const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
-                            await sendDiscordAlert({ title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: chartUrl });
+                                                        await sendDiscordAlert(tenantId, { title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: chartUrl });
+                            await logAgentActivity(tenantId, "Watchdog", asset, `Limit order for ${asset} was canceled. Initiating autopsy.`);
                             
                             try {
                                 const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
@@ -383,8 +407,10 @@ export async function startWatchdog(tenantId) {
                             
                             if (updateErr) {
                                 console.error("[TRADE LOG UPDATE FAILED]:", updateErr.message);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Failed to update trade log for ${openTrade.id}: ${updateErr.message}`);
                             } else {
                                 await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CLOSED', telemetry: { macro_regime_oracle: `POSITION CLOSED`, oracle_reasoning: updatedReason, open_pnl: rawPnl.toFixed(4), open_position: "NONE" } }]);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Position for ${asset} closed. PnL: ${rawPnl.toFixed(4)}. Trigger: ${assumedReason}.`);
                             }
 
                             const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
@@ -393,7 +419,7 @@ export async function startWatchdog(tenantId) {
                             const tpText = openTrade.tp_price ? `\n**Target TP:** $${openTrade.tp_price}` : '';
                             const slText = openTrade.sl_price ? `\n**Target SL:** $${openTrade.sl_price}` : '';
 
-                            await sendDiscordAlert({ 
+                            await sendDiscordAlert(tenantId, { 
                                 title: `🏁 Position Sync: ${asset}`, 
                                 description: `**Trigger:** ${assumedReason}\n**Realized PnL:** $${rawPnl.toFixed(4)}${entryText}${tpText}${slText}`, 
                                 color: rawPnl >= 0 ? 5763719 : 15548997, 
@@ -429,6 +455,7 @@ export async function startWatchdog(tenantId) {
                             const now = Date.now();
                             if (!missingBracketTracker[openTrade.id]) {
                                 missingBracketTracker[openTrade.id] = now;
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Missing OCO Brackets for ${asset} detected. Initiating 10s ceasefire.`);
                                 console.log(`[WATCHDOG] Missing OCO Brackets detected for ${asset}. Yielding 10s for potential Hermes execution...`);
                                 continue;
                             }
@@ -443,6 +470,7 @@ export async function startWatchdog(tenantId) {
                             const safeSlPrice = (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(4);
                             const safeTpPrice = (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(4);
 
+                            await logAgentActivity(tenantId, "Watchdog", asset, `Missing OCO Brackets for ${asset} exceeded grace period. Deploying deterministic safety net.`);
                             console.log(`[WATCHDOG] Missing OCO Brackets for ${asset} exceeded grace period. Deploying deterministic safety net...`);
                             const executePath = '/api/v3/brokerage/orders';
                             const dynamicSafetyNetId = `nx_wd_oco_${Date.now()}`;
@@ -459,20 +487,24 @@ export async function startWatchdog(tenantId) {
                                     ocoResult = await ocoResp.json();
                                 } catch (jsonErr) {
                                     console.error(`[WATCHDOG OCO FAULT] Exchange returned invalid data. Delaying bracket deployment...`);
+                                    await logAgentActivity(tenantId, "Watchdog", asset, `OCO bracket deployment failed for ${asset}: Exchange returned invalid data.`);
                                     continue; 
                                 }
 
                                 if (!ocoResp.ok || ocoResult.success === false) {
                                     const ocoErrMsg = ocoResult.error_response?.preview_failure_reason || ocoResult.error_response?.error || ocoResult.failure_reason?.error_message || JSON.stringify(ocoResult);
                                     console.error(`[WATCHDOG BRACKET REJECT] OCO Failed:`, ocoErrMsg);
-                                    await sendDiscordAlert({ title: `⚠️ Watchdog Bracket Failed: ${asset}`, description: `**Action:** Attempted to deploy missing TP/SL protection!\n**Details:** ${ocoErrMsg}`, color: 15548997 });
+                                    await sendDiscordAlert(tenantId, { title: `⚠️ Watchdog Bracket Failed: ${asset}`, description: `**Action:** Attempted to deploy missing TP/SL protection!\n**Details:** ${ocoErrMsg}`, color: 15548997 });
+                                    await logAgentActivity(tenantId, "Watchdog", asset, `OCO bracket deployment rejected for ${asset}: ${ocoErrMsg}`);
                                 } else {
-                                    await sendDiscordAlert({ title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046 });
+                                    await sendDiscordAlert(tenantId, { title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046 });
+                                    await logAgentActivity(tenantId, "Watchdog", asset, `OCO safety net deployed for ${asset}. TP: $${safeTpPrice}, SL: $${safeSlPrice}.`);
                                     // Clean up tracker upon successful deployment
                                     delete missingBracketTracker[openTrade.id];
                                 }
                             } catch (error) {
                                 console.error("[WATCHDOG BRACKET FATAL]:", error.message);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `FATAL error during OCO bracket deployment for ${asset}: ${error.message}`);
                             }
                         }
                     }
@@ -480,6 +512,20 @@ export async function startWatchdog(tenantId) {
             }
         } catch (err) {
             console.error("[WATCHDOG FAULT]:", err.message);
+            await logAgentActivity(tenantId, "Watchdog", "N/A", `WATCHDOG worker encountered a fault: ${err.message}`);
         }
     }, 5000); 
+}
+
+async function logAgentActivity(tenant_id, agent_name, asset, log_message) {
+    try {
+        const { error } = await supabase.from('hermes_core_memory').insert([
+            { tenant_id, agent_name, asset, log_message, timestamp: new Date().toISOString() }
+        ]);
+        if (error) {
+            console.error("[WATCHDOG LOGGING ERROR]: Failed to log agent activity:", error.message);
+        }
+    } catch (err) {
+        console.error("[WATCHDOG LOGGING FATAL]: Uncaught error in logAgentActivity:", err.message);
+    }
 }

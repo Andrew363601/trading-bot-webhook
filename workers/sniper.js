@@ -221,6 +221,7 @@ const RAM = { configs: [], lastMathRun: {}, isProcessingMath: {} };
 let activeProductIds = []; 
 
 export async function startSniper(tenantId) {
+    await logAgentActivity(tenantId, "Sniper", "N/A", "Sniper worker started.", "WORKER_START");
     console.log(`[SNIPER-${tenantId}] Booting WebSocket Spinal Cord...`);
     const apiKeyName = process.env.COINBASE_API_KEY; const apiSecret = process.env.COINBASE_API_SECRET;
     
@@ -231,6 +232,7 @@ export async function startSniper(tenantId) {
             const { data } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).eq('is_active', true);
             if (data) {
                 RAM.configs = data;
+                await logAgentActivity(tenantId, "Sniper", "N/A", `Synced ${data.length} active strategies.`, "CONFIG_SYNC");
                 
                 const newProductIds = [...new Set(data.map(c => {
                     let p = c.asset.toUpperCase().trim();
@@ -252,7 +254,8 @@ export async function startSniper(tenantId) {
     await syncConfigs();
     setInterval(syncConfigs, 30000); 
 
-    ws.on('open', () => {
+    ws.on('open', async () => {
+        await logAgentActivity(tenantId, "Sniper", "N/A", "WebSocket connected. Subscribing to live tape...", "WEBSOCKET_CONNECT");
         console.log(`[SNIPER] WebSocket connected. Subscribing to live tape...`);
         if (activeProductIds.length > 0) {
             ws.send(JSON.stringify({ type: 'subscribe', product_ids: activeProductIds, channel: 'ticker' }));
@@ -291,6 +294,7 @@ export async function startSniper(tenantId) {
                 }
 
                 if (trapSprung) {
+                    await logAgentActivity(tenantId, "Sniper", config.asset, `LIGHTNING TRAP SPRUNG for ${config.asset} at $${currentPrice}!`, "TRAP_SPRUNG");
                     console.log(`[SNIPER] LIGHTNING TRAP SPRUNG for ${config.asset} at $${currentPrice}!`);
                     
                     let finalQty = params.qty || 1;
@@ -325,7 +329,12 @@ export async function startSniper(tenantId) {
                     config.trap_side = null; 
                     await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id).eq('tenant_id', tenantId);
 
-                    executeTradeMCP(trapPayload).catch(e => console.error(`[SNIPER-${tenantId}] TRAP EXECUTION FATAL:`, e.message));
+                    executeTradeMCP(trapPayload)
+                        .then(() => logAgentActivity(tenantId, "Sniper", config.asset, `Trade executed for TRAP: ${config.trap_side} ${finalQty} ${config.asset} @ $${currentPrice}.`, "TRADE_EXECUTION"))
+                        .catch(e => {
+                            console.error(`[SNIPER-${tenantId}] TRAP EXECUTION FATAL:`, e.message);
+                            logAgentActivity(tenantId, "Sniper", config.asset, `TRAP EXECUTION FAILED for ${config.asset}: ${e.message}`, "ERROR");
+                        });
                     continue; 
                 }
             }
@@ -339,6 +348,7 @@ export async function startSniper(tenantId) {
             RAM.isProcessingMath[config.id] = true;
             RAM.lastMathRun[config.id] = now;
             await supabase.from('strategy_config').update({ is_processing: true }).eq('id', config.id).eq('tenant_id', tenantId);
+            await logAgentActivity(tenantId, "Sniper", config.asset, `Starting strategy evaluation for ${config.strategy} on ${config.asset}.`, "STRATEGY_EVAL_START");
 
             try {
                 const cooldownMins = params.veto_cooldown_minutes || 15;
@@ -393,6 +403,7 @@ export async function startSniper(tenantId) {
                 };
 
                 if (decision.signal) {
+                    await logAgentActivity(tenantId, "Sniper", config.asset, `Signal detected: ${decision.signal} for ${config.strategy}.`, "SIGNAL_DETECTED");
                     if (isCooldownActive) {
                         decision.statusOverride = `COOLDOWN (${cooldownMins}M)`;
                         decision.telemetry.oracle_reasoning = `System in penalty box. Ignoring ${decision.signal} signal.`;
@@ -441,6 +452,7 @@ export async function startSniper(tenantId) {
                             version: config.version,
                             qty: params.qty || 1 
                         });
+                        await logAgentActivity(tenantId, "Sniper", config.asset, `Hermes notified about ${normalizedSignal} signal for ${config.asset}. Awaiting decision.`, "HERMES_NOTIFIED");
 
                         await supabase.from('strategy_config').update({ last_veto_time: new Date().toISOString() }).eq('id', config.id).eq('tenant_id', tenantId);
 
@@ -455,8 +467,10 @@ export async function startSniper(tenantId) {
                 
                 await supabase.from('scan_results').insert([{ tenant_id: tenantId, strategy: config.strategy, asset: config.asset, telemetry: decision.telemetry, status: finalStatus }]);
 
-            } catch (e) { console.error(`[SNIPER-${tenantId}] ASSET ERROR ${config.asset}:`, e.message); }
-            finally {
+            } catch (e) {
+                console.error(`[SNIPER-${tenantId}] ASSET ERROR ${config.asset}:`, e.message);
+                await logAgentActivity(tenantId, "Sniper", config.asset, `Error during strategy evaluation for ${config.asset}: ${e.message}`, "ERROR");
+            } finally {
                 RAM.isProcessingMath[config.id] = false;
                 await supabase.from('strategy_config').update({ is_processing: false }).eq('id', config.id).eq('tenant_id', tenantId);
             }
@@ -465,4 +479,17 @@ export async function startSniper(tenantId) {
 
     ws.on('close', () => { setTimeout(() => startSniper(tenantId), 5000); });
     ws.on('error', (err) => { console.error(`[SNIPER-${tenantId}] WebSocket Error:`, err.message); });
+}
+
+async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_type = 'INFO') {
+    try {
+        const { error } = await supabase.from('agent_session_logs').insert([
+            { tenant_id, agent_name, asset, log_message, log_type, timestamp: new Date().toISOString() }
+        ]);
+        if (error) {
+            console.error("[SNIPER LOGGING ERROR]: Failed to log agent activity:", error.message);
+        }
+    } catch (err) {
+        console.error("[SNIPER LOGGING FATAL]: Uncaught error in logAgentActivity:", err.message);
+    }
 }
