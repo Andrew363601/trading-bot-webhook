@@ -10,6 +10,7 @@ ALTER TABLE strategy_config ENABLE ROW LEVEL SECURITY;
 ALTER TABLE trade_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE scan_results ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hermes_core_memory ENABLE ROW LEVEL SECURITY;
+ALTER TABLE agent_session_logs ENABLE ROW LEVEL SECURITY;
 
 -- 1. Tenants: Users can only see the tenant they belong to
 CREATE POLICY tenant_isolation_policy ON tenants
@@ -74,6 +75,14 @@ CREATE POLICY scans_isolation_policy ON scan_results
   );
 
 CREATE POLICY memory_isolation_policy ON hermes_core_memory
+  FOR ALL USING (
+    tenant_id IN (
+      SELECT tenant_id FROM tenant_users 
+      WHERE auth_user_id = auth.uid()
+    )
+  );
+
+CREATE POLICY agent_session_logs_isolation_policy ON agent_session_logs
   FOR ALL USING (
     tenant_id IN (
       SELECT tenant_id FROM tenant_users 

@@ -9,10 +9,10 @@ app.use(express.json());
 
 const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-async function logAgentActivity(tenant_id, agent_name, asset, log_message) {
+async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_type = 'INFO') {
     try {
-        const { error } = await supabase.from('hermes_core_memory').insert([
-            { tenant_id, agent_name, asset, log_message, timestamp: new Date().toISOString() }
+        const { error } = await supabase.from('agent_session_logs').insert([
+            { tenant_id, agent_name, asset, log_message, log_type, timestamp: new Date().toISOString() }
         ]);
         if (error) {
             console.error("[HERMES BRAIN LOGGING ERROR]: Failed to log agent activity:", error.message);
@@ -52,7 +52,7 @@ async function sendDiscordAlert(tenant_id, { title, description, color, fields =
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
     const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty } = req.body;
-    await logAgentActivity(tenant_id, "Agent Cortex", asset, `Awakened. Mode: ${mode}. Initial message: ${message.substring(0, 100)}...`);
+    await logAgentActivity(tenant_id, "Agent Cortex", asset, `Awakened. Mode: ${mode}. Initial message: ${message.substring(0, 100)}...`, "AGENT_AWAKENED");
     console.log(`[AGENT CORTEX] Awakened by Sniper. Tenant: ${tenant_id} | Asset: ${asset} | Mode: ${mode}`);
     
     // 🟢 THESIS INTEGRITY: Prevent new trades if one is already open for this asset
@@ -66,7 +66,7 @@ app.post('/api/wake', async (req, res) => {
 
         if (openTradeError) {
             console.error("[AGENT CORTEX ERROR]: Failed to check for open trades:", openTradeError.message);
-            await logAgentActivity(tenant_id, "Agent Cortex", asset, `Error checking for open trades: ${openTradeError.message}`);
+            await logAgentActivity(tenant_id, "Agent Cortex", asset, `Error checking for open trades: ${openTradeError.message}`, "ERROR");
             return res.status(500).json({ error: "Failed to check for open trades." });
         }
 
@@ -74,7 +74,7 @@ app.post('/api/wake', async (req, res) => {
             const activeTrade = existingOpenTrades[0];
             const conflictMessage = `THESIS CONFLICT: Agent Cortex detected an active ${activeTrade.side} position for ${asset} at $${activeTrade.entry_price}. New entry signals or virtual traps will be ignored. Focus on managing the existing position.`;
             
-            await logAgentActivity(tenant_id, "Agent Cortex", asset, conflictMessage);
+            await logAgentActivity(tenant_id, "Agent Cortex", asset, conflictMessage, "THESIS_CONFLICT");
             
             // Send a tailored response to Hermes/Sniper to indicate conflict
             return res.status(200).json({
