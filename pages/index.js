@@ -396,7 +396,7 @@ function DashboardContent() {
         color: '#26a69a',
         priceFormat: { type: 'volume' },
         priceScaleId: '',
-        visible: showHeatmap, 
+        visible: true, 
     });
     
     chart.priceScale('').applyOptions({
@@ -475,12 +475,6 @@ function DashboardContent() {
         clearInterval(intervalId); 
     };
   }, [activeAsset, chartTimeframe]);
-
-  useEffect(() => {
-      if (volumeSeriesRef.current) {
-          volumeSeriesRef.current.applyOptions({ visible: showHeatmap });
-      }
-  }, [showHeatmap]);
 
   useEffect(() => {
       if(!seriesRef.current || !seriesMarkersRef.current) return;
