@@ -34,7 +34,8 @@ export default async function handler(req, res) {
     const { payload } = await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
     tenantId = payload.sub; // Supabase JWT has user ID as 'sub'
   } catch (err) {
-    return res.status(401).json({ error: 'Invalid token' });
+    console.error("[SUBSCRIBE STRATEGY ERROR]: JWT Verification failed:", err.message);
+    return res.status(401).json({ error: 'Invalid token', details: err.message });
   }
 
   try {
@@ -45,8 +46,13 @@ export default async function handler(req, res) {
       .eq('auth_user_id', tenantId)
       .single();
 
-    if (tuError || !tenantUser) {
-      return res.status(401).json({ error: 'Tenant not found' });
+    if (tuError) {
+      console.error("[SUBSCRIBE STRATEGY ERROR]: Failed to fetch tenant_id from Supabase:", tuError);
+      return res.status(500).json({ error: 'Failed to retrieve tenant information', details: tuError.message });
+    }
+    if (!tenantUser) {
+      console.error("[SUBSCRIBE STRATEGY ERROR]: Tenant user not found for auth_user_id:", tenantId);
+      return res.status(401).json({ error: 'Tenant not found for this user' });
     }
 
     const actualTenantId = tenantUser.tenant_id;

@@ -34,7 +34,7 @@ export default async function handler(req, res) {
 
         return res.status(200).json(formattedData);
     } catch (error) {
-        console.error("[CHART PROXY ERROR]:", error.message);
-        return res.status(500).json({ error: error.message });
+        console.error("[CHART PROXY ERROR]:", error);
+        return res.status(500).json({ error: "Failed to fetch chart data", details: error.message });
     }
 }
