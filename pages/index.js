@@ -78,6 +78,17 @@ function DashboardContent() {
   const [logStrategyFilter, setLogStrategyFilter] = useState('ALL');
   const [logStatusFilter, setLogStatusFilter] = useState('ALL');
 
+  // Active matrix navigation state
+  const [currentStrategyIndex, setCurrentStrategyIndex] = useState(0);
+  const [strategyMetadata, setStrategyMetadata] = useState([]);
+  const [sessionLogs, setSessionLogs] = useState([]);
+
+  // Strategy management state for edit modal
+  const [editingStrategy, setEditingStrategy] = useState(null);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editingParameters, setEditingParameters] = useState({});
+  const [editingExecutionMode, setEditingExecutionMode] = useState('PAPER');
+
   const normalizeParametersForEditor = useCallback((params) => {
     if (!params) return {};
 
@@ -115,17 +126,6 @@ function DashboardContent() {
     }
     return flattened;
   }, []);
-
-  // Active matrix navigation state
-  const [currentStrategyIndex, setCurrentStrategyIndex] = useState(0);
-  const [strategyMetadata, setStrategyMetadata] = useState([]);
-  const [sessionLogs, setSessionLogs] = useState([]);
-
-  // Strategy management state for edit modal
-  const [editingStrategy, setEditingStrategy] = useState(null);
-  const [editModalOpen, setEditModalOpen] = useState(false);
-  const [editingParameters, setEditingParameters] = useState({});
-  const [editingExecutionMode, setEditingExecutionMode] = useState('PAPER');
 
   const chatHeaders = useMemo(() => ({
     Authorization: session?.access_token ? `Bearer ${session.access_token}` : '',
@@ -1198,12 +1198,6 @@ function DashboardContent() {
                             ${totalPnL.toFixed(2)}
                           </span>
                         </div>
-                        <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-3">
-                          <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-1">Realized ROI</span>
-                          <span className={`text-[12px] font-mono font-black ${parseFloat(avgRoi) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>
-                            {avgRoi}%
-                          </span>
-                        </div>
                       </div>
 
                       {currentAssetStrategies.length > 1 && (
@@ -1229,6 +1223,54 @@ function DashboardContent() {
                   </div>
                 );
             })()}
+          </div>
+
+          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
+            <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
+            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-2 flex-grow min-h-[150px] text-slate-400">
+                {sessionLogs.length === 0 ? (
+                    <div className="text-slate-600 italic">Awaiting agent activity...</div>
+                ) : (
+                    sessionLogs.filter(log => normalizeAssetSymbol(log.asset) === normalizeAssetSymbol(activeAsset)).map((log, i) => (
+                        <div key={i} className="flex flex-col">
+                            <span className="text-[8px] font-black text-slate-500 uppercase">{new Date(log.timestamp).toLocaleTimeString()} - {log.agent_name}</span>
+                            <span className="text-[9px] text-white/80 whitespace-pre-wrap">{log.log_message}</span>
+                        </div>
+                    ))
+                )}
+            </div>
+          </div>
+          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
+          <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
+            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow min-h-[150px]">
+              {messages.map(m => (
+                <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
+                    {m.toolInvocations && m.toolInvocations.map(tool => (
+                        <div key={tool.toolCallId} className="text-[9px] text-slate-500 italic bg-black/30 px-3 py-1.5 rounded-lg border border-white/5 flex items-center gap-2">
+                            {tool.state === 'result' ? <span className="text-emerald-400 font-bold">✓</span> : <Cpu size={10} className="animate-spin text-indigo-400" />}
+                            <span>Nexus executing: <span className="font-bold text-slate-400">{tool.toolName}</span></span>
+                        </div>
+                    ))}
+                    {m.content && (
+                        <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>
+                            {m.content}
+                        </div>
+                    )}
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+                <input 
+                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
+                  value={localInput} 
+                  onChange={(e) => setLocalInput(e.target.value)} 
+                  placeholder="Command Nexus..." 
+                />
+              <button type="submit" disabled={!localInput?.trim() || isLoading} className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}>
+                  {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
+              </button>
+            </form>
           </div>
         </div>
       </main>
