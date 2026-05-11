@@ -59,22 +59,23 @@ export default async function handler(req, res) {
         exchange,
         product_type,
         parameters,
-        is_active: true
+        is_active: true,
+        updated_at: new Date().toISOString()
     };
 
-    // Upsert the strategy configuration. This will insert a new row if one doesn't
-    // exist for the combination of asset, strategy, and tenant. If it does exist,
-    // it will be updated with the new parameters.
+    // Upsert the strategy configuration.
+    // The onConflict columns MUST match a UNIQUE index in Supabase.
     const { data, error } = await supabase
       .from('strategy_config')
-      .upsert(configData, { onConflict: 'asset, strategy, tenant_id' })
+      .upsert(configData, { 
+        onConflict: 'asset, strategy, tenant_id',
+        ignoreDuplicates: false // We want to update if it exists
+      })
       .select()
       .single();
 
     if (error) {
-      // If the error is due to a constraint violation, it means the onConflict
-      // columns are likely incorrect. We log it for debugging.
-      console.error("Supabase subscribe error:", error.message);
+      console.error("[SUBSCRIBE STRATEGY ERROR]:", error.message, "Data:", configData);
       return res.status(500).json({ error: "Failed to subscribe to strategy.", details: error.message });
     }
 

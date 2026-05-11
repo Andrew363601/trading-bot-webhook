@@ -56,29 +56,37 @@ export default async function handler(req, res) {
 
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    
+    // 🟢 THE FIX: Allow Service-Level calls (e.g. from webhook.js) or User-Level calls
+    if (authHeader === `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`) {
+        // Internal service call - tenant_id must be provided in body
+        tenantId = req.body.tenant_id;
+        if (!tenantId) throw new Error("Internal call missing tenant_id");
+        console.log("[EXECUTE TRADE INFO]: Authorized via Service Role. Tenant:", tenantId);
+    } else if (authHeader && authHeader.startsWith('Bearer ')) {
+        // Standard user call - verify JWT
+        const token = authHeader.split(' ')[1];
+        const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
+
+        const { payload } = await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
+        const authUserId = payload.sub;
+
+        const { data: tenantData, error: tenantError } = await supabase
+          .from('tenant_users')
+          .select('tenant_id')
+          .eq('auth_user_id', authUserId)
+          .single();
+
+        if (tenantError || !tenantData) {
+          console.error("[EXECUTE TRADE ERROR]: Could not find tenant for user:", authUserId, tenantError);
+          return res.status(403).json({ error: 'Tenant not found for authenticated user.' });
+        }
+        tenantId = tenantData.tenant_id;
+        console.log("[EXECUTE TRADE INFO]: Authorized via JWT. Tenant:", tenantId);
+    } else {
       console.error("[EXECUTE TRADE ERROR]: Missing or invalid Authorization header.");
       return res.status(401).json({ error: 'Missing or invalid Authorization header' });
     }
-
-    const token = authHeader.split(' ')[1];
-    const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
-
-    const { payload } = await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
-    const authUserId = payload.sub; // The user ID is in the 'sub' claim
-
-    const { data: tenantData, error: tenantError } = await supabase
-      .from('tenant_users')
-      .select('tenant_id')
-      .eq('auth_user_id', authUserId)
-      .single();
-
-    if (tenantError || !tenantData) {
-      console.error("[EXECUTE TRADE ERROR]: Could not find tenant for user:", authUserId, tenantError);
-      return res.status(403).json({ error: 'Tenant not found for authenticated user.' });
-    }
-    tenantId = tenantData.tenant_id; // Assign tenantId
-    console.log("[EXECUTE TRADE INFO]: Tenant ID found:", tenantId);
 
     let data = req.body;
 
@@ -113,7 +121,14 @@ export default async function handler(req, res) {
     let tpPrice = data.tp_price || null;
     let slPrice = data.sl_price || null;
 
-    const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', rawSymbol).eq('strategy_id', strategyId).is('exit_price', null).order('id', { ascending: false }).limit(1);
+    const { data: openTrades } = await supabase.from('trade_logs')
+        .select('*')
+        .eq('tenant_id', tenantId) // Security: Tenant Isolation
+        .eq('symbol', rawSymbol)
+        .eq('strategy_id', strategyId)
+        .is('exit_price', null)
+        .order('id', { ascending: false })
+        .limit(1);
     const openTrade = openTrades && openTrades.length > 0 ? openTrades[0] : null;
 
     const isClosing = openTrade && openTrade.side !== side;
@@ -143,6 +158,7 @@ export default async function handler(req, res) {
     try {
         const { data: scanData } = await supabase.from('scan_results')
             .select('telemetry')
+            .eq('tenant_id', tenantId) // Security: Tenant Isolation
             .eq('asset', rawSymbol)
             .order('created_at', { ascending: false })
             .limit(1);

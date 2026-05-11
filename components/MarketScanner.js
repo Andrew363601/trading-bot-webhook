@@ -23,6 +23,8 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
   const [expandedStrategyId, setExpandedStrategyId] = useState(null);
   const [strategyParams, setStrategyParams] = useState({});
   const [executionMode, setExecutionMode] = useState('PAPER'); // PAPER or LIVE
+  const [favoritesLoading, setFavoritesLoading] = useState({}); // Track individual favorite toggle states
+  const [tenantId, setTenantId] = useState(null); // Cache tenant_id to avoid repeated queries
 
   // Helper to normalize asset symbols for consistent comparison
   const normalizeAssetSymbol = (symbol) => {
@@ -55,31 +57,52 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
     fetchAssets();
   }, [token]);
 
-  // Load favorites from DB
+  // Load tenant_id once and cache it
   useEffect(() => {
-    const loadFavorites = async () => {
+    const loadTenantId = async () => {
       if (!token || !session?.user?.id) return;
       try {
-        const { data: users } = await supabase
+        const { data: users, error } = await supabase
           .from('tenant_users')
           .select('tenant_id')
           .eq('auth_user_id', session.user.id)
           .single();
 
-        if (!users) return;
-
-        const { data: favAssets } = await supabase
-          .from('favorite_assets')
-          .select('asset')
-          .eq('tenant_id', users.tenant_id);
-
-        setFavorites((favAssets || []).map(f => f.asset));
+        if (error) {
+          console.error('Failed to fetch tenant_id:', error);
+          return;
+        }
+        if (users?.tenant_id) setTenantId(users.tenant_id);
       } catch (err) {
-        console.error('Failed to load favorites:', err);
+        console.error('Failed to load tenant_id:', err);
       }
     };
-    loadFavorites();
+    loadTenantId();
   }, [token, session, supabase]);
+
+  // Load favorites from DB
+  const loadFavorites = useCallback(async () => {
+    if (!token || !tenantId) return;
+    try {
+      const { data: favAssets, error } = await supabase
+        .from('favorite_assets')
+        .select('asset')
+        .eq('tenant_id', tenantId);
+
+      if (error) {
+        console.error('Failed to load favorites from DB:', error);
+        return;
+      }
+      setFavorites((favAssets || []).map(f => f.asset));
+      console.log('[DEBUG] Favorites loaded:', (favAssets || []).map(f => f.asset));
+    } catch (err) {
+      console.error('Failed to load favorites:', err);
+    }
+  }, [token, tenantId, supabase]);
+
+  useEffect(() => {
+    loadFavorites();
+  }, [loadFavorites]);
 
   // When asset selected, fetch applicable strategies
   useEffect(() => {
@@ -102,33 +125,46 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
   }, [selectedAsset, token]);
 
   const toggleFavorite = async (assetName) => {
-    if (!token || !session?.user?.id) return;
+    if (!token || !tenantId) return;
+    setFavoritesLoading(prev => ({ ...prev, [assetName]: true }));
     try {
-      const { data: users } = await supabase
-        .from('tenant_users')
-        .select('tenant_id')
-        .eq('auth_user_id', session.user.id)
-        .single();
-
-      if (!users) return;
-
       if (favorites.includes(assetName)) {
-        // Use await to ensure the delete completes
-        await supabase
+        // Delete favorite
+        const { error } = await supabase
           .from('favorite_assets')
           .delete()
-          .eq('tenant_id', users.tenant_id)
+          .eq('tenant_id', tenantId)
           .eq('asset', assetName);
-        setFavorites(fav => fav.filter(f => f !== assetName));
+
+        if (error) {
+          console.error('Failed to remove favorite:', error);
+          alert(`❌ Failed to remove favorite: ${error.message}`);
+        } else {
+          console.log(`[DEBUG] Removed ${assetName} from favorites`);
+          // Reload favorites from DB to ensure consistency
+          await loadFavorites();
+        }
       } else {
-        // Use await to ensure the insert completes
-        await supabase
+        // Add favorite
+        const { data, error } = await supabase
           .from('favorite_assets')
-          .insert([{ tenant_id: users.tenant_id, asset: assetName }]);
-        setFavorites(fav => [...fav, assetName]);
+          .insert([{ tenant_id: tenantId, asset: assetName }])
+          .select();
+
+        if (error) {
+          console.error('Failed to add favorite:', error);
+          alert(`❌ Failed to add favorite: ${error.message}`);
+        } else {
+          console.log(`[DEBUG] Added ${assetName} to favorites`, data);
+          // Reload favorites from DB to ensure consistency
+          await loadFavorites();
+        }
       }
     } catch (err) {
       console.error('Failed to toggle favorite:', err);
+      alert('❌ Failed to toggle favorite');
+    } finally {
+      setFavoritesLoading(prev => ({ ...prev, [assetName]: false }));
     }
   };
 
@@ -292,13 +328,16 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
                       e.stopPropagation();
                       toggleFavorite(asset.id);
                     }}
+                    disabled={favoritesLoading[asset.id]}
                     className={`transition-colors p-1 ${
-                      favorites.includes(asset.id)
-                        ? 'text-yellow-400'
-                        : 'text-slate-700 hover:text-slate-500'
+                      favoritesLoading[asset.id]
+                        ? 'opacity-50 cursor-not-allowed'
+                        : (favorites.includes(asset.id)
+                          ? 'text-yellow-400'
+                          : 'text-slate-700 hover:text-slate-500')
                     }`}
                   >
-                    <Star className="w-3 h-3" fill={favorites.includes(asset.id) ? "currentColor" : "none"} />
+                    <Star className={`w-3 h-3 ${favoritesLoading[asset.id] ? 'animate-spin' : ''}`} fill={favorites.includes(asset.id) ? "currentColor" : "none"} />
                   </button>
                 </div>
               </button>

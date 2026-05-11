@@ -27,11 +27,37 @@ export default async function handler(req, res) {
     // Fetch LIVE Market Price
     try {
         if (asset) {
-            const baseCoin = asset.split('-')[0]; 
-            const priceResp = await fetch(`https://api.exchange.coinbase.com/products/${baseCoin}-USD/ticker`);
-            if (priceResp.ok) {
-                const priceData = await priceResp.json();
-                currentMarketPrice = parseFloat(priceData.price || 0);
+            // Try fetching via Advanced Trade API first if we have keys (more accurate for PERPs)
+            if (apiKeyName && apiSecret) {
+                try {
+                    const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
+                    const path = `/api/v3/brokerage/products/${asset}`;
+                    const token = jwt.sign(
+                        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `GET api.coinbase.com/api/v3/brokerage/products/${asset}` },
+                        privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
+                    );
+
+                    const priceResp = await fetch(`https://api.coinbase.com${path}`, {
+                        headers: { 'Authorization': `Bearer ${token}` }
+                    });
+
+                    if (priceResp.ok) {
+                        const productData = await priceResp.json();
+                        currentMarketPrice = parseFloat(productData.price || 0);
+                    }
+                } catch (advPriceErr) {
+                    console.warn("[PRICE ADVANCED WARN]: Could not fetch price via Advanced API, falling back to public.");
+                }
+            }
+
+            // Fallback to public exchange API (Spot proxy)
+            if (currentMarketPrice === 0) {
+                const baseCoin = asset.split('-')[0]; 
+                const priceResp = await fetch(`https://api.exchange.coinbase.com/products/${baseCoin}-USD/ticker`);
+                if (priceResp.ok) {
+                    const priceData = await priceResp.json();
+                    currentMarketPrice = parseFloat(priceData.price || 0);
+                }
             }
         }
     } catch (priceErr) {

@@ -72,12 +72,14 @@ export default async function handler(req, res) {
       updateData.is_active = is_active;
     }
     updateData.updated_at = new Date().toISOString();
+    updateData.tenant_id = actualTenantId; // Security: Ensure tenant_id is preserved
 
     // Update the config
     const { data: updated, error: updateError } = await supabase
       .from('strategy_config')
       .update(updateData)
       .eq('id', strategy_config_id)
+      .eq('tenant_id', actualTenantId) // Security: Ensure row belongs to tenant
       .select()
       .single();
 

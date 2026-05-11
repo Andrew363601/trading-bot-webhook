@@ -31,40 +31,73 @@ export async function getServerSideProps(context) {
 function AuditLogContent() {
   const [pipelines, setPipelines] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [tenantId, setTenantId] = useState(null); // 🟢 Security: Tenant Isolation
   const [reviewingId, setReviewingId] = useState(null); 
   const [closingId, setClosingId] = useState(null); // 🟢 THE FIX: Tracks which trade is being canceled
   const [assetFilter, setAssetFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const supabase = useSupabaseClient();
+  const session = useSession();
+
+  // Load tenant_id on mount
+  useEffect(() => {
+    const loadTenantId = async () => {
+      if (!session?.user?.id) return;
+      try {
+        const { data: users, error } = await supabase
+          .from('tenant_users')
+          .select('tenant_id')
+          .eq('auth_user_id', session.user.id)
+          .single();
+
+        if (error) {
+          console.error('Failed to fetch tenant_id:', error);
+          return;
+        }
+        if (users?.tenant_id) setTenantId(users.tenant_id);
+      } catch (err) {
+        console.error('Failed to load tenant_id:', err);
+      }
+    };
+    loadTenantId();
+  }, [session, supabase]);
   
   const [liveState, setLiveState] = useState({ scanning: false, oracle: false, executing: false, resting: false, progress: 0 });
 
   const fetchAuditTrail = useCallback(async () => {
+    if (!tenantId) return; // Wait for tenant_id
     setLoading(true);
     try {
       const [{ data: scans }, { data: trades }] = await Promise.all([
-        supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(200),
-        supabase.from('trade_logs').select('*').order('created_at', { ascending: false }).limit(200)
+        supabase.from('scan_results').select('*').eq('tenant_id', tenantId).order('created_at', { ascending: false }).limit(200),
+        supabase.from('trade_logs').select('*').eq('tenant_id', tenantId).order('created_at', { ascending: false }).limit(200)
       ]);
 
       const now = Date.now();
       const latestScan = scans?.[0];
       const latestTrade = trades?.[0];
       
-      const scanAge = latestScan ? now - new Date(latestScan.created_at).getTime() : Infinity;
-      const tradeAge = latestTrade ? now - new Date(latestTrade.created_at).getTime() : Infinity;
+      // Calculate live state based on most recent activity for the current filter
+      const relevantScans = assetFilter === 'ALL' ? (scans || []) : (scans || []).filter(s => s.asset === assetFilter);
+      const relevantTrades = assetFilter === 'ALL' ? (trades || []) : (trades || []).filter(t => t.symbol === assetFilter);
+      
+      const topScan = relevantScans[0];
+      const topTrade = relevantTrades[0];
+
+      const scanAge = topScan ? now - new Date(topScan.created_at).getTime() : Infinity;
+      const tradeAge = topTrade ? now - new Date(topTrade.created_at).getTime() : Infinity;
 
       let progress = 0;
-      if (scanAge < 60000) progress = 25;
-      if (scanAge < 60000 && latestScan?.status === 'RESONANT') progress = 50;
-      if (tradeAge < 120000) progress = 75;
-      if (tradeAge < 120000 && latestTrade?.tp_price && !latestTrade?.exit_price) progress = 100;
+      if (scanAge < 45000) progress = 25;
+      if (scanAge < 45000 && topScan?.status === 'RESONANT') progress = 50;
+      if (tradeAge < 90000 && !topTrade?.exit_price) progress = 75;
+      if (tradeAge < 90000 && topTrade?.tp_price && !topTrade?.exit_price) progress = 100;
 
       setLiveState({
-        scanning: scanAge < 60000, 
-        oracle: scanAge < 60000 && latestScan?.status === 'RESONANT',
-        executing: tradeAge < 120000 && latestTrade?.exit_price === null, 
-        resting: tradeAge < 120000 && latestTrade?.exit_price === null && latestTrade?.tp_price,
+        scanning: scanAge < 45000, 
+        oracle: scanAge < 45000 && topScan?.status === 'RESONANT',
+        executing: tradeAge < 90000 && topTrade?.exit_price === null, 
+        resting: tradeAge < 90000 && topTrade?.exit_price === null && topTrade?.tp_price,
         progress
       });
 
@@ -92,19 +125,26 @@ function AuditLogContent() {
       groupedPipelines.sort((a, b) => b.timestamp - a.timestamp);
       setPipelines(groupedPipelines);
     } catch (err) { console.error("[AUDIT FAULT]:", err); } finally { setLoading(false); }
-  }, [supabase]);
+  }, [supabase, tenantId]);
 
   useEffect(() => {
+    if (!tenantId) return;
     fetchAuditTrail();
     const interval = setInterval(fetchAuditTrail, 10000); 
     return () => clearInterval(interval);
-  }, [fetchAuditTrail]);
+  }, [fetchAuditTrail, tenantId]);
 
   const handleForceReview = async (tradeId) => {
+      if (!session?.access_token) return;
       setReviewingId(tradeId);
       try {
           const res = await fetch('/api/reevaluate-trade', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ trade_id: tradeId })
+              method: 'POST', 
+              headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              }, 
+              body: JSON.stringify({ trade_id: tradeId })
           });
           const data = await res.json();
           if (!res.ok) throw new Error(data.error);
@@ -120,6 +160,7 @@ function AuditLogContent() {
 
   // 🟢 THE FIX: The Universal Kill Switch
   const handleClosePosition = async (trade) => {
+    if (!session?.access_token) return;
     const confirmClose = window.confirm(`Are you sure you want to Cancel/Close the active setup for ${trade.symbol}?`);
     if (!confirmClose) return;
     setClosingId(trade.id);
@@ -128,7 +169,10 @@ function AuditLogContent() {
         const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
         await fetch('/api/execute-trade', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${session.access_token}`
+            },
             body: JSON.stringify({
                 symbol: trade.symbol, strategy_id: trade.strategy_id, version: trade.version || 'v1.0',
                 side: closingSide, execution_mode: trade.execution_mode, qty: trade.qty, price: 0, reason: "MANUAL_UI_CANCEL"
@@ -145,18 +189,26 @@ function AuditLogContent() {
   const uniqueAssets = [...new Set(pipelines.map(p => p.asset).filter(Boolean))];
   const sortedAndFilteredPipelines = [...pipelines]
     .filter(p => {
+      // 🟢 Filter by Asset
       if (assetFilter !== 'ALL' && p.asset !== assetFilter) return false;
+      
+      // 🟢 Filter by Status
       if (statusFilter === 'EXECUTED' && p.type !== 'FULL_TRADE') return false;
-      if (statusFilter === 'VETOED' && (!p.scan?.status?.includes('VETO'))) return false;
+      if (statusFilter === 'VETOED') {
+        const isScanVeto = p.scan?.status?.toUpperCase().includes('VETO');
+        const isTradeVeto = p.trade?.reason?.toUpperCase().includes('VETO');
+        if (!isScanVeto && !isTradeVeto) return false;
+      }
       return true;
     })
     .sort((a, b) => {
-      if (statusFilter === 'ALL' || statusFilter === 'EXECUTED') {
-        const isOpenA = a.type === 'FULL_TRADE' && a.trade && !a.trade.exit_price;
-        const isOpenB = b.type === 'FULL_TRADE' && b.trade && !b.trade.exit_price;
-        if (isOpenA && !isOpenB) return -1;
-        if (!isOpenA && isOpenB) return 1; 
-      }
+      // 🟢 Pin Active Positions to the top
+      const isOpenA = a.type === 'FULL_TRADE' && a.trade && !a.trade.exit_price;
+      const isOpenB = b.type === 'FULL_TRADE' && b.trade && !b.trade.exit_price;
+      if (isOpenA && !isOpenB) return -1;
+      if (!isOpenA && isOpenB) return 1; 
+      
+      // 🟢 Then sort by timestamp
       return b.timestamp - a.timestamp;
     });
 
@@ -246,13 +298,13 @@ function AuditLogContent() {
             <div key={i} className={`p-5 rounded-3xl border transition-all duration-300 ${
               isOpenTrade ? 'bg-emerald-950/40 border-emerald-500/40 shadow-[0_0_40px_-10px_rgba(16,185,129,0.15)]' 
               : isFullTrade ? 'bg-slate-900/60 border-indigo-500/20 shadow-[0_0_30px_-10px_rgba(99,102,241,0.1)]' 
-              : (isVeto ? 'bg-slate-950 border-white/5 opacity-70' : 'bg-slate-900/30 border-white/10')
+              : (isVeto ? 'bg-red-950/10 border-red-500/20' : 'bg-slate-900/30 border-white/10')
             }`}>
               
               <div className="flex justify-between items-start mb-4 border-b border-white/5 pb-4">
                  <div className="flex flex-col gap-2">
                     <div className="flex items-center gap-4">
-                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2 ${isOpenTrade ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : isFullTrade ? 'bg-indigo-500/20 text-indigo-300' : (isVeto ? 'bg-red-500/10 text-red-400' : 'bg-slate-800 text-slate-400')}`}>
+                        <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2 ${isOpenTrade ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : isFullTrade ? 'bg-indigo-500/20 text-indigo-300' : (isVeto ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-800 text-slate-400')}`}>
                         {isOpenTrade && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />}
                         {isOpenTrade ? 'Active Position' : isFullTrade ? 'Pipeline Executed' : (isVeto ? 'Oracle Veto' : 'Scan Log')}
                         </span>

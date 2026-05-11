@@ -10,7 +10,7 @@ import {
   Send, Activity, PieChart, Shield, Zap, TrendingUp, TrendingDown,
   Target, AlertTriangle, ArrowRight, RefreshCw, Layers, BrainCircuit,
   Settings, LogOut, Clock, Crosshair, ChevronRight, Menu, X, PlusCircle,
-  Search, AlertOctagon, Eye, Minimize2, Maximize2, Flame, Power, ChevronDown
+  Search, AlertOctagon, Eye, Minimize2, Maximize2, Power, ChevronDown
 } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
 import MarketScanner from '../components/MarketScanner';
@@ -28,10 +28,10 @@ function DashboardContent() {
   const session = useSession();
 
   // Helper to normalize asset symbols for consistent comparison
-  const normalizeAssetSymbol = (symbol) => {
+  const normalizeAssetSymbol = useCallback((symbol) => {
     if (!symbol) return '';
     return symbol.replace(/(-PERP-INTX|-CDE|-PERP|-USD|-USDT)/g, '').toUpperCase();
-  };
+  }, []);
 
   const [activeAsset, setActiveAsset] = useState('BTC-PERP-INTX');
   const [activeTab, setActiveTab] = useState('ANALYTICS');
@@ -47,11 +47,19 @@ function DashboardContent() {
   const [scanStream, setScanStream] = useState([]); 
   const [portfolio, setPortfolio] = useState({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 } });
   const [loading, setLoading] = useState(true);
+  const [tenantId, setTenantId] = useState(null); // Cache tenant_id for data filtering
+  
+  // Header metrics state for reactive updates
+  const [latestScan, setLatestScan] = useState(null);
+  const [bids, setBids] = useState(0);
+  const [asks, setAsks] = useState(0);
+  const [cvd, setCvd] = useState(0);
+  const [totalLiquidity, setTotalLiquidity] = useState(0);
+  const [targetPercent, setTargetPercent] = useState(50);
   
   const [livePositions, setLivePositions] = useState([]);
   const [liveOrders, setLiveOrders] = useState([]);
   const [isChartMaximized, setIsChartMaximized] = useState(false);
-  const [showHeatmap, setShowHeatmap] = useState(false);
   const [isDefconActive, setIsDefconActive] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
@@ -65,6 +73,12 @@ function DashboardContent() {
   const [chartTimeframe, setChartTimeframe] = useState('1m');
 
   const [localInput, setLocalInput] = useState('');
+
+  // Strategy management state for edit modal
+  const [editingStrategy, setEditingStrategy] = useState(null);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editingParameters, setEditingParameters] = useState({});
+  const [editingExecutionMode, setEditingExecutionMode] = useState('PAPER');
 
   const chatHeaders = useMemo(() => ({
     Authorization: session?.access_token ? `Bearer ${session.access_token}` : '',
@@ -123,12 +137,50 @@ function DashboardContent() {
       return () => clearInterval(defconInterval);
   }, []);
 
+  // Load tenant_id on mount for data filtering
+  useEffect(() => {
+    const loadTenantId = async () => {
+      if (!session?.user?.id) return;
+      try {
+        const { data: users, error } = await supabase
+          .from('tenant_users')
+          .select('tenant_id')
+          .eq('auth_user_id', session.user.id)
+          .single();
+
+        if (error) {
+          console.error('Failed to fetch tenant_id:', error);
+          return;
+        }
+        if (users?.tenant_id) {
+          setTenantId(users.tenant_id);
+          console.log('[DEBUG] Loaded tenant_id for data filtering');
+        }
+      } catch (err) {
+        console.error('Failed to load tenant_id:', err);
+      }
+    };
+    loadTenantId();
+  }, [session?.user?.id, supabase]);
+
   const fetchData = useCallback(async () => {
     try {
+      // Build queries with tenant_id filtering
+      let logsQuery = supabase.from('trade_logs').select('*').order('created_at', { ascending: false });
+      let configsQuery = supabase.from('strategy_config').select('*');
+      let scansQuery = supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25);
+
+      // Add tenant_id filtering if available
+      if (tenantId) {
+        logsQuery = logsQuery.eq('tenant_id', tenantId);
+        configsQuery = configsQuery.eq('tenant_id', tenantId);
+        scansQuery = scansQuery.eq('tenant_id', tenantId);
+      }
+
       const [logsRes, configsRes, scansRes] = await Promise.all([
-          supabase.from('trade_logs').select('*').order('id', { ascending: false }),
-          supabase.from('strategy_config').select('*'),
-          supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25)
+          logsQuery,
+          configsQuery,
+          scansQuery
       ]);
 
       setTradeLogs(logsRes.data || []);
@@ -161,7 +213,7 @@ function DashboardContent() {
       console.error("[NEXUS FATAL] DB Fetch Error:", e); 
       setLoading(false); 
     }
-  }, [activeAsset, supabase]);
+  }, [activeAsset, supabase, tenantId]);
 
   useEffect(() => {
     fetchData();
@@ -246,13 +298,51 @@ function DashboardContent() {
     await append({ role: 'user', content: `Brief me on the ${stratId} strategy currently running on ${activeAsset}.` });
   };
 
+  const openStrategyEditor = (strat) => {
+    setEditingStrategy(strat);
+    setEditingParameters(strat.parameters || {});
+    setEditingExecutionMode(strat.execution_mode || 'PAPER');
+    setEditModalOpen(true);
+  };
+
+  const saveStrategyChanges = async () => {
+    if (!editingStrategy) return;
+    try {
+      const { error } = await supabase
+        .from('strategy_config')
+        .update({
+          parameters: editingParameters,
+          execution_mode: editingExecutionMode,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', editingStrategy.id);
+
+      if (error) {
+        console.error('Failed to update strategy:', error);
+        alert(`❌ Failed to update strategy: ${error.message}`);
+      } else {
+        console.log('[DEBUG] Strategy updated successfully');
+        alert('✅ Strategy updated successfully');
+        setEditModalOpen(false);
+        fetchData(); // Refresh data
+      }
+    } catch (err) {
+      console.error('Failed to save strategy changes:', err);
+      alert('❌ Failed to save strategy changes');
+    }
+  };
+
   // FIX: Filter strategies by normalized asset symbol for consistency
   const currentAssetStrategies = useMemo(() => {
     const normalizedActiveAsset = normalizeAssetSymbol(activeAsset);
     return activeStrategies.filter(s => normalizeAssetSymbol(s.asset) === normalizedActiveAsset);
   }, [activeStrategies, activeAsset]);
 
-  const paperPositions = useMemo(() => tradeLogs.filter(log => !log.exit_price && log.execution_mode === 'PAPER'), [tradeLogs]);
+  const paperPositions = useMemo(() => tradeLogs.filter(log => 
+    !log.exit_price && 
+    log.execution_mode === 'PAPER' &&
+    normalizeAssetSymbol(log.symbol) === normalizeAssetSymbol(activeAsset)
+  ), [tradeLogs, activeAsset, normalizeAssetSymbol]);
   
   const formattedLivePositions = useMemo(() => livePositions.map(pos => ({
       side: pos.side === 'LONG' ? 'BUY' : 'SELL',
@@ -267,7 +357,11 @@ function DashboardContent() {
   })), [livePositions]);
 
   const openPositions = useMemo(() => [...formattedLivePositions, ...paperPositions], [formattedLivePositions, paperPositions]);
-  const tradeHistory = useMemo(() => tradeLogs.filter(log => log.exit_price), [tradeLogs]);
+  
+  const tradeHistory = useMemo(() => tradeLogs.filter(log => 
+    log.exit_price &&
+    normalizeAssetSymbol(log.symbol) === normalizeAssetSymbol(activeAsset)
+  ), [tradeLogs, activeAsset, normalizeAssetSymbol]);
   
   const openOrders = useMemo(() => liveOrders.map(ord => ({
       order_id: ord.order_id, 
@@ -518,14 +612,27 @@ function DashboardContent() {
       }
   }, [tradeLogs, openPositions, activeAsset, chartTimeframe, activeStrategies, scanStream]);
 
-  const activeAssetScans = scanStream.filter(s => s.asset === activeAsset);
-  const latestScan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
-
-  const bids = parseFloat(latestScan?.telemetry?.bids || 0);
-  const asks = parseFloat(latestScan?.telemetry?.asks || 0);
-  const cvd = parseFloat(latestScan?.telemetry?.cvd || 0);
-  const totalLiquidity = bids + asks;
-  const targetPercent = totalLiquidity > 0 ? (bids / totalLiquidity) * 100 : 50;
+  // Update header metrics when activeAsset or scanStream changes
+  useEffect(() => {
+    const activeAssetScans = scanStream.filter(s => normalizeAssetSymbol(s.asset) === normalizeAssetSymbol(activeAsset));
+    const scan = activeAssetScans.length > 0 ? activeAssetScans[0] : null;
+    
+    setLatestScan(scan);
+    const b = parseFloat(scan?.telemetry?.bids || 0);
+    const a = parseFloat(scan?.telemetry?.asks || 0);
+    const c = parseFloat(scan?.telemetry?.cvd || 0);
+    
+    setBids(b);
+    setAsks(a);
+    setCvd(c);
+    
+    const totalLiq = b + a;
+    setTotalLiquidity(totalLiq);
+    const targetPct = totalLiq > 0 ? (b / totalLiq) * 100 : 50;
+    setTargetPercent(targetPct);
+    
+    console.log(`[DEBUG] Header metrics updated for ${activeAsset}: bids=${b}, asks=${a}, cvd=${c}`);
+  }, [activeAsset, scanStream, normalizeAssetSymbol]);
 
   const [liveBidPercent, setLiveBidPercent] = useState(50);
 
@@ -728,13 +835,6 @@ function DashboardContent() {
                 <div className={`h-1.5 w-1.5 rounded-full ${isResonant ? 'bg-emerald-400' : (isVeto ? 'bg-red-400' : 'bg-slate-600')}`} />
                 <span className="text-[9px] font-black uppercase tracking-widest">{latestScan?.status || 'IDLE'}</span>
              </div>
-             
-             <button 
-                onClick={() => setShowHeatmap(!showHeatmap)}
-                className={`p-2 rounded-xl border transition-all ${showHeatmap ? 'bg-amber-500/20 text-amber-400 border-amber-500/30' : 'bg-slate-800/50 text-slate-600 border-white/5 hover:text-slate-400'}`}
-             >
-                <Flame size={14} className={showHeatmap ? 'animate-pulse' : ''} />
-             </button>
         </div>
       </div>
 
@@ -924,12 +1024,22 @@ function DashboardContent() {
                       <div className="flex justify-between items-center mb-1 pl-2">
                           <span className={`text-xs font-black uppercase transition-colors ${strat.is_active ? 'text-white' : 'text-slate-500'}`}>{strat.strategy.replace('_V1','')}</span>
                           
-                          <div 
-                              onClick={(e) => { e.stopPropagation(); handleToggleStrategy(strat.strategy, strat.is_active); }}
-                              className={`p-1.5 rounded-lg border transition-colors hover:cursor-pointer ${strat.is_active ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 hover:shadow-[0_0_10px_-2px_rgba(16,185,129,0.4)]' : 'bg-slate-800 border-white/5 text-slate-500 hover:bg-slate-700 hover:text-slate-300'}`}
-                              title={strat.is_active ? "Pause Strategy" : "Activate Strategy"}
-                          >
-                              <Power size={12} />
+                          <div className="flex gap-1.5">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); openStrategyEditor(strat); }}
+                              className="p-1.5 rounded-lg border transition-colors hover:cursor-pointer bg-indigo-500/10 border-indigo-500/20 text-indigo-400 hover:bg-indigo-500/20"
+                              title="Edit Strategy"
+                            >
+                              <Settings size={12} />
+                            </button>
+                            
+                            <div 
+                                onClick={(e) => { e.stopPropagation(); handleToggleStrategy(strat.strategy, strat.is_active); }}
+                                className={`p-1.5 rounded-lg border transition-colors hover:cursor-pointer ${strat.is_active ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 hover:shadow-[0_0_10px_-2px_rgba(16,185,129,0.4)]' : 'bg-slate-800 border-white/5 text-slate-500 hover:bg-slate-700 hover:text-slate-300'}`}
+                                title={strat.is_active ? "Pause Strategy" : "Activate Strategy"}
+                            >
+                                <Power size={12} />
+                            </div>
                           </div>
                       </div>
                       <div className="text-[10px] text-slate-500 font-mono pl-2">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
@@ -973,6 +1083,95 @@ function DashboardContent() {
           </div>
         </div>
       </main>
+
+      {/* Strategy Edit Modal */}
+      {editModalOpen && editingStrategy && (
+        <div className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-white/10 rounded-3xl p-8 max-w-md w-full shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-lg font-black uppercase text-white">Edit Strategy</h2>
+              <button
+                onClick={() => setEditModalOpen(false)}
+                className="p-1 hover:bg-white/10 rounded-lg transition-colors"
+              >
+                <X size={18} className="text-slate-400" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Strategy Name */}
+              <div>
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
+                  Strategy
+                </label>
+                <div className="bg-slate-800 border border-white/5 rounded-lg px-3 py-2 text-white text-[10px] font-bold">
+                  {editingStrategy.strategy.replace('_V1', '')}
+                </div>
+              </div>
+
+              {/* Execution Mode */}
+              <div>
+                <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest block mb-2">
+                  Execution Mode
+                </label>
+                <select
+                  value={editingExecutionMode}
+                  onChange={(e) => setEditingExecutionMode(e.target.value)}
+                  className="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-white text-[10px] font-bold outline-none focus:ring-1 focus:ring-indigo-500/50"
+                >
+                  <option value="PAPER">Paper Trading</option>
+                  <option value="LIVE">Live Trading</option>
+                </select>
+              </div>
+
+              {/* Parameters */}
+              {Object.keys(editingParameters).length > 0 ? (
+                <div className="border-t border-white/5 pt-4">
+                  <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Parameters</h3>
+                  <div className="space-y-3">
+                    {Object.entries(editingParameters).map(([key, value]) => (
+                      <div key={key}>
+                        <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest block mb-1">
+                          {key}
+                        </label>
+                        <input
+                          type={typeof value === 'number' ? 'number' : 'text'}
+                          value={editingParameters[key]}
+                          onChange={(e) => setEditingParameters(prev => ({
+                            ...prev,
+                            [key]: typeof value === 'number' ? parseFloat(e.target.value) || 0 : e.target.value
+                          }))}
+                          className="w-full bg-slate-800 border border-white/5 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-4 text-slate-600 text-[9px] italic">
+                  No parameters to configure
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-3 border-t border-white/5 pt-4 mt-4">
+                <button
+                  onClick={() => setEditModalOpen(false)}
+                  className="flex-1 bg-slate-800 hover:bg-slate-700 text-white font-black text-[9px] uppercase tracking-widest py-2 rounded-lg transition-all border border-white/5"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={saveStrategyChanges}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[9px] uppercase tracking-widest py-2 rounded-lg transition-all shadow-lg shadow-indigo-500/20"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
