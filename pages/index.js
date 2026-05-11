@@ -1,4 +1,4 @@
-// HARD PUSH: This is the main dashboard page for the Nexus trading terminal.
+// HARD PUSH:
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
