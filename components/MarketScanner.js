@@ -1,7 +1,7 @@
 // components/MarketScanner.js
 // Advanced market scanner with favorites, asset browser, and strategy discovery
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { 
   Search, Star, Settings, Play, Plus, ChevronDown, TrendingUp, TrendingDown,

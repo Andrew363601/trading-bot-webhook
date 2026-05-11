@@ -75,7 +75,10 @@ export default async function handler(req, res) {
       strategyQuery,
       tradeLogQuery,
       recentLogQuery
-    ]);
+    ].map(p => p.catch(error => { // Catch errors from individual promises
+        console.error("[SUPABASE ERROR] Failed to fetch data in chat API:", error.message);
+        return { data: [], error }; // Return empty data and error for graceful degradation
+    })));
 
     const allConfigs = configsRes.data || [];
     const openTrades = tradesRes.data || [];
@@ -191,37 +194,45 @@ export default async function handler(req, res) {
               query = query.gte('exit_time', dateLimit);
             }
 
-            const { data: trades, error } = await query;
-            if (error) return { error: error.message };
+            try {
+                const { data: trades, error } = await query;
+                if (error) {
+                    console.error("[SUPABASE ERROR] queryTradeLedger failed:", error.message);
+                    return { error: error.message };
+                }
 
-            const tradesList = trades || [];
-            const totalTrades = tradesList.length;
-            const totalPnL = tradesList.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
-            const winningTrades = tradesList.filter(t => parseFloat(t.pnl) > 0).length;
-            const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(2) + '%' : '0%';
+                const tradesList = trades || [];
+                const totalTrades = tradesList.length;
+                const totalPnL = tradesList.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+                const winningTrades = tradesList.filter(t => parseFloat(t.pnl) > 0).length;
+                const winRate = totalTrades > 0 ? ((winningTrades / totalTrades) * 100).toFixed(2) + '%' : '0%';
 
-            const breakdown = tradesList.reduce((acc, t) => {
-              const key = `${t.strategy_id} | ${t.symbol}`;
-              if (!acc[key]) acc[key] = { pnl: 0, trades: 0 };
-              acc[key].pnl += (parseFloat(t.pnl) || 0);
-              acc[key].trades += 1;
-              return acc;
-            }, {});
+                const breakdown = tradesList.reduce((acc, t) => {
+                const key = `${t.strategy_id} | ${t.symbol}`;
+                if (!acc[key]) acc[key] = { pnl: 0, trades: 0 };
+                acc[key].pnl += (parseFloat(t.pnl) || 0);
+                acc[key].trades += 1;
+                return acc;
+                }, {});
 
-            return {
-              timeframe: days_back ? `Last ${days_back} days` : 'All-Time',
-              filters: { asset: asset || 'ALL', strategy: strategy_id || 'ALL' },
-              summary: {
-                total_trades: totalTrades,
-                total_pnl: parseFloat(totalPnL.toFixed(4)),
-                win_rate: winRate
-              },
-              breakdown: Object.entries(breakdown).map(([key, data]) => ({
-                segment: key,
-                pnl: parseFloat(data.pnl.toFixed(4)),
-                trade_count: data.trades
-              }))
-            };
+                return {
+                timeframe: days_back ? `Last ${days_back} days` : 'All-Time',
+                filters: { asset: asset || 'ALL', strategy: strategy_id || 'ALL' },
+                summary: {
+                    total_trades: totalTrades,
+                    total_pnl: parseFloat(totalPnL.toFixed(4)),
+                    win_rate: winRate
+                },
+                breakdown: Object.entries(breakdown).map(([key, data]) => ({
+                    segment: key,
+                    pnl: parseFloat(data.pnl.toFixed(4)),
+                    trade_count: data.trades
+                }))
+                };
+            } catch (err) {
+                console.error("[SUPABASE ERROR] Error during queryTradeLedger execution:", err.message);
+                return { error: `Exception during queryTradeLedger: ${err.message}` };
+            }
           }
         }),
 
@@ -237,33 +248,46 @@ export default async function handler(req, res) {
             reasoning: z.string().describe('Technical reasoning for this deployment or mutation.')
           }),
           execute: async (args) => {
-            const { data: existing } = await supabase
-              .from('strategy_config')
-              .select('id')
-              .eq('asset', args.asset)
-              .eq('strategy', args.strategy_id)
-              .maybeSingle();
+            try {
+                const { data: existing, error: existingError } = await supabase
+                .from('strategy_config')
+                .select('id')
+                .eq('asset', args.asset)
+                .eq('strategy', args.strategy_id)
+                .maybeSingle();
 
-            const payload = {
-              asset: args.asset,
-              strategy: args.strategy_id,
-              execution_mode: args.execution_mode || 'PAPER',
-              is_active: args.is_active ?? false, 
-              version: args.version || "v1.0", 
-              parameters: args.parameters || {},
-              last_updated: new Date().toISOString(),
-              reasoning: args.reasoning
-            };
-            
-            let result;
-            if (existing) {
-              result = await supabase.from('strategy_config').update(payload).eq('id', existing.id);
-            } else {
-              result = await supabase.from('strategy_config').insert([payload]);
+                if (existingError) {
+                    console.error("[SUPABASE ERROR] manageStrategy: Failed to fetch existing strategy_config:", existingError.message);
+                    return { success: false, error: existingError.message };
+                }
+
+                const payload = {
+                asset: args.asset,
+                strategy: args.strategy_id,
+                execution_mode: args.execution_mode || 'PAPER',
+                is_active: args.is_active ?? false, 
+                version: args.version || "v1.0", 
+                parameters: args.parameters || {},
+                last_updated: new Date().toISOString(),
+                reasoning: args.reasoning
+                };
+                
+                let result;
+                if (existing) {
+                result = await supabase.from('strategy_config').update(payload).eq('id', existing.id);
+                } else {
+                result = await supabase.from('strategy_config').insert([payload]);
+                }
+        
+                if (result.error) {
+                    console.error("[SUPABASE ERROR] manageStrategy: Failed to save strategy_config:", result.error.message);
+                    return { success: false, error: result.error.message };
+                }
+                return { success: true, message: `Strategy ${args.strategy_id} updated to ${payload.version}.` };
+            } catch (err) {
+                console.error("[SUPABASE ERROR] Error during manageStrategy execution:", err.message);
+                return { success: false, error: `Exception during manageStrategy: ${err.message}` };
             }
-      
-            if (result.error) return { success: false, error: result.error.message };
-            return { success: true, message: `Strategy ${args.strategy_id} updated to ${payload.version}.` };
           },
         }), 
 

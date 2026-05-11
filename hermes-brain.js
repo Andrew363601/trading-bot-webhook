@@ -105,19 +105,27 @@ app.post('/api/wake', async (req, res) => {
                 console.log(`[AGENT CORTEX] 👻 GHOST ORDER SET: ${decisionJson.side} at $${decisionJson.trap_price} | TP: $${updatePayload.trap_tp_price} | SL: $${updatePayload.trap_sl_price}`);
             }
 
-            await supabase.from('strategy_config')
-                .update(updatePayload)
-                .eq('strategy', strategy_id || 'MANUAL')
-                .eq('asset', asset);
+            try {
+                await supabase.from('strategy_config')
+                    .update(updatePayload)
+                    .eq('strategy', strategy_id || 'MANUAL')
+                    .eq('asset', asset);
+            } catch (error) {
+                console.error(`[SUPABASE ERROR] Failed to update strategy_config for ${asset}:`, error.message);
+            }
                 
             if (openTrade) {
                 const timeStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
                 const newLogEntry = `\n[${timeStr}Z] [${decisionJson.action}]: ${decisionJson.working_thesis}`;
                 const rollingLedger = (openTrade.reason || '') + newLogEntry;
                 
-                await supabase.from('trade_logs')
-                    .update({ reason: rollingLedger })
-                    .eq('id', openTrade.id);
+                try {
+                    await supabase.from('trade_logs')
+                        .update({ reason: rollingLedger })
+                        .eq('id', openTrade.id);
+                } catch (error) {
+                    console.error(`[SUPABASE ERROR] Failed to update trade_logs for ${asset}:`, error.message);
+                }
             }
         }
 
@@ -177,18 +185,22 @@ app.post('/api/wake', async (req, res) => {
                 displayPosition = `TRAP ${decisionJson.side} @ $${decisionJson.trap_price}`;
             }
 
-            await supabase.from('scan_results').insert([{
-                tenant_id: tenant_id,
-                strategy: strategy_id || 'MANUAL',
-                asset: asset,
-                status: finalStatus,
-                telemetry: {
-                    macro_regime_oracle: `AGENT ${decisionJson.action}`,
-                    oracle_reasoning: decisionJson.working_thesis,
-                    cvd: marketState?.multi_timeframe_cvd?.["5M_Micro_Ripple"] || 0,
-                    open_position: displayPosition
-                }
-            }]);
+            try {
+                await supabase.from('scan_results').insert([{
+                    tenant_id: tenant_id,
+                    strategy: strategy_id || 'MANUAL',
+                    asset: asset,
+                    status: finalStatus,
+                    telemetry: {
+                        macro_regime_oracle: `AGENT ${decisionJson.action}`,
+                        oracle_reasoning: decisionJson.working_thesis,
+                        cvd: marketState?.multi_timeframe_cvd?.["5M_Micro_Ripple"] || 0,
+                        open_position: displayPosition
+                    }
+                }]);
+            } catch (error) {
+                console.error(`[SUPABASE ERROR] Failed to insert scan_results for ${asset}:`, error.message);
+            }
         }
         
         if (isActionableExecution) {
