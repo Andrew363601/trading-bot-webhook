@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Activity, Filter, RefreshCw, CheckCircle2, Zap, BrainCircuit, Server, Crosshair, Target, Loader2, Clock, XCircle } from 'lucide-react';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
-import { createServerSupabaseClient } from '@supabase/auth-helpers-nextjs';
+import { createPagesServerClient } from '@supabase/auth-helpers-nextjs';
 
 export default function AuditLog({ initialSession }) {
   const session = useSession() || initialSession;
@@ -18,7 +18,7 @@ export default function AuditLog({ initialSession }) {
 }
 
 export async function getServerSideProps(context) {
-  const supabase = createServerSupabaseClient(context);
+  const supabase = createPagesServerClient(context);
   const { data: { session } } = await supabase.auth.getSession();
   
   if (!session) {

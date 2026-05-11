@@ -66,7 +66,7 @@ export default async function handler(req, res) {
         product_type,
         parameters,
         is_active: true,
-        updated_at: new Date().toISOString()
+        last_updated: new Date().toISOString()
     };
 
     // Upsert the strategy configuration.
