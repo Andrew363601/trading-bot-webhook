@@ -147,7 +147,7 @@ export default async function handler(req, res) {
     }
 
     if (resultError) {
-      console.error(`[SUBSCRIBE STRATEGY ERROR]: Failed to ${operation} strategy:`, resultError.message, "Data:", finalConfigData);
+      console.error(`[SUBSCRIBE STRATEGY ERROR]: Failed to ${operation} strategy:`, resultError.message, "Data:", JSON.stringify(finalConfigData, null, 2));
       return res.status(500).json({ error: `Failed to ${operation} strategy.`, details: resultError.message });
     }
 

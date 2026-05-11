@@ -74,6 +74,15 @@ function DashboardContent() {
 
   const [localInput, setLocalInput] = useState('');
 
+  // Trade log filter state
+  const [logStrategyFilter, setLogStrategyFilter] = useState('ALL');
+  const [logStatusFilter, setLogStatusFilter] = useState('ALL');
+
+  // Active matrix navigation state
+  const [currentStrategyIndex, setCurrentStrategyIndex] = useState(0);
+  const [strategyMetadata, setStrategyMetadata] = useState([]);
+  const [sessionLogs, setSessionLogs] = useState([]);
+
   // Strategy management state for edit modal
   const [editingStrategy, setEditingStrategy] = useState(null);
   const [editModalOpen, setEditModalOpen] = useState(false);
@@ -169,23 +178,27 @@ function DashboardContent() {
       let logsQuery = supabase.from('trade_logs').select('*').order('created_at', { ascending: false });
       let configsQuery = supabase.from('strategy_config').select('*');
       let scansQuery = supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25);
+      let sessionLogsQuery = supabase.from('hermes_core_memory').select('*').order('timestamp', { ascending: false }).limit(50);
 
       // Add tenant_id filtering if available
       if (tenantId) {
         logsQuery = logsQuery.eq('tenant_id', tenantId);
         configsQuery = configsQuery.eq('tenant_id', tenantId);
         scansQuery = scansQuery.eq('tenant_id', tenantId);
+        sessionLogsQuery = sessionLogsQuery.eq('tenant_id', tenantId);
       }
 
-      const [logsRes, configsRes, scansRes] = await Promise.all([
+      const [logsRes, configsRes, scansRes, sessionLogsRes] = await Promise.all([
           logsQuery,
           configsQuery,
-          scansQuery
+          scansQuery,
+          sessionLogsQuery
       ]);
 
       setTradeLogs(logsRes.data || []);
       setActiveStrategies(configsRes.data || []);
       setScanStream(scansRes.data || []);
+      setSessionLogs(sessionLogsRes.data || []);
       
       setLoading(false); 
 
@@ -208,6 +221,17 @@ function DashboardContent() {
               }
           })
           .catch(e => console.warn("[NEXUS SYNC] Exchange API delayed:", e.message));
+
+      fetch(`/api/get-strategies-for-asset?asset=${activeAsset}`, {
+          headers: { 'Authorization': `Bearer ${session?.access_token}` }
+      })
+      .then(res => res.json())
+      .then(data => {
+          if (data && data.strategies) {
+              setStrategyMetadata(data.strategies);
+          }
+      })
+      .catch(e => console.warn("[NEXUS SYNC] Strategy Metadata API delayed:", e.message));
 
     } catch (e) { 
       console.error("[NEXUS FATAL] DB Fetch Error:", e); 
@@ -648,10 +672,34 @@ function DashboardContent() {
   const isExchangeActive = openPositions.length > 0 || openOrders.length > 0;
 
 
+  // Apply filters to logs
   let displayLogs = [];
-  if (activeTab === 'POSITIONS') displayLogs = openPositions;
-  else if (activeTab === 'TRADE_HISTORY') displayLogs = tradeHistory;
-  else if (activeTab === 'OPEN_ORDERS') displayLogs = openOrders;
+  let baseDisplayLogs = [];
+  if (activeTab === 'POSITIONS') baseDisplayLogs = openPositions;
+  else if (activeTab === 'TRADE_HISTORY') baseDisplayLogs = tradeHistory;
+  else if (activeTab === 'OPEN_ORDERS') baseDisplayLogs = openOrders;
+
+  // Filter by strategy
+  let filteredByStrategy = baseDisplayLogs;
+  if (logStrategyFilter !== 'ALL') {
+    filteredByStrategy = baseDisplayLogs.filter(log => log.strategy_id === logStrategyFilter || log.strategy_id?.replace('_V1', '') === logStrategyFilter);
+  }
+
+  // Filter by status (for trade history: WINNER/LOSER/SHADOW, for positions: ACTIVE, for orders: PENDING)
+  let filteredByStatus = filteredByStrategy;
+  if (logStatusFilter !== 'ALL') {
+    if (activeTab === 'TRADE_HISTORY') {
+      if (logStatusFilter === 'WINNER') filteredByStatus = filteredByStrategy.filter(log => log.pnl > 0);
+      else if (logStatusFilter === 'LOSER') filteredByStatus = filteredByStrategy.filter(log => log.pnl < 0);
+      else if (logStatusFilter === 'SHADOW') filteredByStatus = filteredByStrategy.filter(log => log.execution_mode === 'SHADOW');
+    } else if (activeTab === 'POSITIONS') {
+      if (logStatusFilter === 'ACTIVE') filteredByStatus = filteredByStrategy.filter(log => !log.exit_price);
+    } else if (activeTab === 'OPEN_ORDERS') {
+      if (logStatusFilter === 'PENDING') filteredByStatus = filteredByStrategy.filter(log => log.execution_mode === 'PENDING_LIMIT');
+    }
+  }
+
+  displayLogs = filteredByStatus;
 
 
   return (
@@ -681,7 +729,7 @@ function DashboardContent() {
                   <Shield className="w-3 h-3" /> Audit
                 </Link>
                 <Link href="/settings" className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
-                  <Settings className="w-3 h-3" /> Settings
+                  <Settings className="w-3 h-3" /> API Keys
                 </Link>
                 <Link href="/performance" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Activity className="w-3 h-3" /> Performance
@@ -713,7 +761,7 @@ function DashboardContent() {
             <Shield className="w-3 h-3" /> Audit
           </Link>
           <Link href="/settings" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-300 border border-white/5 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
-            <Settings className="w-3 h-3" /> Settings
+            <Settings className="w-3 h-3" /> API Keys
           </Link>
           <Link href="/performance" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
             <Activity className="w-3 h-3" /> Performance
@@ -910,6 +958,47 @@ function DashboardContent() {
                </button>
             </div>
 
+            {/* Log Filters */}
+            <div className="flex items-center gap-4 px-6 py-3 border-b border-white/5 bg-slate-950/40 flex-wrap">
+              <div className="flex items-center gap-2">
+                <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Strategy:</label>
+                <select 
+                  value={logStrategyFilter}
+                  onChange={(e) => setLogStrategyFilter(e.target.value)}
+                  className="bg-slate-800/50 border border-white/10 rounded-lg px-2 py-1 text-[9px] font-bold text-slate-300 outline-none focus:ring-1 focus:ring-indigo-500/50"
+                >
+                  <option value="ALL">All</option>
+                  {[...new Set(baseDisplayLogs.map(log => log.strategy_id).filter(Boolean))].map(strat => (
+                    <option key={strat} value={strat}>{strat?.replace('_V1', '')}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Status:</label>
+                <select 
+                  value={logStatusFilter}
+                  onChange={(e) => setLogStatusFilter(e.target.value)}
+                  className="bg-slate-800/50 border border-white/10 rounded-lg px-2 py-1 text-[9px] font-bold text-slate-300 outline-none focus:ring-1 focus:ring-indigo-500/50"
+                >
+                  <option value="ALL">All</option>
+                  {activeTab === 'TRADE_HISTORY' && (
+                    <>
+                      <option value="WINNER">Winner (P&L +)</option>
+                      <option value="LOSER">Loser (P&L -)</option>
+                      <option value="SHADOW">Shadow (Veto)</option>
+                    </>
+                  )}
+                  {activeTab === 'POSITIONS' && (
+                    <option value="ACTIVE">Active</option>
+                  )}
+                  {activeTab === 'OPEN_ORDERS' && (
+                    <option value="PENDING">Pending</option>
+                  )}
+                </select>
+              </div>
+            </div>
+
             <div className="overflow-y-auto custom-scrollbar flex-grow">
               {displayLogs.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12">
@@ -1004,76 +1093,119 @@ function DashboardContent() {
                 {normalizeAssetSymbol(activeAsset)}
               </span>
             </h3>
-            <div className="flex flex-col gap-3 max-h-48 overflow-y-auto custom-scrollbar">
-              {currentAssetStrategies.length === 0 ? (
-                <div className="text-center py-4 text-slate-600 text-[10px] uppercase font-bold">No Strategies</div>
-              ) : (
-                currentAssetStrategies.map(strat => {
-                  const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy && l.execution_mode !== 'SHADOW');
-                  const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
-                  return (
-                    <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-2 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
-                      <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${strat.is_active ? 'bg-emerald-500' : 'bg-slate-700'}`} />
+            
+            {currentAssetStrategies.length === 0 ? (
+                <div className="text-center py-8 text-slate-600 text-[10px] uppercase font-bold border border-dashed border-white/5 rounded-2xl">No Strategies Active</div>
+            ) : (() => {
+                const strat = currentAssetStrategies[currentStrategyIndex % currentAssetStrategies.length];
+                if (!strat) return null;
+                
+                const stratLogs = tradeLogs.filter(l => (l.strategy_id === strat.strategy || l.strategy_id === strat.id) && l.execution_mode !== 'SHADOW' && l.exit_price);
+                const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
+                
+                // ROI Calculation: (PnL / (Entry Price * Qty)) * 100
+                const avgRoi = stratLogs.length > 0 
+                  ? (stratLogs.reduce((sum, l) => {
+                      const cost = l.entry_price * l.qty;
+                      return sum + (cost > 0 ? (l.pnl / cost) * 100 : 0);
+                    }, 0) / stratLogs.length).toFixed(2)
+                  : "0.00";
+
+                // Description from metadata (fallback if not loaded yet)
+                const meta = strategyMetadata.find(m => m.id === strat.strategy);
+                const description = meta?.description || "Strategic execution layer focused on volatility and volume nodes.";
+
+                return (
+                  <div className="relative group">
+                    <div className="p-4 rounded-3xl border bg-black/40 border-white/10 text-left transition-all relative overflow-hidden flex flex-col gap-4">
+                      <div className={`absolute top-0 left-0 w-full h-1 transition-colors ${strat.is_active ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-slate-700'}`} />
                       
-                      <div className="flex justify-between items-center px-3 py-1">
-                          <span className={`text-[11px] font-black uppercase transition-colors ${strat.is_active ? 'text-white' : 'text-slate-500'} truncate flex-grow min-w-0`}>{strat.strategy.replace('_V1','')}</span>
+                      <div className="flex justify-between items-start">
+                          <div className="flex flex-col">
+                            <span className={`text-[13px] font-black uppercase tracking-tighter ${strat.is_active ? 'text-white' : 'text-slate-500'}`}>
+                              {strat.strategy.replace('_V1','').replace(/_/g, ' ')}
+                            </span>
+                            <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">
+                              {strat.execution_mode || 'PAPER'} MODE
+                            </span>
+                          </div>
                           
-                          <div className="flex gap-2 flex-shrink-0">
+                          <div className="flex gap-2">
                             <button
                               onClick={(e) => { e.stopPropagation(); openStrategyEditor(strat); }}
-                              className="p-1.5 rounded-lg border transition-colors hover:cursor-pointer bg-indigo-500/10 border-indigo-500/20 text-indigo-400 hover:bg-indigo-500/20"
-                              title="Edit Strategy"
+                              className="p-2 rounded-xl border transition-colors bg-indigo-500/10 border-indigo-500/20 text-indigo-400 hover:bg-indigo-500/20"
+                              title="Edit Parameters"
                             >
-                              <Settings size={12} />
+                              <Settings size={14} />
                             </button>
                             
-                            <div 
+                            <button 
                                 onClick={(e) => { e.stopPropagation(); handleToggleStrategy(strat.id, strat.is_active); }}
-                                className={`p-1.5 rounded-lg border transition-colors hover:cursor-pointer ${strat.is_active ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 hover:shadow-[0_0_10px_-2px_rgba(16,185,129,0.4)]' : 'bg-slate-800 border-white/5 text-slate-500 hover:bg-slate-700 hover:text-slate-300'}`}
+                                className={`p-2 rounded-xl border transition-colors ${strat.is_active ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30' : 'bg-slate-800 border-white/5 text-slate-500 hover:bg-slate-700'}`}
                                 title={strat.is_active ? "Pause Strategy" : "Activate Strategy"}
                             >
-                                <Power size={12} />
-                            </div>
+                                <Power size={14} />
+                            </button>
                           </div>
                       </div>
-                      <div className="text-[10px] text-slate-500 font-mono px-3">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
-                    </button>
-                  )
-                })
-              )}
-            </div>
+
+                      <p className="text-[10px] text-slate-400 leading-relaxed italic line-clamp-3">
+                        "{description}"
+                      </p>
+
+                      <div className="grid grid-cols-2 gap-3 mt-2">
+                        <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-3">
+                          <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-1">Realized PnL</span>
+                          <span className={`text-[12px] font-mono font-black ${totalPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            ${totalPnL.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-3">
+                          <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-1">Realized ROI</span>
+                          <span className={`text-[12px] font-mono font-black ${parseFloat(avgRoi) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>
+                            {avgRoi}%
+                          </span>
+                        </div>
+                      </div>
+
+                      {currentAssetStrategies.length > 1 && (
+                        <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/5">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setCurrentStrategyIndex(prev => (prev - 1 + currentAssetStrategies.length) % currentAssetStrategies.length); }}
+                            className="p-1.5 rounded-lg hover:bg-white/5 text-slate-500 hover:text-white transition-colors"
+                          >
+                            <ChevronDown size={16} className="rotate-90" />
+                          </button>
+                          <span className="text-[9px] font-black text-slate-600 uppercase tracking-widest">
+                            {currentStrategyIndex + 1} / {currentAssetStrategies.length}
+                          </span>
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); setCurrentStrategyIndex(prev => (prev + 1) % currentAssetStrategies.length); }}
+                            className="p-1.5 rounded-lg hover:bg-white/5 text-slate-500 hover:text-white transition-colors"
+                          >
+                            <ChevronDown size={16} className="-rotate-90" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+            })()}
           </div>
           <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
-          <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
-            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow min-h-[150px]">
-              {messages.map(m => (
-                <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
-                    {m.toolInvocations && m.toolInvocations.map(tool => (
-                        <div key={tool.toolCallId} className="text-[9px] text-slate-500 italic bg-black/30 px-3 py-1.5 rounded-lg border border-white/5 flex items-center gap-2">
-                            {tool.state === 'result' ? <span className="text-emerald-400 font-bold">✓</span> : <Cpu size={10} className="animate-spin text-indigo-400" />}
-                            <span>Nexus executing: <span className="font-bold text-slate-400">{tool.toolName}</span></span>
+            <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
+            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-2 flex-grow min-h-[150px] text-slate-400">
+                {sessionLogs.length === 0 ? (
+                    <div className="text-slate-600 italic">Awaiting agent activity...</div>
+                ) : (
+                    sessionLogs.filter(log => normalizeAssetSymbol(log.asset) === normalizeAssetSymbol(activeAsset)).map((log, i) => (
+                        <div key={i} className="flex flex-col">
+                            <span className="text-[8px] font-black text-slate-500 uppercase">{new Date(log.timestamp).toLocaleTimeString()} - {log.agent_name}</span>
+                            <span className="text-[9px] text-white/80 whitespace-pre-wrap">{log.log_message}</span>
                         </div>
-                    ))}
-                    {m.content && (
-                        <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>
-                            {m.content}
-                        </div>
-                    )}
-                </div>
-              ))}
-              <div ref={chatEndRef} />
+                    ))
+                )}
             </div>
-            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
-                <input 
-                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
-                  value={localInput} 
-                  onChange={(e) => setLocalInput(e.target.value)} 
-                  placeholder="Command Nexus..." 
-                />
-              <button type="submit" disabled={!localInput?.trim() || isLoading} className={`border rounded-xl px-4 py-3 transition-all flex items-center justify-center min-w-[50px] ${isLoading ? 'bg-indigo-500/40 border-indigo-500/50 text-indigo-200 animate-pulse' : 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/30'}`}>
-                  {isLoading ? <span className="text-[10px] font-black tracking-widest">...</span> : <Send size={16} />}
-              </button>
-            </form>
           </div>
         </div>
       </main>
@@ -1123,22 +1255,43 @@ function DashboardContent() {
                 <div className="border-t border-white/5 pt-4">
                   <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Parameters</h3>
                   <div className="space-y-3">
-                    {Object.entries(editingParameters).map(([key, value]) => (
-                      <div key={key}>
-                        <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest block mb-1">
-                          {key}
-                        </label>
-                        <input
-                          type={typeof value === 'number' ? 'number' : 'text'}
-                          value={editingParameters[key]}
-                          onChange={(e) => setEditingParameters(prev => ({
-                            ...prev,
-                            [key]: typeof value === 'number' ? parseFloat(e.target.value) || 0 : e.target.value
-                          }))}
-                          className="w-full bg-slate-800 border border-white/5 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
-                        />
-                      </div>
-                    ))}
+                    {Object.entries(editingParameters).map(([key, value]) => {
+                      const isTimeframe = key.toLowerCase().includes('_tf') || key.toLowerCase().includes('timeframe');
+                      const timeframeOptions = ['1m', '5m', '15m', '30m', '1hr', '2hr', '4hr', '1d'];
+                      
+                      return (
+                        <div key={key}>
+                          <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest block mb-1">
+                            {key}
+                          </label>
+                          {isTimeframe ? (
+                            <select
+                              value={editingParameters[key]}
+                              onChange={(e) => setEditingParameters(prev => ({
+                                ...prev,
+                                [key]: e.target.value
+                              }))}
+                              className="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
+                            >
+                              <option value="">Select Timeframe</option>
+                              {timeframeOptions.map(tf => (
+                                <option key={tf} value={tf}>{tf}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type={typeof value === 'number' ? 'number' : 'text'}
+                              value={editingParameters[key]}
+                              onChange={(e) => setEditingParameters(prev => ({
+                                ...prev,
+                                [key]: typeof value === 'number' ? parseFloat(e.target.value) || 0 : e.target.value
+                              }))}
+                              className="w-full bg-slate-800 border border-white/5 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ) : (
