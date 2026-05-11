@@ -1012,13 +1012,13 @@ function DashboardContent() {
                   const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy && l.execution_mode !== 'SHADOW');
                   const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
                   return (
-                    <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-3 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
+                    <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
                       <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${strat.is_active ? 'bg-emerald-500' : 'bg-slate-700'}`} />
                       
-                      <div className="flex justify-between items-center mb-1 pl-2 pr-2">
-                          <span className={`text-xs font-black uppercase transition-colors ${strat.is_active ? 'text-white' : 'text-slate-500'} truncate`}>{strat.strategy.replace('_V1','')}</span>
+                      <div className="flex justify-between items-center mb-1 pl-3 pr-3">
+                          <span className={`text-[11px] font-black uppercase transition-colors ${strat.is_active ? 'text-white' : 'text-slate-500'} truncate flex-shrink min-w-0`}>{strat.strategy.replace('_V1','')}</span>
                           
-                          <div className="flex gap-2">
+                          <div className="flex gap-2 flex-shrink-0">
                             <button
                               onClick={(e) => { e.stopPropagation(); openStrategyEditor(strat); }}
                               className="p-1.5 rounded-lg border transition-colors hover:cursor-pointer bg-indigo-500/10 border-indigo-500/20 text-indigo-400 hover:bg-indigo-500/20"
@@ -1036,7 +1036,7 @@ function DashboardContent() {
                             </div>
                           </div>
                       </div>
-                      <div className="text-[10px] text-slate-500 font-mono pl-2">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
+                      <div className="text-[10px] text-slate-500 font-mono pl-3">Net PnL: <span className={totalPnL >= 0 ? 'text-emerald-400 font-bold' : 'text-red-400 font-bold'}>${totalPnL.toFixed(2)}</span></div>
                     </button>
                   )
                 })
