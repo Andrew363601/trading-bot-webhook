@@ -78,6 +78,44 @@ function DashboardContent() {
   const [logStrategyFilter, setLogStrategyFilter] = useState('ALL');
   const [logStatusFilter, setLogStatusFilter] = useState('ALL');
 
+  const normalizeParametersForEditor = useCallback((params) => {
+    if (!params) return {};
+
+    const normalized = {};
+    for (const key in params) {
+      const value = params[key];
+      if (typeof value === 'object' && value !== null && 'default' in value && 'type' in value) {
+        normalized[key] = value;
+      } else {
+        normalized[key] = {
+          default: value,
+          type: typeof value === 'number' ? 'number' : 'text',
+          label: key.replace(/_/g, ' ').toUpperCase(),
+          ...(key.includes('leverage') && { min: 1, max: 10 }),
+          ...(key.includes('quantity') && { min: 0.001, max: 100 }),
+          ...(key.includes('stop_loss_pct') && { min: 0.1, max: 20 }),
+          ...(key.includes('take_profit_pct') && { min: 0.1, max: 50 }),
+        };
+      }
+    }
+    return normalized;
+  }, []);
+
+  const flattenParametersForSave = useCallback((params) => {
+    if (!params) return {};
+
+    const flattened = {};
+    for (const key in params) {
+      const value = params[key];
+      if (typeof value === 'object' && value !== null && ('default' in value || 'value' in value)) {
+        flattened[key] = value.value !== undefined ? value.value : value.default;
+      } else {
+        flattened[key] = value;
+      }
+    }
+    return flattened;
+  }, []);
+
   // Active matrix navigation state
   const [currentStrategyIndex, setCurrentStrategyIndex] = useState(0);
   const [strategyMetadata, setStrategyMetadata] = useState([]);
