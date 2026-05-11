@@ -125,7 +125,7 @@ function AuditLogContent() {
       groupedPipelines.sort((a, b) => b.timestamp - a.timestamp);
       setPipelines(groupedPipelines);
     } catch (err) { console.error("[AUDIT FAULT]:", err); } finally { setLoading(false); }
-  }, [supabase, tenantId]);
+  }, [supabase, tenantId, assetFilter]);
 
   useEffect(() => {
     if (!tenantId) return;

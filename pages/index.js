@@ -336,7 +336,7 @@ function DashboardContent() {
   const currentAssetStrategies = useMemo(() => {
     const normalizedActiveAsset = normalizeAssetSymbol(activeAsset);
     return activeStrategies.filter(s => normalizeAssetSymbol(s.asset) === normalizedActiveAsset);
-  }, [activeStrategies, activeAsset]);
+  }, [activeStrategies, activeAsset, normalizeAssetSymbol]);
 
   const paperPositions = useMemo(() => tradeLogs.filter(log => 
     !log.exit_price && 
