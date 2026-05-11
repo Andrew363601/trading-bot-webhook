@@ -57,37 +57,103 @@ export default async function handler(req, res) {
 
     const actualTenantId = tenantUser.tenant_id;
 
-    // Construct the data for the strategy configuration
-    const configData = {
+    // 1. Check for any existing active strategy for this asset and tenant
+    const { data: existingActiveStrategies, error: activeError } = await supabase
+      .from('strategy_config')
+      .select('id, strategy, parameters') // Select id and parameters to preserve them
+      .eq('tenant_id', actualTenantId)
+      .eq('asset', asset)
+      .eq('is_active', true);
+
+    if (activeError) {
+      console.error("[SUBSCRIBE STRATEGY ERROR]: Failed to check for active strategies:", activeError.message);
+      return res.status(500).json({ error: "Failed to check active strategies.", details: activeError.message });
+    }
+
+    const currentActiveStrategy = existingActiveStrategies?.[0];
+
+    // 2. Enforce "one active strategy per asset" rule
+    if (currentActiveStrategy && currentActiveStrategy.strategy !== strategy) {
+      // A different strategy is already active for this asset
+      return res.status(409).json({
+        error: `Only one strategy can be active at a time for ${asset}. Please deactivate "${currentActiveStrategy.strategy}" first.`,
+      });
+    }
+
+    let finalConfigData;
+    let operation; // 'insert' or 'update'
+    let existingStrategyId = null;
+
+    // 3. Check if the specific strategy (by name) already exists (active or inactive)
+    const { data: existingStrategy, error: findStrategyError } = await supabase
+      .from('strategy_config')
+      .select('id, parameters') // Fetch ID and existing parameters
+      .eq('tenant_id', actualTenantId)
+      .eq('asset', asset)
+      .eq('strategy', strategy)
+      .maybeSingle();
+
+    if (findStrategyError) {
+      console.error("[SUBSCRIBE STRATEGY ERROR]: Failed to find existing strategy:", findStrategyError.message);
+      return res.status(500).json({ error: "Failed to find existing strategy.", details: findStrategyError.message });
+    }
+
+    if (existingStrategy) {
+      // Strategy exists (could be inactive or the same active one)
+      operation = 'update';
+      existingStrategyId = existingStrategy.id;
+      finalConfigData = {
+        is_active: true,
+        last_updated: new Date().toISOString(),
+        // IMPORTANT: Retain existing parameters, do not overwrite with new 'parameters' from req.body
+        // The front-end editor handles parameter changes for existing strategies.
+        parameters: existingStrategy.parameters // Use existing parameters
+      };
+    } else {
+      // New strategy - insert it
+      operation = 'insert';
+      finalConfigData = {
         tenant_id: actualTenantId,
         asset,
         strategy,
         exchange,
         product_type,
-        parameters,
+        parameters, // Use new parameters for a new strategy
         is_active: true,
-        last_updated: new Date().toISOString()
-    };
+        last_updated: new Date().toISOString(),
+      };
+    }
 
-    // Upsert the strategy configuration.
-    // The onConflict columns MUST match a UNIQUE index in Supabase.
-    const { data, error } = await supabase
-      .from('strategy_config')
-      .upsert(configData, { 
-        onConflict: 'asset, strategy, tenant_id',
-        ignoreDuplicates: false // We want to update if it exists
-      })
-      .select()
-      .single();
+    let resultData;
+    let resultError;
 
-    if (error) {
-      console.error("[SUBSCRIBE STRATEGY ERROR]:", error.message, "Data:", configData);
-      return res.status(500).json({ error: "Failed to subscribe to strategy.", details: error.message });
+    if (operation === 'update') {
+      const { data, error } = await supabase
+        .from('strategy_config')
+        .update(finalConfigData)
+        .eq('id', existingStrategyId)
+        .select()
+        .single();
+      resultData = data;
+      resultError = error;
+    } else { // operation === 'insert'
+      const { data, error } = await supabase
+        .from('strategy_config')
+        .insert([finalConfigData])
+        .select()
+        .single();
+      resultData = data;
+      resultError = error;
+    }
+
+    if (resultError) {
+      console.error(`[SUBSCRIBE STRATEGY ERROR]: Failed to ${operation} strategy:`, resultError.message, "Data:", finalConfigData);
+      return res.status(500).json({ error: `Failed to ${operation} strategy.`, details: resultError.message });
     }
 
     return res.status(201).json({
-      message: "Successfully subscribed to strategy",
-      config: data
+      message: `Successfully ${operation === 'insert' ? 'subscribed to'' : 'activated'} strategy`,
+      config: resultData
     });
   } catch (error) {
     console.error('[SUBSCRIBE STRATEGY FATAL ERROR]: Uncaught error in subscribe-strategy API:', error.message);

@@ -235,9 +235,9 @@ function DashboardContent() {
       setActiveAsset(newAsset);
   };
 
-  const handleToggleStrategy = async (strategyId, currentState) => {
+  const handleToggleStrategy = async (configId, currentState) => {
       try {
-          await supabase.from('strategy_config').update({ is_active: !currentState }).eq('strategy', strategyId);
+          await supabase.from('strategy_config').update({ is_active: !currentState }).eq('id', configId);
           fetchData(); 
       } catch (err) {
           console.error("Failed to toggle strategy:", err);
@@ -1012,13 +1012,13 @@ function DashboardContent() {
                   const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy && l.execution_mode !== 'SHADOW');
                   const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
                   return (
-                    <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
+                    <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-3 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
                       <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${strat.is_active ? 'bg-emerald-500' : 'bg-slate-700'}`} />
                       
-                      <div className="flex justify-between items-center mb-1 pl-2">
-                          <span className={`text-xs font-black uppercase transition-colors ${strat.is_active ? 'text-white' : 'text-slate-500'}`}>{strat.strategy.replace('_V1','')}</span>
+                      <div className="flex justify-between items-center mb-1 pl-2 pr-2">
+                          <span className={`text-xs font-black uppercase transition-colors ${strat.is_active ? 'text-white' : 'text-slate-500'} truncate`}>{strat.strategy.replace('_V1','')}</span>
                           
-                          <div className="flex gap-1.5">
+                          <div className="flex gap-2">
                             <button
                               onClick={(e) => { e.stopPropagation(); openStrategyEditor(strat); }}
                               className="p-1.5 rounded-lg border transition-colors hover:cursor-pointer bg-indigo-500/10 border-indigo-500/20 text-indigo-400 hover:bg-indigo-500/20"
@@ -1028,7 +1028,7 @@ function DashboardContent() {
                             </button>
                             
                             <div 
-                                onClick={(e) => { e.stopPropagation(); handleToggleStrategy(strat.strategy, strat.is_active); }}
+                                onClick={(e) => { e.stopPropagation(); handleToggleStrategy(strat.id, strat.is_active); }}
                                 className={`p-1.5 rounded-lg border transition-colors hover:cursor-pointer ${strat.is_active ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/30 hover:shadow-[0_0_10px_-2px_rgba(16,185,129,0.4)]' : 'bg-slate-800 border-white/5 text-slate-500 hover:bg-slate-700 hover:text-slate-300'}`}
                                 title={strat.is_active ? "Pause Strategy" : "Activate Strategy"}
                             >
