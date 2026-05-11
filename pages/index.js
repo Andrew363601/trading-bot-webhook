@@ -1012,10 +1012,10 @@ function DashboardContent() {
                   const stratLogs = tradeLogs.filter(l => l.strategy_id === strat.strategy && l.execution_mode !== 'SHADOW');
                   const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
                   return (
-                    <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-3 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
+                    <button key={strat.id} onClick={() => handleStrategySelect(strat.strategy)} className="p-4 rounded-2xl border bg-black/20 border-white/5 text-left transition-all hover:bg-white/5 relative overflow-hidden">
                       <div className={`absolute top-0 left-0 w-1 h-full transition-colors ${strat.is_active ? 'bg-emerald-500' : 'bg-slate-700'}`} />
                       
-                      <div className="flex justify-between items-center px-2 py-1">
+                      <div className="flex justify-between items-center px-2 py-2 mb-2">
                           <span className={`text-[11px] font-black uppercase transition-colors ${strat.is_active ? 'text-white' : 'text-slate-500'} truncate flex-grow min-w-0`}>{strat.strategy.replace('_V1','')}</span>
                           
                           <div className="flex gap-2 flex-shrink-0">
