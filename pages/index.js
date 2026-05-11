@@ -1150,7 +1150,7 @@ function DashboardContent() {
                       </div>
 
                       <p className="text-[10px] text-slate-400 leading-relaxed italic line-clamp-3">
-                        "{description}"
+                        &quot;{description}&quot;
                       </p>
 
                       <div className="grid grid-cols-2 gap-3 mt-2">
