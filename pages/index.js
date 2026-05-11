@@ -237,7 +237,7 @@ function DashboardContent() {
       console.error("[NEXUS FATAL] DB Fetch Error:", e); 
       setLoading(false); 
     }
-  }, [activeAsset, supabase, tenantId]);
+  }, [activeAsset, supabase, tenantId, session?.access_token]);
 
   useEffect(() => {
     fetchData();
