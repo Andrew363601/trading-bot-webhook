@@ -64,6 +64,17 @@ function DashboardContent() {
   
   const [livePrice, setLivePrice] = useState(0); 
   const [tradeLogs, setTradeLogs] = useState([]);
+  const [debouncedTradeLogs, setDebouncedTradeLogs] = useState([]);
+
+  // Debounce tradeLogs updates to stabilize chart markers
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedTradeLogs(tradeLogs);
+    }, 200); // Debounce for 200ms
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [tradeLogs]);
   const [activeStrategies, setActiveStrategies] = useState([]);
   const [scanStream, setScanStream] = useState([]); 
   const [portfolio, setPortfolio] = useState({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 } });
@@ -454,7 +465,7 @@ function DashboardContent() {
     !log.exit_price && 
     log.execution_mode === 'PAPER' &&
     normalizeAssetSymbol(log.symbol) === normalizeAssetSymbol(activeAsset)
-  ), [tradeLogs, activeAsset, normalizeAssetSymbol]);
+  ), [debouncedTradeLogs, activeAsset, normalizeAssetSymbol]);
   
   const formattedLivePositions = useMemo(() => livePositions.map(pos => ({
       side: pos.side === 'LONG' ? 'BUY' : 'SELL',
@@ -470,10 +481,10 @@ function DashboardContent() {
 
   const openPositions = useMemo(() => [...formattedLivePositions, ...paperPositions], [formattedLivePositions, paperPositions]);
   
-  const tradeHistory = useMemo(() => tradeLogs.filter(log => 
+  const tradeHistory = useMemo(() => debouncedTradeLogs.filter(log => 
     log.exit_price &&
     normalizeAssetSymbol(log.symbol) === normalizeAssetSymbol(activeAsset)
-  ), [tradeLogs, activeAsset, normalizeAssetSymbol]);
+  ), [debouncedTradeLogs, activeAsset, normalizeAssetSymbol]);
   
   const openOrders = useMemo(() => liveOrders.map(ord => ({
       order_id: ord.order_id, 
@@ -584,8 +595,8 @@ function DashboardContent() {
                 volumeSeriesRef.current.setData(volumeData);
 
                 // Update markers for the new asset and data
-                console.log("[CHART DEBUG] Setting chart markers for activeAsset:", activeAsset, "with", tradeLogs.length, "trade logs.");
-                const relevantMarkers = tradeLogs
+                console.log("[CHART DEBUG] Setting chart markers for activeAsset:", activeAsset, "with", debouncedTradeLogs.length, "debounced trade logs.");
+                const relevantMarkers = debouncedTradeLogs
                     .filter(trade => normalizeAssetSymbol(trade.symbol) === normalizeAssetSymbol(activeAsset))
                     .map(trade => {
                         const tradeTime = new Date(trade.created_at).getTime() / 1000;
