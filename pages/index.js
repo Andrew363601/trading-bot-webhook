@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSwipeable } from 'react-swipeable';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
-import { useChat } from '@ai-sdk/react'; 
+import { useChat } from 'ai/react'; 
 import Link from 'next/link'; 
 import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers, HistogramSeries } from 'lightweight-charts';
 import { 
@@ -104,6 +104,7 @@ function DashboardContent() {
   const seriesMarkersRef = useRef(null); 
   const priceLinesRef = useRef([]);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
+  const [showMarkers, setShowMarkers] = useState(true);
 
   const [localInput, setLocalInput] = useState('');
 
@@ -550,12 +551,13 @@ function DashboardContent() {
   useEffect(() => {
     if (!chartContainerRef.current) return;
     
+    const isLight = theme === 'light';
     const chart = createChart(chartContainerRef.current, {
-        layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
-        grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+        layout: { background: { type: 'solid', color: 'transparent' }, textColor: isLight ? '#475569' : '#94a3b8' },
+        grid: { vertLines: { color: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.03)' }, horzLines: { color: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.03)' } },
         crosshair: { mode: CrosshairMode.Normal },
-        timeScale: { timeVisible: true, secondsVisible: false, borderColor: 'rgba(255,255,255,0.1)' },
-        rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)' },
+        rightPriceScale: { borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)' },
         autoSize: true,
     });
 
@@ -598,7 +600,19 @@ function DashboardContent() {
         seriesMarkersRef.current?.setMarkers([]); // Ensure markers are cleared on unmount/re-init
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); 
+  }, []);
+
+  // Update chart theme when toggling light/dark mode without recreating the chart
+  useEffect(() => {
+    if (!chartRef.current) return;
+    const isLight = theme === 'light';
+    chartRef.current.applyOptions({
+      layout: { textColor: isLight ? '#475569' : '#94a3b8' },
+      grid: { vertLines: { color: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.03)' }, horzLines: { color: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.03)' } },
+      timeScale: { borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)' },
+      rightPriceScale: { borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)' },
+    });
+  }, [theme]); 
 
   useEffect(() => {
     let isMounted = true;
@@ -658,7 +672,7 @@ function DashboardContent() {
   }, [activeAsset, chartTimeframe, normalizeAssetSymbol]);
 
   useEffect(() => {
-      if (!seriesRef.current || !seriesMarkersRef.current || !debouncedTradeLogs || debouncedTradeLogs.length === 0) {
+      if (!seriesRef.current || !seriesMarkersRef.current || !debouncedTradeLogs || debouncedTradeLogs.length === 0 || !showMarkers) {
           seriesMarkersRef.current?.setMarkers([]); // Clear markers if conditions not met
           return;
       }
@@ -675,7 +689,12 @@ function DashboardContent() {
           const candleTimesArray = currentData.map(c => c.time);
           const usedTimes = new Set();
           
-          [...debouncedTradeLogs].reverse().forEach(log => {
+          // Filter logs to only include those matching the active asset
+          const assetLogs = debouncedTradeLogs.filter(log => 
+            normalizeAssetSymbol(log.symbol) === normalizeAssetSymbol(activeAsset)
+          );
+          
+          [...assetLogs].reverse().forEach(log => {
               if (log.created_at) {
                   let rawTime = Math.floor(new Date(log.created_at).getTime() / 1000);
                   let snappedTime = candleTimesArray.reduce((prev, curr) => 
@@ -688,13 +707,14 @@ function DashboardContent() {
 
                       const isBuy = log.side === 'BUY' || log.side === 'LONG';
                       const isShadow = log.execution_mode === 'SHADOW';
+                      const entryPrice = log.entry_price ? `$${parseFloat(log.entry_price).toFixed(2)}` : '';
 
                       markers.push({
                           time: snappedTime,
                           position: isBuy ? 'belowBar' : 'aboveBar',
                           color: isShadow ? '#64748b' : (isBuy ? '#10b981' : '#ef4444'),
                           shape: isBuy ? 'arrowUp' : 'arrowDown',
-                          text: isShadow ? '👻 VETO' : (isBuy ? 'BUY' : 'SELL')
+                          text: isShadow ? '👻 VETO' : `${isBuy ? 'BUY' : 'SELL'} ${entryPrice}`
                       });
                   }
               }
@@ -712,6 +732,7 @@ function DashboardContent() {
                       const isBuy = log.side === 'BUY' || log.side === 'LONG';
                       const exitPosition = isBuy ? 'aboveBar' : 'belowBar';
                       const exitShape = isBuy ? 'arrowDown' : 'arrowUp';
+                      const pnlText = log.pnl ? ` $${parseFloat(log.pnl).toFixed(2)}` : '';
                       
                       let text = 'CLOSE';
                       let color = '#94a3b8'; 
@@ -732,7 +753,7 @@ function DashboardContent() {
                           position: exitPosition,
                           color: color,
                           shape: exitShape,
-                          text: text
+                          text: text + pnlText
                       });
                   }
               }
@@ -743,7 +764,7 @@ function DashboardContent() {
 
       } catch (e) { console.error("Chart Markers Error:", e); }
 
-  }, [activeAsset, chartTimeframe, debouncedTradeLogs, normalizeAssetSymbol, openPositions]);
+  }, [activeAsset, chartTimeframe, debouncedTradeLogs, normalizeAssetSymbol, openPositions, showMarkers]);
 
   // Update header metrics when activeAsset or scanStream changes
   useEffect(() => {
@@ -769,10 +790,8 @@ function DashboardContent() {
 
   // Auto-load first active strategy when asset changes
   useEffect(() => {
-    if (currentAssetStrategies.length > 0) {
-      setCurrentStrategyIndex(0);
-    }
-  }, [currentAssetStrategies]);
+    setCurrentStrategyIndex(0);
+  }, [currentAssetStrategies, activeAsset]);
 
   const [liveBidPercent, setLiveBidPercent] = useState(50);
 
@@ -1023,9 +1042,9 @@ function DashboardContent() {
         
         <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-[calc(100vh-280px)] sm:h-[calc(100vh-240px)] md:h-[calc(100vh-200px)] lg:h-[calc(100vh-180px)]">
           
-          <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "bg-slate-900/50 border border-white/10 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
+          <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
             
-            <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-4 right-4 z-50 bg-black/40 hover:bg-indigo-500/20 text-slate-400 hover:text-indigo-300 border border-white/10 hover:border-indigo-500/50 p-2 rounded-lg transition-colors backdrop-blur-md">
+            <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-4 right-4 z-50 dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-2 rounded-lg transition-colors backdrop-blur-md">
                 {isChartMaximized ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
             </button>
 
@@ -1054,19 +1073,26 @@ function DashboardContent() {
                })}
             </div>
 
-            <div className="px-6 py-3 flex items-center justify-between border-b border-white/5 bg-black/20 backdrop-blur-md rounded-t-[2rem]">
+            <div className="px-6 py-3 flex items-center justify-between border-b dark:border-white/5 border-slate-200 dark:bg-black/20 bg-slate-100 backdrop-blur-md rounded-t-[2rem]">
               <div className="flex items-center gap-4">
-                <div className="flex bg-black/40 p-1 rounded-xl border border-white/5 gap-1">
+                <div className="flex dark:bg-black/40 bg-slate-200 p-1 rounded-xl border dark:border-white/5 border-slate-300 gap-1">
                   {['1m', '5m', '15m', '1h', '4h'].map(tf => (
                     <button 
                       key={tf} 
                       onClick={() => setChartTimeframe(tf)}
-                      className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase transition-all ${chartTimeframe === tf ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-slate-500 hover:text-slate-300'}`}
+                      className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase transition-all ${chartTimeframe === tf ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'dark:text-slate-500 text-slate-600 hover:text-slate-300'}`}
                     >
                       {tf}
                     </button>
                   ))}
                 </div>
+                <button
+                  onClick={() => setShowMarkers(prev => !prev)}
+                  className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase transition-all ${showMarkers ? 'bg-emerald-600/30 text-emerald-400 border border-emerald-500/30' : 'dark:bg-slate-800/50 bg-slate-200 dark:text-slate-500 text-slate-600 border dark:border-white/5 border-slate-300'}`}
+                  title="Toggle trade markers on chart"
+                >
+                  {showMarkers ? '🔖 ON' : '🔖 OFF'}
+                </button>
               </div>
             </div>
 
@@ -1075,8 +1101,8 @@ function DashboardContent() {
             </div>
           </div>
 
-          <div className="flex flex-col h-[35%] overflow-hidden border border-white/5 rounded-[2rem] bg-slate-900/30 pb-2">
-            <div className="flex items-center gap-6 px-6 pt-5 border-b border-white/5 bg-slate-950/80 sticky top-0 z-20">
+          <div className="flex flex-col h-[35%] overflow-hidden border dark:border-white/5 border-slate-200 rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
+            <div className="flex items-center gap-6 px-6 pt-5 border-b dark:border-white/5 border-slate-200 dark:bg-slate-950/80 bg-white sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
                   className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'OPEN_ORDERS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
@@ -1146,7 +1172,7 @@ function DashboardContent() {
                 </div>
               ) : (
                 <table className="w-full min-w-max text-left">
-                  <thead className="bg-slate-950/40 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
+                  <thead className="dark:bg-slate-950/40 bg-slate-100 text-[9px] font-black dark:text-slate-600 text-slate-700 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
                     <tr>
                       <th className="px-2 py-2 whitespace-nowrap min-w-[70px]">Date</th>
                       <th className="px-2 py-2 whitespace-nowrap min-w-[100px] text-center">Context</th>
@@ -1228,7 +1254,7 @@ function DashboardContent() {
 
                 <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-hidden lg:resize-y pb-2">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
-            <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between">
+            <h3 className="text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 mb-4 flex items-center justify-between">
               <span>Active Matrix</span>
               <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full font-mono uppercase">
                 {normalizeAssetSymbol(activeAsset)}
@@ -1258,12 +1284,12 @@ function DashboardContent() {
 
                 return (
                   <div className="relative group" {...swipeHandlers}>
-                    <div className="p-4 rounded-3xl border bg-black/40 border-white/10 text-left transition-all relative overflow-hidden flex flex-col gap-4">
+                    <div className="p-4 rounded-3xl border dark:bg-black/40 bg-white border dark:border-white/10 border-slate-200 text-left transition-all relative overflow-hidden flex flex-col gap-4">
                       <div className={`absolute top-0 left-0 w-full h-1 transition-colors ${strat.is_active ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-slate-700'}`} />
                       
                       <div className="flex justify-between items-start">
                           <div className="flex flex-col">
-                            <span className={`text-[13px] font-black uppercase tracking-tighter ${strat.is_active ? 'text-white' : 'text-slate-500'}`}>
+                            <span className={`text-[13px] font-black uppercase tracking-tighter ${strat.is_active ? 'dark:text-white text-slate-900' : 'text-slate-500'}`}>
                               {strat.strategy.replace('_V1','').replace(/_/g, ' ')}
                             </span>
                             <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">
@@ -1334,21 +1360,9 @@ function DashboardContent() {
             })()}
           </div>
 
-          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[300px] max-h-[min(400px, calc(100vh - 200px))]">
-            <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center justify-between">
-              <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
-              <select
-                value={sessionLogAgentFilter}
-                onChange={(e) => setSessionLogAgentFilter(e.target.value)}
-                className="bg-slate-800/50 border border-white/10 rounded-lg px-2 py-1 text-[9px] font-bold text-slate-300 outline-none focus:ring-1 focus:ring-indigo-500/50"
-              >
-                <option value="ALL">All Agents</option>
-                <option value="Sniper">Sniper</option>
-                <option value="Watchdog">Watchdog</option>
-                <option value="Agent Cortex">Agent Cortex</option>
-              </select>
-            </div>
-            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-2 flex-grow min-h-[150px] text-slate-400">
+          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-[2.5rem] flex flex-col overflow-hidden shadow-2xl min-h-[300px] max-h-[min(400px, calc(100vh - 200px))]">
+            <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
+            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-2 h-full dark:text-slate-400 text-slate-600">
                 {sessionLogs.filter(log => sessionLogAgentFilter === 'ALL' || log.agent_name === sessionLogAgentFilter).length === 0 ? (
                     <div className="text-slate-600 italic">Awaiting agent activity...</div>
                 ) : (
@@ -1363,7 +1377,7 @@ function DashboardContent() {
                                 <span className={`text-[8px] font-black uppercase tracking-tighter ${agentColor}`}>
                                     {new Date(log.timestamp).toLocaleTimeString()} - {log.agent_name}
                                 </span>
-                                <span className="text-[9px] text-white/70 whitespace-pre-wrap leading-relaxed">{log.log_message}</span>
+                                <span className="text-[9px] dark:text-white/70 text-slate-700 whitespace-pre-wrap leading-relaxed">{log.log_message}</span>
                             </div>
                         );
                     })
