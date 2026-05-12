@@ -256,6 +256,7 @@ function DashboardContent() {
       ]);
 
       setTradeLogs(logsRes.data || []);
+      console.log("[FETCH DATA] tradeLogs updated with", (logsRes.data || []).length, "items.");
       setActiveStrategies(configsRes.data || []);
       setScanStream(scansRes.data || []);
       setSessionLogs(sessionLogsRes.data || []);
@@ -304,8 +305,13 @@ function DashboardContent() {
   }, [activeAsset, supabase, tenantId, session?.access_token]);
 
   useEffect(() => {
+    // Debug log for fetchData calls
+    console.log("[FETCH DATA] fetchData triggered.");
     fetchData();
-    const int = setInterval(fetchData, 8000);
+    const int = setInterval(() => {
+        console.log("[FETCH DATA] fetchData interval triggered.");
+        fetchData();
+    }, 8000);
     return () => clearInterval(int);
   }, [fetchData]);
 
@@ -551,6 +557,7 @@ function DashboardContent() {
             if(!isMounted) return;
 
             if (!Array.isArray(data) || data.length === 0) {
+                console.log("[CHART DEBUG] No chart data or empty array. Clearing markers.");
                 seriesRef.current.setData([]);
                 volumeSeriesRef.current.setData([]);
                 seriesMarkersRef.current.setMarkers([]); // Clear markers if no data
@@ -577,6 +584,7 @@ function DashboardContent() {
                 volumeSeriesRef.current.setData(volumeData);
 
                 // Update markers for the new asset and data
+                console.log("[CHART DEBUG] Setting chart markers for activeAsset:", activeAsset, "with", tradeLogs.length, "trade logs.");
                 const relevantMarkers = tradeLogs
                     .filter(trade => normalizeAssetSymbol(trade.symbol) === normalizeAssetSymbol(activeAsset))
                     .map(trade => {
