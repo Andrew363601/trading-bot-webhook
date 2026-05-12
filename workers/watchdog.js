@@ -9,7 +9,10 @@ import Ws from 'ws';
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
-  { global: { WebSocket: Ws } }
+  { 
+    global: { WebSocket: Ws },
+    realtime: { transport: Ws }
+  }
 );
 
 async function sendDiscordAlert(tenant_id, { title, description, color, fields = [], imageUrl = null }) {

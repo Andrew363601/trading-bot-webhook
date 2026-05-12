@@ -2,16 +2,15 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import WebSocket from 'ws'; 
-import { evaluateStrategy } from '../lib/strategy-router.js';
-import { executeTradeMCP } from '../lib/execute-trade-mcp.js'; 
-
 import Ws from 'ws'; 
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
-  { global: { WebSocket: Ws } }
+  { 
+    global: { WebSocket: Ws },
+    realtime: { transport: Ws }
+  }
 );
 
 function generateCoinbaseToken(method, path, apiKey, apiSecret) {
