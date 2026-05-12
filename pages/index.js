@@ -478,7 +478,7 @@ function DashboardContent() {
     preventScrollOnSwipe: true
   });
 
-  const paperPositions = useMemo(() => tradeLogs.filter(log => 
+  const paperPositions = useMemo(() => debouncedTradeLogs.filter(log => 
     !log.exit_price && 
     log.execution_mode === 'PAPER' &&
     normalizeAssetSymbol(log.symbol) === normalizeAssetSymbol(activeAsset)
@@ -710,7 +710,7 @@ function DashboardContent() {
 
       } catch (e) { console.error("Chart Markers Error:", e); }
 
-  }, [activeAsset, chartTimeframe, debouncedTradeLogs, normalizeAssetSymbol, seriesRef.current, seriesMarkersRef.current, openPositions]);
+  }, [activeAsset, chartTimeframe, debouncedTradeLogs, normalizeAssetSymbol, openPositions]);
 
   // Update header metrics when activeAsset or scanStream changes
   useEffect(() => {
