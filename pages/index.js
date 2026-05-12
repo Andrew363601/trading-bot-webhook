@@ -104,6 +104,7 @@ function DashboardContent() {
   const priceLinesRef = useRef([]);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
   const [showMarkers, setShowMarkers] = useState(true);
+  const [showPriceLines, setShowPriceLines] = useState(true);
 
   const [localInput, setLocalInput] = useState('');
 
@@ -566,6 +567,8 @@ function DashboardContent() {
       execution_mode: 'LIVE (EXCHANGE)',
       strategy_id: 'ACTIVE_DERIVATIVE',
       pnl: parseFloat(pos.unrealized_pnl || 0),
+      tp_price: pos.tp_price ? parseFloat(pos.tp_price) : null,
+      sl_price: pos.sl_price ? parseFloat(pos.sl_price) : null,
       created_at: new Date().toISOString(),
       reason: ''
   })), [livePositions]);
@@ -808,7 +811,12 @@ function DashboardContent() {
 
   // Price lines effect: TP, SL, trap prices, volume nodes
   useEffect(() => {
-    if (!seriesRef.current) return;
+    if (!seriesRef.current || !showPriceLines) {
+      // Clear existing price lines when toggled off
+      priceLinesRef.current.forEach(pl => seriesRef.current?.removePriceLine(pl));
+      priceLinesRef.current = [];
+      return;
+    }
 
     // Clear existing price lines
     priceLinesRef.current.forEach(pl => seriesRef.current.removePriceLine(pl));
@@ -858,7 +866,7 @@ function DashboardContent() {
     } catch (err) {
       console.error("Price Lines Drawing Error:", err);
     }
-  }, [openPositions, activeStrategies, activeAsset, scanStream, normalizeAssetSymbol]);
+  }, [openPositions, activeStrategies, activeAsset, scanStream, normalizeAssetSymbol, showPriceLines]);
 
   // Update header metrics when activeAsset or scanStream changes
   useEffect(() => {
@@ -1186,6 +1194,13 @@ function DashboardContent() {
                   title="Toggle trade markers on chart"
                 >
                   {showMarkers ? '🔖 ON' : '🔖 OFF'}
+                </button>
+                <button
+                  onClick={() => setShowPriceLines(prev => !prev)}
+                  className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase transition-all ${showPriceLines ? 'bg-amber-600/30 text-amber-400 border border-amber-500/30' : 'dark:bg-slate-800/50 bg-slate-200 dark:text-slate-500 text-slate-600 border dark:border-white/5 border-slate-300'}`}
+                  title="Toggle TP/SL price lines on chart"
+                >
+                  {showPriceLines ? '📊 TP/SL' : '📊 OFF'}
                 </button>
               </div>
             </div>

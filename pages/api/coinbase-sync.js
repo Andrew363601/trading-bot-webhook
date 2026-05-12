@@ -72,12 +72,40 @@ async function handler(req, res) {
             if (posResp.ok) {
                 const rawData = await posResp.json();
                 
-                // THE FIX: Normalize the Futures variables so Nexus can read them correctly!
-                posData.positions = (rawData.positions || []).map(p => ({
-                    ...p,
-                    entry_price: p.average_entry_price || p.vwap || 0,
-                    size: p.number_of_contracts || p.size || 0
-                }));
+                // Normalize positions and enrich with TP/SL from open orders
+                posData.positions = (rawData.positions || []).map(p => {
+                    const productId = p.product_id;
+                    let tpPrice = null;
+                    let slPrice = null;
+
+                    // Match TP/SL orders to this position by product_id and side
+                    (orderData.orders || []).forEach(order => {
+                        if (order.product_id !== productId) return;
+                        const config = order.order_configuration || {};
+                        
+                        // Stop-limit orders = Stop Loss
+                        if (config.stop_limit_stop_limit_gtc) {
+                            const stopPrice = parseFloat(config.stop_limit_stop_limit_gtc.stop_price);
+                            if (!isNaN(stopPrice)) slPrice = stopPrice;
+                        }
+                        
+                        // Limit orders on opposite side = Take Profit
+                        if (config.limit_limit_gtc) {
+                            const limitPrice = parseFloat(config.limit_limit_gtc.limit_price);
+                            if (!isNaN(limitPrice) && order.side !== p.side) {
+                                tpPrice = limitPrice;
+                            }
+                        }
+                    });
+
+                    return {
+                        ...p,
+                        entry_price: p.average_entry_price || p.vwap || 0,
+                        size: p.number_of_contracts || p.size || 0,
+                        tp_price: tpPrice,
+                        sl_price: slPrice
+                    };
+                });
             }
         } catch (e) { console.error("Position fetch failed:", e.message); }
 

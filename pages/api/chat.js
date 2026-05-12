@@ -440,8 +440,20 @@ export default async function handler(req, res) {
       },
     });
 
-    // 🟢 THE FIX: Remove 'return' to allow the Node ServerResponse to stream properly
-    result.pipeDataStreamToResponse(res);
+    // 🟢 THE FIX: Use toDataStreamResponse() for ai v6.x compatibility
+    const streamResponse = result.toDataStreamResponse();
+    res.status(streamResponse.status);
+    streamResponse.headers.forEach((value, key) => {
+      res.setHeader(key, value);
+    });
+    const reader = streamResponse.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(decoder.decode(value, { stream: true }));
+    }
+    res.end();
 
   } catch (err) {
     console.error("====== FULL CHAT FAULT ENCOUNTERED ======");
