@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSwipeable } from 'react-swipeable';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
-import { useChat } from 'ai'; 
+import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
 import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers, HistogramSeries } from 'lightweight-charts';
 import { 
