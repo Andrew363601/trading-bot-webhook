@@ -3,7 +3,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSwipeable } from 'react-swipeable';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
-import { useChat } from 'ai/react'; 
 import Link from 'next/link'; 
 import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers, HistogramSeries } from 'lightweight-charts';
 import { 
@@ -186,26 +185,67 @@ function DashboardContent() {
     return flattened;
   }, []);
 
-  const chatHeaders = useMemo(() => ({
-    Authorization: session?.access_token ? `Bearer ${session.access_token}` : '',
-  }), [session?.access_token]);
+  const [messages, setMessages] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [sdkError, setSdkError] = useState(null);
 
-  const { messages, append, error: sdkError, isLoading, setMessages } = useChat({
-    api: '/api/chat',
-    id: 'nexus-terminal-v1',
-    headers: {
-      Authorization: session?.access_token ? `Bearer ${session.access_token}` : '',
-    },
-    onResponse: (response) => {
-        console.log("[NEXUS CHAT] Response received:", response.status);
-    },
-    onFinish: (message) => {
-        console.log("[NEXUS CHAT] Message finished:", message.content.substring(0, 20) + "...");
-    },
-    onError: (err) => {
+  const append = useCallback(async (message) => {
+    if (isLoading) return;
+    setIsLoading(true);
+    setSdkError(null);
+    
+    const updatedMessages = [...messages, message];
+    setMessages(updatedMessages);
+    
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': session?.access_token ? `Bearer ${session.access_token}` : '',
+        },
+        body: JSON.stringify({ messages: updatedMessages }),
+      });
+      
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Chat API returned ${res.status}`);
+      }
+      
+      // Handle streaming response
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        fullContent += decoder.decode(value, { stream: true });
+      }
+      
+      // Parse the streamed content - it's typically SSE format with "0:" prefix for text
+      let parsedContent = fullContent;
+      try {
+        // Try to extract text content from SSE format: "0: \"text\""
+        const textMatch = fullContent.match(/0:\s*"([^"]*)"/);
+        if (textMatch) {
+          parsedContent = textMatch[1].replace(/\\n/g, '\n');
+        }
+      } catch (e) {}
+      
+      const assistantMessage = { 
+        role: 'assistant', 
+        content: parsedContent || 'No response generated', 
+        id: Date.now().toString() 
+      };
+      setMessages(prev => [...prev, assistantMessage]);
+    } catch (err) {
       console.error("[NEXUS AGENT FATAL]:", err);
+      setSdkError(err.message);
+    } finally {
+      setIsLoading(false);
     }
-  });
+  }, [messages, isLoading, session?.access_token]);
 
   // Persist messages to session storage to avoid losing them on reload
   useEffect(() => {
@@ -438,12 +478,6 @@ function DashboardContent() {
     
     const content = localInput;
     setLocalInput(''); 
-    
-    console.log("[CHAT DEBUG] append type:", typeof append, "isLoading:", isLoading);
-    if (typeof append !== 'function') {
-      console.error("[CHAT FATAL] append is not a function. useChat may have failed to initialize.");
-      return;
-    }
     
     try {
         await append({ role: 'user', content });
