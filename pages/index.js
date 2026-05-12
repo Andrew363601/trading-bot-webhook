@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useSwipeable } from 'react-swipeable';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
-import { useChat } from '@ai-sdk/react'; 
+import { useChat } from 'ai'; 
 import Link from 'next/link'; 
 import { createChart, CrosshairMode, CandlestickSeries, createSeriesMarkers, HistogramSeries } from 'lightweight-charts';
 import { 
@@ -126,14 +126,26 @@ function DashboardContent() {
   const normalizeParametersForEditor = useCallback((params) => {
     if (!params) return {};
 
+    // Reverse timeframe mapping: Coinbase API format → short display format
+    const coinbaseToShort = {
+      'ONE_MINUTE': '1m', 'FIVE_MINUTE': '5m', 'FIFTEEN_MINUTE': '15m',
+      'THIRTY_MINUTE': '30m', 'ONE_HOUR': '1h', 'TWO_HOUR': '2h',
+      'FOUR_HOUR': '4h', 'SIX_HOUR': '6h', 'ONE_DAY': '1d'
+    };
+
     const normalized = {};
     for (const key in params) {
       const value = params[key];
       if (typeof value === 'object' && value !== null && 'default' in value && 'type' in value) {
         normalized[key] = value;
       } else {
+        let displayValue = value;
+        // Convert Coinbase timeframe format to short display format for macro_tf and trigger_tf
+        if ((key === 'macro_tf' || key === 'trigger_tf') && coinbaseToShort[displayValue?.toUpperCase()]) {
+          displayValue = coinbaseToShort[displayValue.toUpperCase()];
+        }
         normalized[key] = {
-          default: value,
+          default: displayValue,
           type: typeof value === 'number' ? 'number' : 'text',
           label: key.replace(/_/g, ' ').toUpperCase(),
           ...(key.includes('leverage') && { min: 1, max: 10 }),
@@ -149,11 +161,23 @@ function DashboardContent() {
   const flattenParametersForSave = useCallback((params) => {
     if (!params) return {};
 
+    // Timeframe mapping: short format → Coinbase API format
+    const tfToCoinbase = {
+      '1m': 'ONE_MINUTE', '5m': 'FIVE_MINUTE', '15m': 'FIFTEEN_MINUTE',
+      '30m': 'THIRTY_MINUTE', '1h': 'ONE_HOUR', '2h': 'TWO_HOUR',
+      '4h': 'FOUR_HOUR', '6h': 'SIX_HOUR', '1d': 'ONE_DAY'
+    };
+
     const flattened = {};
     for (const key in params) {
       const value = params[key];
       if (typeof value === 'object' && value !== null && ('default' in value || 'value' in value)) {
-        flattened[key] = value.value !== undefined ? value.value : value.default;
+        let rawValue = value.value !== undefined ? value.value : value.default;
+        // Convert short timeframe formats to Coinbase format for macro_tf and trigger_tf
+        if ((key === 'macro_tf' || key === 'trigger_tf') && tfToCoinbase[rawValue?.toLowerCase()]) {
+          rawValue = tfToCoinbase[rawValue.toLowerCase()];
+        }
+        flattened[key] = rawValue;
       } else {
         flattened[key] = value;
       }
@@ -267,11 +291,14 @@ function DashboardContent() {
           sessionLogsQuery
       ]);
 
-      setTradeLogs(logsRes.data || []);
-      console.log("[FETCH DATA] tradeLogs updated with", (logsRes.data || []).length, "items.");
-      setActiveStrategies(configsRes.data || []);
-      setScanStream(scansRes.data || []);
-      setSessionLogs(sessionLogsRes.data || []);
+      // Deep compare to prevent unnecessary re-renders that cause flickering
+      const newLogs = logsRes.data || [];
+      const newConfigs = configsRes.data || [];
+      setTradeLogs(prev => JSON.stringify(prev) === JSON.stringify(newLogs) ? prev : newLogs);
+      console.log("[FETCH DATA] tradeLogs updated with", newLogs.length, "items.");
+      setActiveStrategies(prev => JSON.stringify(prev) === JSON.stringify(newConfigs) ? prev : newConfigs);
+      setScanStream(prev => JSON.stringify(prev) === JSON.stringify(scansRes.data || []) ? prev : (scansRes.data || []));
+      setSessionLogs(prev => JSON.stringify(prev) === JSON.stringify(sessionLogsRes.data || []) ? prev : (sessionLogsRes.data || []));
       
       setLoading(false); 
 
@@ -411,6 +438,12 @@ function DashboardContent() {
     const content = localInput;
     setLocalInput(''); 
     
+    console.log("[CHAT DEBUG] append type:", typeof append, "isLoading:", isLoading);
+    if (typeof append !== 'function') {
+      console.error("[CHAT FATAL] append is not a function. useChat may have failed to initialize.");
+      return;
+    }
+    
     try {
         await append({ role: 'user', content });
     } catch (err) {
@@ -437,7 +470,7 @@ function DashboardContent() {
         .update({
           parameters: flattenParametersForSave(editingParameters),
           execution_mode: editingExecutionMode,
-          updated_at: new Date().toISOString()
+          last_updated: new Date().toISOString()
         })
         .eq('id', editingStrategy.id);
 
@@ -622,7 +655,7 @@ function DashboardContent() {
         isMounted = false;
         clearInterval(intervalId);
     };
-  }, [activeAsset, chartTimeframe, tradeLogs, normalizeAssetSymbol]);
+  }, [activeAsset, chartTimeframe, normalizeAssetSymbol]);
 
   useEffect(() => {
       if (!seriesRef.current || !seriesMarkersRef.current || !debouncedTradeLogs || debouncedTradeLogs.length === 0) {
@@ -1105,7 +1138,7 @@ function DashboardContent() {
               </div>
             </div>
 
-            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[450px] max-h-[min(600px, calc(100vh - 150px))] sm:max-h-[calc(100vh-400px)]">
+            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[450px] max-h-[min(800px, calc(100vh - 120px))] sm:max-h-[calc(100vh-250px)] resize-y">
               {displayLogs.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12">
                   <Layers size={24} className="mb-2 opacity-50" />
