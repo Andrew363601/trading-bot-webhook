@@ -212,7 +212,7 @@ function DashboardContent() {
         throw new Error(errData.error || `Chat API returned ${res.status}`);
       }
       
-      // Handle streaming response
+      // Handle streaming response from pipeDataStreamToResponse
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let fullContent = '';
@@ -223,15 +223,21 @@ function DashboardContent() {
         fullContent += decoder.decode(value, { stream: true });
       }
       
-      // Parse the streamed content - it's typically SSE format with "0:" prefix for text
-      let parsedContent = fullContent;
-      try {
-        // Try to extract text content from SSE format: "0: \"text\""
-        const textMatch = fullContent.match(/0:\s*"([^"]*)"/);
-        if (textMatch) {
-          parsedContent = textMatch[1].replace(/\\n/g, '\n');
-        }
-      } catch (e) {}
+      // Parse SSE format: extract all text parts from "0:\"text\"" lines
+      let parsedContent = '';
+      const textLines = fullContent.match(/0:"([^"]*)"/g);
+      if (textLines) {
+        parsedContent = textLines
+          .map(line => line.replace(/^0:"/, '').replace(/"$/, ''))
+          .join('')
+          .replace(/\\n/g, '\n')
+          .replace(/\\"/g, '"');
+      }
+      
+      // Fallback: if no SSE format found, use raw content
+      if (!parsedContent) {
+        parsedContent = fullContent.replace(/^[0-9a-f]+:/gm, '').trim();
+      }
       
       const assistantMessage = { 
         role: 'assistant', 
@@ -800,6 +806,60 @@ function DashboardContent() {
 
   }, [activeAsset, chartTimeframe, debouncedTradeLogs, normalizeAssetSymbol, openPositions, showMarkers]);
 
+  // Price lines effect: TP, SL, trap prices, volume nodes
+  useEffect(() => {
+    if (!seriesRef.current) return;
+
+    // Clear existing price lines
+    priceLinesRef.current.forEach(pl => seriesRef.current.removePriceLine(pl));
+    priceLinesRef.current = [];
+
+    try {
+      // Draw TP/SL lines for open positions
+      openPositions.forEach(pos => {
+        if (pos.tp_price) {
+          const tp = seriesRef.current.createPriceLine({ price: pos.tp_price, color: '#10b981', lineWidth: 2, lineStyle: 2, title: 'TP' });
+          priceLinesRef.current.push(tp);
+        }
+        if (pos.sl_price) {
+          const sl = seriesRef.current.createPriceLine({ price: pos.sl_price, color: '#ef4444', lineWidth: 2, lineStyle: 2, title: 'SL' });
+          priceLinesRef.current.push(sl);
+        }
+      });
+
+      // Draw trap price line for active strategy
+      const currentStrat = activeStrategies.find(s => normalizeAssetSymbol(s.asset) === normalizeAssetSymbol(activeAsset));
+      if (currentStrat?.trap_price) {
+        const tPrice = parseFloat(currentStrat.trap_price);
+        const color = currentStrat.trap_side === 'BUY' ? '#10b981' : '#ef4444';
+        const trapLine = seriesRef.current.createPriceLine({ price: tPrice, color: color, lineWidth: 2, lineStyle: 2, title: `👻 ${currentStrat.trap_side} TRAP` });
+        priceLinesRef.current.push(trapLine);
+      }
+
+      // Draw volume node lines from scan telemetry
+      const assetScans = scanStream.filter(s => normalizeAssetSymbol(s.asset) === normalizeAssetSymbol(activeAsset));
+      const latestAssetScan = assetScans.length > 0 ? assetScans[0] : null;
+      if (latestAssetScan?.telemetry) {
+        const t = latestAssetScan.telemetry;
+
+        if (t.macro_poc && t.macro_poc !== "None") {
+          const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.macro_poc), color: '#f59e0b', lineWidth: 2, lineStyle: 0, title: 'MACRO POC' });
+          priceLinesRef.current.push(pl);
+        }
+        if (t.upper_macro_node && t.upper_macro_node !== "None") {
+          const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.upper_macro_node), color: '#94a3b8', lineWidth: 1, lineStyle: 1, title: 'UPPER NODE' });
+          priceLinesRef.current.push(pl);
+        }
+        if (t.lower_macro_node && t.lower_macro_node !== "None") {
+          const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.lower_macro_node), color: '#94a3b8', lineWidth: 1, lineStyle: 1, title: 'LOWER NODE' });
+          priceLinesRef.current.push(pl);
+        }
+      }
+    } catch (err) {
+      console.error("Price Lines Drawing Error:", err);
+    }
+  }, [openPositions, activeStrategies, activeAsset, scanStream, normalizeAssetSymbol]);
+
   // Update header metrics when activeAsset or scanStream changes
   useEffect(() => {
     const activeAssetScans = scanStream.filter(s => normalizeAssetSymbol(s.asset) === normalizeAssetSymbol(activeAsset));
@@ -1135,7 +1195,7 @@ function DashboardContent() {
             </div>
           </div>
 
-          <div className="flex flex-col h-[35%] overflow-hidden border dark:border-white/5 border-slate-200 rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
+          <div className="flex flex-col h-[50%] sm:h-[35%] overflow-hidden border dark:border-white/5 border-slate-200 rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
             <div className="flex items-center gap-6 px-6 pt-5 border-b dark:border-white/5 border-slate-200 dark:bg-slate-950/80 bg-white sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
@@ -1395,8 +1455,20 @@ function DashboardContent() {
           </div>
 
           <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-[2.5rem] flex flex-col overflow-hidden shadow-2xl min-h-[300px] max-h-[min(400px, calc(100vh - 200px))]">
-            <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
-            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-2 h-full dark:text-slate-400 text-slate-600">
+            <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center justify-between flex-shrink-0">
+              <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
+              <select
+                value={sessionLogAgentFilter}
+                onChange={(e) => setSessionLogAgentFilter(e.target.value)}
+                className="dark:bg-slate-800/50 bg-white border dark:border-white/10 border-slate-300 rounded-lg px-2 py-1 text-[9px] font-bold dark:text-slate-300 text-slate-600 outline-none focus:ring-1 focus:ring-indigo-500/50"
+              >
+                <option value="ALL">All Agents</option>
+                <option value="Sniper">Sniper</option>
+                <option value="Watchdog">Watchdog</option>
+                <option value="Agent Cortex">Agent Cortex</option>
+              </select>
+            </div>
+            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-2 max-h-[250px] sm:max-h-full dark:text-slate-400 text-slate-600">
                 {sessionLogs.filter(log => sessionLogAgentFilter === 'ALL' || log.agent_name === sessionLogAgentFilter).length === 0 ? (
                     <div className="text-slate-600 italic">Awaiting agent activity...</div>
                 ) : (

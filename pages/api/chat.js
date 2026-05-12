@@ -71,14 +71,26 @@ export default async function handler(req, res) {
       recentLogQuery = recentLogQuery.eq('tenant_id', tenantId);
     }
 
-    const [configsRes, tradesRes, closedRes] = await Promise.all([
-      strategyQuery,
-      tradeLogQuery,
-      recentLogQuery
-    ].map(p => p.catch(error => { // Catch errors from individual promises
-        console.error("[SUPABASE ERROR] Failed to fetch data in chat API:", error.message);
-        return { data: [], error }; // Return empty data and error for graceful degradation
-    })));
+    // Execute queries with individual error handling (query builders are not Promises)
+    let configsRes, tradesRes, closedRes;
+    try {
+      configsRes = await strategyQuery;
+    } catch (error) {
+      console.error("[SUPABASE ERROR] Failed to fetch strategy configs:", error.message);
+      configsRes = { data: [], error };
+    }
+    try {
+      tradesRes = await tradeLogQuery;
+    } catch (error) {
+      console.error("[SUPABASE ERROR] Failed to fetch open trades:", error.message);
+      tradesRes = { data: [], error };
+    }
+    try {
+      closedRes = await recentLogQuery;
+    } catch (error) {
+      console.error("[SUPABASE ERROR] Failed to fetch recent closed trades:", error.message);
+      closedRes = { data: [], error };
+    }
 
     const allConfigs = configsRes.data || [];
     const openTrades = tradesRes.data || [];
