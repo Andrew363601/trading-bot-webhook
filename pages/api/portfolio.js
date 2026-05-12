@@ -2,17 +2,32 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { withTenantAuth } from '../../lib/auth-middleware';
+import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   try {
     const { asset } = req.query; 
-    const apiKeyName = process.env.COINBASE_API_KEY;
+    const { tenantId } = req.tenant;
+
+    let apiKeyName = process.env.COINBASE_API_KEY;
     let apiSecret = process.env.COINBASE_API_SECRET || "";
+
+    // Attempt to retrieve tenant-specific keys
+    try {
+        const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+        if (secrets && secrets.apiKey && secrets.apiSecret) {
+            apiKeyName = secrets.apiKey;
+            apiSecret = secrets.apiSecret;
+        }
+    } catch (e) {
+        console.warn(`[PORTFOLIO] No keys for tenant ${tenantId}, falling back to ENV`);
+    }
     
     // 1. Clean the secret
     apiSecret = apiSecret.replace(/\\n/g, '\n');
@@ -105,6 +120,7 @@ export default async function handler(req, res) {
     const { data: paperLogs } = await supabase
       .from('trade_logs')
       .select('pnl')
+      .eq('tenant_id', tenantId)
       .eq('execution_mode', 'PAPER')
       .not('pnl', 'is', null);
 
@@ -124,3 +140,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
+
+export default withTenantAuth(handler);

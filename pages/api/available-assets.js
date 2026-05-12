@@ -1,8 +1,8 @@
-// pages/api/available-assets.js force push
-import { jwtVerify, createRemoteJWKSet } from 'jose';
+// pages/api/available-assets.js
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
+import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 
 const supabase = createClient(
@@ -10,35 +10,13 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    console.error("[AVAILABLE ASSETS ERROR]: Missing or invalid Authorization header.");
-    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
-  }
+  const { tenantId } = req.tenant;
 
-  let tenantId = null;
-  try {
-    const token = authHeader.split(' ')[1];
-    const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
-    const { payload } = await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
-    
-    const { data: tenantData } = await supabase
-      .from('tenant_users')
-      .select('tenant_id')
-      .eq('auth_user_id', payload.sub)
-      .single();
-    
-    tenantId = tenantData?.tenant_id;
-  } catch (err) {
-    return res.status(401).json({ error: 'Invalid token', details: err.message });
-  }
-
-  // ... (rest of your API route code from the previous interaction remains here)
   try {
     // Top 15 Perpetual Futures assets (Hardcoded fallback for speed)
     const topAssets = [
@@ -105,7 +83,7 @@ export default async function handler(req, res) {
         }
         
         if (privateKey) {
-          // Fetch both FUTURE and PERPETUAL_FUTURES for better coverage and pricing
+          // Fetch both FUTURE and PERPETUAL_FUTURE for better coverage and pricing
           const productTypes = ['FUTURE', 'PERPETUAL_FUTURE'];
           
           for (const type of productTypes) {
@@ -179,3 +157,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: error.message });
   }
 }
+
+export default withTenantAuth(handler);
