@@ -1,5 +1,6 @@
 // pages/api/webhook.js
 import { createClient } from '@supabase/supabase-js';
+import { executeTradeMCP } from '../../lib/execute-trade-mcp.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -36,29 +37,15 @@ export default async function handler(req, res) {
       data.execution_mode = mode; 
       data.tenant_id = tenant_id; // Pass tenant_id to the engine
 
-      // 2. Route to Coinbase Engine
-      const protocol = req.headers['x-forwarded-proto'] || 'http';
-      const host = req.headers.host;
-      const executeUrl = `${protocol}://${host}/api/execute-trade`;
+      // 2. Direct call to Coinbase Engine (no HTTP, no exposed endpoint)
+      console.log(`[ROUTER] Executing trade for ${data.symbol} (Tenant: ${tenant_id}, Mode: ${mode})`);
 
-      console.log(`[ROUTER] Forwarding ${data.symbol} to Engine for tenant ${tenant_id} in ${mode} mode...`);
-
-      // 🟢 THE FIX: Pass Service Role Key for internal authentication
-      const forwardRequest = await fetch(executeUrl, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`
-        },
-        body: JSON.stringify(data)
-      });
-
-      const forwardResult = await forwardRequest.json();
+      const engineResult = await executeTradeMCP(data);
 
       return res.status(200).json({ 
         status: "success", 
         mode: mode, 
-        engine_response: forwardResult 
+        engine_response: engineResult 
       });
 
     } catch (err) {

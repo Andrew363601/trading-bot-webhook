@@ -2,6 +2,7 @@
 export const maxDuration = 300;
 
 import { createClient } from '@supabase/supabase-js';
+import { executeTradeMCP } from '../../lib/execute-trade-mcp.js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { evaluateTradeIdea } from '../../lib/trade-oracle.js';
@@ -113,17 +114,12 @@ export default async function handler(req, res) {
                 execution_mode: trade.execution_mode || 'PAPER',
                 leverage: trade.leverage || 1,
                 market_type: trade.market_type || 'FUTURES',
-                reason: `[ORACLE MANUAL REVIEW CLOSE]: ${verdict.reasoning}`
+                reason: `[ORACLE MANUAL REVIEW CLOSE]: ${verdict.reasoning}`,
+                tenant_id: trade.tenant_id
             };
             
-            const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
-            const protocol = host.includes('localhost') ? 'http' : 'https';
-            const closeRes = await fetch(`${protocol}://${host}/api/execute-trade`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-            
-            if (!closeRes.ok) {
-                const errData = await closeRes.json();
-                throw new Error(`Execution route failed: ${errData.error || closeRes.statusText}`);
-            }
+            console.log(`[REEVALUATE] Direct execution for ${trade.symbol} close (Tenant: ${trade.tenant_id})`);
+            const engineResult = await executeTradeMCP(payload);
             
             // 📱 ALERT: FORCE CLOSE
             await sendDiscordAlert(`🎯 Sniper Review: CLOSE ${trade.symbol}`, `**Action:** Force closing position.\n**Oracle:** ${verdict.reasoning}`, 15548997);

@@ -167,15 +167,18 @@ function AuditLogContent() {
     
     try {
         const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
-        await fetch('/api/execute-trade', {
+        const closeRes = await fetch('/api/close-position', {
             method: 'POST',
             headers: { 
               'Content-Type': 'application/json',
               'Authorization': `Bearer ${session.access_token}`
             },
             body: JSON.stringify({
-                symbol: trade.symbol, strategy_id: trade.strategy_id, version: trade.version || 'v1.0',
-                side: closingSide, execution_mode: trade.execution_mode, qty: trade.qty, price: 0, reason: "MANUAL_UI_CANCEL"
+                trade_id: trade.id,
+                symbol: trade.symbol,
+                side: closingSide,
+                qty: trade.qty,
+                price: 0
             })
         });
         fetchAuditTrail(); 

@@ -77,6 +77,8 @@ function DashboardContent() {
   // Trade log filter state
   const [logStrategyFilter, setLogStrategyFilter] = useState('ALL');
   const [logStatusFilter, setLogStatusFilter] = useState('ALL');
+  const [sessionLogAgentFilter, setSessionLogAgentFilter] = useState('ALL'); // New state for session log filter
+  const [sessionLogAgentFilter, setSessionLogAgentFilter] = useState('ALL'); // New state for session log filter
 
   // Active matrix navigation state
   const [currentStrategyIndex, setCurrentStrategyIndex] = useState(0);
@@ -216,7 +218,7 @@ function DashboardContent() {
       let logsQuery = supabase.from('trade_logs').select('*').order('created_at', { ascending: false });
       let configsQuery = supabase.from('strategy_config').select('*');
       let scansQuery = supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25);
-      let sessionLogsQuery = supabase.from('agent_session_logs').select('*').order('timestamp', { ascending: false }).limit(50);
+      let sessionLogsQuery = supabase.from('agent_session_logs').select('*').order('timestamp', { ascending: false }).limit(200);
 
       // Add tenant_id filtering if available
       if (tenantId) {
@@ -315,15 +317,30 @@ function DashboardContent() {
     const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id || 'Exchange'}?`);
     if (!confirmClose) return;
     const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
-    await fetch('/api/execute-trade', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        symbol: trade.symbol, strategy_id: trade.strategy_id || 'MANUAL', version: trade.version || 'v1.0',
-        side: closingSide, execution_mode: trade.execution_mode.includes('LIVE') ? 'LIVE' : 'PAPER', qty: trade.qty, price: livePrice 
-      })
-    });
-    fetchData(); 
+    try {
+      const closeRes = await fetch('/api/close-position', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify({
+          trade_id: trade.id,
+          symbol: trade.symbol,
+          side: closingSide,
+          qty: trade.qty,
+          price: livePrice || 0
+        })
+      });
+      if (closeRes.ok) {
+        fetchData();
+      } else {
+        const err = await closeRes.json();
+        alert(`Error closing position: ${err.error}`);
+      }
+    } catch (e) {
+      alert(`Error closing position: ${e.message}`);
+    }
   };
 
   const handleCancelOrder = async (order) => {
@@ -333,7 +350,10 @@ function DashboardContent() {
       try {
           await fetch('/api/cancel-order', {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: { 
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${session?.access_token}`
+              },
               body: JSON.stringify({ order_ids: [order.order_id] })
           });
           fetchData(); 
@@ -837,7 +857,7 @@ function DashboardContent() {
             </button>
 
             {showScanner && (
-              <div className="absolute top-full left-0 mt-2 w-full sm:w-80 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-64 sm:max-h-none">
+              <div className="absolute top-full left-0 mt-2 w-full sm:w-96 md:w-80 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-96">
                 <div className="flex items-center justify-between p-3 border-b border-white/5">
                    <span className="text-[9px] sm:text-[10px] font-black uppercase text-indigo-400 tracking-widest">Select Asset</span>
                    <button onClick={() => setShowScanner(false)} className="text-slate-500 hover:text-white"><X size={14}/></button>
@@ -1044,7 +1064,7 @@ function DashboardContent() {
                   <p className="text-[11px] font-bold uppercase tracking-widest">No data available</p>
                 </div>
               ) : (
-                <table className="w-full text-left table-fixed">
+                <table className="w-full min-w-full text-left table-fixed">
                   <thead className="bg-slate-950/40 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
                     <tr>
                       <th className="px-4 py-3 w-24">Date</th>
@@ -1123,7 +1143,7 @@ function DashboardContent() {
           </div>
         </div>
 
-        <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-hidden lg:resize-y pb-2">
+                <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-hidden lg:resize-y pb-2">
           <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
             <h3 className="text-[10px] font-black uppercase text-slate-500 mb-4 flex items-center justify-between">
               <span>Active Matrix</span>
@@ -1198,6 +1218,12 @@ function DashboardContent() {
                             ${totalPnL.toFixed(2)}
                           </span>
                         </div>
+                        <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-3">
+                          <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-1">Realized ROI</span>
+                          <span className={`text-[12px] font-mono font-black ${parseFloat(avgRoi) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>
+                            {avgRoi}%
+                          </span>
+                        </div>
                       </div>
 
                       {currentAssetStrategies.length > 1 && (
@@ -1226,12 +1252,24 @@ function DashboardContent() {
           </div>
 
           <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
-            <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
+            <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center justify-between">
+              <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
+              <select
+                value={sessionLogAgentFilter}
+                onChange={(e) => setSessionLogAgentFilter(e.target.value)}
+                className="bg-slate-800/50 border border-white/10 rounded-lg px-2 py-1 text-[9px] font-bold text-slate-300 outline-none focus:ring-1 focus:ring-indigo-500/50"
+              >
+                <option value="ALL">All Agents</option>
+                <option value="Sniper">Sniper</option>
+                <option value="Watchdog">Watchdog</option>
+                <option value="Agent Cortex">Agent Cortex</option>
+              </select>
+            </div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-2 flex-grow min-h-[150px] text-slate-400">
-                {sessionLogs.length === 0 ? (
+                {sessionLogs.filter(log => sessionLogAgentFilter === 'ALL' || log.agent_name === sessionLogAgentFilter).length === 0 ? (
                     <div className="text-slate-600 italic">Awaiting agent activity...</div>
                 ) : (
-                    sessionLogs.filter(log => normalizeAssetSymbol(log.asset) === normalizeAssetSymbol(activeAsset)).map((log, i) => (
+                    sessionLogs.filter(log => sessionLogAgentFilter === 'ALL' || log.agent_name === sessionLogAgentFilter).filter(log => normalizeAssetSymbol(log.asset) === normalizeAssetSymbol(activeAsset)).map((log, i) => (
                         <div key={i} className="flex flex-col">
                             <span className="text-[8px] font-black text-slate-500 uppercase">{new Date(log.timestamp).toLocaleTimeString()} - {log.agent_name}</span>
                             <span className="text-[9px] text-white/80 whitespace-pre-wrap">{log.log_message}</span>

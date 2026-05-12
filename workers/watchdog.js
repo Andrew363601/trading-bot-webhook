@@ -514,6 +514,90 @@ export async function startWatchdog(tenantId) {
                             }
                         }
                     }
+                } else if (openTrade.execution_mode === 'PAPER') {
+                    // 🟢 PAPER TRADE TP/SL TRIGGER LOGIC
+                    const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
+                    
+                    if (openTrade.tp_price && openTrade.sl_price) {
+                        const rawPriceMove = openTrade.side === 'BUY' 
+                            ? (currentPrice - openTrade.entry_price) / openTrade.entry_price 
+                            : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
+                        const leverage = parseFloat(openTrade.leverage || 1);
+                        const pnlPercent = rawPriceMove * leverage;
+                        
+                        let triggerType = null;
+                        let exactExitPrice = currentPrice;
+                        
+                        // Check TP trigger (BUY: price >= TP, SELL: price <= TP)
+                        if (openTrade.side === 'BUY' && currentPrice >= openTrade.tp_price) {
+                            triggerType = 'TAKE_PROFIT';
+                            exactExitPrice = openTrade.tp_price;
+                        } else if (openTrade.side === 'SELL' && currentPrice <= openTrade.tp_price) {
+                            triggerType = 'TAKE_PROFIT';
+                            exactExitPrice = openTrade.tp_price;
+                        }
+                        
+                        // Check SL trigger (BUY: price <= SL, SELL: price >= SL)
+                        if (!triggerType && openTrade.side === 'BUY' && currentPrice <= openTrade.sl_price) {
+                            triggerType = 'STOP_LOSS';
+                            exactExitPrice = openTrade.sl_price;
+                        } else if (!triggerType && openTrade.side === 'SELL' && currentPrice >= openTrade.sl_price) {
+                            triggerType = 'STOP_LOSS';
+                            exactExitPrice = openTrade.sl_price;
+                        }
+                        
+                        if (triggerType) {
+                            const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
+                            const safeExitPrice = parseFloat(exactExitPrice) || 0;
+                            const safeQty = parseFloat(openTrade.qty) || 1;
+                            const rawPnl = openTrade.side === 'BUY' 
+                                ? (safeExitPrice - safeEntryPrice) * safeQty * multiplier 
+                                : (safeEntryPrice - safeExitPrice) * safeQty * multiplier;
+                            
+                            const updatedReason = openTrade.reason 
+                                ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${triggerType} (PAPER_TRADE_AUTOMATIC)` 
+                                : `${triggerType} (PAPER_TRADE_AUTOMATIC)`;
+                            
+                            const { error: updateErr } = await supabase.from('trade_logs').update({ 
+                                exit_price: safeExitPrice, 
+                                pnl: parseFloat(rawPnl.toFixed(4)), 
+                                exit_time: new Date().toISOString(), 
+                                reason: updatedReason 
+                            }).eq('id', openTrade.id);
+                            
+                            if (updateErr) {
+                                console.error("[PAPER TRADE LOG UPDATE FAILED]:", updateErr.message);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Failed to close paper trade ${openTrade.id}: ${updateErr.message}`, "ERROR");
+                            } else {
+                                await supabase.from('scan_results').insert([{ 
+                                    strategy: openTrade.strategy_id || 'MANUAL', 
+                                    asset: asset, 
+                                    status: 'CLOSED', 
+                                    telemetry: { 
+                                        macro_regime_oracle: `POSITION CLOSED`, 
+                                        oracle_reasoning: updatedReason, 
+                                        open_pnl: rawPnl.toFixed(4), 
+                                        open_position: "NONE" 
+                                    } 
+                                }]);
+                                
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Paper trade for ${asset} closed. PnL: ${rawPnl.toFixed(4)}. Trigger: ${triggerType}.`, "POSITION_CLOSED");
+                                
+                                const entryText = safeEntryPrice ? `\n**Entry Price:** $${safeEntryPrice}` : '';
+                                const tpText = openTrade.tp_price ? `\n**Target TP:** $${openTrade.tp_price}` : '';
+                                const slText = openTrade.sl_price ? `\n**Target SL:** $${openTrade.sl_price}` : '';
+                                
+                                await sendDiscordAlert(tenantId, { 
+                                    title: `📊 Paper Trade Closed: ${asset}`, 
+                                    description: `**Trigger:** ${triggerType}\n**Realized PnL:** $${rawPnl.toFixed(4)}${entryText}${tpText}${slText}\n**Exit Price:** $${safeExitPrice}`, 
+                                    color: rawPnl >= 0 ? 5763719 : 15548997
+                                });
+                            }
+                        }
+                    } else {
+                        // No TP/SL configured for paper trade - just monitor
+                        await logAgentActivity(tenantId, "Watchdog", asset, `Paper trade ${openTrade.id} has no TP/SL configured. Current price: $${currentPrice}.`, "INFO");
+                    }
                 }
             }
         } catch (err) {
