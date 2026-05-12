@@ -440,13 +440,10 @@ export default async function handler(req, res) {
       },
     });
 
-    // 🟢 THE FIX: Use toDataStreamResponse() for ai v6.x compatibility
-    const streamResponse = result.toDataStreamResponse();
-    res.status(streamResponse.status);
-    streamResponse.headers.forEach((value, key) => {
-      res.setHeader(key, value);
-    });
-    const reader = streamResponse.body.getReader();
+    // 🟢 THE FIX: Use toDataStream() for ai v6.x compatibility (returns ReadableStream directly)
+    res.setHeader('Content-Type', 'text/plain');
+    const dataStream = result.toDataStream();
+    const reader = dataStream.getReader();
     const decoder = new TextDecoder();
     while (true) {
       const { done, value } = await reader.read();

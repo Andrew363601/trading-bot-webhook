@@ -102,6 +102,7 @@ function DashboardContent() {
   const volumeSeriesRef = useRef(null);
   const seriesMarkersRef = useRef(null); 
   const priceLinesRef = useRef([]);
+  const volumeLinesRef = useRef([]);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
   const [showMarkers, setShowMarkers] = useState(true);
   const [showPriceLines, setShowPriceLines] = useState(true);
@@ -131,7 +132,8 @@ function DashboardContent() {
     const coinbaseToShort = {
       'ONE_MINUTE': '1m', 'FIVE_MINUTE': '5m', 'FIFTEEN_MINUTE': '15m',
       'THIRTY_MINUTE': '30m', 'ONE_HOUR': '1h', 'TWO_HOUR': '2h',
-      'FOUR_HOUR': '4h', 'SIX_HOUR': '6h', 'ONE_DAY': '1d'
+      'FOUR_HOUR': '4h', 'SIX_HOUR': '6h', 'ONE_DAY': '1d',
+      '1HR': '1h', '5MIN': '5m', '15MIN': '15m', '30MIN': '30m'
     };
 
     const normalized = {};
@@ -166,7 +168,10 @@ function DashboardContent() {
     const tfToCoinbase = {
       '1m': 'ONE_MINUTE', '5m': 'FIVE_MINUTE', '15m': 'FIFTEEN_MINUTE',
       '30m': 'THIRTY_MINUTE', '1h': 'ONE_HOUR', '2h': 'TWO_HOUR',
-      '4h': 'FOUR_HOUR', '6h': 'SIX_HOUR', '1d': 'ONE_DAY'
+      '4h': 'FOUR_HOUR', '6h': 'SIX_HOUR', '1d': 'ONE_DAY',
+      '1hr': 'ONE_HOUR', '5min': 'FIVE_MINUTE', '15min': 'FIFTEEN_MINUTE',
+      '30min': 'THIRTY_MINUTE', '2hr': 'TWO_HOUR', '4hr': 'FOUR_HOUR',
+      '6hr': 'SIX_HOUR'
     };
 
     const flattened = {};
@@ -641,6 +646,8 @@ function DashboardContent() {
         resizeObserver.disconnect();
         chart.remove();
         seriesMarkersRef.current?.setMarkers([]); // Ensure markers are cleared on unmount/re-init
+        priceLinesRef.current = []; // Clear price lines ref
+        volumeLinesRef.current = []; // Clear volume lines ref
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -809,18 +816,15 @@ function DashboardContent() {
 
   }, [activeAsset, chartTimeframe, debouncedTradeLogs, normalizeAssetSymbol, openPositions, showMarkers]);
 
-  // Price lines effect: TP, SL, trap prices, volume nodes
+  // TP/SL price lines effect (controlled by showPriceLines toggle)
   useEffect(() => {
-    if (!seriesRef.current || !showPriceLines) {
-      // Clear existing price lines when toggled off
-      priceLinesRef.current.forEach(pl => seriesRef.current?.removePriceLine(pl));
-      priceLinesRef.current = [];
-      return;
-    }
+    if (!seriesRef.current) return;
 
-    // Clear existing price lines
+    // Clear existing TP/SL/trap price lines
     priceLinesRef.current.forEach(pl => seriesRef.current.removePriceLine(pl));
     priceLinesRef.current = [];
+
+    if (!showPriceLines) return; // Don't draw TP/SL lines when toggled off
 
     try {
       // Draw TP/SL lines for open positions
@@ -843,8 +847,20 @@ function DashboardContent() {
         const trapLine = seriesRef.current.createPriceLine({ price: tPrice, color: color, lineWidth: 2, lineStyle: 2, title: `👻 ${currentStrat.trap_side} TRAP` });
         priceLinesRef.current.push(trapLine);
       }
+    } catch (err) {
+      console.error("TP/SL Lines Drawing Error:", err);
+    }
+  }, [openPositions, activeStrategies, activeAsset, normalizeAssetSymbol, showPriceLines]);
 
-      // Draw volume node lines from scan telemetry
+  // Volume node lines effect (always on, independent of showPriceLines)
+  useEffect(() => {
+    if (!seriesRef.current) return;
+
+    // Clear existing volume node lines
+    volumeLinesRef.current.forEach(pl => seriesRef.current.removePriceLine(pl));
+    volumeLinesRef.current = [];
+
+    try {
       const assetScans = scanStream.filter(s => normalizeAssetSymbol(s.asset) === normalizeAssetSymbol(activeAsset));
       const latestAssetScan = assetScans.length > 0 ? assetScans[0] : null;
       if (latestAssetScan?.telemetry) {
@@ -852,21 +868,21 @@ function DashboardContent() {
 
         if (t.macro_poc && t.macro_poc !== "None") {
           const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.macro_poc), color: '#f59e0b', lineWidth: 2, lineStyle: 0, title: 'MACRO POC' });
-          priceLinesRef.current.push(pl);
+          volumeLinesRef.current.push(pl);
         }
         if (t.upper_macro_node && t.upper_macro_node !== "None") {
           const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.upper_macro_node), color: '#94a3b8', lineWidth: 1, lineStyle: 1, title: 'UPPER NODE' });
-          priceLinesRef.current.push(pl);
+          volumeLinesRef.current.push(pl);
         }
         if (t.lower_macro_node && t.lower_macro_node !== "None") {
           const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.lower_macro_node), color: '#94a3b8', lineWidth: 1, lineStyle: 1, title: 'LOWER NODE' });
-          priceLinesRef.current.push(pl);
+          volumeLinesRef.current.push(pl);
         }
       }
     } catch (err) {
-      console.error("Price Lines Drawing Error:", err);
+      console.error("Volume Node Lines Error:", err);
     }
-  }, [openPositions, activeStrategies, activeAsset, scanStream, normalizeAssetSymbol, showPriceLines]);
+  }, [activeAsset, scanStream, normalizeAssetSymbol]);
 
   // Update header metrics when activeAsset or scanStream changes
   useEffect(() => {
@@ -1142,15 +1158,15 @@ function DashboardContent() {
 
       <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 md:gap-6 grow overflow-hidden px-4 sm:px-0">
         
-        <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-[calc(100vh-280px)] sm:h-[calc(100vh-240px)] md:h-[calc(100vh-200px)] lg:h-[calc(100vh-180px)]">
+        <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-[calc(100vh-320px)] sm:h-[calc(100vh-240px)] md:h-[calc(100vh-200px)] lg:h-[calc(100vh-180px)]">
           
-          <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
+          <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
             
-            <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-4 right-4 z-50 dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-2 rounded-lg transition-colors backdrop-blur-md">
-                {isChartMaximized ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
+            <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-2 right-2 sm:top-4 sm:right-4 z-50 dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-1 sm:p-2 rounded-lg transition-colors backdrop-blur-md">
+                {isChartMaximized ? <Minimize2 size={12} className="sm:size-[14px]"/> : <Maximize2 size={12} className="sm:size-[14px]"/>}
             </button>
 
-            <div className="absolute top-6 right-16 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
+            <div className="hidden sm:block absolute top-6 right-16 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {openPositions.slice(0, 3).map((log, i) => {
                  const displayPnl = log.execution_mode.includes('LIVE') ? log.pnl : 
                  ((log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1));
@@ -1210,7 +1226,7 @@ function DashboardContent() {
             </div>
           </div>
 
-          <div className="flex flex-col h-[50%] sm:h-[35%] overflow-hidden border dark:border-white/5 border-slate-200 rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
+          <div className="flex flex-col h-[55%] sm:h-[40%] overflow-hidden border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
             <div className="flex items-center gap-6 px-6 pt-5 border-b dark:border-white/5 border-slate-200 dark:bg-slate-950/80 bg-white sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
@@ -1362,7 +1378,7 @@ function DashboardContent() {
         </div>
 
                 <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-hidden lg:resize-y pb-2">
-          <div className="bg-slate-900/50 border border-white/10 rounded-[2.5rem] p-6 shadow-2xl flex-shrink-0">
+          <div className="dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] p-4 sm:p-6 shadow-2xl flex-shrink-0">
             <h3 className="text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 mb-4 flex items-center justify-between">
               <span>Active Matrix</span>
               <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full font-mono uppercase">
@@ -1469,7 +1485,7 @@ function DashboardContent() {
             })()}
           </div>
 
-          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-[2.5rem] flex flex-col overflow-hidden shadow-2xl min-h-[300px] max-h-[min(400px, calc(100vh - 200px))]">
+          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-2xl sm:rounded-[2.5rem] flex flex-col overflow-hidden shadow-2xl min-h-[300px] max-h-[min(400px, calc(100vh - 200px))]">
             <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
               <select
@@ -1505,7 +1521,7 @@ function DashboardContent() {
                 )}
             </div>
           </div>
-          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[500px]">
+          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-2xl sm:rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[500px]">
           <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
               {messages.map(m => (
