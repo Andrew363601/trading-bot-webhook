@@ -162,6 +162,9 @@ app.post('/api/wake', async (req, res) => {
         console.log(`[AGENT CORTEX] Decision Matrix:`, decisionJson.action || "APPROVE_EXECUTION");
         console.log(`[AGENT RATIONALE]:`, decisionJson.working_thesis || "Executing protocol.");
 
+        // 🟢 THE FIX: Log the reasoning to the persistent audit trail for the UI
+        await logAgentActivity(tenant_id, "Agent Cortex", asset, `Analysis Complete. Action: ${decisionJson.action}. Rationale: ${decisionJson.working_thesis}`, "AGENT_DECISION");
+
         if (decisionJson.working_thesis) {
             const updatePayload = { active_thesis: decisionJson.working_thesis };
             

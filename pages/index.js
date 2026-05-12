@@ -1250,7 +1250,7 @@ function DashboardContent() {
             })()}
           </div>
 
-          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
+          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[300px]">
             <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center justify-between">
               <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
               <select
@@ -1268,18 +1268,27 @@ function DashboardContent() {
                 {sessionLogs.filter(log => sessionLogAgentFilter === 'ALL' || log.agent_name === sessionLogAgentFilter).length === 0 ? (
                     <div className="text-slate-600 italic">Awaiting agent activity...</div>
                 ) : (
-                    sessionLogs.filter(log => sessionLogAgentFilter === 'ALL' || log.agent_name === sessionLogAgentFilter).filter(log => normalizeAssetSymbol(log.asset) === normalizeAssetSymbol(activeAsset)).map((log, i) => (
-                        <div key={i} className="flex flex-col">
-                            <span className="text-[8px] font-black text-slate-500 uppercase">{new Date(log.timestamp).toLocaleTimeString()} - {log.agent_name}</span>
-                            <span className="text-[9px] text-white/80 whitespace-pre-wrap">{log.log_message}</span>
-                        </div>
-                    ))
+                    sessionLogs.filter(log => sessionLogAgentFilter === 'ALL' || log.agent_name === sessionLogAgentFilter).filter(log => normalizeAssetSymbol(log.asset) === normalizeAssetSymbol(activeAsset)).map((log, i) => {
+                        const agentColor = 
+                            log.agent_name === 'Sniper' ? 'text-emerald-400' : 
+                            log.agent_name === 'Watchdog' ? 'text-rose-400' : 
+                            log.agent_name === 'Agent Cortex' ? 'text-indigo-400' : 'text-slate-500';
+                        
+                        return (
+                            <div key={i} className="flex flex-col border-l-2 border-white/5 pl-3 py-1 hover:bg-white/[0.02] transition-colors">
+                                <span className={`text-[8px] font-black uppercase tracking-tighter ${agentColor}`}>
+                                    {new Date(log.timestamp).toLocaleTimeString()} - {log.agent_name}
+                                </span>
+                                <span className="text-[9px] text-white/70 whitespace-pre-wrap leading-relaxed">{log.log_message}</span>
+                            </div>
+                        );
+                    })
                 )}
             </div>
           </div>
-          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl">
+          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[500px]">
           <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
-            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow min-h-[150px]">
+            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow min-h-[250px]">
               {messages.map(m => (
                 <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                     {m.toolInvocations && m.toolInvocations.map(tool => (
