@@ -4,7 +4,13 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+import Ws from 'ws'; 
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  { global: { WebSocket: Ws } }
+);
 
 async function sendDiscordAlert(tenant_id, { title, description, color, fields = [], imageUrl = null }) {
     const { data: settings, error: settingsError } = await supabase

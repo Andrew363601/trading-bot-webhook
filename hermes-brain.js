@@ -7,7 +7,13 @@ import { createClient } from '@supabase/supabase-js';
 const app = express();
 app.use(express.json());
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+import Ws from 'ws'; 
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  { global: { WebSocket: Ws } }
+);
 
 async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_type = 'INFO') {
     try {

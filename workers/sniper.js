@@ -6,7 +6,13 @@ import WebSocket from 'ws';
 import { evaluateStrategy } from '../lib/strategy-router.js';
 import { executeTradeMCP } from '../lib/execute-trade-mcp.js'; 
 
-const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+import Ws from 'ws'; 
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  { global: { WebSocket: Ws } }
+);
 
 function generateCoinbaseToken(method, path, apiKey, apiSecret) {
     const privateKey = crypto.createPrivateKey({ key: apiSecret.replace(/\\n/g, '\n'), format: 'pem' });
