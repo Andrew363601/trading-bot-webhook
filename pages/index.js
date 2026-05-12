@@ -78,7 +78,6 @@ function DashboardContent() {
   const [logStrategyFilter, setLogStrategyFilter] = useState('ALL');
   const [logStatusFilter, setLogStatusFilter] = useState('ALL');
   const [sessionLogAgentFilter, setSessionLogAgentFilter] = useState('ALL'); // New state for session log filter
-  const [sessionLogAgentFilter, setSessionLogAgentFilter] = useState('ALL'); // New state for session log filter
 
   // Active matrix navigation state
   const [currentStrategyIndex, setCurrentStrategyIndex] = useState(0);
