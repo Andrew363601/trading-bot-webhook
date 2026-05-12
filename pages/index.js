@@ -528,6 +528,7 @@ function DashboardContent() {
     return () => {
         resizeObserver.disconnect();
         chart.remove();
+        seriesMarkersRef.current?.setMarkers([]); // Ensure markers are cleared on unmount/re-init
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); 
@@ -1140,7 +1141,7 @@ function DashboardContent() {
               </div>
             </div>
 
-            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[300px] sm:min-h-[500px] max-h-[calc(100vh-400px)]">
+            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[450px] sm:min-h-[500px] max-h-[calc(100vh-400px)]">
               {displayLogs.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12">
                   <Layers size={24} className="mb-2 opacity-50" />
@@ -1374,7 +1375,7 @@ function DashboardContent() {
           </div>
           <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[500px]">
           <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
-            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow min-h-[250px]">
+            <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
               {messages.map(m => (
                 <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                     {m.toolInvocations && m.toolInvocations.map(tool => (

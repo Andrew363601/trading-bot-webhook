@@ -29,7 +29,17 @@ export default async function handler(req, res) {
       if (userError || !user) {
         return res.status(401).json({ error: 'Invalid token' });
       }
-      tenantId = user.user_metadata?.tenant_id || user.id;
+
+      const { data: tenantUserLink, error: tenantLinkError } = await supabase
+        .from('tenant_users')
+        .select('tenant_id')
+        .eq('auth_user_id', user.id)
+        .single();
+
+      if (tenantLinkError || !tenantUserLink) {
+        return res.status(401).json({ error: 'User not linked to a tenant' });
+      }
+      tenantId = tenantUserLink.tenant_id;
     } catch (tokenErr) {
       return res.status(401).json({ error: 'Token verification failed' });
     }
