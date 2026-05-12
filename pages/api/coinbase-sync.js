@@ -1,13 +1,35 @@
 // pages/api/coinbase-sync.js
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
+import { withTenantAuth } from '../../lib/auth-middleware';
+import { retrieveAPIKey } from '../../lib/secrets-manager.js';
+import { createClient } from '@supabase/supabase-js';
 
-export default async function handler(req, res) {
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+async function handler(req, res) {
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
     try {
-        const apiKeyName = process.env.COINBASE_API_KEY;
-        const apiSecret = process.env.COINBASE_API_SECRET;
+        const { tenantId } = req.tenant;
+
+        let apiKeyName = process.env.COINBASE_API_KEY;
+        let apiSecret = process.env.COINBASE_API_SECRET;
+        
+        // Attempt to retrieve tenant-specific keys
+        try {
+            const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+            if (secrets && secrets.apiKey && secrets.apiSecret) {
+                apiKeyName = secrets.apiKey;
+                apiSecret = secrets.apiSecret;
+            }
+        } catch (e) {
+            console.warn(`[COINBASE SYNC] No keys for tenant ${tenantId}, falling back to ENV`);
+        }
+
         if (!apiKeyName || !apiSecret) return res.status(401).json({ error: 'Missing API Keys' });
 
         const formattedSecret = apiSecret.replace(/\\n/g, '\n').trim();
@@ -69,3 +91,5 @@ export default async function handler(req, res) {
         return res.status(200).json({ positions: [], orders: [] }); 
     }
 }
+
+export default withTenantAuth(handler);

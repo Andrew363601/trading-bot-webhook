@@ -36,3 +36,31 @@ body {
   transition-duration: 150ms;
   
 }
+
+/* Responsive Table Cell Styling for Mobile */
+.responsive-table-cell {
+  @apply px-2 py-2 whitespace-nowrap;
+  min-width: 70px; /* Default min-width for smaller cells */
+}
+
+.responsive-table-cell.date {
+  min-width: 70px;
+}
+
+.responsive-table-cell.context {
+  min-width: 100px;
+}
+
+.responsive-table-cell.vector {
+  min-width: 60px;
+}
+
+.responsive-table-cell.entry,
+.responsive-table-cell.targets {
+  min-width: 80px;
+}
+
+.responsive-table-cell.status,
+.responsive-table-cell.pnl {
+  min-width: 70px;
+}

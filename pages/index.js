@@ -10,7 +10,7 @@ import {
   Send, Activity, PieChart, Shield, Zap, TrendingUp, TrendingDown,
   Target, AlertTriangle, ArrowRight, RefreshCw, Layers, BrainCircuit,
   Settings, LogOut, Clock, Crosshair, ChevronRight, Menu, X, PlusCircle,
-  Search, AlertOctagon, Eye, Minimize2, Maximize2, Power, ChevronDown
+  Search, AlertOctagon, Eye, Minimize2, Maximize2, Power, ChevronDown, Sun, Moon
 } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
 import MarketScanner from '../components/MarketScanner';
@@ -26,6 +26,27 @@ export default function Dashboard() {
 function DashboardContent() {
   const supabase = useSupabaseClient();
   const session = useSession();
+  const [theme, setTheme] = useState('dark'); // Default to dark mode
+
+  // Theme persistence
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme) {
+      setTheme(savedTheme);
+      document.documentElement.classList.toggle('dark', savedTheme === 'dark');
+    } else {
+      document.documentElement.classList.add('dark'); // Default to dark if no preference
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('theme', theme);
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(prevTheme => (prevTheme === 'dark' ? 'light' : 'dark'));
+  };
 
   // Helper to normalize asset symbols for consistent comparison
   const normalizeAssetSymbol = useCallback((symbol) => {
@@ -241,7 +262,9 @@ function DashboardContent() {
       
       setLoading(false); 
 
-      fetch(`/api/portfolio?asset=${activeAsset}`)
+      fetch(`/api/portfolio?asset=${activeAsset}`, {
+          headers: { 'Authorization': `Bearer ${session?.access_token}` }
+      })
           .then(res => res.json())
           .then(data => {
               if (data) {
@@ -251,7 +274,9 @@ function DashboardContent() {
           })
           .catch(e => console.warn("[NEXUS SYNC] Portfolio API delayed:", e.message));
 
-      fetch('/api/coinbase-sync')
+      fetch('/api/coinbase-sync', {
+          headers: { 'Authorization': `Bearer ${session?.access_token}` }
+      })
           .then(res => res.json())
           .then(data => {
               if (data) {
@@ -512,7 +537,7 @@ function DashboardContent() {
     let intervalId;
 
     const loadChartData = async (isLiveTick = false) => {
-        if(!seriesRef.current || !volumeSeriesRef.current) return;
+        if(!seriesRef.current || !volumeSeriesRef.current || !chartRef.current) return;
 
         const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
         const granularity = tfMap[chartTimeframe] || 60;
@@ -524,7 +549,12 @@ function DashboardContent() {
             const data = await res.json();
             if(!isMounted) return;
 
-            if (!Array.isArray(data) || data.length === 0) return;
+            if (!Array.isArray(data) || data.length === 0) {
+                seriesRef.current.setData([]);
+                volumeSeriesRef.current.setData([]);
+                seriesMarkersRef.current.setMarkers([]); // Clear markers if no data
+                return;
+            }
 
             if (isLiveTick) {
                 const latestCandle = data[data.length - 1];
@@ -544,21 +574,59 @@ function DashboardContent() {
                     color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
                 }));
                 volumeSeriesRef.current.setData(volumeData);
+
+                // Update markers for the new asset and data
+                const relevantMarkers = tradeLogs
+                    .filter(trade => normalizeAssetSymbol(trade.symbol) === normalizeAssetSymbol(activeAsset))
+                    .map(trade => {
+                        const tradeTime = new Date(trade.created_at).getTime() / 1000;
+                        const exitTime = trade.exit_time ? new Date(trade.exit_time).getTime() / 1000 : null;
+
+                        const markers = [];
+
+                        // Entry marker
+                        if (trade.entry_price) {
+                            markers.push({
+                                time: tradeTime,
+                                position: trade.side === 'BUY' ? 'belowBar' : 'aboveBar',
+                                color: trade.side === 'BUY' ? '#10b981' : '#ef4444',
+                                shape: trade.side === 'BUY' ? 'arrowUp' : 'arrowDown',
+                                text: `${trade.side} ${trade.qty} @ ${trade.entry_price}`
+                            });
+                        }
+
+                        // Exit marker
+                        if (exitTime && trade.exit_price) {
+                            markers.push({
+                                time: exitTime,
+                                position: trade.side === 'BUY' ? 'aboveBar' : 'belowBar',
+                                color: trade.side === 'BUY' ? '#ef4444' : '#10b981',
+                                shape: trade.side === 'BUY' ? 'arrowDown' : 'arrowUp',
+                                text: `Closed @ ${trade.exit_price} PnL: ${trade.pnl}`
+                            });
+                        }
+                        return markers;
+                    })
+                    .flat(); // Flatten array of arrays into a single array
+
+                seriesMarkersRef.current.setMarkers(relevantMarkers);
             }
         } catch(e) { console.error("Chart Fetch Error:", e); }
     };
 
-    loadChartData(false); 
+    loadChartData(false);
     intervalId = setInterval(() => loadChartData(true), 3000);
 
-    return () => { 
-        isMounted = false; 
-        clearInterval(intervalId); 
+    return () => {
+        isMounted = false;
+        clearInterval(intervalId);
     };
-  }, [activeAsset, chartTimeframe]);
+  }, [activeAsset, chartTimeframe, tradeLogs, normalizeAssetSymbol]);
 
   useEffect(() => {
       if(!seriesRef.current || !seriesMarkersRef.current) return;
+      // Clear markers when activeAsset changes to prevent duplicates
+      seriesMarkersRef.current.setMarkers([]);
 
       try {
           const markers = [];
@@ -760,7 +828,7 @@ function DashboardContent() {
 
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-200 p-4 font-sans flex flex-col gap-4 relative">
+    <div className="min-h-screen bg-[#020617] text-slate-200 px-2 sm:px-4 py-4 font-sans flex flex-col gap-4 relative">
       
       {isDefconActive && (
           <div className="bg-red-500/20 border-b border-red-500/50 text-red-200 px-6 py-3 flex items-center justify-center gap-3 w-full animate-pulse z-50">
@@ -788,6 +856,14 @@ function DashboardContent() {
                 <Link href="/settings" className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Settings className="w-3 h-3" /> API Keys
                 </Link>
+                <button 
+                    onClick={toggleTheme} 
+                    className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2"
+                    title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+                >
+                    {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+                    {theme === 'dark' ? 'Light' : 'Dark'}
+                </button>
                 <Link href="/performance" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Activity className="w-3 h-3" /> Performance
                 </Link>
@@ -820,6 +896,14 @@ function DashboardContent() {
           <Link href="/settings" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-300 border border-white/5 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
             <Settings className="w-3 h-3" /> API Keys
           </Link>
+          <button 
+              onClick={() => { toggleTheme(); setShowMobileMenu(false); }} 
+              className="text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-300 border border-white/5 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full"
+              title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          >
+              {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+              {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+          </button>
           <Link href="/performance" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
             <Activity className="w-3 h-3" /> Performance
           </Link>
@@ -856,7 +940,7 @@ function DashboardContent() {
             </button>
 
             {showScanner && (
-              <div className="absolute top-full left-0 mt-2 w-full sm:w-96 md:w-80 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-96">
+              <div className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-80 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
                 <div className="flex items-center justify-between p-3 border-b border-white/5">
                    <span className="text-[9px] sm:text-[10px] font-black uppercase text-indigo-400 tracking-widest">Select Asset</span>
                    <button onClick={() => setShowScanner(false)} className="text-slate-500 hover:text-white"><X size={14}/></button>
@@ -1056,23 +1140,23 @@ function DashboardContent() {
               </div>
             </div>
 
-            <div className="overflow-y-auto custom-scrollbar flex-grow">
+            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[300px] sm:min-h-[500px] max-h-[calc(100vh-400px)]">
               {displayLogs.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12">
                   <Layers size={24} className="mb-2 opacity-50" />
                   <p className="text-[11px] font-bold uppercase tracking-widest">No data available</p>
                 </div>
               ) : (
-                <table className="w-full min-w-full text-left table-fixed">
+                <table className="w-full min-w-max text-left">
                   <thead className="bg-slate-950/40 text-[9px] font-black text-slate-600 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
                     <tr>
-                      <th className="px-4 py-3 w-24">Date</th>
-                      <th className="px-4 py-3 text-center">Context</th>
-                      <th className="px-4 py-3 text-center w-20">Vector</th>
-                      <th className="px-4 py-3 text-center">Entry</th>
-                      <th className="px-4 py-3 text-center">Targets</th>
-                      <th className="px-4 py-3">Status</th>
-                      <th className="px-4 py-3 text-right">PnL</th>
+                      <th className="px-2 py-2 whitespace-nowrap min-w-[70px]">Date</th>
+                      <th className="px-2 py-2 whitespace-nowrap min-w-[100px] text-center">Context</th>
+                      <th className="px-2 py-2 whitespace-nowrap min-w-[60px] text-center">Vector</th>
+                      <th className="px-2 py-2 whitespace-nowrap min-w-[80px] text-center">Entry</th>
+                      <th className="px-2 py-2 whitespace-nowrap min-w-[80px] text-center">Targets</th>
+                      <th className="px-2 py-2 whitespace-nowrap min-w-[70px]">Status</th>
+                      <th className="px-2 py-2 whitespace-nowrap min-w-[70px] text-right">PnL</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
@@ -1098,10 +1182,10 @@ function DashboardContent() {
 
                       return (
                       <tr key={i} className={`hover:bg-white/[0.02] transition-colors ${isShadow ? 'opacity-50' : ''}`}>
-                        <td className="px-4 py-3 text-[9px] text-slate-500">
+                        <td className="responsive-table-cell date text-[9px] text-slate-500">
                             <div className="flex flex-col"><span className="text-[10px] font-bold text-slate-400">{formattedTime}</span></div>
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="responsive-table-cell context text-center">
                             <div className="flex flex-col items-center gap-1">
                                 <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded border bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10">
                                     {log.strategy_id?.replace('_V1', '')}
@@ -1111,28 +1195,30 @@ function DashboardContent() {
                                 {isTripwire && !isShadow && <span className="text-[7px] bg-amber-500/20 text-amber-300 px-1 rounded uppercase tracking-widest">TRIPWIRE</span>}
                             </div>
                         </td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="responsive-table-cell vector text-center">
                             <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${isShadow ? 'bg-slate-800 text-slate-500' : (log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400')}`}>
                                 {log.side} {log.qty > 0 ? `(${log.qty})` : ''}
                             </span>
                         </td>
-                        <td className="px-4 py-3 text-slate-300 text-[10px] text-center">${log.entry_price}</td>
-                        <td className="px-4 py-3 text-center">
+                        <td className="responsive-table-cell entry text-[10px] text-slate-300 text-center">
+                            {log.entry_price ? `$${log.entry_price.toFixed(2)}` : '---'}
+                        </td>
+                        <td className="responsive-table-cell targets text-center">
                             {isShadow ? <span className="text-slate-700 italic text-[9px]">Rejected</span> : 
                              (log.tp_price || log.sl_price ? (
                                 <div className="flex flex-col text-[8px] tracking-tighter uppercase">
-                                    <span className="text-emerald-500/60">TP: ${log.tp_price}</span>
-                                    <span className="text-red-500/60">SL: ${log.sl_price}</span>
+                                    <span className="text-emerald-500/60">TP: ${log.tp_price ? log.tp_price.toFixed(2) : '---'}</span>
+                                    <span className="text-red-500/60">SL: ${log.sl_price ? log.sl_price.toFixed(2) : '---'}</span>
                                 </div>
                             ) : <span className="text-slate-700 italic text-[9px]">Dynamic</span>)}
                         </td>
-                        <td className="px-4 py-3">
+                        <td className="responsive-table-cell status text-center">
                             {isShadow ? <span className="text-[9px] text-red-400 font-bold">VETOED</span> :
-                            (log.exit_price ? <span className="text-[10px] text-slate-400">${log.exit_price}</span> : 
+                            (log.exit_price ? <span className="text-[10px] text-slate-400">${log.exit_price.toFixed(2)}</span> : 
                              <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
                              <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">X</button></>)}
                         </td>
-                        <td className="px-4 py-3 text-right font-black text-[10px]">{pnlDisplay}</td>
+                        <td className="responsive-table-cell pnl text-right font-black text-[10px]">{pnlDisplay}</td>
                       </tr>
                     )})}
                   </tbody>
