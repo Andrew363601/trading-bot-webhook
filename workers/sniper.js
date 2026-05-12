@@ -2,14 +2,16 @@
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import Ws from 'ws'; 
+import WebSocket from 'ws'; 
+import { evaluateStrategy } from '../lib/strategy-router.js';
+import { executeTradeMCP } from '../lib/execute-trade-mcp.js'; 
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
   { 
-    global: { WebSocket: Ws },
-    realtime: { transport: Ws }
+    global: { WebSocket: WebSocket },
+    realtime: { transport: WebSocket }
   }
 );
 

@@ -4,14 +4,14 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
 
-import Ws from 'ws'; 
+import WebSocket from 'ws'; 
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
   { 
-    global: { WebSocket: Ws },
-    realtime: { transport: Ws }
+    global: { WebSocket: WebSocket },
+    realtime: { transport: WebSocket }
   }
 );
 
