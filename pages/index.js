@@ -828,7 +828,7 @@ function DashboardContent() {
 
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-200 px-2 sm:px-4 py-4 font-sans flex flex-col gap-4 relative">
+    <div className="min-h-screen dark:bg-[#020617] dark:text-slate-200 bg-white text-slate-900 px-2 sm:px-4 py-4 font-sans flex flex-col gap-4 relative">
       
       {isDefconActive && (
           <div className="bg-red-500/20 border-b border-red-500/50 text-red-200 px-6 py-3 flex items-center justify-center gap-3 w-full animate-pulse z-50">
@@ -840,12 +840,12 @@ function DashboardContent() {
       )}
 
       {loading && (
-         <div className="absolute inset-0 z-50 bg-[#020617]/90 backdrop-blur-sm flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">
+         <div className="absolute inset-0 z-50 dark:bg-[#020617]/90 bg-white/90 backdrop-blur-sm flex items-center justify-center font-mono text-indigo-500 animate-pulse uppercase tracking-[0.4em]">
              Establishing Nexus...
          </div>
       )}
 
-      <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b border-white/5 pb-4 px-4 sm:px-0">
+      <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b dark:border-white/5 border-slate-300/5 pb-4 px-4 sm:px-0">
         <div className="flex items-center gap-2 sm:gap-4">
             <h1 className="text-lg sm:text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus</h1>
             <div className="hidden sm:block h-6 w-[1px] bg-white/10 mx-2" />
@@ -1336,8 +1336,8 @@ function DashboardContent() {
             })()}
           </div>
 
-          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[300px]">
-            <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center justify-between">
+          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[300px]">
+            <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center justify-between">
               <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
               <select
                 value={sessionLogAgentFilter}
@@ -1372,8 +1372,8 @@ function DashboardContent() {
                 )}
             </div>
           </div>
-          <div className="bg-slate-950 border border-white/10 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[500px]">
-          <div className="px-6 py-4 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
+          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[500px]">
+          <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow min-h-[250px]">
               {messages.map(m => (
                 <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
@@ -1384,7 +1384,7 @@ function DashboardContent() {
                         </div>
                     ))}
                     {m.content && (
-                        <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'bg-indigo-500/10 text-indigo-300 border border-indigo-500/20' : 'bg-slate-900/80 text-cyan-400 border border-white/5'}`}>
+                        <div className={`max-w-[90%] rounded-2xl px-4 py-3 ${m.role === 'user' ? 'dark:bg-indigo-500/10 bg-indigo-100 dark:text-indigo-300 text-indigo-800 dark:border-indigo-500/20 border-indigo-300/50' : 'dark:bg-slate-900/80 bg-slate-100 dark:text-cyan-400 text-cyan-800 dark:border-white/5 border-slate-300/50'}`}>
                             {m.content}
                         </div>
                     )}
@@ -1392,9 +1392,9 @@ function DashboardContent() {
               ))}
               <div ref={chatEndRef} />
             </div>
-            <form onSubmit={handleManualSubmit} className="p-4 border-t border-white/5 bg-slate-900/40 flex gap-3">
+            <form onSubmit={handleManualSubmit} className="p-4 border-t dark:border-white/5 border-slate-300/50 dark:bg-slate-900/40 bg-slate-100 flex gap-3">
                 <input 
-                  className="w-full bg-black/50 border border-white/10 rounded-xl px-4 py-3 text-[11px] font-mono text-white focus:outline-none focus:border-indigo-500/50" 
+                  className="w-full dark:bg-black/50 bg-white dark:border-white/10 border-slate-300/50 rounded-xl px-4 py-3 text-[11px] font-mono dark:text-white text-slate-900 focus:outline-none focus:border-indigo-500/50" 
                   value={localInput} 
                   onChange={(e) => setLocalInput(e.target.value)} 
                   placeholder="Command Nexus..." 
