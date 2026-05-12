@@ -8,12 +8,12 @@ import {
   Zap, Lock, AlertCircle
 } from 'lucide-react';
 
-export default function MarketScanner({ onSelectAsset, currentAsset }) {
+export default function MarketScanner({ onSelectAsset, currentAsset, activeStrategies = [] }) {
   const supabase = useSupabaseClient();
   const session = useSession();
   const token = session?.access_token;
 
-  const [activeTab, setActiveTab] = useState('FAVORITES'); // FAVORITES, BROWSE
+  const [activeTab, setActiveTab] = useState('FAVORITES'); // FAVORITES, BROWSE, ACTIVE_STRATEGIES, PERPS, FUTURES
   const [allAssets, setAllAssets] = useState([]);
   const [favorites, setFavorites] = useState([]);
   const [selectedAsset, setSelectedAsset] = useState(null);
@@ -210,6 +210,12 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
     const normalizedId = normalizeAssetSymbol(a.id);
     // 1. Tab filtering
     if (activeTab === 'FAVORITES' && !favorites.includes(a.id)) return false;
+    if (activeTab === 'ACTIVE_STRATEGIES') {
+      const assetHasActiveStrategy = activeStrategies.some(s => 
+        normalizeAssetSymbol(s.asset) === normalizedId && s.is_active === true
+      );
+      if (!assetHasActiveStrategy) return false;
+    }
     if (activeTab === 'PERPS' && !a.id.includes('PERP')) return false;
     if (activeTab === 'FUTURES' && !a.id.includes('-CDE')) return false;
     // 2. Search filtering (using normalized ID)
@@ -233,10 +239,21 @@ export default function MarketScanner({ onSelectAsset, currentAsset }) {
           Favs
         </button>
         <button
+          onClick={() => setActiveTab('ACTIVE_STRATEGIES')}
+          className={`px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
+            activeTab === 'ACTIVE_STRATEGIES'
+              ? 'text-emerald-400 border-b-2 border-emerald-400'
+              : 'text-slate-500 hover:text-slate-300'
+          }`}
+        >
+          <Zap className="w-3 h-3 inline mr-1" />
+          My Strategies
+        </button>
+        <button
           onClick={() => setActiveTab('BROWSE')}
           className={`px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
             activeTab === 'BROWSE'
-              ? 'text-emerald-400 border-b-2 border-emerald-400'
+              ? 'text-cyan-400 border-b-2 border-cyan-400'
               : 'text-slate-500 hover:text-slate-300'
           }`}
         >

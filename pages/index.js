@@ -1,6 +1,7 @@
 // HARD PUSH:
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useSwipeable } from 'react-swipeable';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { useChat } from '@ai-sdk/react'; 
 import Link from 'next/link'; 
@@ -461,6 +462,22 @@ function DashboardContent() {
     return activeStrategies.filter(s => normalizeAssetSymbol(s.asset) === normalizedActiveAsset);
   }, [activeStrategies, activeAsset, normalizeAssetSymbol]);
 
+  // Swipe handlers for active matrix card strategy cycling
+  const swipeHandlers = useSwipeable({
+    onSwipedLeft: () => {
+      if (currentAssetStrategies.length > 1) {
+        setCurrentStrategyIndex(prev => (prev + 1) % currentAssetStrategies.length);
+      }
+    },
+    onSwipedRight: () => {
+      if (currentAssetStrategies.length > 1) {
+        setCurrentStrategyIndex(prev => (prev - 1 + currentAssetStrategies.length) % currentAssetStrategies.length);
+      }
+    },
+    trackMouse: true,
+    preventScrollOnSwipe: true
+  });
+
   const paperPositions = useMemo(() => tradeLogs.filter(log => 
     !log.exit_price && 
     log.execution_mode === 'PAPER' &&
@@ -585,6 +602,7 @@ function DashboardContent() {
                     color: latestCandle.close >= latestCandle.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
                 });
             } else {
+                seriesMarkersRef.current.setMarkers([]); // Proactively clear markers on full data reload
                 seriesRef.current.setData(data);
                 
                 const volumeData = data.map(c => ({
@@ -593,43 +611,6 @@ function DashboardContent() {
                     color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
                 }));
                 volumeSeriesRef.current.setData(volumeData);
-
-                // Update markers for the new asset and data
-                console.log("[CHART DEBUG] Setting chart markers for activeAsset:", activeAsset, "with", debouncedTradeLogs.length, "debounced trade logs.");
-                const relevantMarkers = debouncedTradeLogs
-                    .filter(trade => normalizeAssetSymbol(trade.symbol) === normalizeAssetSymbol(activeAsset))
-                    .map(trade => {
-                        const tradeTime = new Date(trade.created_at).getTime() / 1000;
-                        const exitTime = trade.exit_time ? new Date(trade.exit_time).getTime() / 1000 : null;
-
-                        const markers = [];
-
-                        // Entry marker
-                        if (trade.entry_price) {
-                            markers.push({
-                                time: tradeTime,
-                                position: trade.side === 'BUY' ? 'belowBar' : 'aboveBar',
-                                color: trade.side === 'BUY' ? '#10b981' : '#ef4444',
-                                shape: trade.side === 'BUY' ? 'arrowUp' : 'arrowDown',
-                                text: `${trade.side} ${trade.qty} @ ${trade.entry_price}`
-                            });
-                        }
-
-                        // Exit marker
-                        if (exitTime && trade.exit_price) {
-                            markers.push({
-                                time: exitTime,
-                                position: trade.side === 'BUY' ? 'aboveBar' : 'belowBar',
-                                color: trade.side === 'BUY' ? '#ef4444' : '#10b981',
-                                shape: trade.side === 'BUY' ? 'arrowDown' : 'arrowUp',
-                                text: `Closed @ ${trade.exit_price} PnL: ${trade.pnl}`
-                            });
-                        }
-                        return markers;
-                    })
-                    .flat(); // Flatten array of arrays into a single array
-
-                seriesMarkersRef.current.setMarkers(relevantMarkers);
             }
         } catch(e) { console.error("Chart Fetch Error:", e); }
     };
@@ -644,9 +625,11 @@ function DashboardContent() {
   }, [activeAsset, chartTimeframe, tradeLogs, normalizeAssetSymbol]);
 
   useEffect(() => {
-      if(!seriesRef.current || !seriesMarkersRef.current) return;
-      // Clear markers when activeAsset changes to prevent duplicates
-      seriesMarkersRef.current.setMarkers([]);
+      if (!seriesRef.current || !seriesMarkersRef.current || !debouncedTradeLogs || debouncedTradeLogs.length === 0) {
+          seriesMarkersRef.current?.setMarkers([]); // Clear markers if conditions not met
+          return;
+      }
+      seriesMarkersRef.current.setMarkers([]); // Proactive clear at start of effect
 
       try {
           const markers = [];
@@ -659,7 +642,7 @@ function DashboardContent() {
           const candleTimesArray = currentData.map(c => c.time);
           const usedTimes = new Set();
           
-          [...tradeLogs].reverse().forEach(log => {
+          [...debouncedTradeLogs].reverse().forEach(log => {
               if (log.created_at) {
                   let rawTime = Math.floor(new Date(log.created_at).getTime() / 1000);
                   let snappedTime = candleTimesArray.reduce((prev, curr) => 
@@ -725,55 +708,9 @@ function DashboardContent() {
           markers.sort((a,b) => a.time - b.time);
           seriesMarkersRef.current.setMarkers(markers);
 
-          priceLinesRef.current.forEach(line => seriesRef.current.removePriceLine(line));
-          priceLinesRef.current = [];
+      } catch (e) { console.error("Chart Markers Error:", e); }
 
-          openPositions.forEach(pos => {
-              if(pos.entry_price) {
-                  const el = seriesRef.current.createPriceLine({ price: pos.entry_price, color: '#6366f1', lineWidth: 2, lineStyle: 0, title: `${pos.side} AVG` });
-                  priceLinesRef.current.push(el);
-              }
-              if(pos.tp_price) {
-                  const tl = seriesRef.current.createPriceLine({ price: pos.tp_price, color: '#10b981', lineWidth: 2, lineStyle: 2, title: 'TP' });
-                  priceLinesRef.current.push(tl);
-              }
-              if(pos.sl_price) {
-                  const sl = seriesRef.current.createPriceLine({ price: pos.sl_price, color: '#ef4444', lineWidth: 2, lineStyle: 2, title: 'SL' });
-                  priceLinesRef.current.push(sl);
-              }
-          });
-
-          const currentStrat = activeStrategies.find(s => s.asset === activeAsset);
-          if (currentStrat?.trap_price) {
-              const tPrice = parseFloat(currentStrat.trap_price);
-              const color = currentStrat.trap_side === 'BUY' ? '#10b981' : '#ef4444';
-              const trapLine = seriesRef.current.createPriceLine({ price: tPrice, color: color, lineWidth: 2, lineStyle: 2, title: `👻 ${currentStrat.trap_side} TRAP` });
-              priceLinesRef.current.push(trapLine);
-          }
-
-          const assetScans = scanStream.filter(s => s.asset === activeAsset);
-          const latestAssetScan = assetScans.length > 0 ? assetScans[0] : null;
-          if (latestAssetScan?.telemetry) {
-              const t = latestAssetScan.telemetry;
-              
-              if (t.macro_poc && t.macro_poc !== "None") {
-                  const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.macro_poc), color: '#f59e0b', lineWidth: 2, lineStyle: 0, title: 'MACRO POC' });
-                  priceLinesRef.current.push(pl);
-              }
-              if (t.upper_macro_node && t.upper_macro_node !== "None") {
-                  const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.upper_macro_node), color: '#94a3b8', lineWidth: 1, lineStyle: 1, title: 'UPPER NODE' });
-                  priceLinesRef.current.push(pl);
-              }
-              if (t.lower_macro_node && t.lower_macro_node !== "None") {
-                  const pl = seriesRef.current.createPriceLine({ price: parseFloat(t.lower_macro_node), color: '#94a3b8', lineWidth: 1, lineStyle: 1, title: 'LOWER NODE' });
-                  priceLinesRef.current.push(pl);
-              }
-          }
-
-      } catch (err) {
-          console.error("Marker Drawing Error:", err);
-      }
-  }, [tradeLogs, openPositions, activeAsset, chartTimeframe, activeStrategies, scanStream]);
+  }, [activeAsset, chartTimeframe, debouncedTradeLogs, normalizeAssetSymbol, seriesRef.current, seriesMarkersRef.current, openPositions]);
 
   // Update header metrics when activeAsset or scanStream changes
   useEffect(() => {
@@ -796,6 +733,13 @@ function DashboardContent() {
     
     console.log(`[DEBUG] Header metrics updated for ${activeAsset}: bids=${b}, asks=${a}, cvd=${c}`);
   }, [activeAsset, scanStream, normalizeAssetSymbol]);
+
+  // Auto-load first active strategy when asset changes
+  useEffect(() => {
+    if (currentAssetStrategies.length > 0) {
+      setCurrentStrategyIndex(0);
+    }
+  }, [currentAssetStrategies]);
 
   const [liveBidPercent, setLiveBidPercent] = useState(50);
 
@@ -973,6 +917,7 @@ function DashboardContent() {
                       setShowScanner(false);
                     }}
                     currentAsset={activeAsset}
+                    activeStrategies={activeStrategies}
                   />
                 </div>
               </div>
@@ -1160,7 +1105,7 @@ function DashboardContent() {
               </div>
             </div>
 
-            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[450px] sm:min-h-[500px] max-h-[calc(100vh-400px)]">
+            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[450px] max-h-[min(600px, calc(100vh - 150px))] sm:max-h-[calc(100vh-400px)]">
               {displayLogs.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12">
                   <Layers size={24} className="mb-2 opacity-50" />
@@ -1279,7 +1224,7 @@ function DashboardContent() {
                 const description = meta?.description || "Strategic execution layer focused on volatility and volume nodes.";
 
                 return (
-                  <div className="relative group">
+                  <div className="relative group" {...swipeHandlers}>
                     <div className="p-4 rounded-3xl border bg-black/40 border-white/10 text-left transition-all relative overflow-hidden flex flex-col gap-4">
                       <div className={`absolute top-0 left-0 w-full h-1 transition-colors ${strat.is_active ? 'bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-slate-700'}`} />
                       
@@ -1356,7 +1301,7 @@ function DashboardContent() {
             })()}
           </div>
 
-          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[300px]">
+          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[300px] max-h-[min(400px, calc(100vh - 200px))]">
             <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center justify-between">
               <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
               <select
