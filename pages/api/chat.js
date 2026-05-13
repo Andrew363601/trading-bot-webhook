@@ -451,7 +451,8 @@ export default async function handler(req, res) {
     // 🟢 THE FIX: Use result.text (Promise<string>) — stable across all ai v6.x versions
     const text = await result.text;
     res.setHeader('Content-Type', 'text/plain');
-    res.write(text);
+    // Gemini 3 sometimes returns empty text after thought tokens + function calls
+    res.write(text || 'I have analyzed the data and am ready to proceed. What specific information would you like me to share?');
     res.end();
 
   } catch (err) {
