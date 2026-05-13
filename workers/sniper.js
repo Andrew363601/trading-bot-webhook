@@ -224,10 +224,17 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
     } catch (e) { return { indicators: {}, crossAsset: {}, orderBook: {}, derivativesData: {} }; }
 }
 
-const RAM = { configs: [], lastMathRun: {}, isProcessingMath: {} };
-let activeProductIds = []; 
+const tenantRAM = new Map(); // tenantId => { configs, lastMathRun, isProcessingMath, activeProductIds }
+
+function getTenantState(tenantId) {
+    if (!tenantRAM.has(tenantId)) {
+        tenantRAM.set(tenantId, { configs: [], lastMathRun: {}, isProcessingMath: {}, activeProductIds: [] });
+    }
+    return tenantRAM.get(tenantId);
+}
 
 export async function startSniper(tenantId) {
+    const state = getTenantState(tenantId);
     await logAgentActivity(tenantId, "Sniper", "N/A", "Sniper worker started.", "WORKER_START");
     console.log(`[SNIPER-${tenantId}] Booting WebSocket Spinal Cord...`);
     const apiKeyName = process.env.COINBASE_API_KEY; const apiSecret = process.env.COINBASE_API_SECRET;
@@ -238,7 +245,7 @@ export async function startSniper(tenantId) {
         try {
             const { data } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).eq('is_active', true);
             if (data) {
-                RAM.configs = data;
+                state.configs = data;
                 await logAgentActivity(tenantId, "Sniper", "N/A", `Synced ${data.length} active strategies.`, "CONFIG_SYNC");
                 
                 const newProductIds = [...new Set(data.map(c => {
@@ -247,12 +254,12 @@ export async function startSniper(tenantId) {
                     return p;
                 }))];
 
-                const needsSubscription = newProductIds.some(id => !activeProductIds.includes(id));
+                const needsSubscription = newProductIds.some(id => !state.activeProductIds.includes(id));
 
                 if (needsSubscription && ws.readyState === WebSocket.OPEN) {
                     console.log(`[SNIPER] New assets detected in database. Hot-wiring WebSocket subscriptions...`);
                     ws.send(JSON.stringify({ type: 'subscribe', product_ids: newProductIds, channel: 'ticker' }));
-                    activeProductIds = newProductIds;
+                    state.activeProductIds = newProductIds;
                 }
             }
         } catch (e) { console.error("[RAM SYNC FAULT]", e.message); }
@@ -264,8 +271,8 @@ export async function startSniper(tenantId) {
     ws.on('open', async () => {
         await logAgentActivity(tenantId, "Sniper", "N/A", "WebSocket connected. Subscribing to live tape...", "WEBSOCKET_CONNECT");
         console.log(`[SNIPER] WebSocket connected. Subscribing to live tape...`);
-        if (activeProductIds.length > 0) {
-            ws.send(JSON.stringify({ type: 'subscribe', product_ids: activeProductIds, channel: 'ticker' }));
+        if (state.activeProductIds.length > 0) {
+            ws.send(JSON.stringify({ type: 'subscribe', product_ids: state.activeProductIds, channel: 'ticker' }));
         }
     });
 
@@ -278,7 +285,7 @@ export async function startSniper(tenantId) {
         const currentPrice = parseFloat(tick.price);
         const wsAsset = tick.product_id;
 
-        const activeAssetConfigs = RAM.configs.filter(c => {
+        const activeAssetConfigs = state.configs.filter(c => {
             let p = c.asset.toUpperCase().trim();
             if (!p.includes('-')) p = p.replace('PERP', '-PERP').replace('USD', '-USD');
             return p === wsAsset;
@@ -347,13 +354,13 @@ export async function startSniper(tenantId) {
             }
 
             const now = Date.now();
-            const lastRun = RAM.lastMathRun[config.id] || 0;
-            const isProcessing = RAM.isProcessingMath[config.id] || false;
+            const lastRun = state.lastMathRun[config.id] || 0;
+            const isProcessing = state.isProcessingMath[config.id] || false;
 
-            if (isProcessing || (now - lastRun < 120000)) continue; 
+            if (isProcessing || (now - lastRun < 60000)) continue; 
 
-            RAM.isProcessingMath[config.id] = true;
-            RAM.lastMathRun[config.id] = now;
+            state.isProcessingMath[config.id] = true;
+            state.lastMathRun[config.id] = now;
             await supabase.from('strategy_config').update({ is_processing: true }).eq('id', config.id).eq('tenant_id', tenantId);
             await logAgentActivity(tenantId, "Sniper", config.asset, `Starting strategy evaluation for ${config.strategy} on ${config.asset}.`, "STRATEGY_EVAL_START");
 
@@ -478,7 +485,7 @@ export async function startSniper(tenantId) {
                 console.error(`[SNIPER-${tenantId}] ASSET ERROR ${config.asset}:`, e.message);
                 await logAgentActivity(tenantId, "Sniper", config.asset, `Error during strategy evaluation for ${config.asset}: ${e.message}`, "ERROR");
             } finally {
-                RAM.isProcessingMath[config.id] = false;
+                state.isProcessingMath[config.id] = false;
                 await supabase.from('strategy_config').update({ is_processing: false }).eq('id', config.id).eq('tenant_id', tenantId);
             }
         }
