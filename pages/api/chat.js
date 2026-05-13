@@ -337,12 +337,21 @@ export default async function handler(req, res) {
           parameters: z.object({
             asset: z.string().optional().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
             symbol: z.string().optional().describe('The asset symbol, e.g., DOGE-PERP-INTX (alias for asset)'),
-            granularity: z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']).optional().describe('Candle granularity. Defaults to ONE_HOUR.'),
-            lookback_candles: z.number().max(5000).optional().describe('Total number of candles to fetch. Defaults to 150.')
+            granularity: z.union([z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']), z.number()]).optional().describe('Candle granularity: enum string or seconds number (60, 300, 900, 3600, 86400). Defaults to ONE_HOUR.'),
+            lookback_candles: z.number().max(5000).optional().describe('Total number of candles to fetch. Defaults to 150.'),
+            limit: z.number().max(5000).optional().describe('Alias for lookback_candles.')
           }),
-          execute: async ({ asset, symbol, granularity = 'ONE_HOUR', lookback_candles = 150 }) => {
+          execute: async ({ asset, symbol, granularity = 'ONE_HOUR', lookback_candles, limit }) => {
             const resolvedAsset = asset || symbol;
             if (!resolvedAsset) return { error: "Missing asset symbol" };
+            
+            // Resolve granularity: accept number (seconds) or enum string
+            const granularityMap = { 60: 'ONE_MINUTE', 300: 'FIVE_MINUTE', 900: 'FIFTEEN_MINUTE', 3600: 'ONE_HOUR', 86400: 'ONE_DAY' };
+            const resolvedGranularity = typeof granularity === 'number' ? (granularityMap[granularity] || 'ONE_HOUR') : (granularity || 'ONE_HOUR');
+            
+            // Resolve lookback_candles: accept limit as alias
+            const resolvedLookback = lookback_candles || limit || 150;
+            
             const apiKeyName = process.env.COINBASE_API_KEY;
             const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
             if (!apiKeyName || !apiSecret) return { error: "Missing Coinbase Credentials" };
@@ -360,7 +369,7 @@ export default async function handler(req, res) {
             const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
             
             let lookbackSeconds;
-            switch (granularity) {
+            switch (resolvedGranularity) {
                 case 'ONE_MINUTE': lookbackSeconds = 60; break;
                 case 'FIVE_MINUTE': lookbackSeconds = 300; break;
                 case 'FIFTEEN_MINUTE': lookbackSeconds = 900; break;
@@ -371,7 +380,7 @@ export default async function handler(req, res) {
             
             let allCandles = [];
             let currentEnd = Math.floor(Date.now() / 1000);
-            let candlesLeft = lookback_candles;
+            let candlesLeft = resolvedLookback;
 
             try {
               const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
@@ -413,7 +422,7 @@ export default async function handler(req, res) {
 
               return { 
                 asset: coinbaseProduct, 
-                granularity, 
+                granularity: resolvedGranularity, 
                 total_fetched_from_api: allCandles.length,
                 candles_returned_to_ai: safeData.length,
                 data: safeData
