@@ -218,31 +218,15 @@ function DashboardContent() {
         throw new Error(errData.error || `Chat API returned ${res.status}`);
       }
       
-      // Handle streaming response from pipeDataStreamToResponse
+      // Handle streaming response (raw text chunks from textStream)
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let fullContent = '';
+      let parsedContent = '';
       
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        fullContent += decoder.decode(value, { stream: true });
-      }
-      
-      // Parse SSE format: extract all text parts from "0:\"text\"" lines
-      let parsedContent = '';
-      const textLines = fullContent.match(/0:"([^"]*)"/g);
-      if (textLines) {
-        parsedContent = textLines
-          .map(line => line.replace(/^0:"/, '').replace(/"$/, ''))
-          .join('')
-          .replace(/\\n/g, '\n')
-          .replace(/\\"/g, '"');
-      }
-      
-      // Fallback: if no SSE format found, use raw content
-      if (!parsedContent) {
-        parsedContent = fullContent.replace(/^[0-9a-f]+:/gm, '').trim();
+        parsedContent += decoder.decode(value, { stream: true });
       }
       
       const assistantMessage = { 

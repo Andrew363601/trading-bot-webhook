@@ -440,15 +440,10 @@ export default async function handler(req, res) {
       },
     });
 
-    // 🟢 THE FIX: Use result.response (Web Response object) for ai v6.x compatibility
+    // 🟢 THE FIX: Use result.textStream (AsyncIterable) — stable across all ai v6.x versions
     res.setHeader('Content-Type', 'text/plain');
-    const response = result.response;
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(decoder.decode(value, { stream: true }));
+    for await (const chunk of result.textStream) {
+      res.write(chunk);
     }
     res.end();
 
