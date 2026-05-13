@@ -3,15 +3,11 @@
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
-import { createClient } from '@supabase/supabase-js';
+import { useSupabaseClient } from '@supabase/auth-helpers-react';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-);
-
 export default function LandingPage() {
+  const supabase = useSupabaseClient();
   const [logs, setLogs] = useState([]);
   const [showRationalization, setShowRationalization] = useState(false);
   const demoTenantId = process.env.NEXT_PUBLIC_DEMO_TENANT_ID;

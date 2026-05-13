@@ -72,30 +72,21 @@ export default async function handler(req, res) {
 
     console.log(`[CHAT API] Request for tenant: ${tenantId}. Message count: ${safeMessages.length}`);
 
+    // Helper for timeouts
+    const withTimeout = (promise, ms = 15000, fallback = { data: [], error: 'Timeout' }) => 
+        Promise.race([
+            promise,
+            new Promise(resolve => setTimeout(() => resolve(fallback), ms))
+        ]);
+
     let strategyQuery = supabase.from('strategy_config').select('*').eq('tenant_id', tenantId);
     let tradeLogQuery = supabase.from('trade_logs').select('*').is('exit_price', null).eq('tenant_id', tenantId);
     let recentLogQuery = supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5).eq('tenant_id', tenantId);
 
-    // Execute queries with individual error handling (query builders are not Promises)
-    let configsRes, tradesRes, closedRes;
-    try {
-      configsRes = await strategyQuery;
-    } catch (error) {
-      console.error("[SUPABASE ERROR] Failed to fetch strategy configs:", error.message);
-      configsRes = { data: [], error };
-    }
-    try {
-      tradesRes = await tradeLogQuery;
-    } catch (error) {
-      console.error("[SUPABASE ERROR] Failed to fetch open trades:", error.message);
-      tradesRes = { data: [], error };
-    }
-    try {
-      closedRes = await recentLogQuery;
-    } catch (error) {
-      console.error("[SUPABASE ERROR] Failed to fetch recent closed trades:", error.message);
-      closedRes = { data: [], error };
-    }
+    // Execute queries with timeouts
+    const configsRes = await withTimeout(strategyQuery);
+    const tradesRes = await withTimeout(tradeLogQuery);
+    const closedRes = await withTimeout(recentLogQuery);
 
     const allConfigs = configsRes.data || [];
     const openTrades = tradesRes.data || [];
@@ -203,21 +194,26 @@ export default async function handler(req, res) {
             days_back: z.number().optional().describe('Number of days back to search (e.g., 7 for this week). Leave undefined for all-time.')
           }),
           execute: async ({ asset, strategy_id, days_back }) => {
-            let query = supabase.from('trade_logs').select('*').not('exit_price', 'is', null).eq('tenant_id', tenantId);
+            const runQuery = async () => {
+                let query = supabase.from('trade_logs').select('*').not('exit_price', 'is', null).eq('tenant_id', tenantId);
 
-            if (asset) query = query.eq('symbol', asset);
-            if (strategy_id) query = query.eq('strategy_id', strategy_id);
-            if (days_back) {
-              const dateLimit = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
-              query = query.gte('exit_time', dateLimit);
-            }
+                if (asset) query = query.eq('symbol', asset);
+                if (strategy_id) query = query.eq('strategy_id', strategy_id);
+                if (days_back) {
+                const dateLimit = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
+                query = query.gte('exit_time', dateLimit);
+                }
+
+                const { data: trades, error } = await query;
+                if (error) throw error;
+                return trades;
+            };
 
             try {
-                const { data: trades, error } = await query;
-                if (error) {
-                    console.error("[SUPABASE ERROR] queryTradeLedger failed:", error.message);
-                    return { error: error.message };
-                }
+                const trades = await Promise.race([
+                    runQuery(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Query timeout')), 10000))
+                ]);
 
                 const tradesList = trades || [];
                 const totalTrades = tradesList.length;
@@ -266,7 +262,7 @@ export default async function handler(req, res) {
             reasoning: z.string().describe('Technical reasoning for this deployment or mutation.')
           }),
           execute: async (args) => {
-            try {
+            const runManage = async () => {
                 const { data: existing, error: existingError } = await supabase
                 .from('strategy_config')
                 .select('id')
@@ -275,10 +271,7 @@ export default async function handler(req, res) {
                 .eq('tenant_id', tenantId)
                 .maybeSingle();
 
-                if (existingError) {
-                    console.error("[SUPABASE ERROR] manageStrategy: Failed to fetch existing strategy_config:", existingError.message);
-                    return { success: false, error: existingError.message };
-                }
+                if (existingError) throw existingError;
 
                 const payload = {
                 tenant_id: tenantId,
@@ -299,11 +292,15 @@ export default async function handler(req, res) {
                 result = await supabase.from('strategy_config').insert([payload]);
                 }
         
-                if (result.error) {
-                    console.error("[SUPABASE ERROR] manageStrategy: Failed to save strategy_config:", result.error.message);
-                    return { success: false, error: result.error.message };
-                }
+                if (result.error) throw result.error;
                 return { success: true, message: `Strategy ${args.strategy_id} updated to ${payload.version}.` };
+            };
+
+            try {
+                return await Promise.race([
+                    runManage(),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Strategy update timeout')), 10000))
+                ]);
             } catch (err) {
                 console.error("[SUPABASE ERROR] Error during manageStrategy execution:", err.message);
                 return { success: false, error: `Exception during manageStrategy: ${err.message}` };
@@ -348,59 +345,49 @@ export default async function handler(req, res) {
             limit: z.number().max(5000).optional().describe('Alias for lookback_candles.')
           }),
           execute: async ({ asset, symbol, granularity = 'ONE_HOUR', lookback_candles, limit }) => {
-            const resolvedAsset = asset || symbol;
-            if (!resolvedAsset) return { error: "Missing asset symbol" };
-            
-            // Resolve granularity: accept enum string, numeric string (seconds), or short-hand string (1m, 1h)
-            const granularityMapping = {
-              'ONE_MINUTE': 'ONE_MINUTE', '1m': 'ONE_MINUTE', '60': 'ONE_MINUTE', 60: 'ONE_MINUTE',
-              'FIVE_MINUTE': 'FIVE_MINUTE', '5m': 'FIVE_MINUTE', '300': 'FIVE_MINUTE', 300: 'FIVE_MINUTE',
-              'FIFTEEN_MINUTE': 'FIFTEEN_MINUTE', '15m': 'FIFTEEN_MINUTE', '900': 'FIFTEEN_MINUTE', 900: 'FIFTEEN_MINUTE',
-              'ONE_HOUR': 'ONE_HOUR', '1h': 'ONE_HOUR', '3600': 'ONE_HOUR', 3600: 'ONE_HOUR',
-              'ONE_DAY': 'ONE_DAY', '1d': 'ONE_DAY', '86400': 'ONE_DAY', 86400: 'ONE_DAY',
-            };
-            const resolvedGranularity = granularityMapping[String(granularity).toLowerCase()] || 'ONE_HOUR';
-            
-            // Resolve lookback_candles: accept limit as alias
-            const resolvedLookback = lookback_candles || limit || 150;
-            
-            const apiKeyName = process.env.COINBASE_API_KEY;
-            const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
-            if (!apiKeyName || !apiSecret) return { error: "Missing Coinbase Credentials" };
+            const runFetch = async () => {
+              const resolvedAsset = asset || symbol;
+              if (!resolvedAsset) throw new Error("Missing asset symbol");
+              
+              const granularityMapping = {
+                'ONE_MINUTE': 'ONE_MINUTE', '1m': 'ONE_MINUTE', '60': 'ONE_MINUTE', 60: 'ONE_MINUTE',
+                'FIVE_MINUTE': 'FIVE_MINUTE', '5m': 'FIVE_MINUTE', '300': 'FIVE_MINUTE', 300: 'FIVE_MINUTE',
+                'FIFTEEN_MINUTE': 'FIFTEEN_MINUTE', '15m': 'FIFTEEN_MINUTE', '900': 'FIFTEEN_MINUTE', 900: 'FIFTEEN_MINUTE',
+                'ONE_HOUR': 'ONE_HOUR', '1h': 'ONE_HOUR', '3600': 'ONE_HOUR', 3600: 'ONE_HOUR',
+                'ONE_DAY': 'ONE_DAY', '1d': 'ONE_DAY', '86400': 'ONE_DAY', 86400: 'ONE_DAY',
+              };
+              const resolvedGranularity = granularityMapping[String(granularity).toLowerCase()] || 'ONE_HOUR';
+              const resolvedLookback = lookback_candles || limit || 150;
+              
+              const apiKeyName = process.env.COINBASE_API_KEY;
+              const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
+              if (!apiKeyName || !apiSecret) throw new Error("Missing Coinbase Credentials");
 
-            let coinbaseProduct = resolvedAsset.toUpperCase().trim();
-            if (!coinbaseProduct.includes('-')) {
-                if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
-                else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
-                else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP-INTX');
-            } 
-            if (coinbaseProduct.endsWith('-PERP')) {
-                coinbaseProduct = coinbaseProduct + '-INTX';
-            }
+              let coinbaseProduct = resolvedAsset.toUpperCase().trim();
+              if (!coinbaseProduct.includes('-')) {
+                  if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+                  else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+                  else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP-INTX');
+              } 
+              if (coinbaseProduct.endsWith('-PERP')) coinbaseProduct = coinbaseProduct + '-INTX';
 
-            const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
-            
-            let lookbackSeconds;
-            switch (resolvedGranularity) {
-                case 'ONE_MINUTE': lookbackSeconds = 60; break;
-                case 'FIVE_MINUTE': lookbackSeconds = 300; break;
-                case 'FIFTEEN_MINUTE': lookbackSeconds = 900; break;
-                case 'ONE_HOUR': lookbackSeconds = 3600; break;
-                case 'ONE_DAY': lookbackSeconds = 86400; break;
-                default: lookbackSeconds = 3600;
-            }
-            
-            let allCandles = [];
-            let currentEnd = Math.floor(Date.now() / 1000);
-            let candlesLeft = resolvedLookback;
+              const apiPath = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+              let lookbackSeconds = 3600;
+              if (resolvedGranularity === 'ONE_MINUTE') lookbackSeconds = 60;
+              else if (resolvedGranularity === 'FIVE_MINUTE') lookbackSeconds = 300;
+              else if (resolvedGranularity === 'FIFTEEN_MINUTE') lookbackSeconds = 900;
+              else if (resolvedGranularity === 'ONE_DAY') lookbackSeconds = 86400;
 
-            try {
+              let allCandles = [];
+              let currentEnd = Math.floor(Date.now() / 1000);
+              let candlesLeft = resolvedLookback;
+
               const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
 
               while (candlesLeft > 0) {
                 const batchSize = Math.min(candlesLeft, 300);
                 const currentStart = currentEnd - (batchSize * lookbackSeconds);
-                const query = `?start=${currentStart}&end=${currentEnd}&granularity=${granularity}`;
+                const query = `?start=${currentStart}&end=${currentEnd}&granularity=${resolvedGranularity}`;
 
                 const token = jwt.sign({
                   iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
@@ -410,35 +397,24 @@ export default async function handler(req, res) {
                 const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
                 const data = await resp.json();
                 
-                if (!resp.ok) {
-                    return { error: `Coinbase API Error ${resp.status}: ${data.message || data.error_details || JSON.stringify(data)}` };
-                }
-                
+                if (!resp.ok) throw new Error(`Coinbase API Error: ${JSON.stringify(data)}`);
                 if (!data.candles || data.candles.length === 0) break;
                 
                 allCandles = allCandles.concat(data.candles);
                 currentEnd = currentStart;
                 candlesLeft -= batchSize;
-                
-                await new Promise(resolve => setTimeout(resolve, 100));
+                await new Promise(resolve => setTimeout(resolve, 50));
               }
               
-              const formattedCandles = allCandles.map(c => ({ 
-                  close: parseFloat(c.close), 
-                  high: parseFloat(c.high), 
-                  low: parseFloat(c.low), 
-                  volume: parseFloat(c.volume) 
-              })).reverse();
+              const formattedCandles = allCandles.map(c => ({ close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
+              return { asset: coinbaseProduct, granularity: resolvedGranularity, data: formattedCandles.slice(-500) };
+            };
 
-              const safeData = formattedCandles.slice(-500);
-
-              return { 
-                asset: coinbaseProduct, 
-                granularity: resolvedGranularity, 
-                total_fetched_from_api: allCandles.length,
-                candles_returned_to_ai: safeData.length,
-                data: safeData
-              };
+            try {
+              return await Promise.race([
+                runFetch(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Historical data fetch timeout')), 25000))
+              ]);
             } catch (err) {
               return { error: err.message };
             }
@@ -449,17 +425,24 @@ export default async function handler(req, res) {
           description: 'Triggers the genetic optimizer.',
           parameters: z.object({}),
           execute: async () => {
-            const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
-            const protocol = host.includes('localhost') ? 'http' : 'https';
-            const url = `${protocol}://${host}/api/genetic-optimizer`;
-            
-            try {
+            const runOpt = async () => {
+              const host = req.headers.host || process.env.VERCEL_URL || 'localhost:3000';
+              const protocol = host.includes('localhost') ? 'http' : 'https';
+              const url = `${protocol}://${host}/api/genetic-optimizer`;
+              
               const resp = await fetch(url);
               if (!resp.ok) {
                   const errorText = await resp.text();
                   throw new Error(`Server returned ${resp.status}: ${errorText}`);
               }
-              const result = await resp.json();
+              return await resp.json();
+            };
+
+            try {
+              const result = await Promise.race([
+                runOpt(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Optimizer trigger timeout')), 15000))
+              ]);
               return { success: true, data: result };
             } catch (e) {
               return { success: false, error: e.message };

@@ -242,9 +242,25 @@ app.post('/api/wake', async (req, res) => {
             alertColor = 16753920; 
         }
 
+        let alertDescription = `**Conviction Score:** ${decisionJson.conviction_score || 'N/A'}/100\n**Action:** ${decisionJson.action}`;
+
+        if (decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE") {
+            const entryStr = decisionJson.price ? `\n**Est. Entry:** $${decisionJson.price}` : '';
+            const tpStr = decisionJson.tp_price ? `\n**Target TP:** $${decisionJson.tp_price}` : '';
+            const slStr = decisionJson.sl_price ? `\n**Target SL:** $${decisionJson.sl_price}` : '';
+            alertDescription = `**Action:** ${decisionJson.action}${entryStr}${tpStr}${slStr}\n**Conviction:** ${decisionJson.conviction_score || 'N/A'}/100`;
+        } else if (isTrap) {
+            const trapStr = `\n**Trap Price:** $${decisionJson.trap_price}`;
+            const tpStr = decisionJson.trap_tp_price ? `\n**Target TP:** $${decisionJson.trap_tp_price}` : '';
+            const slStr = decisionJson.trap_sl_price ? `\n**Target SL:** $${decisionJson.trap_sl_price}` : '';
+            alertDescription = `**Action:** GHOST_TRAP${trapStr}${tpStr}${slStr}\n**Conviction:** ${decisionJson.conviction_score || 'N/A'}/100`;
+        }
+
+        alertDescription += `\n\n**Working Thesis:**\n_${decisionJson.working_thesis || 'No thesis provided'}_`;
+
         await sendDiscordAlert(tenant_id, {
             title: alertTitle,
-            description: `**Conviction Score:** ${decisionJson.conviction_score || 'N/A'}/100\n**Action:** ${decisionJson.action}\n\n**Working Thesis:**\n_${decisionJson.working_thesis || 'No thesis provided'}_`,
+            description: alertDescription,
             color: alertColor, 
             imageUrl: chartUrl
         });
