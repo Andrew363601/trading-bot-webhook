@@ -338,7 +338,7 @@ export default async function handler(req, res) {
           parameters: z.object({
             asset: z.string().optional().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
             symbol: z.string().optional().describe('The asset symbol, e.g., DOGE-PERP-INTX (alias for asset)'),
-            granularity: z.union([z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']), z.number()]).optional().describe('Candle granularity: enum string or seconds number (60, 300, 900, 3600, 86400). Defaults to ONE_HOUR.'),
+            granularity: z.union([z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']), z.string()]).optional().describe('Candle granularity: enum string, short string (1m, 1h), or seconds number (60, 300, 900, 3600, 86400). Defaults to ONE_HOUR.'),
             lookback_candles: z.number().max(5000).optional().describe('Total number of candles to fetch. Defaults to 150.'),
             limit: z.number().max(5000).optional().describe('Alias for lookback_candles.')
           }),
@@ -346,9 +346,15 @@ export default async function handler(req, res) {
             const resolvedAsset = asset || symbol;
             if (!resolvedAsset) return { error: "Missing asset symbol" };
             
-            // Resolve granularity: accept number (seconds) or enum string
-            const granularityMap = { 60: 'ONE_MINUTE', 300: 'FIVE_MINUTE', 900: 'FIFTEEN_MINUTE', 3600: 'ONE_HOUR', 86400: 'ONE_DAY' };
-            const resolvedGranularity = typeof granularity === 'number' ? (granularityMap[granularity] || 'ONE_HOUR') : (granularity || 'ONE_HOUR');
+            // Resolve granularity: accept enum string, numeric string (seconds), or short-hand string (1m, 1h)
+            const granularityMapping = {
+              'ONE_MINUTE': 'ONE_MINUTE', '1m': 'ONE_MINUTE', '60': 'ONE_MINUTE', 60: 'ONE_MINUTE',
+              'FIVE_MINUTE': 'FIVE_MINUTE', '5m': 'FIVE_MINUTE', '300': 'FIVE_MINUTE', 300: 'FIVE_MINUTE',
+              'FIFTEEN_MINUTE': 'FIFTEEN_MINUTE', '15m': 'FIFTEEN_MINUTE', '900': 'FIFTEEN_MINUTE', 900: 'FIFTEEN_MINUTE',
+              'ONE_HOUR': 'ONE_HOUR', '1h': 'ONE_HOUR', '3600': 'ONE_HOUR', 3600: 'ONE_HOUR',
+              'ONE_DAY': 'ONE_DAY', '1d': 'ONE_DAY', '86400': 'ONE_DAY', 86400: 'ONE_DAY',
+            };
+            const resolvedGranularity = granularityMapping[String(granularity).toLowerCase()] || 'ONE_HOUR';
             
             // Resolve lookback_candles: accept limit as alias
             const resolvedLookback = lookback_candles || limit || 150;
