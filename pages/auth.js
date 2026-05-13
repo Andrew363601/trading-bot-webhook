@@ -29,7 +29,7 @@ export default function AuthPage() {
             .single();
 
           if (userData?.tenants?.subscription_active) {
-            router.replace('/audit');
+            router.replace('/');
           } else {
             router.replace('/plans');
           }

@@ -20,7 +20,7 @@ export default function PlansPage() {
           .single();
         
         if (data?.tenants?.subscription_active) {
-          router.replace('/audit');
+          router.replace('/');
         }
       };
       checkSub();
