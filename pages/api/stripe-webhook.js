@@ -66,7 +66,8 @@ export default async function handler(req, res) {
 
                 await supabase.from('tenants').update({
                     billing_tier: tier,
-                    subscription_active: sub.status === 'active' || sub.status === 'trialing'
+                    subscription_active: sub.status === 'active' || sub.status === 'trialing',
+                    updated_at: new Date().toISOString() // Track timestamp for grace period
                 }).eq('id', tenantId);
             }
             break;
@@ -82,7 +83,8 @@ export default async function handler(req, res) {
                 }).eq('tenant_id', deletedTenantId);
 
                 await supabase.from('tenants').update({
-                    subscription_active: false
+                    subscription_active: false,
+                    updated_at: new Date().toISOString() // Start grace period timer
                 }).eq('id', deletedTenantId);
             }
             break;

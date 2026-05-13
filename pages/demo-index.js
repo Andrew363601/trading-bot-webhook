@@ -3,28 +3,67 @@
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
+import { createClient } from '@supabase/supabase-js';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
 
-export default function LandingPage() {
-  const [logs, setLogs] = useState([
-    { type: 'SNIPER', text: 'Math signal detected for ETH-PERP.' },
-    { type: 'SNIPER', text: 'Fetching Core Memory & Waking Hermes...' },
-    { type: 'AGENT', text: 'Analyzing Multi-TF X-Ray...', color: 'text-purple-400' },
-    { type: 'AGENT', text: '1H Macro Trend: -98,720 (Bearish)', color: 'text-slate-300' },
-    { type: 'AGENT', text: '5M Micro Ripple: +5,550 (Bullish Trap)', color: 'text-slate-300' },
-    { type: 'ACTION', text: 'VETO', color: 'text-red-400 font-bold' },
-    { type: 'INFO', text: 'Reason: Signal fights dominant 1H Macro Trend. Reward/Risk is 1.18. Capital Protected.', color: 'text-slate-500' }
-  ]);
-  const [showRationalization, setShowRationalization] = useState(false);
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+);
 
-  // Simulate live logs for dummy account
+export default function LandingPage() {
+  const [logs, setLogs] = useState([]);
+  const [showRationalization, setShowRationalization] = useState(false);
+  const demoTenantId = process.env.NEXT_PUBLIC_DEMO_TENANT_ID;
+
   useEffect(() => {
-    const interval = setInterval(() => {
-      setShowRationalization(true);
-      setTimeout(() => setShowRationalization(false), 5000);
-    }, 15000);
-    return () => clearInterval(interval);
-  }, []);
+    if (!demoTenantId) return;
+
+    // Fetch initial logs for dummy account
+    const fetchInitialLogs = async () => {
+      const { data } = await supabase
+        .from('agent_session_logs')
+        .select('agent_name, log_message, log_type')
+        .eq('tenant_id', demoTenantId)
+        .order('timestamp', { ascending: false })
+        .limit(10);
+      
+      if (data) {
+        setLogs(data.map(l => ({ 
+          type: l.agent_name === 'Agent Cortex' ? 'AGENT' : 'SNIPER', 
+          text: l.log_message,
+          color: l.agent_name === 'Agent Cortex' ? 'text-purple-400' : 'text-cyan-400'
+        })));
+      }
+    };
+
+    fetchInitialLogs();
+
+    // Subscribe to real-time logs for dummy account
+    const channel = supabase
+      .channel('dummy-logs')
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'agent_session_logs',
+        filter: `tenant_id=eq.${demoTenantId}` 
+      }, (payload) => {
+        const newLog = payload.new;
+        setLogs(prev => [{
+          type: newLog.agent_name === 'Agent Cortex' ? 'AGENT' : 'SNIPER',
+          text: newLog.log_message,
+          color: newLog.agent_name === 'Agent Cortex' ? 'text-purple-400' : 'text-cyan-400'
+        }, ...prev].slice(0, 15));
+
+        if (newLog.agent_name === 'Agent Cortex') {
+          setShowRationalization(true);
+          setTimeout(() => setShowRationalization(false), 8000);
+        }
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [demoTenantId]);
 
   const coinbaseLink = getCoinbaseAffiliateLink('landing_page');
   return (

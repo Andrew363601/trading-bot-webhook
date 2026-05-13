@@ -1,7 +1,6 @@
 // pages/api/cancel-order.js
 import { createClient } from '@supabase/supabase-js';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 
 const supabase = createClient(
@@ -9,25 +8,11 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   try {
-    // 1. Session Validation
-    const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Missing or invalid authorization' });
-    }
-
-    const token = authHeader.substring(7);
-    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-    
-    if (userError || !user) {
-      return res.status(401).json({ error: 'Invalid token' });
-    }
-
-    const tenantId = user.user_metadata?.tenant_id || user.id;
-
+    const { tenantId } = req.tenant;
     const { order_ids } = req.body;
     
     if (!order_ids || !Array.isArray(order_ids)) {
@@ -84,3 +69,5 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
+
+export default withTenantAuth(handler);
