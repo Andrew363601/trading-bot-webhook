@@ -3,6 +3,7 @@ import express from 'express';
 import fs from 'fs';
 import { buildRadarChartUrl } from './lib/discord-chart.js';
 import { createClient } from '@supabase/supabase-js'; 
+import { recordUsage } from './lib/usage-meter.js';
 
 const app = express();
 app.use(express.json());
@@ -61,6 +62,10 @@ async function sendDiscordAlert(tenant_id, { title, description, color, fields =
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
     const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty } = req.body;
+    
+    // Track Hermes API usage
+    await recordUsage(tenant_id, 'HERMES_API_CALL', 1);
+
     await logAgentActivity(tenant_id, "Agent Cortex", asset, `Awakened. Mode: ${mode}. Initial message: ${message.substring(0, 100)}...`, "AGENT_AWAKENED");
     console.log(`[AGENT CORTEX] Awakened by Sniper. Tenant: ${tenant_id} | Asset: ${asset} | Mode: ${mode}`);
     

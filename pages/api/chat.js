@@ -9,6 +9,7 @@ import { z } from 'zod';
 import fs from 'fs';
 import path from 'path';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
+import { recordUsage } from '../../lib/usage-meter';
 
 const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
 import crypto from 'crypto';
@@ -64,6 +65,9 @@ export default async function handler(req, res) {
       console.error("[CHAT API SECURITY] Rejected request with no valid tenant_id.");
       return res.status(401).json({ error: 'Authentication required. Valid tenant session not found.' });
     }
+
+    // Track Chat Usage
+    await recordUsage(tenantId, 'CHAT_MESSAGE', 1);
 
     console.log(`[CHAT API] Request for tenant: ${tenantId}. Message count: ${safeMessages.length}`);
 
