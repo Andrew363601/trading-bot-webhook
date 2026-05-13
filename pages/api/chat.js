@@ -188,6 +188,7 @@ export default async function handler(req, res) {
       system: systemPrompt,
       messages: safeMessages, 
       maxSteps: 10,
+      experimental_output: { type: 'text' },
       tools: {
         queryTradeLedger: tool({
           description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
