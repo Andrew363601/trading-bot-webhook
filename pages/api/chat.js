@@ -184,7 +184,7 @@ export default async function handler(req, res) {
     `;
 
     const result = await streamText({
-      model: google('gemini-1.5-flash'), 
+      model: google('gemini-3-flash-preview'),
       system: systemPrompt,
       messages: safeMessages, 
       maxSteps: 5,

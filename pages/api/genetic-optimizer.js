@@ -169,7 +169,7 @@ Analyze the 500 candles and classify the current market phase for this asset int
       `;
 
   // 5. STRUCTURED GENERATION (Bypassing Vercel AI SDK for Native Gemini REST API)
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${process.env.GEMINI_API_KEY}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${process.env.GEMINI_API_KEY}`;
       
   const payload = {
     systemInstruction: {
