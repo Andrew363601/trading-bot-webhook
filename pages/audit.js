@@ -14,7 +14,11 @@ export default function AuditLog({ initialSession }) {
     );
   }
 
-  return <AuditLogContent />;
+  return (
+    <div className="min-h-screen bg-[#020617] text-slate-200 p-4 md:p-6 font-sans flex flex-col gap-6 max-w-[100vw] overflow-x-hidden">
+      <AuditLogContent />
+    </div>
+  );
 }
 
 export async function getServerSideProps(context) {
@@ -216,30 +220,30 @@ function AuditLogContent() {
     });
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-200 p-6 font-sans flex flex-col gap-6">
+    <div className="min-h-screen bg-[#020617] text-slate-200 p-4 md:p-6 font-sans flex flex-col gap-6 max-w-[100vw] overflow-x-hidden">
       <style dangerouslySetInnerHTML={{__html: `
         @keyframes travel { 0% { left: 0%; opacity: 0; box-shadow: 0 0 10px #10b981; background: #10b981; } 10% { opacity: 1; } 40% { box-shadow: 0 0 15px #f59e0b; background: #f59e0b; } 70% { box-shadow: 0 0 20px #06b6d4; background: #06b6d4; } 90% { opacity: 1; } 100% { left: 100%; opacity: 0; box-shadow: 0 0 25px #a855f7; background: #a855f7; } }
         .animate-travel { animation: travel 3s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
       `}} />
 
-      <header className="max-w-[1400px] w-full mx-auto flex flex-col md:flex-row justify-between items-center pb-4 border-b border-white/10 gap-4">
-        <div className="flex items-center gap-3">
-          <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl"><Activity className="text-indigo-400" size={24} /></div>
+      <header className="max-w-7xl w-full mx-auto flex flex-col lg:flex-row justify-between items-center pb-4 border-b border-white/10 gap-4">
+        <div className="flex items-center gap-3 w-full lg:w-auto">
+          <div className="p-2 md:p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl"><Activity className="text-indigo-400" size={20} md={24} /></div>
           <div>
-            <h1 className="text-2xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Audit Trail</h1>
-            <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-1">Unified Pipeline Diagnostics</p>
+            <h1 className="text-xl md:text-2xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus Audit Trail</h1>
+            <p className="text-[8px] md:text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-1">Unified Pipeline Diagnostics</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-4 bg-slate-900/50 p-2 rounded-2xl border border-white/5">
-          <div className="flex gap-2 mr-2">
-             <button onClick={() => setStatusFilter('ALL')} className={`text-[9px] font-black uppercase px-3 py-1.5 rounded-lg border ${statusFilter === 'ALL' ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}>All</button>
-             <button onClick={() => setStatusFilter('EXECUTED')} className={`text-[9px] font-black uppercase px-3 py-1.5 rounded-lg border ${statusFilter === 'EXECUTED' ? 'bg-cyan-500/20 border-cyan-500/30 text-cyan-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}>Executed</button>
-             <button onClick={() => setStatusFilter('VETOED')} className={`text-[9px] font-black uppercase px-3 py-1.5 rounded-lg border ${statusFilter === 'VETOED' ? 'bg-red-500/20 border-red-500/30 text-red-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}>Vetoes</button>
+        <div className="flex flex-wrap items-center gap-3 md:gap-4 bg-slate-900/50 p-2 rounded-2xl border border-white/5 w-full lg:w-auto justify-between">
+          <div className="flex gap-2">
+             <button onClick={() => setStatusFilter('ALL')} className={`text-[8px] md:text-[9px] font-black uppercase px-2 md:px-3 py-1.5 rounded-lg border ${statusFilter === 'ALL' ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}>All</button>
+             <button onClick={() => setStatusFilter('EXECUTED')} className={`text-[8px] md:text-[9px] font-black uppercase px-2 md:px-3 py-1.5 rounded-lg border ${statusFilter === 'EXECUTED' ? 'bg-cyan-500/20 border-cyan-500/30 text-cyan-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}>Executed</button>
+             <button onClick={() => setStatusFilter('VETOED')} className={`text-[8px] md:text-[9px] font-black uppercase px-2 md:px-3 py-1.5 rounded-lg border ${statusFilter === 'VETOED' ? 'bg-red-500/20 border-red-500/30 text-red-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}>Vetoes</button>
           </div>
           <div className="flex items-center gap-2 px-3 border-l border-white/10">
             <Filter size={14} className="text-slate-400" />
-            <select className="bg-transparent text-[10px] font-black uppercase tracking-widest text-cyan-300 focus:outline-none cursor-pointer" value={assetFilter} onChange={(e) => setAssetFilter(e.target.value)}>
+            <select className="bg-transparent text-[9px] md:text-[10px] font-black uppercase tracking-widest text-cyan-300 focus:outline-none cursor-pointer" value={assetFilter} onChange={(e) => setAssetFilter(e.target.value)}>
               <option value="ALL">All Assets</option>
               {uniqueAssets.map(a => <option key={a} value={a}>{a}</option>)}
             </select>
@@ -249,34 +253,34 @@ function AuditLogContent() {
       </header>
 
       {/* LIVE ANIMATION PIPELINE */}
-      <div className="max-w-[1400px] w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+      <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl relative overflow-hidden">
          <div className="absolute inset-0 bg-gradient-to-r from-emerald-500/5 via-cyan-500/5 to-purple-500/5" />
-         <div className="absolute top-1/2 left-[10%] right-[10%] h-[2px] bg-slate-800 -translate-y-1/2 rounded-full overflow-hidden">
+         <div className="absolute top-1/2 left-[5%] right-[5%] md:left-[10%] md:right-[10%] h-[2px] bg-slate-800 -translate-y-1/2 rounded-full overflow-hidden">
             <div className="absolute inset-y-0 left-0 bg-slate-600 transition-all duration-1000" style={{ width: `${liveState.progress}%` }} />
             {liveState.scanning && <div className="absolute top-1/2 -translate-y-1/2 w-4 h-1 rounded-full animate-travel z-20" />}
          </div>
 
-         <div className="relative z-10 flex items-center justify-between max-w-4xl mx-auto">
-            <div className="flex flex-col items-center gap-3 w-24 bg-slate-900 p-2 rounded-xl border border-white/5 shadow-lg">
-               <div className={`w-12 h-12 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${liveState.scanning ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-[0_0_20px_-2px_rgba(16,185,129,0.5)]' : 'bg-slate-950 border-white/10 text-slate-600'}`}><Zap size={20} className={liveState.scanning ? 'animate-pulse' : ''} /></div>
-               <span className={`text-[9px] font-black uppercase tracking-widest ${liveState.scanning ? 'text-emerald-300' : 'text-slate-500'}`}>Scanner</span>
+         <div className="relative z-10 flex items-center justify-between max-w-4xl mx-auto gap-2">
+            <div className="flex flex-col items-center gap-2 md:gap-3 w-16 md:w-24 bg-slate-900 p-2 rounded-xl border border-white/5 shadow-lg">
+               <div className={`w-10 h-10 md:w-12 md:h-12 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${liveState.scanning ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400 shadow-[0_0_20px_-2px_rgba(16,185,129,0.5)]' : 'bg-slate-950 border-white/10 text-slate-600'}`}><Zap size={16} className={liveState.scanning ? 'animate-pulse' : ''} /></div>
+               <span className={`text-[8px] md:text-[9px] font-black uppercase tracking-widest ${liveState.scanning ? 'text-emerald-300' : 'text-slate-500'}`}>Scanner</span>
             </div>
-            <div className="flex flex-col items-center gap-3 w-24 bg-slate-900 p-2 rounded-xl border border-white/5 shadow-lg">
-               <div className={`w-12 h-12 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${liveState.oracle ? 'bg-amber-500/20 border-amber-500/50 text-amber-400 shadow-[0_0_20px_-2px_rgba(245,158,11,0.5)]' : 'bg-slate-950 border-white/10 text-slate-600'}`}><BrainCircuit size={20} className={liveState.oracle ? 'animate-pulse' : ''} /></div>
-               <span className={`text-[9px] font-black uppercase tracking-widest ${liveState.oracle ? 'text-amber-300' : 'text-slate-500'}`}>Oracle</span>
+            <div className="flex flex-col items-center gap-2 md:gap-3 w-16 md:w-24 bg-slate-900 p-2 rounded-xl border border-white/5 shadow-lg">
+               <div className={`w-10 h-10 md:w-12 md:h-12 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${liveState.oracle ? 'bg-amber-500/20 border-amber-500/50 text-amber-400 shadow-[0_0_20px_-2px_rgba(245,158,11,0.5)]' : 'bg-slate-950 border-white/10 text-slate-600'}`}><BrainCircuit size={16} className={liveState.oracle ? 'animate-pulse' : ''} /></div>
+               <span className={`text-[8px] md:text-[9px] font-black uppercase tracking-widest ${liveState.oracle ? 'text-amber-300' : 'text-slate-500'}`}>Oracle</span>
             </div>
-            <div className="flex flex-col items-center gap-3 w-24 bg-slate-900 p-2 rounded-xl border border-white/5 shadow-lg">
-               <div className={`w-12 h-12 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${liveState.executing ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400 shadow-[0_0_20px_-2px_rgba(6,182,212,0.5)]' : 'bg-slate-950 border-white/10 text-slate-600'}`}><Server size={20} className={liveState.executing ? 'animate-pulse' : ''} /></div>
-               <span className={`text-[9px] font-black uppercase tracking-widest ${liveState.executing ? 'text-cyan-300' : 'text-slate-500'}`}>Exchange</span>
+            <div className="flex flex-col items-center gap-2 md:gap-3 w-16 md:w-24 bg-slate-900 p-2 rounded-xl border border-white/5 shadow-lg">
+               <div className={`w-10 h-10 md:w-12 md:h-12 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${liveState.executing ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400 shadow-[0_0_20px_-2px_rgba(6,182,212,0.5)]' : 'bg-slate-950 border-white/10 text-slate-600'}`}><Server size={16} className={liveState.executing ? 'animate-pulse' : ''} /></div>
+               <span className={`text-[8px] md:text-[9px] font-black uppercase tracking-widest ${liveState.executing ? 'text-cyan-300' : 'text-slate-500'}`}>Exchange</span>
             </div>
-            <div className="flex flex-col items-center gap-3 w-24 bg-slate-900 p-2 rounded-xl border border-white/5 shadow-lg">
-               <div className={`w-12 h-12 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${liveState.resting ? 'bg-purple-500/20 border-purple-500/50 text-purple-400 shadow-[0_0_20px_-2px_rgba(168,85,247,0.5)]' : 'bg-slate-950 border-white/10 text-slate-600'}`}><Crosshair size={20} className={liveState.resting ? 'animate-spin-slow' : ''} /></div>
-               <span className={`text-[9px] font-black uppercase tracking-widest ${liveState.resting ? 'text-purple-300' : 'text-slate-500'}`}>Limits</span>
+            <div className="flex flex-col items-center gap-2 md:gap-3 w-16 md:w-24 bg-slate-900 p-2 rounded-xl border border-white/5 shadow-lg">
+               <div className={`w-10 h-10 md:w-12 md:h-12 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${liveState.resting ? 'bg-purple-500/20 border-purple-500/50 text-purple-400 shadow-[0_0_20px_-2px_rgba(168,85,247,0.5)]' : 'bg-slate-950 border-white/10 text-slate-600'}`}><Crosshair size={16} className={liveState.resting ? 'animate-spin-slow' : ''} /></div>
+               <span className={`text-[8px] md:text-[9px] font-black uppercase tracking-widest ${liveState.resting ? 'text-purple-300' : 'text-slate-500'}`}>Limits</span>
             </div>
          </div>
       </div>
 
-      <main className="max-w-[1400px] w-full mx-auto space-y-6">
+      <main className="max-w-7xl w-full mx-auto space-y-6">
         {sortedAndFilteredPipelines.map((pipeline, i) => {
           const isVeto = pipeline.type === 'ORPHAN_SCAN' && pipeline.scan?.status?.includes('VETO');
           const isFullTrade = pipeline.type === 'FULL_TRADE';

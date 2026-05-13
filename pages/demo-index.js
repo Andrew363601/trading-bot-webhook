@@ -4,12 +4,18 @@ import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useSupabaseClient } from '@supabase/auth-helpers-react';
+import { Activity, ChevronRight, TrendingUp } from 'lucide-react';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
 
 export default function LandingPage() {
   const supabase = useSupabaseClient();
   const [logs, setLogs] = useState([]);
   const [showRationalization, setShowRationalization] = useState(false);
+  const [terminalFilter, setTerminalFilter] = useState('ALL');
+  const [demoStats, setDemoStats] = useState({ winRate: '0%', totalTrades: 0, totalPnL: '$0.00' });
+  const [activeDemoTrade, setActiveDemoTrade] = useState(null);
+  const [demoTrades, setDemoTrades] = useState([]);
+  const [selectedStrategy, setSelectedStrategy] = useState(null);
   const demoTenantId = process.env.NEXT_PUBLIC_DEMO_TENANT_ID;
 
   useEffect(() => {
@@ -19,24 +25,49 @@ export default function LandingPage() {
     const fetchInitialLogs = async () => {
       const { data } = await supabase
         .from('agent_session_logs')
-        .select('agent_name, log_message, log_type')
+        .select('agent_name, log_message, log_type, timestamp')
         .eq('tenant_id', demoTenantId)
         .order('timestamp', { ascending: false })
-        .limit(10);
+        .limit(20);
       
       if (data) {
         setLogs(data.map(l => ({ 
-          type: l.agent_name === 'Agent Cortex' ? 'AGENT' : 'SNIPER', 
+          type: l.agent_name === 'Agent Cortex' ? 'CORTEX' : (l.agent_name === 'Watchdog' ? 'WATCHDOG' : 'SNIPER'), 
           text: l.log_message,
-          color: l.agent_name === 'Agent Cortex' ? 'text-purple-400' : 'text-cyan-400'
+          color: l.agent_name === 'Agent Cortex' ? 'text-purple-400' : (l.agent_name === 'Watchdog' ? 'text-emerald-400' : 'text-cyan-400')
         })));
       }
     };
 
+    const fetchDemoPerformance = async () => {
+        const { data: trades } = await supabase
+            .from('trade_logs')
+            .select('*')
+            .eq('tenant_id', demoTenantId);
+        
+        if (trades) {
+            setDemoTrades(trades);
+            const closed = trades.filter(t => t.exit_price !== null);
+            const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+            const winRate = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(1) + '%' : '0%';
+            const totalPnL = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+            
+            setDemoStats({
+                winRate,
+                totalTrades: closed.length,
+                totalPnL: `$${totalPnL.toFixed(2)}`
+            });
+
+            const open = trades.find(t => t.exit_price === null);
+            setActiveDemoTrade(open);
+        }
+    };
+
     fetchInitialLogs();
+    fetchDemoPerformance();
 
     // Subscribe to real-time logs for dummy account
-    const channel = supabase
+    const logChannel = supabase
       .channel('dummy-logs')
       .on('postgres_changes', { 
         event: 'INSERT', 
@@ -45,11 +76,21 @@ export default function LandingPage() {
         filter: `tenant_id=eq.${demoTenantId}` 
       }, (payload) => {
         const newLog = payload.new;
+        
+        // Live ROI Extraction from Watchdog logs
+        if (newLog.agent_name === 'Watchdog' && newLog.log_message.includes('Live ROE:')) {
+            const roeMatch = newLog.log_message.match(/Live ROE: ([\d.-]+)%/);
+            if (roeMatch) {
+                const roe = roeMatch[1];
+                setActiveDemoTrade(prev => prev ? { ...prev, current_roe: roe } : null);
+            }
+        }
+
         setLogs(prev => [{
-          type: newLog.agent_name === 'Agent Cortex' ? 'AGENT' : 'SNIPER',
+          type: newLog.agent_name === 'Agent Cortex' ? 'CORTEX' : (newLog.agent_name === 'Watchdog' ? 'WATCHDOG' : 'SNIPER'),
           text: newLog.log_message,
-          color: newLog.agent_name === 'Agent Cortex' ? 'text-purple-400' : 'text-cyan-400'
-        }, ...prev].slice(0, 15));
+          color: newLog.agent_name === 'Agent Cortex' ? 'text-purple-400' : (newLog.agent_name === 'Watchdog' ? 'text-emerald-400' : 'text-cyan-400')
+        }, ...prev].slice(0, 30));
 
         if (newLog.agent_name === 'Agent Cortex') {
           setShowRationalization(true);
@@ -58,8 +99,53 @@ export default function LandingPage() {
       })
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
-  }, [demoTenantId]);
+    // Subscribe to trade updates for dummy account
+    const tradeChannel = supabase
+      .channel('dummy-trades')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'trade_logs',
+        filter: `tenant_id=eq.${demoTenantId}` 
+      }, () => {
+        fetchDemoPerformance();
+      })
+      .subscribe();
+
+    return () => { 
+        supabase.removeChannel(logChannel); 
+        supabase.removeChannel(tradeChannel);
+    };
+  }, [demoTenantId, supabase]);
+
+  const filteredLogs = logs.filter(l => terminalFilter === 'ALL' || l.type === terminalFilter);
+
+  const getStrategyStats = (strategyName) => {
+    const strategyTrades = demoTrades.filter(t => t.strategy_id === strategyName && t.exit_price !== null);
+    const wins = strategyTrades.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+    const winRate = strategyTrades.length > 0 ? ((wins / strategyTrades.length) * 100).toFixed(0) + '%' : '0%';
+    const totalPnL = strategyTrades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+    
+    // Calculate last 7 days history
+    const history = [0, 0, 0, 0, 0, 0, 0];
+    const now = new Date();
+    strategyTrades.forEach(t => {
+        const tradeDate = new Date(t.exit_time);
+        const diffDays = Math.floor((now - tradeDate) / (1000 * 60 * 60 * 24));
+        if (diffDays >= 0 && diffDays < 7) {
+            history[6 - diffDays] += (parseFloat(t.pnl) || 0);
+        }
+    });
+
+    return { winRate, totalPnL: totalPnL.toFixed(2), history };
+  };
+
+  const showcaseStrategies = [
+    { id: 'ORACLE_PRICE_ACTION_V1', asset: 'BTC-PERP', name: 'Oracle Breakout', color: 'indigo' },
+    { id: 'KELTNER_EXECUTION_V1', asset: 'ETH-PERP', name: 'Keltner Execution', color: 'cyan' },
+    { id: 'SOL_RANGE_REVERSION_V1', asset: 'SOL-PERP', name: 'Range Reversion', color: 'purple' },
+    { id: 'DOGE_HF_SCALPER_V1', asset: 'DOGE-PERP', name: 'HF Scalper', color: 'emerald' },
+  ];
 
   const coinbaseLink = getCoinbaseAffiliateLink('landing_page');
   return (
@@ -211,14 +297,64 @@ export default function LandingPage() {
             
             <div className="w-full lg:w-1/2">
               <div className="bg-slate-950 rounded-xl overflow-hidden border border-slate-700 shadow-2xl">
-                <div className="bg-slate-900 px-4 py-3 border-b border-slate-700 flex gap-2">
-                  <div className="w-3 h-3 rounded-full bg-red-500"></div>
-                  <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
-                  <div className="w-3 h-3 rounded-full bg-green-500"></div>
-                  <span className="text-[10px] text-slate-500 font-mono ml-auto uppercase tracking-widest">Live Agent Swarm</span>
+                <div className="bg-slate-900 px-4 py-3 border-b border-slate-700 flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full bg-red-500"></div>
+                    <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+                    <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                  </div>
+                  
+                  {/* Terminal Filter Bar */}
+                  <div className="flex bg-slate-950/50 p-1 rounded-lg border border-white/5">
+                    {['ALL', 'CORTEX', 'WATCHDOG', 'SNIPER'].map(f => (
+                      <button 
+                        key={f}
+                        onClick={() => setTerminalFilter(f)}
+                        className={`px-3 py-1 rounded-md text-[9px] font-black uppercase tracking-widest transition-all ${terminalFilter === f ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+
+                  <span className="text-[10px] text-slate-500 font-mono uppercase tracking-widest flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></div>
+                    Live Stream
+                  </span>
                 </div>
-                <div className="p-6 font-mono text-sm text-slate-300 space-y-2 h-[240px] overflow-y-auto">
-                  {logs.map((log, i) => (
+
+                {/* Dummy Account Stats Header */}
+                <div className="bg-slate-900/50 px-6 py-4 border-b border-white/5 flex justify-between items-center">
+                    <div className="flex gap-8">
+                        <div>
+                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">Win Rate</p>
+                            <p className="text-lg font-black text-emerald-400 font-mono">{demoStats.winRate}</p>
+                        </div>
+                        <div>
+                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">Total PnL</p>
+                            <p className="text-lg font-black text-indigo-400 font-mono">{demoStats.totalPnL}</p>
+                        </div>
+                    </div>
+                    {activeDemoTrade && (
+                        <div className="flex items-center gap-3 bg-indigo-500/10 border border-indigo-500/20 px-4 py-2 rounded-xl">
+                            <Activity size={14} className="text-indigo-400 animate-pulse" />
+                            <div>
+                                <p className="text-[8px] text-indigo-300 uppercase font-black tracking-widest">Active: {activeDemoTrade.symbol}</p>
+                                <p className="text-xs font-mono font-bold text-white italic">
+                                    {activeDemoTrade.side} @ ${activeDemoTrade.entry_price}
+                                    {activeDemoTrade.current_roe && (
+                                        <span className={`ml-2 ${parseFloat(activeDemoTrade.current_roe) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                            ({activeDemoTrade.current_roe}%)
+                                        </span>
+                                    )}
+                                </p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                <div className="p-6 font-mono text-sm text-slate-300 space-y-2 h-[400px] overflow-y-auto">
+                  {filteredLogs.map((log, i) => (
                     <p key={i} className={log.color || 'text-slate-300'}>
                       &gt; [{log.type}] {log.text}
                     </p>
@@ -227,6 +363,79 @@ export default function LandingPage() {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Strategy Intelligence Section */}
+      <div className="py-24 bg-slate-950 border-t border-slate-900">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center mb-16">
+            <h2 className="text-cyan-400 font-semibold tracking-wide uppercase">Performance Matrix</h2>
+            <p className="mt-2 text-4xl font-extrabold text-white">Strategy Intelligence</p>
+            <p className="mt-4 text-slate-400 max-w-2xl mx-auto">Live transparency of our autonomous agent performance in the demo environment.</p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            {showcaseStrategies.map((strat, i) => {
+              const stats = getStrategyStats(strat.id);
+              const isSelected = selectedStrategy === strat.id;
+
+              return (
+                <div 
+                    key={i} 
+                    onClick={() => setSelectedStrategy(isSelected ? null : strat.id)}
+                    className={`group bg-slate-900/40 backdrop-blur-md border p-6 rounded-2xl transition-all duration-300 cursor-pointer hover:-translate-y-1 ${isSelected ? 'border-indigo-500 bg-slate-900/80 ring-1 ring-indigo-500/50' : 'border-white/5 hover:border-indigo-500/50 hover:bg-slate-900/60'}`}
+                >
+                    <div className="flex justify-between items-start mb-6">
+                    <div>
+                        <h4 className="text-lg font-bold text-white">{strat.asset}</h4>
+                        <p className="text-xs text-slate-500 uppercase tracking-widest">{strat.name}</p>
+                    </div>
+                    <div className={`w-10 h-10 bg-indigo-500/10 rounded-xl flex items-center justify-center`}>
+                        <TrendingUp className="w-5 h-5 text-indigo-400" />
+                    </div>
+                    </div>
+                    
+                    <div className="space-y-4">
+                    <div className="flex justify-between items-end">
+                        <span className="text-xs text-slate-400 uppercase font-black tracking-widest">Success Rate</span>
+                        <span className="text-xl font-black text-white">{stats.winRate}</span>
+                    </div>
+                    
+                    {/* Dynamic Sparkline */}
+                    <div className="flex items-end gap-1 h-8">
+                        {stats.history.map((h, j) => {
+                          // Scale height relative to max in history or a minimum
+                          const max = Math.max(...stats.history, 1);
+                          const height = Math.max(10, (h / max) * 100);
+                          return (
+                            <div 
+                                key={j} 
+                                className={`flex-1 rounded-t-sm transition-all duration-500 ${h >= 0 ? 'bg-emerald-500/40' : 'bg-red-500/40'}`} 
+                                style={{ height: `${Math.abs(height)}%` }}
+                            />
+                          );
+                        })}
+                    </div>
+
+                    <div className="flex justify-between items-center pt-2">
+                        <span className="text-xs text-slate-400 uppercase font-black tracking-widest">Lifetime PnL</span>
+                        <span className={`font-bold ${parseFloat(stats.totalPnL) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            {parseFloat(stats.totalPnL) >= 0 ? '+' : ''}${stats.totalPnL}
+                        </span>
+                    </div>
+                    </div>
+
+                    <div className="mt-6 pt-6 border-t border-white/5 flex justify-between items-center">
+                        <span className="text-[10px] text-slate-500 font-mono">Real-time Data</span>
+                        <Link href="/auth" className="text-[10px] font-black uppercase tracking-widest text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
+                            Deploy <ChevronRight className="w-3 h-3" />
+                        </Link>
+                    </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>

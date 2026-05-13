@@ -239,20 +239,20 @@ function PerformanceLogContent() {
   );
 
   return (
-    <div className="min-h-screen bg-[#020617] text-slate-200 p-6 font-sans flex flex-col gap-6">
+    <div className="min-h-screen bg-[#020617] text-slate-200 p-3 md:p-6 font-sans flex flex-col gap-6 max-w-[100vw] overflow-x-hidden">
       
-      <header className="max-w-[1400px] w-full mx-auto flex flex-col md:flex-row justify-between items-center pb-4 border-b border-white/10 gap-4">
-        <div className="flex items-center gap-3">
-          <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
-            <BarChart3 className="text-emerald-400" size={24} />
+      <header className="max-w-7xl w-full mx-auto flex flex-col lg:flex-row justify-between items-center pb-4 border-b border-white/10 gap-4">
+        <div className="flex items-center gap-3 w-full lg:w-auto">
+          <div className="p-2 md:p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
+            <BarChart3 className="text-emerald-400" size={20} md={24} />
           </div>
           <div>
-            <h1 className="text-2xl font-black italic tracking-tighter bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent uppercase">Performance Analytics</h1>
-            <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-1">Daily ROI & Execution Ledger</p>
+            <h1 className="text-xl md:text-2xl font-black italic tracking-tighter bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent uppercase text-left">Performance Analytics</h1>
+            <p className="text-[8px] md:text-[10px] text-slate-500 font-mono uppercase tracking-widest mt-1">Daily ROI & Execution Ledger</p>
           </div>
         </div>
 
-        <div className="flex items-center gap-4 bg-slate-900/50 p-2 rounded-2xl border border-white/5">
+        <div className="flex flex-wrap items-center gap-3 md:gap-4 bg-slate-900/50 p-2 rounded-2xl border border-white/5 w-full lg:w-auto justify-between">
             <div className="flex items-center gap-2 px-3">
                 <Layers size={14} className="text-slate-400" />
                 <select 
@@ -277,22 +277,22 @@ function PerformanceLogContent() {
         </div>
       </header>
 
-      <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2 bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl flex flex-col min-h-[300px]">
-              <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center justify-between">
+      <div className="max-w-7xl w-full mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col min-h-[300px]">
+              <h3 className="text-[9px] md:text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center justify-between">
                   <span className="flex items-center gap-2"><LineChart size={14}/> Cumulative Equity Curve</span>
                   {chartData.length > 0 && <span className={`text-xs font-mono font-bold ${chartData[chartData.length-1].value >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>${chartData[chartData.length-1].value.toFixed(2)}</span>}
               </h3>
               {chartData.length > 0 ? (
-                  <div ref={chartContainerRef} className="flex-grow w-full relative min-h-[250px]" style={{ height: '300px' }} />
+                  <div ref={chartContainerRef} className="flex-grow w-full relative min-h-[200px] md:min-h-[250px]" style={{ height: '300px' }} />
               ) : (
-                  <div className="flex-grow flex items-center justify-center text-slate-600 font-mono text-[10px] uppercase tracking-widest">No valid trades to plot</div>
+                  <div className="flex-grow flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest">No valid trades to plot</div>
               )}
           </div>
           
-          <div className="lg:col-span-1 bg-indigo-500/10 border border-indigo-500/20 rounded-3xl p-6 shadow-2xl flex flex-col gap-4">
-             <h3 className="text-[10px] font-black uppercase text-indigo-300 tracking-widest flex items-center gap-2"><Lightbulb size={14}/> Optimizer Insights</h3>
-             <p className="text-[12px] text-indigo-200 leading-relaxed font-mono italic">
+          <div className="lg:col-span-1 bg-indigo-500/10 border border-indigo-500/20 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col gap-4">
+             <h3 className="text-[9px] md:text-[10px] font-black uppercase text-indigo-300 tracking-widest flex items-center gap-2"><Lightbulb size={14}/> Optimizer Insights</h3>
+             <p className="text-[11px] md:text-[12px] text-indigo-200 leading-relaxed font-mono italic">
                  {generateInsights()}
              </p>
              <div className="mt-auto pt-4 border-t border-indigo-500/20">
@@ -301,10 +301,10 @@ function PerformanceLogContent() {
           </div>
       </div>
 
-      <div className="max-w-[1400px] w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl">
+      <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl overflow-x-auto">
         <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center gap-2"><Calendar size={14}/> 4-Week Rolling Calendar</h3>
         
-        <div className="grid grid-cols-7 gap-2">
+        <div className="grid grid-cols-7 gap-2 min-w-[600px]">
             {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(day => (
                 <div key={day} className="text-center text-[9px] font-black uppercase tracking-widest text-slate-600 mb-2">{day}</div>
             ))}
@@ -336,7 +336,7 @@ function PerformanceLogContent() {
       </div>
 
       {selectedDate && (
-        <div className="max-w-[1400px] w-full mx-auto grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <div className="max-w-7xl w-full mx-auto grid grid-cols-1 lg:grid-cols-4 gap-6">
           
           <div className="lg:col-span-1 flex flex-col gap-4">
             <div className="bg-slate-900/40 border border-white/10 p-5 rounded-3xl">

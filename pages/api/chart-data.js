@@ -1,6 +1,6 @@
 // pages/api/chart-data.js
 export default async function handler(req, res) {
-    const { asset, granularity } = req.query;
+    const { asset, granularity, start, end } = req.query;
     
     if (!asset) return res.status(400).json({ error: "Asset is required" });
 
@@ -17,7 +17,11 @@ export default async function handler(req, res) {
     const tfGranularity = granularity || 60;
 
     try {
-        const response = await fetch(`https://api.exchange.coinbase.com/products/${spotProduct}/candles?granularity=${tfGranularity}`);
+        let url = `https://api.exchange.coinbase.com/products/${spotProduct}/candles?granularity=${tfGranularity}`;
+        if (start) url += `&start=${start}`;
+        if (end) url += `&end=${end}`;
+
+        const response = await fetch(url);
         
         if (!response.ok) throw new Error(`Coinbase API returned ${response.status}`);
         

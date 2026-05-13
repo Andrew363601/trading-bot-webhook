@@ -107,6 +107,10 @@ function DashboardContent() {
   const [showMarkers, setShowMarkers] = useState(true);
   const [showPriceLines, setShowPriceLines] = useState(true);
 
+  const isLoadingOlderRef = useRef(false);
+  const allChartDataRef = useRef([]);
+  const earliestFetchedTimeRef = useRef(null);
+
   const [localInput, setLocalInput] = useState('');
 
   // Trade log filter state
@@ -633,6 +637,51 @@ function DashboardContent() {
     volumeSeriesRef.current = volumeSeries;
     seriesMarkersRef.current = markersPlugin; 
 
+    // 🟢 THE UPGRADE: Infinite Scroll / Lazy Loading
+    chart.timeScale().subscribeVisibleTimeRangeChange(async (newRange) => {
+        if (!newRange || !seriesRef.current || isLoadingOlderRef.current) return;
+        
+        // If we are close to the beginning of the data (left side)
+        const currentData = allChartDataRef.current;
+        if (currentData.length === 0) return;
+
+        const firstCandleTime = currentData[0].time;
+        if (newRange.from <= firstCandleTime + 10) {
+            isLoadingOlderRef.current = true;
+            
+            const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
+            const granularity = tfMap[chartTimeframe] || 60;
+            const endTime = firstCandleTime;
+
+            try {
+                console.log(`[CHART] Fetching older data before ${endTime}...`);
+                const res = await fetch(`/api/chart-data?asset=${activeAsset}&granularity=${granularity}&end=${endTime}&limit=1000`);
+                if (res.ok) {
+                    const olderData = await res.json();
+                    if (Array.isArray(olderData) && olderData.length > 0) {
+                        // Filter out duplicates (Coinbase sometimes overlaps)
+                        const existingTimes = new Set(currentData.map(d => d.time));
+                        const uniqueOlder = olderData.filter(d => !existingTimes.has(d.time));
+                        
+                        const merged = [...uniqueOlder, ...currentData].sort((a, b) => a.time - b.time);
+                        allChartDataRef.current = merged;
+                        
+                        seriesRef.current.setData(merged);
+                        const volumeData = merged.map(c => ({
+                            time: c.time, value: c.volume,
+                            color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
+                        }));
+                        volumeSeriesRef.current.setData(volumeData);
+                    }
+                }
+            } catch (e) {
+                console.error("Failed to load older data", e);
+            } finally {
+                isLoadingOlderRef.current = false;
+            }
+        }
+    });
+
     const handleResize = () => {
         if(chartContainerRef.current) {
             chart.applyOptions({ width: chartContainerRef.current.clientWidth, height: chartContainerRef.current.clientHeight });
@@ -668,6 +717,10 @@ function DashboardContent() {
     let isMounted = true;
     let intervalId;
 
+    // Reset chart state when asset or timeframe changes
+    allChartDataRef.current = [];
+    isLoadingOlderRef.current = false;
+
     const loadChartData = async (isLiveTick = false) => {
         if(!seriesRef.current || !volumeSeriesRef.current || !chartRef.current) return;
 
@@ -675,17 +728,21 @@ function DashboardContent() {
         const granularity = tfMap[chartTimeframe] || 60;
 
         try {
-            const res = await fetch(`/api/chart-data?asset=${activeAsset}&granularity=${granularity}&limit=1500&deepCache=true`);
+            // If live tick, we just want the latest. If full load, we want the first batch.
+            const res = await fetch(`/api/chart-data?asset=${activeAsset}&granularity=${granularity}&limit=1000&deepCache=true`);
             if(!res.ok) throw new Error("Chart proxy failed");
             
             const data = await res.json();
             if(!isMounted) return;
 
             if (!Array.isArray(data) || data.length === 0) {
-                console.log("[CHART DEBUG] No chart data or empty array. Clearing markers.");
-                seriesRef.current.setData([]);
-                volumeSeriesRef.current.setData([]);
-                seriesMarkersRef.current.setMarkers([]); // Clear markers if no data
+                if (!isLiveTick) {
+                    console.log("[CHART DEBUG] No chart data or empty array. Clearing series.");
+                    seriesRef.current.setData([]);
+                    volumeSeriesRef.current.setData([]);
+                    allChartDataRef.current = [];
+                    seriesMarkersRef.current.setMarkers([]);
+                }
                 return;
             }
 
@@ -693,14 +750,23 @@ function DashboardContent() {
                 const latestCandle = data[data.length - 1];
                 seriesRef.current.update(latestCandle);
                 
+                // Update local ref as well
+                const lastIdx = allChartDataRef.current.length - 1;
+                if (lastIdx >= 0 && allChartDataRef.current[lastIdx].time === latestCandle.time) {
+                    allChartDataRef.current[lastIdx] = latestCandle;
+                } else {
+                    allChartDataRef.current.push(latestCandle);
+                }
+
                 volumeSeriesRef.current.update({
                     time: latestCandle.time,
                     value: latestCandle.volume,
                     color: latestCandle.close >= latestCandle.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
                 });
             } else {
-                seriesMarkersRef.current.setMarkers([]); // Proactively clear markers on full data reload
+                seriesMarkersRef.current.setMarkers([]); 
                 seriesRef.current.setData(data);
+                allChartDataRef.current = data;
                 
                 const volumeData = data.map(c => ({
                     time: c.time,
