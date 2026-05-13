@@ -125,6 +125,19 @@ export async function startWatchdog(tenantId) {
                     continue; 
                 }
 
+                // Cleanup orphaned trades: if trade is > 60s old with no exchange confirmation, mark as failed
+                if (tradeAgeMs > 60000 && openTrade.execution_mode === 'LIVE') {
+                    await logAgentActivity(tenantId, "Watchdog", asset, `Trade ${openTrade.id} has been pending for ${Math.round(tradeAgeMs/1000)}s without exchange confirmation. Cleaning up...`, "TRADE_CLEANUP");
+                    console.log(`[WATCHDOG-${tenantId}] Trade ${openTrade.id} has been pending for ${Math.round(tradeAgeMs/1000)}s. Marking as failed.`);
+                    await supabase.from('trade_logs').update({
+                        exit_price: openTrade.entry_price || 0,
+                        pnl: 0,
+                        exit_time: new Date().toISOString(),
+                        reason: 'ORDER_FAILED'
+                    }).eq('id', openTrade.id);
+                    continue;
+                }
+
                 let coinbaseProduct = asset.toUpperCase().trim();
                 if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP'); 
 

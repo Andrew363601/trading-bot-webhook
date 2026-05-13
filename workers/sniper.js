@@ -350,7 +350,7 @@ export async function startSniper(tenantId) {
             const lastRun = RAM.lastMathRun[config.id] || 0;
             const isProcessing = RAM.isProcessingMath[config.id] || false;
 
-            if (isProcessing || (now - lastRun < 60000)) continue; 
+            if (isProcessing || (now - lastRun < 120000)) continue; 
 
             RAM.isProcessingMath[config.id] = true;
             RAM.lastMathRun[config.id] = now;

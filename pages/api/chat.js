@@ -440,11 +440,10 @@ export default async function handler(req, res) {
       },
     });
 
-    // 🟢 THE FIX: Use result.textStream (AsyncIterable) — stable across all ai v6.x versions
+    // 🟢 THE FIX: Use result.text (Promise<string>) — stable across all ai v6.x versions
+    const text = await result.text;
     res.setHeader('Content-Type', 'text/plain');
-    for await (const chunk of result.textStream) {
-      res.write(chunk);
-    }
+    res.write(text);
     res.end();
 
   } catch (err) {

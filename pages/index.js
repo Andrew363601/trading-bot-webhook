@@ -306,6 +306,12 @@ function DashboardContent() {
   }, [session?.user?.id, supabase]);
 
   const fetchData = useCallback(async () => {
+    // Guard: don't fetch data without tenant_id to prevent cross-tenant leakage
+    if (!tenantId) {
+      console.log("[FETCH DATA] No tenant_id yet, skipping fetch to prevent cross-tenant data leakage.");
+      return;
+    }
+
     try {
       // Build queries with tenant_id filtering
       let logsQuery = supabase.from('trade_logs').select('*').order('created_at', { ascending: false });
