@@ -104,23 +104,34 @@ export default async function handler(req, res) {
       existingStrategyId = existingStrategy.id;
       finalConfigData = {
         is_active: true,
-        updated_at: new Date().toISOString(),
+        last_updated: new Date().toISOString(),
         // IMPORTANT: Retain existing parameters, do not overwrite with new 'parameters' from req.body
         // The front-end editor handles parameter changes for existing strategies.
         parameters: existingStrategy.parameters // Use existing parameters
       };
     } else {
-      // New strategy - insert it
+      // New strategy - insert it with standard default parameters
       operation = 'insert';
+      const defaultParameters = {
+        qty: 1,
+        leverage: 1,
+        macro_tf: "ONE_HOUR",
+        trigger_tf: "FIVE_MINUTE",
+        market_type: "FUTURES",
+        tripwire_percent: 0.25,
+        trail_step_percent: 0.10,
+        veto_cooldown_minutes: 10
+      };
+      // Merge: incoming parameters override defaults
+      const mergedParameters = { ...defaultParameters, ...flattenParameters(parameters) };
       finalConfigData = {
         tenant_id: actualTenantId,
         asset,
         strategy,
         exchange,
         product_type,
-        parameters: flattenParameters(parameters), // Flatten parameters before inserting
+        parameters: mergedParameters,
         is_active: true,
-        updated_at: new Date().toISOString(),
       };
     }
 
