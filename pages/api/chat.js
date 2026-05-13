@@ -334,10 +334,10 @@ export default async function handler(req, res) {
           parameters: z.object({
             asset: z.string().optional().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
             symbol: z.string().optional().describe('The asset symbol, e.g., DOGE-PERP-INTX (alias for asset)'),
-            granularity: z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']),
-            lookback_candles: z.number().max(5000).describe('Total number of candles to fetch')
+            granularity: z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']).optional().describe('Candle granularity. Defaults to ONE_HOUR.'),
+            lookback_candles: z.number().max(5000).optional().describe('Total number of candles to fetch. Defaults to 150.')
           }),
-          execute: async ({ asset, symbol, granularity, lookback_candles = 150 }) => {
+          execute: async ({ asset, symbol, granularity = 'ONE_HOUR', lookback_candles = 150 }) => {
             const resolvedAsset = asset || symbol;
             if (!resolvedAsset) return { error: "Missing asset symbol" };
             const apiKeyName = process.env.COINBASE_API_KEY;
