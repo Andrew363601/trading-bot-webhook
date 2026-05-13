@@ -59,17 +59,17 @@ export default async function handler(req, res) {
       tenantId = userLink?.tenant_id;
     }
 
-    console.log(`[CHAT API] Request for tenant: ${tenantId || 'GLOBAL'}. Message count: ${safeMessages.length}`);
-
-    let strategyQuery = supabase.from('strategy_config').select('*');
-    let tradeLogQuery = supabase.from('trade_logs').select('*').is('exit_price', null);
-    let recentLogQuery = supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5);
-
-    if (tenantId) {
-      strategyQuery = strategyQuery.eq('tenant_id', tenantId);
-      tradeLogQuery = tradeLogQuery.eq('tenant_id', tenantId);
-      recentLogQuery = recentLogQuery.eq('tenant_id', tenantId);
+    // HARD ENFORCEMENT: Reject unauthenticated requests to prevent cross-tenant data leakage
+    if (!tenantId) {
+      console.error("[CHAT API SECURITY] Rejected request with no valid tenant_id.");
+      return res.status(401).json({ error: 'Authentication required. Valid tenant session not found.' });
     }
+
+    console.log(`[CHAT API] Request for tenant: ${tenantId}. Message count: ${safeMessages.length}`);
+
+    let strategyQuery = supabase.from('strategy_config').select('*').eq('tenant_id', tenantId);
+    let tradeLogQuery = supabase.from('trade_logs').select('*').is('exit_price', null).eq('tenant_id', tenantId);
+    let recentLogQuery = supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('id', { ascending: false }).limit(5).eq('tenant_id', tenantId);
 
     // Execute queries with individual error handling (query builders are not Promises)
     let configsRes, tradesRes, closedRes;
@@ -197,7 +197,7 @@ export default async function handler(req, res) {
             days_back: z.number().optional().describe('Number of days back to search (e.g., 7 for this week). Leave undefined for all-time.')
           }),
           execute: async ({ asset, strategy_id, days_back }) => {
-            let query = supabase.from('trade_logs').select('*').not('exit_price', 'is', null);
+            let query = supabase.from('trade_logs').select('*').not('exit_price', 'is', null).eq('tenant_id', tenantId);
 
             if (asset) query = query.eq('symbol', asset);
             if (strategy_id) query = query.eq('strategy_id', strategy_id);
@@ -266,6 +266,7 @@ export default async function handler(req, res) {
                 .select('id')
                 .eq('asset', args.asset)
                 .eq('strategy', args.strategy_id)
+                .eq('tenant_id', tenantId)
                 .maybeSingle();
 
                 if (existingError) {
@@ -274,6 +275,7 @@ export default async function handler(req, res) {
                 }
 
                 const payload = {
+                tenant_id: tenantId,
                 asset: args.asset,
                 strategy: args.strategy_id,
                 execution_mode: args.execution_mode || 'PAPER',
@@ -286,7 +288,7 @@ export default async function handler(req, res) {
                 
                 let result;
                 if (existing) {
-                result = await supabase.from('strategy_config').update(payload).eq('id', existing.id);
+                result = await supabase.from('strategy_config').update(payload).eq('id', existing.id).eq('tenant_id', tenantId);
                 } else {
                 result = await supabase.from('strategy_config').insert([payload]);
                 }
@@ -330,16 +332,19 @@ export default async function handler(req, res) {
         fetchHistoricalData: tool({
           description: 'Fetches historical OHLC candles from Coinbase.',
           parameters: z.object({
-            asset: z.string().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
+            asset: z.string().optional().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
+            symbol: z.string().optional().describe('The asset symbol, e.g., DOGE-PERP-INTX (alias for asset)'),
             granularity: z.enum(['ONE_MINUTE', 'FIVE_MINUTE', 'FIFTEEN_MINUTE', 'ONE_HOUR', 'ONE_DAY']),
             lookback_candles: z.number().max(5000).describe('Total number of candles to fetch')
           }),
-          execute: async ({ asset, granularity, lookback_candles = 150 }) => {
+          execute: async ({ asset, symbol, granularity, lookback_candles = 150 }) => {
+            const resolvedAsset = asset || symbol;
+            if (!resolvedAsset) return { error: "Missing asset symbol" };
             const apiKeyName = process.env.COINBASE_API_KEY;
             const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
             if (!apiKeyName || !apiSecret) return { error: "Missing Coinbase Credentials" };
 
-            let coinbaseProduct = asset.toUpperCase().trim();
+            let coinbaseProduct = resolvedAsset.toUpperCase().trim();
             if (!coinbaseProduct.includes('-')) {
                 if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
                 else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
