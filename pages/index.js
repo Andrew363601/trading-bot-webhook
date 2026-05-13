@@ -641,33 +641,38 @@ function DashboardContent() {
     chart.timeScale().subscribeVisibleTimeRangeChange(async (newRange) => {
         if (!newRange || !seriesRef.current || isLoadingOlderRef.current) return;
         
-        // If we are close to the beginning of the data (left side)
         const currentData = allChartDataRef.current;
         if (currentData.length === 0) return;
 
+        const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
+        const granularity = tfMap[chartTimeframe] || 60;
         const firstCandleTime = currentData[0].time;
-        if (newRange.from <= firstCandleTime + 10) {
+
+        // Fetch when user is within 50 candles of the left edge
+        if (newRange.from <= firstCandleTime + (granularity * 50)) {
             isLoadingOlderRef.current = true;
-            
-            const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
-            const granularity = tfMap[chartTimeframe] || 60;
             const endTime = firstCandleTime;
 
             try {
-                console.log(`[CHART] Fetching older data before ${endTime}...`);
+                console.log(`[CHART] Stitching older data before ${new Date(endTime * 1000).toLocaleString()}...`);
                 const res = await fetch(`/api/chart-data?asset=${activeAsset}&granularity=${granularity}&end=${endTime}&limit=1000`);
                 if (res.ok) {
                     const olderData = await res.json();
                     if (Array.isArray(olderData) && olderData.length > 0) {
-                        // Filter out duplicates (Coinbase sometimes overlaps)
-                        const existingTimes = new Set(currentData.map(d => d.time));
-                        const uniqueOlder = olderData.filter(d => !existingTimes.has(d.time));
+                        const merged = [...olderData, ...currentData].sort((a, b) => a.time - b.time);
                         
-                        const merged = [...uniqueOlder, ...currentData].sort((a, b) => a.time - b.time);
-                        allChartDataRef.current = merged;
+                        // Deduplicate merged set
+                        const seen = new Set();
+                        const uniqueMerged = merged.filter(d => {
+                            if (seen.has(d.time)) return false;
+                            seen.add(d.time);
+                            return true;
+                        });
+
+                        allChartDataRef.current = uniqueMerged;
+                        seriesRef.current.setData(uniqueMerged);
                         
-                        seriesRef.current.setData(merged);
-                        const volumeData = merged.map(c => ({
+                        const volumeData = uniqueMerged.map(c => ({
                             time: c.time, value: c.volume,
                             color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
                         }));
@@ -677,7 +682,7 @@ function DashboardContent() {
             } catch (e) {
                 console.error("Failed to load older data", e);
             } finally {
-                isLoadingOlderRef.current = false;
+                setTimeout(() => { isLoadingOlderRef.current = false; }, 1000); // Cooldown
             }
         }
     });
@@ -717,9 +722,12 @@ function DashboardContent() {
     let isMounted = true;
     let intervalId;
 
-    // Reset chart state when asset or timeframe changes
+    // 🟢 Reset chart state when asset or timeframe changes
     allChartDataRef.current = [];
     isLoadingOlderRef.current = false;
+    if (seriesRef.current) seriesRef.current.setData([]);
+    if (volumeSeriesRef.current) volumeSeriesRef.current.setData([]);
+    if (seriesMarkersRef.current) seriesMarkersRef.current.setMarkers([]);
 
     const loadChartData = async (isLiveTick = false) => {
         if(!seriesRef.current || !volumeSeriesRef.current || !chartRef.current) return;
