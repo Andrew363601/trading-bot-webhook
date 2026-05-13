@@ -308,11 +308,14 @@ export default async function handler(req, res) {
         readStrategyLogic: tool({
           description: 'Reads the raw JavaScript source code of a specific strategy file.',
           parameters: z.object({
-            fileName: z.string().describe('The name of the strategy file to read, e.g., "doge_hf_scalper_v1.js"')
+            fileName: z.string().optional().describe('The name of the strategy file to read, e.g., "doge_hf_scalper_v1.js"'),
+            strategy_name: z.string().optional().describe('The name of the strategy to read, e.g., "ORACLE_PRICE_ACTION_V1"')
           }),
-          execute: async ({ fileName }) => {
+          execute: async ({ fileName, strategy_name }) => {
             try {
-              const safeFileName = path.basename(fileName);
+              const resolvedName = fileName || (strategy_name ? `${strategy_name.toLowerCase()}.js` : '');
+              if (!resolvedName) return { error: "Missing fileName or strategy_name" };
+              const safeFileName = path.basename(resolvedName);
               const cleanName = safeFileName.toLowerCase().replace('.js', '').trim();
               const finalFileName = `${cleanName}.js`;
               const filePath = path.join(process.cwd(), 'lib', 'strategies', finalFileName);
