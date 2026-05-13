@@ -187,7 +187,7 @@ export default async function handler(req, res) {
       model: google('gemini-3-flash-preview'),
       system: systemPrompt,
       messages: safeMessages, 
-      maxSteps: 5,
+      maxSteps: 10,
       tools: {
         queryTradeLedger: tool({
           description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',

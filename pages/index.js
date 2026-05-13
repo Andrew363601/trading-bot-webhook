@@ -234,7 +234,13 @@ function DashboardContent() {
         content: parsedContent || 'No response generated', 
         id: Date.now().toString() 
       };
-      setMessages(prev => [...prev, assistantMessage]);
+      
+      // Only add non-empty responses to conversation history
+      if (parsedContent && parsedContent !== 'No response generated') {
+        setMessages(prev => [...prev, assistantMessage]);
+      } else {
+        console.warn("[CHAT DEBUG] Empty response received, not adding to conversation history.");
+      }
     } catch (err) {
       console.error("[NEXUS AGENT FATAL]:", err);
       setSdkError(err.message);
@@ -256,7 +262,11 @@ function DashboardContent() {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          setMessages(parsed);
+          // Filter out any "No response generated" messages from history
+          const cleanMessages = parsed.filter(m => 
+            m.role !== 'assistant' || (m.content && m.content !== 'No response generated')
+          );
+          setMessages(cleanMessages);
         }
       } catch (e) {
         console.error("[NEXUS DEBUG] Failed to load chat history:", e);
@@ -1512,7 +1522,19 @@ function DashboardContent() {
             </div>
           </div>
           <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-2xl sm:rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[500px]">
-          <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
+          <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center justify-between">
+              <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
+              <button
+                onClick={() => {
+                  setMessages([]);
+                  sessionStorage.removeItem('nexus_chat_history');
+                }}
+                className="text-[9px] font-bold text-slate-500 hover:text-red-400 transition-colors px-2 py-1 rounded-lg hover:bg-red-500/10"
+                title="Clear conversation history"
+              >
+                Clear
+              </button>
+            </div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-4 flex-grow">
               {messages.map(m => (
                 <div key={m.id} className={`flex flex-col gap-2 ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
