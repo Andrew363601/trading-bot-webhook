@@ -1,11 +1,31 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import Head from 'next/head';
+import { useRouter } from 'next/router';
 import { Zap, Check, ArrowRight } from 'lucide-react';
 
 export default function PlansPage() {
   const session = useSession();
+  const supabase = useSupabaseClient();
   const [loading, setLoading] = useState(null);
+  const router = useRouter();
+
+  useEffect(() => {
+    if (session) {
+      const checkSub = async () => {
+        const { data } = await supabase
+          .from('tenant_users')
+          .select('tenants(subscription_active)')
+          .eq('auth_user_id', session.user.id)
+          .single();
+        
+        if (data?.tenants?.subscription_active) {
+          router.replace('/audit');
+        }
+      };
+      checkSub();
+    }
+  }, [session, supabase, router]);
 
   const handleSelectTier = async (tier) => {
     if (!session) return;

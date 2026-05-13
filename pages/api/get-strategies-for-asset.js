@@ -5,7 +5,8 @@ import { jwtVerify, createRemoteJWKSet } from 'jose';
 import fs from 'fs';
 import path from 'path';
 
-const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {

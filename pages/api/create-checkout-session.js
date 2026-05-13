@@ -20,14 +20,32 @@ export default async function handler(req, res) {
     };
 
     const priceId = priceIds[tier];
-    if (!priceId) return res.status(400).json({ error: 'Invalid tier selected' });
+    if (!priceId) {
+        return res.status(400).json({ error: `Environment variable for ${tier} price is missing or tier is invalid.` });
+    }
+
+    // Ensure we have a site URL (fallback to request origin for local dev)
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || req.headers.origin;
 
     try {
-        // 1. Check if user already has a Stripe customer ID
+        // 1. Get the actual tenant_id from the auth_user_id (tenantId in body)
+        const { data: userLink, error: userError } = await supabase
+            .from('tenant_users')
+            .select('tenant_id')
+            .eq('auth_user_id', tenantId)
+            .single();
+
+        if (userError || !userLink) {
+            throw new Error(`User not found in registry. Please ensure you are logged in correctly.`);
+        }
+
+        const realTenantId = userLink.tenant_id;
+
+        // 2. Check if user already has a Stripe customer ID
         const { data: subData } = await supabase
             .from('subscriptions')
             .select('stripe_customer_id')
-            .eq('tenant_id', tenantId)
+            .eq('tenant_id', realTenantId)
             .single();
 
         let customerId = subData?.stripe_customer_id;
@@ -35,12 +53,12 @@ export default async function handler(req, res) {
         if (!customerId) {
             const customer = await stripe.customers.create({
                 email,
-                metadata: { tenantId }
+                metadata: { tenantId: realTenantId }
             });
             customerId = customer.id;
         }
 
-        // 2. Create Checkout Session
+        // 3. Create Checkout Session
         const session = await stripe.checkout.sessions.create({
             customer: customerId,
             payment_method_types: ['card'],
@@ -48,11 +66,11 @@ export default async function handler(req, res) {
             mode: 'subscription',
             subscription_data: {
                 trial_period_days: 14,
-                metadata: { tenantId }
+                metadata: { tenantId: realTenantId }
             },
-            success_url: `${process.env.NEXT_PUBLIC_SITE_URL}/audit?session_id={CHECKOUT_SESSION_ID}`,
-            cancel_url: `${process.env.NEXT_PUBLIC_SITE_URL}/demo-index#pricing`,
-            metadata: { tenantId, tier }
+            success_url: `${siteUrl}/audit?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${siteUrl}/plans`,
+            metadata: { tenantId: realTenantId, tier }
         });
 
         res.status(200).json({ sessionId: session.id, url: session.url });

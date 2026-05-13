@@ -11,7 +11,8 @@ import path from 'path';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 import { recordUsage } from '../../lib/usage-meter';
 
-const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
 import crypto from 'crypto';
 
 export default async function handler(req, res) {
@@ -35,7 +36,7 @@ export default async function handler(req, res) {
 
     const safeMessages = messages.length > 15 ? messages.slice(-15) : messages;
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://wsrioyxzhxxrtzjncfvn.supabase.co";
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
     if (!supabaseKey) throw new Error("Missing Supabase Keys in environment.");
     

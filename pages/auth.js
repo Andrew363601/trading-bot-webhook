@@ -21,8 +21,18 @@ export default function AuthPage() {
         const { data: { session: activeSession } } = await supabase.auth.getSession();
         
         if (activeSession) {
-          // Session exists, redirect to plans to ensure they have a tier
-          router.replace('/plans');
+          // Check subscription status before deciding where to send them
+          const { data: userData } = await supabase
+            .from('tenant_users')
+            .select('tenants(subscription_active)')
+            .eq('auth_user_id', activeSession.user.id)
+            .single();
+
+          if (userData?.tenants?.subscription_active) {
+            router.replace('/audit');
+          } else {
+            router.replace('/plans');
+          }
         } else {
           // No session after callback processing
           setSessionCheckComplete(true);

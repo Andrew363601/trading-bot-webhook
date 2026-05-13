@@ -2,10 +2,11 @@
 import { createClient } from "@supabase/supabase-js";
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 
-const JWKS = createRemoteJWKSet(new URL('https://wsrioyxzhxxrtzjncfvn.supabase.co/auth/v1/.well-known/jwks.json'));
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  supabaseUrl,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
