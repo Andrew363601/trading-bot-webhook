@@ -1,5 +1,4 @@
 import Stripe from 'stripe';
-import { buffer } from 'micro';
 import { createClient } from '@supabase/supabase-js';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
@@ -8,6 +7,15 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// Helper to get raw body without 'micro'
+async function getRawBody(readable) {
+    const chunks = [];
+    for await (const chunk of readable) {
+        chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+    }
+    return Buffer.concat(chunks);
+}
+
 export const config = {
     api: { bodyParser: false }
 };
@@ -15,7 +23,13 @@ export const config = {
 export default async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
 
-    const buf = await buffer(req);
+    let buf;
+    try {
+        buf = await getRawBody(req);
+    } catch (e) {
+        return res.status(400).send(`Raw body error: ${e.message}`);
+    }
+    
     const sig = req.headers['stripe-signature'];
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 

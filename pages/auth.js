@@ -21,8 +21,8 @@ export default function AuthPage() {
         const { data: { session: activeSession } } = await supabase.auth.getSession();
         
         if (activeSession) {
-          // Session exists, redirect to dashboard
-          router.replace('/');
+          // Session exists, redirect to plans to ensure they have a tier
+          router.replace('/plans');
         } else {
           // No session after callback processing
           setSessionCheckComplete(true);
