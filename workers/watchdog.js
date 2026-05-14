@@ -534,6 +534,7 @@ export async function startWatchdog(tenantId) {
                         }
                     }
                 } else if (openTrade.execution_mode === 'PAPER') {
+                    try {
                     // 🟢 PAPER TRADE TP/SL TRIGGER LOGIC
                     const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
                     
@@ -616,6 +617,9 @@ export async function startWatchdog(tenantId) {
                     } else {
                         // No TP/SL configured for paper trade - just monitor
                         await logAgentActivity(tenantId, "Watchdog", asset, `Paper trade ${openTrade.id} has no TP/SL configured. Current price: $${currentPrice}.`, "INFO");
+                    }
+                    } catch (paperErr) {
+                        console.error("[PAPER TRADE MONITOR ERROR]:", paperErr.message);
                     }
                 }
             }

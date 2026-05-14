@@ -15,10 +15,25 @@ export default function AuthPage() {
   const session = useSession();
 
   useEffect(() => {
-    // Session check for callback processing only - NO auto-redirect
+    // Session check for callback processing - redirect after OAuth
     const checkSession = async () => {
       try {
         const { data: { session: activeSession } } = await supabase.auth.getSession();
+        
+        if (activeSession) {
+          // New users go to plans page, existing paid users go to dashboard
+          const { data: userData } = await supabase
+            .from('tenant_users')
+            .select('tenants(subscription_active)')
+            .eq('auth_user_id', activeSession.user.id)
+            .single();
+
+          if (userData?.tenants?.subscription_active) {
+            router.replace('/');
+          } else {
+            router.replace('/plans');
+          }
+        }
         setSessionCheckComplete(true);
       } catch (err) {
         console.error('Session check error:', err);
