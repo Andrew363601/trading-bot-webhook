@@ -14,6 +14,7 @@ export default function LandingPage() {
   const [terminalFilter, setTerminalFilter] = useState('ALL');
   const [demoStats, setDemoStats] = useState({ winRate: '0%', totalTrades: 0, totalPnL: '$0.00' });
   const [activeDemoTrade, setActiveDemoTrade] = useState(null);
+  const [demoTrades, setDemoTrades] = useState([]);
   const [demoConfigs, setDemoConfigs] = useState([]);
   const [selectedStrategy, setSelectedStrategy] = useState(null);
   const demoTenantId = process.env.NEXT_PUBLIC_DEMO_TENANT_ID;
