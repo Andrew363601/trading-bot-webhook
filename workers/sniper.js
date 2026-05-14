@@ -39,6 +39,85 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
+// 🟢 THE FIX: Rate Limiter & Caching for Coinbase API
+const requestQueue = [];
+let processingQueue = false;
+const candleCache = new Map();
+const CACHE_TTL = 30000; // 30 seconds
+const MAX_RPS = 8; // Max requests per second
+
+async function processRequestQueue() {
+    if (processingQueue) return;
+    processingQueue = true;
+    
+    while (requestQueue.length > 0) {
+        const batch = requestQueue.splice(0, MAX_RPS);
+        const startTime = Date.now();
+        
+        await Promise.all(batch.map(fn => fn()));
+        
+        const elapsed = Date.now() - startTime;
+        if (elapsed < 1000) {
+            await new Promise(resolve => setTimeout(resolve, 1000 - elapsed));
+        }
+    }
+    
+    processingQueue = false;
+}
+
+async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
+  const cacheKey = `${asset}_${granularity}`;
+  const cached = candleCache.get(cacheKey);
+  
+  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
+    return cached.data;
+  }
+
+  return new Promise((resolve, reject) => {
+    requestQueue.push(async () => {
+      try {
+        const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
+        let coinbaseProduct = asset.toUpperCase().trim();
+        if (!coinbaseProduct.includes('-')) {
+            if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
+            else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
+            else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
+        }
+        const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
+        const end = Math.floor(Date.now() / 1000);
+
+        let secondsPerCandle = 3600;
+        if (safeGranularity === 'ONE_MINUTE') secondsPerCandle = 60;
+        else if (safeGranularity === 'FIVE_MINUTE') secondsPerCandle = 300;
+        else if (safeGranularity === 'FIFTEEN_MINUTE') secondsPerCandle = 900;
+        else if (safeGranularity === 'THIRTY_MINUTE') secondsPerCandle = 1800;
+        else if (safeGranularity === 'ONE_HOUR') secondsPerCandle = 3600;
+        else if (safeGranularity === 'TWO_HOUR') secondsPerCandle = 7200;
+        else if (safeGranularity === 'SIX_HOUR') secondsPerCandle = 21600;
+        else if (safeGranularity === 'ONE_DAY') secondsPerCandle = 86400;
+
+        const start = end - (secondsPerCandle * 300); 
+        const token = generateCoinbaseToken('GET', path, apiKey, secret);
+
+        const resp = await fetch(`https://api.coinbase.com${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!resp.ok) throw new Error(`Coinbase HTTP ${resp.status}`); 
+        const data = await resp.json();
+        const result = data.candles?.map(c => ({ open: c.open ? parseFloat(c.open) : parseFloat(c.close), close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
+        
+        // Cache the result
+        candleCache.set(cacheKey, { data: result, timestamp: Date.now() });
+        
+        resolve(result);
+      } catch (err) { 
+        reject(err); 
+      }
+    });
+    
+    processRequestQueue();
+  });
+}
+
+// 🟢 Helper functions required by the Sniper
 const getCVDSequence = (candles, sequenceLength = 5) => {
     if (!candles || candles.length === 0) return [];
     const seq = [];
@@ -77,38 +156,6 @@ async function fetchMacroAsset(ticker) {
         }
         return null;
     } catch (e) { return null; }
-}
-
-async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
-  try {
-    const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');
-    let coinbaseProduct = asset.toUpperCase().trim();
-    if (!coinbaseProduct.includes('-')) {
-        if (coinbaseProduct.endsWith('USDT')) coinbaseProduct = coinbaseProduct.replace('USDT', '-USDT');
-        else if (coinbaseProduct.endsWith('USD')) coinbaseProduct = coinbaseProduct.replace('USD', '-USD');
-        else if (coinbaseProduct.endsWith('PERP')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
-    }
-    const path = `/api/v3/brokerage/products/${coinbaseProduct}/candles`;
-    const end = Math.floor(Date.now() / 1000);
-
-    let secondsPerCandle = 3600;
-    if (safeGranularity === 'ONE_MINUTE') secondsPerCandle = 60;
-    else if (safeGranularity === 'FIVE_MINUTE') secondsPerCandle = 300;
-    else if (safeGranularity === 'FIFTEEN_MINUTE') secondsPerCandle = 900;
-    else if (safeGranularity === 'THIRTY_MINUTE') secondsPerCandle = 1800;
-    else if (safeGranularity === 'ONE_HOUR') secondsPerCandle = 3600;
-    else if (safeGranularity === 'TWO_HOUR') secondsPerCandle = 7200;
-    else if (safeGranularity === 'SIX_HOUR') secondsPerCandle = 21600;
-    else if (safeGranularity === 'ONE_DAY') secondsPerCandle = 86400;
-
-    const start = end - (secondsPerCandle * 300); 
-    const token = generateCoinbaseToken('GET', path, apiKey, secret);
-
-    const resp = await fetch(`https://api.coinbase.com${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, { headers: { 'Authorization': `Bearer ${token}` } });
-    if (!resp.ok) throw new Error(`Coinbase HTTP ${resp.status}`); 
-    const data = await resp.json();
-    return data.candles?.map(c => ({ open: c.open ? parseFloat(c.open) : parseFloat(c.close), close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
-  } catch (err) { throw err; } 
 }
 
 async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, secret) {
