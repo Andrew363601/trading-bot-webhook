@@ -140,8 +140,7 @@ export async function startWatchdog(tenantId) {
                     continue;
                 }
 
-                // 🟢 THE FIX: Enable tripwire/trailing logic for PAPER trades too
-                if (openTrade.execution_mode === 'PAPER' || openTrade.execution_mode === 'LIVE') {
+                let coinbaseProduct = asset.toUpperCase().trim();
                 if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP'); 
 
                 const tickerPath = `/api/v3/brokerage/products/${coinbaseProduct}/ticker`;
@@ -160,6 +159,8 @@ export async function startWatchdog(tenantId) {
                 if (!currentPrice || isNaN(currentPrice)) {
                     continue;
                 }
+
+                const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
 
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
                      await logAgentActivity(tenantId, "Watchdog", asset, `Missing entry price for trade ${openTrade.id}. Attempting to self-heal.`, "SELF_HEAL_START");
@@ -204,8 +205,6 @@ export async function startWatchdog(tenantId) {
                         openOrders = orderData.orders || [];
                     }
 
-                    const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
-                    
                     let entryClientId = `nx_entry_${openTrade.id}`;
                     let ocoClientId = `nx_oco_${openTrade.id}`;
 
@@ -533,10 +532,10 @@ export async function startWatchdog(tenantId) {
                             }
                         }
                     }
-                } else if (openTrade.execution_mode === 'PAPER') {
-                    // 🟢 PAPER TRADE TP/SL TRIGGER LOGIC
-                    const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
-                    
+                }
+
+                // 🟢 PAPER TRADE TP/SL TRIGGER LOGIC
+                if (openTrade.execution_mode === 'PAPER') {
                     if (openTrade.tp_price && openTrade.sl_price) {
                         const rawPriceMove = openTrade.side === 'BUY' 
                             ? (currentPrice - openTrade.entry_price) / openTrade.entry_price 
@@ -623,8 +622,7 @@ export async function startWatchdog(tenantId) {
             console.error("[WATCHDOG FAULT]:", err.message);
             await logAgentActivity(tenantId, "Watchdog", "N/A", `WATCHDOG worker encountered a fault: ${err.message}`, "ERROR");
         }
-    }, 5000); 
-}
+    }, 5000);
 
 async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_type = 'INFO') {
     try {
