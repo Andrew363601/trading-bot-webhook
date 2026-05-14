@@ -6,6 +6,7 @@ import { executeTradeMCP } from '../../lib/execute-trade-mcp.js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { evaluateTradeIdea } from '../../lib/trade-oracle.js';
+import { buildRadarChartUrl } from '../../lib/discord-chart.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -13,13 +14,15 @@ const supabase = createClient(
 );
 
 // --- 📱 DISCORD MESSENGER ---
-async function sendDiscordAlert(title, description, color) {
+async function sendDiscordAlert(title, description, color, imageUrl = null) {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) return;
     try {
+        const embed = { title, description, color, timestamp: new Date().toISOString() };
+        if (imageUrl) embed.image = { url: imageUrl };
         await fetch(webhookUrl, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ embeds: [{ title, description, color, timestamp: new Date().toISOString() }] })
+            body: JSON.stringify({ embeds: [embed] })
         });
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
@@ -181,8 +184,18 @@ export default async function handler(req, res) {
 
             if (limitDbErr) throw new Error(`Database failed to save updated limits: ${limitDbErr.message}`);
 
+            // 📊 CHART: Build chart with new TP/SL levels
+            const adjustChartUrl = await buildRadarChartUrl({
+                asset: trade.symbol,
+                candles: triggerCandles.slice(-50),
+                currentPrice,
+                tpPrice: safeTp || verdict.tp_price,
+                slPrice: safeSl || verdict.sl_price,
+                openTrade: trade
+            });
+
             // 📱 ALERT: ADJUST LIMITS WITH OLD VS NEW
-            await sendDiscordAlert(`🛠️ Sniper Review: ADJUSTED ${trade.symbol}`, `**Old Brackets:** TP $${oldTp} | SL $${oldSl}\n**New Brackets:** TP $${safeTp || 'N/A'} | SL $${safeSl || 'N/A'}\n**Oracle:** ${verdict.reasoning}`, 3447003);
+            await sendDiscordAlert(`🛠️ Sniper Review: ADJUSTED ${trade.symbol}`, `**Old Brackets:** TP $${oldTp} | SL $${oldSl}\n**New Brackets:** TP $${safeTp || 'N/A'} | SL $${safeSl || 'N/A'}\n**Oracle:** ${verdict.reasoning}`, 3447003, adjustChartUrl);
 
             return res.status(200).json({ status: "ADJUSTED", reasoning: verdict.reasoning });
         } else {

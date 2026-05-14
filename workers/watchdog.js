@@ -270,6 +270,15 @@ export async function startWatchdog(tenantId) {
                             openTrade.sl_price = safeBreakEvenSL;
                             openTrade.reason = updatedReason;
 
+                            // 📊 CHART: Tripwire activated — send chart with new break-even SL
+                            const tripwireChartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade, null, safeBreakEvenSL);
+                            await sendDiscordAlert(tenantId, {
+                                title: `🛡️ Tripwire Activated: ${asset}`,
+                                description: `**Action:** SL moved to Break-Even at $${safeBreakEvenSL}\n**Profit at Trigger:** ${(pnlPercent*100).toFixed(2)}%`,
+                                color: 10181046,
+                                imageUrl: tripwireChartUrl
+                            });
+
                             await pingHermes({
                                 asset: asset, 
                                 mode: "TRIPWIRE_HIT",
@@ -303,7 +312,16 @@ export async function startWatchdog(tenantId) {
                                 }
 
                                 await supabase.from('trade_logs').update({ sl_price: safeDynamicSL }).eq('id', openTrade.id);
-                                openTrade.sl_price = safeDynamicSL; 
+                                openTrade.sl_price = safeDynamicSL;
+
+                                // 📊 CHART: Trailing SL moved — send chart with new SL
+                                const trailChartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade, null, safeDynamicSL);
+                                await sendDiscordAlert(tenantId, {
+                                    title: `🎯 Trailing SL Updated: ${asset}`,
+                                    description: `**New SL:** $${safeDynamicSL}\n**Direction:** ${openTrade.side === 'BUY' ? 'Up' : 'Down'}`,
+                                    color: 10181046,
+                                    imageUrl: trailChartUrl
+                                });
                             }
                         }
                     }
@@ -521,7 +539,9 @@ export async function startWatchdog(tenantId) {
                                     await sendDiscordAlert(tenantId, { title: `⚠️ Watchdog Bracket Failed: ${asset}`, description: `**Action:** Attempted to deploy missing TP/SL protection!\n**Details:** ${ocoErrMsg}`, color: 15548997 });
                                     await logAgentActivity(tenantId, "Watchdog", asset, `OCO bracket deployment rejected for ${asset}: ${ocoErrMsg}`, "ERROR");
                                 } else {
-                                    await sendDiscordAlert(tenantId, { title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046 });
+                                    // 📊 CHART: Safety Net deployed — send chart with deployed TP/SL
+                                    const safetyNetChartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade, safeTpPrice, safeSlPrice);
+                                    await sendDiscordAlert(tenantId, { title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046, imageUrl: safetyNetChartUrl });
                                     await logAgentActivity(tenantId, "Watchdog", asset, `OCO safety net deployed for ${asset}. TP: $${safeTpPrice}, SL: $${safeSlPrice}.`, "SAFETY_NET_SUCCESS");
                                     // Clean up tracker upon successful deployment
                                     delete missingBracketTracker[openTrade.id];
@@ -542,6 +562,14 @@ export async function startWatchdog(tenantId) {
                             : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
                         const leverage = parseFloat(openTrade.leverage || 1);
                         const pnlPercent = rawPriceMove * leverage;
+
+                        // 💚 PAPER HEARTBEAT: Log ROE every 60s
+                        const now = Date.now();
+                        if (!heartbeatTracker[openTrade.id] || now - heartbeatTracker[openTrade.id] >= 60000) {
+                            await logAgentActivity(tenantId, "Watchdog", asset, `Heartbeat: Paper ROE: ${(pnlPercent * 100).toFixed(2)}%`, "HEARTBEAT");
+                            console.log(`[WATCHDOG RADAR] Asset: ${asset} | Paper ROE: ${(pnlPercent * 100).toFixed(2)}%`);
+                            heartbeatTracker[openTrade.id] = now;
+                        }
                         
                         let triggerType = null;
                         let exactExitPrice = currentPrice;
@@ -601,6 +629,9 @@ export async function startWatchdog(tenantId) {
                                 
                                 await logAgentActivity(tenantId, "Watchdog", asset, `Paper trade for ${asset} closed. PnL: ${rawPnl.toFixed(4)}. Trigger: ${triggerType}.`, "POSITION_CLOSED");
                                 
+                                // 📊 CHART: Paper trade closed — build chart with TP/SL levels
+                                const paperCloseChartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
+                                
                                 const entryText = safeEntryPrice ? `\n**Entry Price:** $${safeEntryPrice}` : '';
                                 const tpText = openTrade.tp_price ? `\n**Target TP:** $${openTrade.tp_price}` : '';
                                 const slText = openTrade.sl_price ? `\n**Target SL:** $${openTrade.sl_price}` : '';
@@ -608,7 +639,8 @@ export async function startWatchdog(tenantId) {
                                 await sendDiscordAlert(tenantId, { 
                                     title: `📊 Paper Trade Closed: ${asset}`, 
                                     description: `**Trigger:** ${triggerType}\n**Realized PnL:** $${rawPnl.toFixed(4)}${entryText}${tpText}${slText}\n**Exit Price:** $${safeExitPrice}`, 
-                                    color: rawPnl >= 0 ? 5763719 : 15548997
+                                    color: rawPnl >= 0 ? 5763719 : 15548997,
+                                    imageUrl: paperCloseChartUrl
                                 });
                             }
                         }
