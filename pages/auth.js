@@ -15,28 +15,11 @@ export default function AuthPage() {
   const session = useSession();
 
   useEffect(() => {
-    // Wait for Supabase to process OAuth callback
+    // Session check for callback processing only
     const checkSession = async () => {
       try {
         const { data: { session: activeSession } } = await supabase.auth.getSession();
-        
-        if (activeSession) {
-          // Check subscription status before deciding where to send them
-          const { data: userData } = await supabase
-            .from('tenant_users')
-            .select('tenants(subscription_active)')
-            .eq('auth_user_id', activeSession.user.id)
-            .single();
-
-          if (userData?.tenants?.subscription_active) {
-            router.replace('/');
-          } else {
-            router.replace('/plans');
-          }
-        } else {
-          // No session after callback processing
-          setSessionCheckComplete(true);
-        }
+        setSessionCheckComplete(true);
       } catch (err) {
         console.error('Session check error:', err);
         setSessionCheckComplete(true);

@@ -258,12 +258,15 @@ app.post('/api/wake', async (req, res) => {
 
         alertDescription += `\n\n**Working Thesis:**\n_${decisionJson.working_thesis || 'No thesis provided'}_`;
 
-        await sendDiscordAlert(tenant_id, {
-            title: alertTitle,
-            description: alertDescription,
-            color: alertColor, 
-            imageUrl: chartUrl
-        });
+        // 🟢 THE EVOLUTION: Mute 'APPROVED' notifications (keep onlySprung/Ghost/Veto/Close)
+        if (decisionJson.action !== "APPROVE") {
+            await sendDiscordAlert(tenant_id, {
+                title: alertTitle,
+                description: alertDescription,
+                color: alertColor, 
+                imageUrl: chartUrl
+            });
+        }
 
         const isActionableExecution = decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE" || decisionJson.action === "CLOSE";
         

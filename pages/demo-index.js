@@ -14,12 +14,68 @@ export default function LandingPage() {
   const [terminalFilter, setTerminalFilter] = useState('ALL');
   const [demoStats, setDemoStats] = useState({ winRate: '0%', totalTrades: 0, totalPnL: '$0.00' });
   const [activeDemoTrade, setActiveDemoTrade] = useState(null);
-  const [demoTrades, setDemoTrades] = useState([]);
+  const [demoConfigs, setDemoConfigs] = useState([]);
   const [selectedStrategy, setSelectedStrategy] = useState(null);
   const demoTenantId = process.env.NEXT_PUBLIC_DEMO_TENANT_ID;
 
   useEffect(() => {
     if (!demoTenantId) return;
+
+    let logChannel;
+    let tradeChannel;
+
+    const setupSubscriptions = () => {
+        // Subscribe to real-time logs for dummy account
+        logChannel = supabase
+          .channel('dummy-logs')
+          .on('postgres_changes', { 
+            event: 'INSERT', 
+            schema: 'public', 
+            table: 'agent_session_logs',
+            filter: `tenant_id=eq.${demoTenantId}` 
+          }, (payload) => {
+            const newLog = payload.new;
+            
+            // Live ROI Extraction from Watchdog logs
+            if (newLog.agent_name === 'Watchdog' && newLog.log_message.includes('Live ROE:')) {
+                const roeMatch = newLog.log_message.match(/Live ROE: ([\d.-]+)%/);
+                if (roeMatch) {
+                    const roe = roeMatch[1];
+                    setActiveDemoTrade(prev => prev ? { ...prev, current_roe: roe } : null);
+                }
+            }
+
+            setLogs(prev => [{
+              type: newLog.agent_name === 'Agent Cortex' ? 'CORTEX' : (newLog.agent_name === 'Watchdog' ? 'WATCHDOG' : 'SNIPER'),
+              text: newLog.log_message,
+              color: newLog.agent_name === 'Agent Cortex' ? 'text-purple-400' : (newLog.agent_name === 'Watchdog' ? 'text-emerald-400' : 'text-cyan-400')
+            }, ...prev].slice(0, 30));
+
+            if (newLog.agent_name === 'Agent Cortex') {
+              setShowRationalization(true);
+              setTimeout(() => setShowRationalization(false), 8000);
+            }
+          })
+          .subscribe((status) => {
+            if (status === 'CLOSED') {
+                console.warn("[REALTIME] Log channel closed. Retrying...");
+                setTimeout(setupSubscriptions, 3000);
+            }
+          });
+
+        // Subscribe to trade updates for dummy account
+        tradeChannel = supabase
+          .channel('dummy-trades')
+          .on('postgres_changes', { 
+            event: '*', 
+            schema: 'public', 
+            table: 'trade_logs',
+            filter: `tenant_id=eq.${demoTenantId}` 
+          }, () => {
+            fetchDemoPerformance();
+          })
+          .subscribe();
+    };
 
     // Fetch initial logs for dummy account
     const fetchInitialLogs = async () => {
@@ -45,9 +101,15 @@ export default function LandingPage() {
             .select('*')
             .eq('tenant_id', demoTenantId);
         
+        const { data: configs } = await supabase
+            .from('strategy_config')
+            .select('*')
+            .eq('tenant_id', demoTenantId)
+            .eq('is_active', true);
+
         if (trades) {
             setDemoTrades(trades);
-            const closed = trades.filter(t => t.exit_price !== null);
+            // ... (rest of stats logic)
             const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
             const winRate = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(1) + '%' : '0%';
             const totalPnL = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
@@ -65,56 +127,11 @@ export default function LandingPage() {
 
     fetchInitialLogs();
     fetchDemoPerformance();
-
-    // Subscribe to real-time logs for dummy account
-    const logChannel = supabase
-      .channel('dummy-logs')
-      .on('postgres_changes', { 
-        event: 'INSERT', 
-        schema: 'public', 
-        table: 'agent_session_logs',
-        filter: `tenant_id=eq.${demoTenantId}` 
-      }, (payload) => {
-        const newLog = payload.new;
-        
-        // Live ROI Extraction from Watchdog logs
-        if (newLog.agent_name === 'Watchdog' && newLog.log_message.includes('Live ROE:')) {
-            const roeMatch = newLog.log_message.match(/Live ROE: ([\d.-]+)%/);
-            if (roeMatch) {
-                const roe = roeMatch[1];
-                setActiveDemoTrade(prev => prev ? { ...prev, current_roe: roe } : null);
-            }
-        }
-
-        setLogs(prev => [{
-          type: newLog.agent_name === 'Agent Cortex' ? 'CORTEX' : (newLog.agent_name === 'Watchdog' ? 'WATCHDOG' : 'SNIPER'),
-          text: newLog.log_message,
-          color: newLog.agent_name === 'Agent Cortex' ? 'text-purple-400' : (newLog.agent_name === 'Watchdog' ? 'text-emerald-400' : 'text-cyan-400')
-        }, ...prev].slice(0, 30));
-
-        if (newLog.agent_name === 'Agent Cortex') {
-          setShowRationalization(true);
-          setTimeout(() => setShowRationalization(false), 8000);
-        }
-      })
-      .subscribe();
-
-    // Subscribe to trade updates for dummy account
-    const tradeChannel = supabase
-      .channel('dummy-trades')
-      .on('postgres_changes', { 
-        event: '*', 
-        schema: 'public', 
-        table: 'trade_logs',
-        filter: `tenant_id=eq.${demoTenantId}` 
-      }, () => {
-        fetchDemoPerformance();
-      })
-      .subscribe();
+    setupSubscriptions();
 
     return () => { 
-        supabase.removeChannel(logChannel); 
-        supabase.removeChannel(tradeChannel);
+        if (logChannel) supabase.removeChannel(logChannel); 
+        if (tradeChannel) supabase.removeChannel(tradeChannel);
     };
   }, [demoTenantId, supabase]);
 
@@ -147,7 +164,9 @@ export default function LandingPage() {
     { id: 'DOGE_HF_SCALPER_V1', asset: 'DOGE-PERP', name: 'HF Scalper', color: 'emerald' },
   ];
 
-  const coinbaseLink = getCoinbaseAffiliateLink('landing_page');
+  const activeShowcaseStrategies = showcaseStrategies.filter(s => 
+    demoConfigs.some(c => c.strategy === s.id && c.asset.includes(s.asset.split('-')[0]))
+  );
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50 font-sans selection:bg-cyan-500/30">
       <Head>
@@ -173,10 +192,13 @@ export default function LandingPage() {
               </div>
             </div>
             <div className="flex items-center gap-4">
-              <Link href="/auth" className="hidden md:block hover:text-cyan-400 transition-colors">
+              <Link href="/auth" className="hover:text-cyan-400 transition-colors">
                 Dashboard
               </Link>
-              <a href={coinbaseLink} target="_blank" rel="noopener noreferrer" className="bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-6 py-2 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]">
+              <Link href="/auth" className="md:hidden bg-indigo-600 text-white px-4 py-2 rounded-full text-xs font-bold">
+                Deploy Agent
+              </Link>
+              <a href={coinbaseLink} target="_blank" rel="noopener noreferrer" className="hidden sm:block bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-6 py-2 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]">
                 Connect Coinbase
               </a>
             </div>
@@ -377,7 +399,7 @@ export default function LandingPage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {showcaseStrategies.map((strat, i) => {
+            {activeShowcaseStrategies.length > 0 ? activeShowcaseStrategies.map((strat, i) => {
               const stats = getStrategyStats(strat.id);
               const isSelected = selectedStrategy === strat.id;
 
@@ -435,7 +457,11 @@ export default function LandingPage() {
                     </div>
                 </div>
               );
-            })}
+            }) : (
+                <div className="col-span-full py-12 text-center bg-slate-900/20 rounded-3xl border border-white/5">
+                    <p className="text-slate-500 font-mono text-sm uppercase tracking-widest">No active strategy intelligence detected for demo.</p>
+                </div>
+            )}
           </div>
         </div>
       </div>
@@ -476,7 +502,7 @@ export default function LandingPage() {
                 <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Discord Alerts</li>
                 <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Static Risk Rules</li>
               </ul>
-              <button className="w-full text-center bg-slate-800 border border-slate-700 py-3 rounded-lg hover:bg-slate-700 transition font-bold">Start Retail</button>
+              <Link href="/auth" className="w-full text-center bg-slate-800 border border-slate-700 py-3 rounded-lg hover:bg-slate-700 transition font-bold block">Start Retail</Link>
             </div>
 
             <div className="bg-slate-900/60 backdrop-blur-md p-8 rounded-2xl flex flex-col relative transform md:-translate-y-4 ring-2 ring-cyan-400 shadow-[0_0_30px_rgba(34,211,238,0.15)]">
@@ -492,7 +518,7 @@ export default function LandingPage() {
                 <li className="flex items-center font-semibold text-white"><svg className="w-5 h-5 text-purple-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> Agentic Reflection (Self-Learning)</li>
                 <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Standard Nexus Card</li>
               </ul>
-              <button className="w-full text-center bg-white text-slate-950 py-3 rounded-lg transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)] font-bold">Deploy Pro Agent</button>
+              <Link href="/auth" className="w-full text-center bg-white text-slate-950 py-3 rounded-lg transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)] font-bold block">Deploy Pro Agent</Link>
             </div>
 
             <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl flex flex-col">
@@ -507,7 +533,7 @@ export default function LandingPage() {
                 <li className="flex items-center"><svg className="w-5 h-5 text-purple-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> Agentic Reflection</li>
                 <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Metal Nexus Card + Cash Back</li>
               </ul>
-              <button className="w-full text-center bg-slate-800 border border-slate-700 py-3 rounded-lg hover:bg-slate-700 transition font-bold">Apply Now</button>
+              <Link href="/auth" className="w-full text-center bg-slate-800 border border-slate-700 py-3 rounded-lg hover:bg-slate-700 transition font-bold block">Apply Now</Link>
             </div>
           </div>
         </div>
