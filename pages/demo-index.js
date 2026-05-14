@@ -1,4 +1,4 @@
-// hard push
+// hard push tf
 
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
@@ -167,8 +167,6 @@ export default function LandingPage() {
   const activeShowcaseStrategies = showcaseStrategies.filter(s => 
     demoConfigs.some(c => c.strategy === s.id)
   );
-
-  const coinbaseLink = getCoinbaseAffiliateLink('landing_page');
 
   const coinbaseLink = getCoinbaseAffiliateLink('landing_page');
 
