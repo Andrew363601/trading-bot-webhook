@@ -1162,7 +1162,7 @@ function DashboardContent() {
             </button>
 
             {showScanner && (
-              <div className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-80 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
+              <div className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-[600px] bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
                 <div className="flex items-center justify-between p-3 border-b border-white/5">
                    <span className="text-[9px] sm:text-[10px] font-black uppercase text-indigo-400 tracking-widest">Select Asset</span>
                    <button onClick={() => setShowScanner(false)} className="text-slate-500 hover:text-white"><X size={14}/></button>
@@ -1263,26 +1263,26 @@ function DashboardContent() {
       </div>
 
       <main className="flex-grow flex flex-col md:flex-row gap-4 overflow-hidden h-[calc(100vh-140px)]">
-        {/* Asset Selection Matrix - INCREASED SIZE */}
-        <aside className="hidden md:flex flex-col w-72 bg-slate-900/40 border border-white/5 rounded-3xl overflow-hidden shadow-2xl">
-          <div className="p-6 border-b border-white/5 flex items-center justify-between">
-            <h2 className="text-sm font-black uppercase tracking-widest text-slate-400 italic">Asset Matrix</h2>
-            <TrendingUp size={16} className="text-indigo-500" />
+        {/* Asset Selection Matrix */}
+        <aside className="hidden md:flex flex-col w-52 bg-slate-900/40 border border-white/5 rounded-3xl overflow-hidden shadow-2xl">
+          <div className="p-4 border-b border-white/5 flex items-center justify-between">
+            <h2 className="text-[10px] font-black uppercase tracking-widest text-slate-500 italic">Asset Matrix</h2>
+            <TrendingUp size={14} className="text-indigo-500" />
           </div>
-          <div className="flex-grow overflow-y-auto custom-scrollbar p-3 space-y-2">
+          <div className="flex-grow overflow-y-auto custom-scrollbar p-2 space-y-1">
             {assetsList.map((asset) => {
               const isActive = activeAsset === asset;
               return (
                 <button
                   key={asset}
                   onClick={() => setActiveAsset(asset)}
-                  className={`w-full text-left px-5 py-4 rounded-2xl transition-all duration-300 flex flex-col gap-1 group ${isActive ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'hover:bg-white/5 text-slate-400'}`}
+                  className={`w-full text-left px-4 py-3 rounded-xl transition-all duration-300 flex flex-col gap-0.5 group ${isActive ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'hover:bg-white/5 text-slate-500'}`}
                 >
                   <div className="flex justify-between items-center w-full">
-                    <span className="text-base font-black tracking-tight">{asset.split('-')[0]}</span>
-                    <ChevronRight size={14} className={`transition-transform duration-300 ${isActive ? 'translate-x-0' : '-translate-x-2 opacity-0 group-hover:opacity-100 group-hover:translate-x-0'}`} />
+                    <span className="text-xs font-black tracking-tight">{asset.split('-')[0]}</span>
+                    <ChevronRight size={12} className={`transition-transform duration-300 ${isActive ? 'translate-x-0' : '-translate-x-2 opacity-0 group-hover:opacity-100 group-hover:translate-x-0'}`} />
                   </div>
-                  <span className={`text-[10px] font-mono uppercase tracking-tighter ${isActive ? 'text-indigo-100' : 'text-slate-600'}`}>{asset}</span>
+                  <span className={`text-[8px] font-mono uppercase tracking-tighter ${isActive ? 'text-indigo-200' : 'text-slate-600'}`}>{asset}</span>
                 </button>
               );
             })}
