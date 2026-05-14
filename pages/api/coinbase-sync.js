@@ -25,9 +25,12 @@ async function handler(req, res) {
             if (secrets && secrets.apiKey && secrets.apiSecret) {
                 apiKeyName = secrets.apiKey;
                 apiSecret = secrets.apiSecret;
+            } else {
+                throw new Error('No tenant-specific keys found');
             }
         } catch (e) {
-            console.warn(`[COINBASE SYNC] No keys for tenant ${tenantId}, falling back to ENV`);
+            console.warn(`[COINBASE SYNC] No keys for tenant ${tenantId}. Cannot sync.`);
+            return res.status(200).json({ positions: [], orders: [], warning: "No API keys configured for this tenant" });
         }
 
         if (!apiKeyName || !apiSecret) return res.status(401).json({ error: 'Missing API Keys' });

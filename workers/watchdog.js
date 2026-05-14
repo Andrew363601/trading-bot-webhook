@@ -140,7 +140,8 @@ export async function startWatchdog(tenantId) {
                     continue;
                 }
 
-                let coinbaseProduct = asset.toUpperCase().trim();
+                // 🟢 THE FIX: Enable tripwire/trailing logic for PAPER trades too
+                if (openTrade.execution_mode === 'PAPER' || openTrade.execution_mode === 'LIVE') {
                 if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP'); 
 
                 const tickerPath = `/api/v3/brokerage/products/${coinbaseProduct}/ticker`;

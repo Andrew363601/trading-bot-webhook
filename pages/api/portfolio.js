@@ -24,9 +24,12 @@ async function handler(req, res) {
         if (secrets && secrets.apiKey && secrets.apiSecret) {
             apiKeyName = secrets.apiKey;
             apiSecret = secrets.apiSecret;
+        } else {
+            throw new Error('No tenant-specific keys found');
         }
     } catch (e) {
-        console.warn(`[PORTFOLIO] No keys for tenant ${tenantId}, falling back to ENV`);
+        console.warn(`[PORTFOLIO] No keys for tenant ${tenantId}. Cannot fetch live portfolio.`);
+        return res.status(200).json({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 }, currentPrice: 0 });
     }
     
     // 1. Clean the secret

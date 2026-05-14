@@ -775,6 +775,14 @@ function DashboardContent() {
                 seriesMarkersRef.current.setMarkers([]); 
                 seriesRef.current.setData(data);
                 allChartDataRef.current = data;
+
+                // 🟢 THE FIX: Force absolute Y-axis reset to snap to new price range
+                if (!isLiveTick) {
+                    chartRef.current.timeScale().fitContent();
+                    chartRef.current.priceScale('right').applyOptions({
+                        autoScale: true,
+                    });
+                }
                 
                 const volumeData = data.map(c => ({
                     time: c.time,
