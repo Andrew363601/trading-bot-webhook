@@ -608,8 +608,8 @@ function DashboardContent() {
         layout: { background: { type: 'solid', color: 'transparent' }, textColor: isLight ? '#475569' : '#94a3b8' },
         grid: { vertLines: { color: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.03)' }, horzLines: { color: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.03)' } },
         crosshair: { mode: CrosshairMode.Normal },
-        timeScale: { timeVisible: true, secondsVisible: false, borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)', rightOffset: 5 },
-        rightPriceScale: { borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)', autoScale: true },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)' },
+        rightPriceScale: { borderColor: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)' },
         autoSize: true,
     });
 
@@ -775,14 +775,6 @@ function DashboardContent() {
                 seriesMarkersRef.current.setMarkers([]); 
                 seriesRef.current.setData(data);
                 allChartDataRef.current = data;
-
-                // 🟢 THE FIX: Force absolute Y-axis reset to snap to new price range (e.g. BTC -> DOGE)
-                if (!isLiveTick) {
-                    chartRef.current.timeScale().fitContent();
-                    chartRef.current.priceScale('right').applyOptions({
-                        autoScale: true,
-                    });
-                }
                 
                 const volumeData = data.map(c => ({
                     time: c.time,
@@ -1044,7 +1036,7 @@ function DashboardContent() {
 
 
   return (
-    <div className="min-h-screen dark:bg-[#020617] dark:text-slate-200 bg-white text-slate-900 px-2 sm:px-4 py-4 font-sans flex flex-col gap-4 relative h-screen overflow-hidden">
+    <div className="min-h-screen dark:bg-[#020617] dark:text-slate-200 bg-white text-slate-900 px-2 sm:px-4 py-4 font-sans flex flex-col gap-4 relative">
       
       {isDefconActive && (
           <div className="bg-red-500/20 border-b border-red-500/50 text-red-200 px-6 py-3 flex items-center justify-center gap-3 w-full animate-pulse z-50">
@@ -1083,12 +1075,6 @@ function DashboardContent() {
                 <Link href="/performance" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Activity className="w-3 h-3" /> Performance
                 </Link>
-                
-                {/* 🟢 Profile Display */}
-                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/5 bg-white/5 ml-2">
-                   <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                   <span className="text-[10px] font-black text-slate-400 uppercase truncate max-w-[120px]">{session?.user?.email?.split('@')[0]}</span>
-                </div>
             </div>
         </div>
         
@@ -1162,7 +1148,7 @@ function DashboardContent() {
             </button>
 
             {showScanner && (
-              <div className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-[600px] bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
+              <div className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-80 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
                 <div className="flex items-center justify-between p-3 border-b border-white/5">
                    <span className="text-[9px] sm:text-[10px] font-black uppercase text-indigo-400 tracking-widest">Select Asset</span>
                    <button onClick={() => setShowScanner(false)} className="text-slate-500 hover:text-white"><X size={14}/></button>
@@ -1196,22 +1182,24 @@ function DashboardContent() {
 
           <div className="hidden sm:block h-8 w-[1px] bg-white/5" />
 
-          <div className="w-full sm:w-auto flex flex-wrap items-center gap-4 sm:gap-6">
-             <div className="flex flex-col min-w-[50px]">
+          <div className="w-full sm:w-auto flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-6">
+             <div className="flex flex-col">
                 <span className="text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest">CVD</span>
                 <span className={`text-xs sm:text-sm font-mono font-bold ${cvd !== 0 ? (cvd > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-500'}`}>
                     {cvd > 0 ? '+' : ''}{cvd.toFixed(0)}
                 </span>
              </div>
-             <div className="flex flex-col min-w-[40px]">
+             <div className="flex flex-col">
                 <span className="text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest">Score</span>
-                <span className="text-xs sm:text-sm font-mono font-bold text-indigo-400">{latestScan?.telemetry?.oracle_score || '88'}</span>
+                <span className="text-xs sm:text-sm font-mono font-bold text-indigo-400">{latestScan?.telemetry?.oracle_score || '--'}</span>
              </div>
-             <div className="flex flex-col min-w-[70px]">
+             <div className="flex flex-col">
                 <span className="text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest">Regime</span>
-                <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest ${latestScan?.telemetry?.macro_regime_oracle === 'TREND' ? 'text-emerald-400' : (latestScan?.telemetry?.macro_regime_oracle === 'CHOP' ? 'text-amber-400' : 'text-slate-500')}`}>
-                    {latestScan?.telemetry?.macro_regime_oracle || 'EVAL'}
-                </span>
+                {latestScan?.telemetry?.macro_regime_oracle && (
+                    <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest ${latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'text-emerald-400' : (latestScan.telemetry.macro_regime_oracle === 'CHOP' ? 'text-amber-400' : 'text-slate-500')}`}>
+                        {latestScan.telemetry.macro_regime_oracle}
+                    </span>
+                )}
              </div>
           </div>
 
@@ -1242,29 +1230,11 @@ function DashboardContent() {
         </div>
       </div>
 
-      {/* 🟢 Mobile Metric Row (Compact & High-Contrast) */}
-      <div className="md:hidden grid grid-cols-3 gap-1 py-3 border-b border-white/5 px-2 mb-2 bg-slate-900/40 backdrop-blur-xl">
-        <div className="flex flex-col items-center justify-center border-r border-white/5">
-            <span className="text-[7px] text-slate-500 uppercase font-black tracking-tighter">Macro CVD</span>
-            <span className={`text-xs font-mono font-black ${cvd >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {cvd > 0 ? '+' : ''}{cvd.toFixed(0)}
-            </span>
-        </div>
-        <div className="flex flex-col items-center justify-center border-r border-white/5">
-            <span className="text-[7px] text-slate-500 uppercase font-black tracking-tighter">Regime</span>
-            <span className={`text-[9px] font-black uppercase ${latestScan?.telemetry?.macro_regime_oracle === 'TREND' ? 'text-emerald-400' : (latestScan?.telemetry?.macro_regime_oracle === 'CHOP' ? 'text-amber-400' : 'text-slate-400')}`}>
-                {latestScan?.telemetry?.macro_regime_oracle || 'EVAL'}
-            </span>
-        </div>
-        <div className="flex flex-col items-center justify-center">
-            <span className="text-[7px] text-slate-500 uppercase font-black tracking-tighter">Oracle Score</span>
-            <span className="text-xs font-black text-indigo-400 font-mono">{latestScan?.telemetry?.oracle_score || '88'}</span>
-        </div>
-      </div>
-
-      <main className="flex-grow flex flex-col md:flex-row gap-4 overflow-hidden h-[calc(100vh-140px)]">
-        <div className="flex-grow flex flex-col gap-4 overflow-hidden h-full">
-          <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "flex-grow dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] overflow-hidden flex flex-col relative shadow-2xl transition-all min-h-0"}>
+      <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 md:gap-6 grow overflow-hidden px-4 sm:px-0">
+        
+        <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-[calc(100vh-320px)] sm:h-[calc(100vh-240px)] md:h-[calc(100vh-200px)] lg:h-[calc(100vh-180px)]">
+          
+          <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
             
             <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-2 right-2 sm:top-4 sm:right-4 z-50 dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-1 sm:p-2 rounded-lg transition-colors backdrop-blur-md">
                 {isChartMaximized ? <Minimize2 size={12} className="sm:size-[14px]"/> : <Maximize2 size={12} className="sm:size-[14px]"/>}
@@ -1436,10 +1406,7 @@ function DashboardContent() {
                       return (
                       <tr key={i} className={`hover:bg-white/[0.02] transition-colors ${isShadow ? 'opacity-50' : ''}`}>
                         <td className="responsive-table-cell date text-[9px] text-slate-500">
-                            <div className="flex flex-col">
-                                <span className="text-[10px] font-bold text-slate-400">{timestamp ? new Date(timestamp).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit' }) : ''}</span>
-                                <span className="text-[9px] font-mono text-slate-600">{formattedTime}</span>
-                            </div>
+                            <div className="flex flex-col"><span className="text-[10px] font-bold text-slate-400">{formattedTime}</span></div>
                         </td>
                         <td className="responsive-table-cell context text-center">
                             <div className="flex flex-col items-center gap-1">
