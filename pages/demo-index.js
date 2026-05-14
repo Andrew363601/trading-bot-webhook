@@ -105,19 +105,19 @@ export default function LandingPage() {
         const { data: configs } = await supabase
             .from('strategy_config')
             .select('*')
-            .eq('tenant_id', demoTenantId)
-            .eq('is_active', true);
+            .eq('tenant_id', demoTenantId);
 
+        if (configs) setDemoConfigs(configs);
         if (trades) {
             setDemoTrades(trades);
-            // ... (rest of stats logic)
-            const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
-            const winRate = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(1) + '%' : '0%';
-            const totalPnL = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+            const closedTrades = trades.filter(t => t.exit_price !== null);
+            const wins = closedTrades.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+            const winRate = closedTrades.length > 0 ? ((wins / closedTrades.length) * 100).toFixed(1) + '%' : '0%';
+            const totalPnL = closedTrades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
             
             setDemoStats({
                 winRate,
-                totalTrades: closed.length,
+                totalTrades: closedTrades.length,
                 totalPnL: `$${totalPnL.toFixed(2)}`
             });
 

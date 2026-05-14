@@ -1263,32 +1263,6 @@ function DashboardContent() {
       </div>
 
       <main className="flex-grow flex flex-col md:flex-row gap-4 overflow-hidden h-[calc(100vh-140px)]">
-        {/* Asset Selection Matrix */}
-        <aside className="hidden md:flex flex-col w-52 bg-slate-900/40 border border-white/5 rounded-3xl overflow-hidden shadow-2xl">
-          <div className="p-4 border-b border-white/5 flex items-center justify-between">
-            <h2 className="text-[10px] font-black uppercase tracking-widest text-slate-500 italic">Asset Matrix</h2>
-            <TrendingUp size={14} className="text-indigo-500" />
-          </div>
-          <div className="flex-grow overflow-y-auto custom-scrollbar p-2 space-y-1">
-            {assetsList.map((asset) => {
-              const isActive = activeAsset === asset;
-              return (
-                <button
-                  key={asset}
-                  onClick={() => setActiveAsset(asset)}
-                  className={`w-full text-left px-4 py-3 rounded-xl transition-all duration-300 flex flex-col gap-0.5 group ${isActive ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/20' : 'hover:bg-white/5 text-slate-500'}`}
-                >
-                  <div className="flex justify-between items-center w-full">
-                    <span className="text-xs font-black tracking-tight">{asset.split('-')[0]}</span>
-                    <ChevronRight size={12} className={`transition-transform duration-300 ${isActive ? 'translate-x-0' : '-translate-x-2 opacity-0 group-hover:opacity-100 group-hover:translate-x-0'}`} />
-                  </div>
-                  <span className={`text-[8px] font-mono uppercase tracking-tighter ${isActive ? 'text-indigo-200' : 'text-slate-600'}`}>{asset}</span>
-                </button>
-              );
-            })}
-          </div>
-        </aside>
-
         <div className="flex-grow flex flex-col gap-4 overflow-hidden h-full">
           <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "flex-grow dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] overflow-hidden flex flex-col relative shadow-2xl transition-all min-h-0"}>
             
