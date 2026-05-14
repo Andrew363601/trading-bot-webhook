@@ -617,12 +617,13 @@ export async function startWatchdog(tenantId) {
                         await logAgentActivity(tenantId, "Watchdog", asset, `Paper trade ${openTrade.id} has no TP/SL configured. Current price: $${currentPrice}.`, "INFO");
                     }
                 }
-            }
+            } // end for
         } catch (err) {
             console.error("[WATCHDOG FAULT]:", err.message);
             await logAgentActivity(tenantId, "Watchdog", "N/A", `WATCHDOG worker encountered a fault: ${err.message}`, "ERROR");
         }
     }, 5000);
+} // end startWatchdog
 
 async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_type = 'INFO') {
     try {
