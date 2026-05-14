@@ -165,8 +165,13 @@ export default function LandingPage() {
   ];
 
   const activeShowcaseStrategies = showcaseStrategies.filter(s => 
-    demoConfigs.some(c => c.strategy === s.id && c.asset.includes(s.asset.split('-')[0]))
+    demoConfigs.some(c => c.strategy === s.id)
   );
+
+  const coinbaseLink = getCoinbaseAffiliateLink('landing_page');
+
+  const coinbaseLink = getCoinbaseAffiliateLink('landing_page');
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50 font-sans selection:bg-cyan-500/30">
       <Head>

@@ -218,7 +218,9 @@ app.post('/api/wake', async (req, res) => {
                 asset, candles, poc: indicators.macro_poc, upperNode: indicators.upper_macro_node, lowerNode: indicators.lower_macro_node,
                 currentPrice: candles[candles.length - 1]?.close, openTrade,
                 trapPrice: isTrap ? decisionJson.trap_price : null,
-                trapSide: isTrap ? decisionJson.side : null
+                trapSide: isTrap ? decisionJson.side : null,
+                tpPrice: decisionJson.tp_price || decisionJson.trap_tp_price,
+                slPrice: decisionJson.sl_price || decisionJson.trap_sl_price
             });
         }
         

@@ -61,7 +61,7 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
-async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, openTrade = null) {
+async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, openTrade = null, tpPrice = null, slPrice = null) {
     try {
         let telemetry = {};
         const { data: scanData } = await supabase.from('scan_results').select('telemetry').eq('asset', symbol).order('created_at', { ascending: false }).limit(1);
@@ -84,6 +84,8 @@ async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, o
         return await buildRadarChartUrl({
             asset: symbol, candles: recentCandles, currentPrice: currentPrice,
             poc: telemetry.macro_poc, upperNode: telemetry.upper_macro_node, lowerNode: telemetry.lower_macro_node,
+            tpPrice: tpPrice || openTrade?.tp_price,
+            slPrice: slPrice || openTrade?.sl_price,
             openTrade: openTrade
         });
     } catch(e) { console.error("[WATCHDOG CHART FAILED]", e.message); return null; }
@@ -391,8 +393,8 @@ export async function startWatchdog(tenantId) {
                             
                             await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CANCELED', telemetry: { macro_regime_oracle: `ORDER CANCELED`, oracle_reasoning: updatedReason, open_position: "NONE" } }]);
 
-                            const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
-                                                        await sendDiscordAlert(tenantId, { title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: chartUrl });
+                            const cancelChartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
+                            await sendDiscordAlert(tenantId, { title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: cancelChartUrl });
                             await logAgentActivity(tenantId, "Watchdog", asset, `Limit order for ${asset} was canceled. Initiating autopsy.`, "ORDER_CANCELED");
                             
                             try {

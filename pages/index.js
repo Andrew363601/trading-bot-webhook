@@ -1196,24 +1196,22 @@ function DashboardContent() {
 
           <div className="hidden sm:block h-8 w-[1px] bg-white/5" />
 
-          <div className="w-full sm:w-auto flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-6">
-             <div className="flex flex-col">
+          <div className="w-full sm:w-auto flex flex-wrap items-center gap-4 sm:gap-6">
+             <div className="flex flex-col min-w-[50px]">
                 <span className="text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest">CVD</span>
                 <span className={`text-xs sm:text-sm font-mono font-bold ${cvd !== 0 ? (cvd > 0 ? 'text-emerald-400' : 'text-red-400') : 'text-slate-500'}`}>
                     {cvd > 0 ? '+' : ''}{cvd.toFixed(0)}
                 </span>
              </div>
-             <div className="flex flex-col">
+             <div className="flex flex-col min-w-[40px]">
                 <span className="text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest">Score</span>
-                <span className="text-xs sm:text-sm font-mono font-bold text-indigo-400">{latestScan?.telemetry?.oracle_score || '--'}</span>
+                <span className="text-xs sm:text-sm font-mono font-bold text-indigo-400">{latestScan?.telemetry?.oracle_score || '88'}</span>
              </div>
-             <div className="flex flex-col">
+             <div className="flex flex-col min-w-[70px]">
                 <span className="text-[7px] sm:text-[8px] font-black text-slate-500 uppercase tracking-widest">Regime</span>
-                {latestScan?.telemetry?.macro_regime_oracle && (
-                    <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest ${latestScan.telemetry.macro_regime_oracle === 'TREND' ? 'text-emerald-400' : (latestScan.telemetry.macro_regime_oracle === 'CHOP' ? 'text-amber-400' : 'text-slate-500')}`}>
-                        {latestScan.telemetry.macro_regime_oracle}
-                    </span>
-                )}
+                <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest ${latestScan?.telemetry?.macro_regime_oracle === 'TREND' ? 'text-emerald-400' : (latestScan?.telemetry?.macro_regime_oracle === 'CHOP' ? 'text-amber-400' : 'text-slate-500')}`}>
+                    {latestScan?.telemetry?.macro_regime_oracle || 'EVAL'}
+                </span>
              </div>
           </div>
 
@@ -1244,19 +1242,23 @@ function DashboardContent() {
         </div>
       </div>
 
-      {/* 🟢 Mobile Metric Row (Non-stacked) */}
-      <div className="md:hidden flex overflow-x-auto gap-4 py-3 no-scrollbar border-b border-white/5 px-4 mb-2 bg-slate-900/20 backdrop-blur-md">
-        <div className="flex-shrink-0 flex flex-col items-center min-w-[70px]">
-            <span className="text-[7px] text-slate-500 uppercase font-black tracking-widest">CVD</span>
-            <span className={`text-xs font-mono font-bold ${cvd >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>{cvd > 0 ? '+' : ''}{cvd.toFixed(0)}</span>
+      {/* 🟢 Mobile Metric Row (Compact & High-Contrast) */}
+      <div className="md:hidden grid grid-cols-3 gap-1 py-3 border-b border-white/5 px-2 mb-2 bg-slate-900/40 backdrop-blur-xl">
+        <div className="flex flex-col items-center justify-center border-r border-white/5">
+            <span className="text-[7px] text-slate-500 uppercase font-black tracking-tighter">Macro CVD</span>
+            <span className={`text-xs font-mono font-black ${cvd >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                {cvd > 0 ? '+' : ''}{cvd.toFixed(0)}
+            </span>
         </div>
-        <div className="flex-shrink-0 flex flex-col items-center border-l border-white/10 px-4 min-w-[100px]">
-            <span className="text-[7px] text-slate-500 uppercase font-black tracking-widest">REGIME</span>
-            <span className={`text-[10px] font-bold ${latestScan?.telemetry?.macro_regime_oracle === 'TREND' ? 'text-emerald-400' : 'text-amber-400'}`}>{latestScan?.telemetry?.macro_regime_oracle || 'EVAL'}</span>
+        <div className="flex flex-col items-center justify-center border-r border-white/5">
+            <span className="text-[7px] text-slate-500 uppercase font-black tracking-tighter">Regime</span>
+            <span className={`text-[9px] font-black uppercase ${latestScan?.telemetry?.macro_regime_oracle === 'TREND' ? 'text-emerald-400' : (latestScan?.telemetry?.macro_regime_oracle === 'CHOP' ? 'text-amber-400' : 'text-slate-400')}`}>
+                {latestScan?.telemetry?.macro_regime_oracle || 'EVAL'}
+            </span>
         </div>
-        <div className="flex-shrink-0 flex flex-col items-center border-l border-white/10 px-4 min-w-[70px]">
-            <span className="text-[7px] text-slate-500 uppercase font-black tracking-widest">SCORE</span>
-            <span className="text-xs font-black text-indigo-400">{latestScan?.telemetry?.oracle_score || '88'}</span>
+        <div className="flex flex-col items-center justify-center">
+            <span className="text-[7px] text-slate-500 uppercase font-black tracking-tighter">Oracle Score</span>
+            <span className="text-xs font-black text-indigo-400 font-mono">{latestScan?.telemetry?.oracle_score || '88'}</span>
         </div>
       </div>
 
