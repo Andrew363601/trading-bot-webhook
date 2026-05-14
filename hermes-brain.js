@@ -63,13 +63,8 @@ async function sendDiscordAlert(tenant_id, { title, description, color, fields =
 app.post('/api/wake', async (req, res) => {
     const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty } = req.body;
     
-    // Track Hermes API usage with success/fail logging
-    try {
-        console.log(`[USAGE] Waking Hermes for tenant ${tenant_id}...`);
-        await recordUsage(tenant_id, 'HERMES_API_CALL', 1);
-    } catch (uErr) {
-        console.error(`[USAGE ERROR] Failed to log Hermes API call:`, uErr.message);
-    }
+    // Track Hermes API usage
+    await recordUsage(tenant_id, 'HERMES_API_CALL', 1);
 
     await logAgentActivity(tenant_id, "Agent Cortex", asset, `Awakened. Mode: ${mode}. Initial message: ${message.substring(0, 100)}...`, "AGENT_AWAKENED");
     console.log(`[AGENT CORTEX] Awakened by Sniper. Tenant: ${tenant_id} | Asset: ${asset} | Mode: ${mode}`);
@@ -122,6 +117,21 @@ app.post('/api/wake', async (req, res) => {
         }).catch(() => ({ json: () => ({ error: "Market State offline" }) }));
 
         const marketState = await stateResp.json();
+
+        // 🟢 THE FIX: Fetch candles for chart generation if not provided in request
+        if (!candles || !indicators) {
+            try {
+                const chartResp = await fetch(mcpUrl, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tool: 'get_chart_data', arguments: { symbol: asset, timeframe: trigger_tf || 'FIVE_MINUTE', count: 50 } })
+                }).catch(() => ({ json: () => ({}) }));
+                const chartData = await chartResp.json();
+                if (chartData?.candles) candles = chartData.candles;
+                if (chartData?.indicators) indicators = chartData.indicators;
+            } catch (e) {
+                console.warn("[AGENT CORTEX] Chart data fetch failed, proceeding without chart image.");
+            }
+        }
 
         console.log(`[AGENT CORTEX] Data acquired. Booting Gemini inference engine...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`;

@@ -271,7 +271,6 @@ export async function startWatchdog(tenantId) {
                             openTrade.reason = updatedReason;
 
                             await pingHermes({
-                                tenant_id: tenantId,
                                 asset: asset, 
                                 mode: "TRIPWIRE_HIT",
                                 message: `TRIPWIRE HIT! Trade is currently at ${(pnlPercent*100).toFixed(2)}% profit. Stop Loss has been automatically moved to break-even to secure capital. Review the live tape and Macro levels. Output action "HOLD" if the trend is still explosive, or "CLOSE" to secure profit now.`,
@@ -279,9 +278,7 @@ export async function startWatchdog(tenantId) {
                                 strategy_id: openTrade.strategy_id,
                                 macro_tf: params.macro_tf || 'ONE_HOUR',
                                 trigger_tf: params.trigger_tf || 'THIRTY_MINUTE',
-                                previous_thesis: configData?.active_thesis,
-                                candles: recentCandles.slice(-50),
-                                indicators: telemetry
+                                previous_thesis: configData?.active_thesis
                             });
                         }
 

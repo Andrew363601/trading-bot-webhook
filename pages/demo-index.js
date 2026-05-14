@@ -110,15 +110,15 @@ export default function LandingPage() {
         if (configs) setDemoConfigs(configs);
         if (trades) {
             setDemoTrades(trades);
-            const closedTrades = trades.filter(t => t.exit_price !== null);
-            const wins = closedTrades.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
-            const winRate = closedTrades.length > 0 ? ((wins / closedTrades.length) * 100).toFixed(1) + '%' : '0%';
-            const totalPnL = closedTrades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+            const closed = trades.filter(t => t.exit_price !== null);
+            const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+            const winRate = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(1) + '%' : '0%';
+            const totalPnLVal = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
             
             setDemoStats({
                 winRate,
-                totalTrades: closedTrades.length,
-                totalPnL: `$${totalPnL.toFixed(2)}`
+                totalTrades: closed.length,
+                totalPnL: `$${totalPnLVal.toFixed(2)}`
             });
 
             const open = trades.find(t => t.exit_price === null);
