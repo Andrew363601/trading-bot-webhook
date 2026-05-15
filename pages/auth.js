@@ -21,14 +21,18 @@ export default function AuthPage() {
         const { data: { session: activeSession } } = await supabase.auth.getSession();
         
         if (activeSession) {
-          // New users go to plans page, existing paid users go to dashboard
+          // Check billing_tier: FREE_TRIAL users go to plans, paid users go to dashboard
           const { data: userData } = await supabase
             .from('tenant_users')
-            .select('tenants(subscription_active)')
+            .select('tenants(billing_tier, subscription_active)')
             .eq('auth_user_id', activeSession.user.id)
             .single();
 
-          if (userData?.tenants?.subscription_active) {
+          const isPaid = userData?.tenants?.billing_tier && 
+            userData.tenants.billing_tier !== 'FREE_TRIAL' && 
+            userData?.tenants?.subscription_active;
+
+          if (isPaid) {
             router.replace('/');
           } else {
             router.replace('/plans');

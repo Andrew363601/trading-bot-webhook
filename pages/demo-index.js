@@ -20,7 +20,25 @@ export default function LandingPage() {
   const demoTenantId = process.env.NEXT_PUBLIC_DEMO_TENANT_ID;
 
   useEffect(() => {
-    if (!demoTenantId) return;
+    if (!demoTenantId) {
+      // No demo tenant configured — use synthetic fallback data
+      setLogs([
+        { type: 'CORTEX', text: 'Nexus Cortex v2.4.1 — Demo Environment (Synthetic)', color: 'text-purple-400' },
+        { type: 'WATCHDOG', text: 'Watchdog online. Monitoring BTC-PERP, ETH-PERP, SOL-PERP...', color: 'text-emerald-400' },
+        { type: 'SNIPER', text: 'Strategy ORACLE_PRICE_ACTION_V1 deployed on BTC-PERP [PAPER]', color: 'text-cyan-400' },
+        { type: 'CORTEX', text: 'Rationalizing trade for SOL-PERP... analyzing volume absorption at 5M nodes.', color: 'text-purple-400' },
+        { type: 'WATCHDOG', text: 'Heartbeat: Live ROE: 2.34% | Tripwire: 5.00%.', color: 'text-emerald-400' },
+        { type: 'SNIPER', text: 'KELTNER_EXECUTION_V1: ETH-PERP limit order placed @ $3,245.00', color: 'text-cyan-400' },
+      ]);
+      setDemoStats({ winRate: '67.3%', totalTrades: 142, totalPnL: '$4,892.15' });
+      setDemoConfigs([
+        { strategy: 'ORACLE_PRICE_ACTION_V1', asset: 'BTC-PERP' },
+        { strategy: 'KELTNER_EXECUTION_V1', asset: 'ETH-PERP' },
+        { strategy: 'SOL_RANGE_REVERSION_V1', asset: 'SOL-PERP' },
+        { strategy: 'DOGE_HF_SCALPER_V1', asset: 'DOGE-PERP' },
+      ]);
+      return;
+    }
 
     let logChannel;
     let tradeChannel;

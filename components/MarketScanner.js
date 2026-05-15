@@ -226,7 +226,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   return (
     <div className="bg-slate-950/50 rounded-2xl p-3 space-y-4 max-h-[500px] overflow-y-auto custom-scrollbar">
       {/* Tabs */}
-      <div className="flex gap-4 border-b border-white/10 overflow-x-auto no-scrollbar justify-start md:justify-between">
+      <div className="flex gap-4 border-b border-white/10 overflow-x-auto no-scrollbar justify-start md:justify-between min-w-max">
         <button
           onClick={() => setActiveTab('FAVORITES')}
           className={`px-3 py-2 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${

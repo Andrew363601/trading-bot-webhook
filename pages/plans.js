@@ -13,13 +13,16 @@ export default function PlansPage() {
   useEffect(() => {
     if (session) {
       const checkSub = async () => {
+        // Check billing_tier instead of subscription_active — new users have
+        // subscription_active=TRUE but billing_tier='FREE_TRIAL'
         const { data } = await supabase
           .from('tenant_users')
-          .select('tenants(subscription_active)')
+          .select('tenants(billing_tier, subscription_active)')
           .eq('auth_user_id', session.user.id)
           .single();
         
-        if (data?.tenants?.subscription_active) {
+        // Only redirect if they have an active PAID subscription (not free trial)
+        if (data?.tenants?.billing_tier && data.tenants.billing_tier !== 'FREE_TRIAL' && data?.tenants?.subscription_active) {
           router.replace('/');
         }
       };

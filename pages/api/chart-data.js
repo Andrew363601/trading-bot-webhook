@@ -1,6 +1,8 @@
 // pages/api/chart-data.js
+import { buildRadarChartUrl } from '../../lib/discord-chart.js';
+
 export default async function handler(req, res) {
-    const { asset, granularity, start, end } = req.query;
+    const { asset, granularity, start, end, tp_price, sl_price, entry_price, trap_price, trap_side } = req.query;
     
     if (!asset) return res.status(400).json({ error: "Asset is required" });
 
@@ -62,6 +64,22 @@ export default async function handler(req, res) {
             seen.add(d.time);
             return true;
         });
+
+        // If TP/SL params provided, return chart URL alongside candles
+        if (tp_price || sl_price || entry_price) {
+            const currentPrice = deduplicated.length > 0 ? deduplicated[deduplicated.length - 1].close : null;
+            const chartUrl = await buildRadarChartUrl({
+                asset,
+                candles: deduplicated.slice(-50),
+                currentPrice,
+                tpPrice: tp_price || null,
+                slPrice: sl_price || null,
+                trapPrice: trap_price || null,
+                trapSide: trap_side || null,
+                openTrade: entry_price ? { entry_price } : null
+            });
+            return res.status(200).json({ candles: deduplicated, chartUrl });
+        }
 
         return res.status(200).json(deduplicated);
     } catch (error) {

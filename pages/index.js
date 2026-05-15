@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
 import MarketScanner from '../components/MarketScanner';
+import { getCoinbaseAffiliateLink } from '../lib/constants';
 
 export default function Dashboard() {
   return (
@@ -95,6 +96,28 @@ function DashboardContent() {
   const [isDefconActive, setIsDefconActive] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
+
+  // Profile settings state
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [profileFullName, setProfileFullName] = useState('');
+  const [profileApiKey, setProfileApiKey] = useState('');
+  const [profileApiSecret, setProfileApiSecret] = useState('');
+  const [profileWebhookUrl, setProfileWebhookUrl] = useState('');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMessage, setProfileMessage] = useState('');
+
+  // Onboarding state
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const onboardingSteps = [
+    { title: 'Activate Your First Strategy', desc: 'Select an asset from the market scanner, then choose a strategy and toggle it to PAPER mode to start simulated trading.', target: 'strategy-matrix' },
+    { title: 'Connect Coinbase', desc: 'Create a Coinbase account to fund your live trading. Click the button below to get started.', target: 'coinbase', action: true, actionLabel: 'Create Coinbase Account', actionUrl: getCoinbaseAffiliateLink('onboarding') },
+    { title: 'Add Your API Keys', desc: 'Go to Profile Settings to add your Coinbase API keys. Use "Trade Only" permissions for security.', target: 'profile' },
+    { title: 'Connect Discord', desc: 'Add your Discord webhook URL in Profile Settings to receive real-time trade alerts.', target: 'discord' },
+  ];
+
+  // Trial grace period banner
+  const [graceBanner, setGraceBanner] = useState(null); // { daysLeft: number } or null
 
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -317,6 +340,59 @@ function DashboardContent() {
       }
     };
     loadTenantId();
+  }, [session?.user?.id, supabase]);
+
+  // Onboarding check: show tour for first 5 days
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    const checkOnboarding = async () => {
+      const completed = localStorage.getItem('nexus_onboarding_completed');
+      if (completed === 'true') return;
+
+      // Check account age from tenants table
+      const { data: userData } = await supabase
+        .from('tenant_users')
+        .select('tenants(created_at)')
+        .eq('auth_user_id', session.user.id)
+        .single();
+
+      if (userData?.tenants?.created_at) {
+        const created = new Date(userData.tenants.created_at);
+        const now = new Date();
+        const daysSinceCreation = (now - created) / (1000 * 60 * 60 * 24);
+        if (daysSinceCreation <= 5) {
+          setShowOnboarding(true);
+          setOnboardingStep(0);
+        }
+      }
+    };
+    checkOnboarding();
+  }, [session?.user?.id, supabase]);
+
+  // Trial grace period check
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    const checkGrace = async () => {
+      const { data: userData } = await supabase
+        .from('tenant_users')
+        .select('tenants(created_at)')
+        .eq('auth_user_id', session.user.id)
+        .single();
+
+      if (userData?.tenants?.created_at) {
+        const created = new Date(userData.tenants.created_at);
+        const now = new Date();
+        const daysSinceCreation = (now - created) / (1000 * 60 * 60 * 24);
+        // Trial is 14 days, grace period is 3 days after trial ends
+        if (daysSinceCreation > 14 && daysSinceCreation <= 17) {
+          const daysLeft = Math.ceil(17 - daysSinceCreation);
+          setGraceBanner({ daysLeft });
+        } else {
+          setGraceBanner(null);
+        }
+      }
+    };
+    checkGrace();
   }, [session?.user?.id, supabase]);
 
   const fetchData = useCallback(async () => {
@@ -1061,6 +1137,24 @@ function DashboardContent() {
          </div>
       )}
 
+      {/* Trial Grace Period Banner */}
+      {graceBanner && (
+        <div className="max-w-[1800px] w-full mx-auto mt-2 px-4 sm:px-0">
+          <div className="bg-amber-600/30 border border-amber-500/30 rounded-2xl p-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-bold text-amber-300">Your free trial has ended.</p>
+                <p className="text-xs text-amber-400/80">You have {graceBanner.daysLeft} day{graceBanner.daysLeft !== 1 ? 's' : ''} to subscribe before your account is paused.</p>
+              </div>
+            </div>
+            <Link href="/plans" className="text-[10px] font-black uppercase tracking-widest bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/50 px-4 py-2 rounded-lg transition-all flex-shrink-0">
+              Subscribe Now
+            </Link>
+          </div>
+        </div>
+      )}
+
       <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b dark:border-white/5 border-slate-300/5 pb-4 px-4 sm:px-0">
         <div className="flex items-center gap-2 sm:gap-4">
             <h1 className="text-lg sm:text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus</h1>
@@ -1069,9 +1163,9 @@ function DashboardContent() {
                 <Link href="/audit" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Shield className="w-3 h-3" /> Audit
                 </Link>
-                <Link href="/settings" className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
-                  <Settings className="w-3 h-3" /> API Keys
-                </Link>
+                <button onClick={() => setShowProfileModal(true)} className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+                  <Settings className="w-3 h-3" /> Profile
+                </button>
                 <button 
                     onClick={toggleTheme} 
                     className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2"
@@ -1109,9 +1203,9 @@ function DashboardContent() {
           <Link href="/audit" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
             <Shield className="w-3 h-3" /> Audit
           </Link>
-          <Link href="/settings" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-300 border border-white/5 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
-            <Settings className="w-3 h-3" /> API Keys
-          </Link>
+          <button onClick={() => { setShowProfileModal(true); setShowMobileMenu(false); }} className="text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-300 border border-white/5 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
+            <Settings className="w-3 h-3" /> Profile
+          </button>
           <button 
               onClick={() => { toggleTheme(); setShowMobileMenu(false); }} 
               className="text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-300 border border-white/5 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full"
@@ -1156,7 +1250,7 @@ function DashboardContent() {
             </button>
 
             {showScanner && (
-              <div className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-80 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
+              <div className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-96 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
                 <div className="flex items-center justify-between p-3 border-b border-white/5">
                    <span className="text-[9px] sm:text-[10px] font-black uppercase text-indigo-400 tracking-widest">Select Asset</span>
                    <button onClick={() => setShowScanner(false)} className="text-slate-500 hover:text-white"><X size={14}/></button>
@@ -1754,6 +1848,174 @@ function DashboardContent() {
                 >
                   Save Changes
                 </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Profile Settings Modal */}
+      {showProfileModal && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowProfileModal(false)}>
+          <div className="bg-slate-900 border border-white/10 rounded-2xl p-6 w-full max-w-md mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-lg font-black uppercase tracking-wider">Profile Settings</h2>
+              <button onClick={() => setShowProfileModal(false)} className="text-slate-500 hover:text-white transition-colors">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1 block">Full Name</label>
+                <input
+                  type="text"
+                  value={profileFullName}
+                  onChange={e => setProfileFullName(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all placeholder:text-slate-700"
+                  placeholder="Your name"
+                />
+              </div>
+
+              <div className="border-t border-white/5 pt-4">
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-3">Coinbase API Keys</h3>
+                <div className="space-y-3">
+                  <input
+                    type="text"
+                    value={profileApiKey}
+                    onChange={e => setProfileApiKey(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all placeholder:text-slate-700"
+                    placeholder="API Key Name"
+                  />
+                  <input
+                    type="password"
+                    value={profileApiSecret}
+                    onChange={e => setProfileApiSecret(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all placeholder:text-slate-700"
+                    placeholder="API Secret"
+                  />
+                </div>
+              </div>
+
+              <div className="border-t border-white/5 pt-4">
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">Discord Webhook</h3>
+                <input
+                  type="url"
+                  value={profileWebhookUrl}
+                  onChange={e => setProfileWebhookUrl(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all placeholder:text-slate-700"
+                  placeholder="https://discord.com/api/webhooks/..."
+                />
+              </div>
+
+              {profileMessage && (
+                <p className="text-xs text-emerald-400 font-medium">{profileMessage}</p>
+              )}
+
+              <button
+                onClick={async () => {
+                  setProfileSaving(true);
+                  setProfileMessage('');
+                  try {
+                    if (profileApiKey && profileApiSecret) {
+                      const keyRes = await fetch('/api/configure-api-keys', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ exchange: 'coinbase', apiKey: profileApiKey, apiSecret: profileApiSecret })
+                      });
+                      if (!keyRes.ok) throw new Error('Failed to save API keys');
+                    }
+                    if (profileWebhookUrl) {
+                      const webhookRes = await fetch('/api/configure-tenant-settings', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ notification_webhook_url: profileWebhookUrl })
+                      });
+                      if (!webhookRes.ok) throw new Error('Failed to save webhook');
+                    }
+                    setProfileMessage('Settings saved successfully.');
+                    setTimeout(() => setShowProfileModal(false), 1500);
+                  } catch (err) {
+                    setProfileMessage(`Error: ${err.message}`);
+                  } finally {
+                    setProfileSaving(false);
+                  }
+                }}
+                disabled={profileSaving}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {profileSaving ? 'Saving...' : 'Save Settings'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Onboarding Tour */}
+      {showOnboarding && onboardingSteps[onboardingStep] && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-indigo-500/30 rounded-2xl p-8 w-full max-w-md mx-4 shadow-2xl shadow-[0_0_40px_rgba(99,102,241,0.2)]">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-full bg-indigo-500/20 flex items-center justify-center">
+                <Zap className="w-5 h-5 text-indigo-400" />
+              </div>
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400">Step {onboardingStep + 1} of {onboardingSteps.length}</p>
+                <h3 className="text-lg font-bold text-white">{onboardingSteps[onboardingStep].title}</h3>
+              </div>
+            </div>
+            <p className="text-slate-400 text-sm leading-relaxed mb-8">{onboardingSteps[onboardingStep].desc}</p>
+            <div className="flex justify-between items-center">
+              <button
+                onClick={() => {
+                  localStorage.setItem('nexus_onboarding_completed', 'true');
+                  setShowOnboarding(false);
+                }}
+                className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors"
+              >
+                Skip Tour
+              </button>
+              <div className="flex gap-2">
+                {onboardingStep > 0 && (
+                  <button
+                    onClick={() => setOnboardingStep(s => s - 1)}
+                    className="text-[10px] font-black uppercase tracking-widest bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg transition-colors"
+                  >
+                    Back
+                  </button>
+                )}
+                {onboardingSteps[onboardingStep].action ? (
+                  <a
+                    href={onboardingSteps[onboardingStep].actionUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[10px] font-black uppercase tracking-widest bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-4 py-2 rounded-lg transition-all hover:-translate-y-0.5"
+                    onClick={() => {
+                      if (onboardingStep < onboardingSteps.length - 1) {
+                        setOnboardingStep(s => s + 1);
+                      } else {
+                        localStorage.setItem('nexus_onboarding_completed', 'true');
+                        setShowOnboarding(false);
+                      }
+                    }}
+                  >
+                    {onboardingSteps[onboardingStep].actionLabel}
+                  </a>
+                ) : (
+                  <button
+                    onClick={() => {
+                      if (onboardingStep < onboardingSteps.length - 1) {
+                        setOnboardingStep(s => s + 1);
+                      } else {
+                        localStorage.setItem('nexus_onboarding_completed', 'true');
+                        setShowOnboarding(false);
+                      }
+                    }}
+                    className="text-[10px] font-black uppercase tracking-widest bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg transition-all"
+                  >
+                    {onboardingStep < onboardingSteps.length - 1 ? 'Next' : 'Get Started'}
+                  </button>
+                )}
               </div>
             </div>
           </div>

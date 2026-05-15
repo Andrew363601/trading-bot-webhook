@@ -365,7 +365,7 @@ function PerformanceLogContent() {
           <div className="lg:col-span-3 space-y-4">
              <div className="flex items-center justify-between pl-2">
                  <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2"><Clock size={14}/> Execution Logs</h3>
-                 <div className="flex gap-2">
+                 <div className="flex gap-2 items-center">
                      {['ALL', 'WIN', 'LOSS', 'LONG', 'SHORT'].map(f => (
                          <button 
                             key={f} 
@@ -375,6 +375,31 @@ function PerformanceLogContent() {
                             {f}
                          </button>
                      ))}
+                     <button
+                        onClick={() => {
+                            const rows = [['Date','Time','Asset','Strategy','Side','Entry','Exit','PnL','Reason']];
+                            displayLogs.forEach(p => {
+                                const t = p.trade;
+                                if (!t) return;
+                                rows.push([
+                                    p.dateStr, p.timeStr, p.asset, p.strategy,
+                                    t.side || '', t.entry_price || '', t.exit_price || '',
+                                    t.pnl || '0', p.reasoning || ''
+                                ]);
+                            });
+                            const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
+                            const blob = new Blob([csv], { type: 'text/csv' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = `nexus-trades-${selectedDate || 'all'}.csv`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                        }}
+                        className="text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 ml-2"
+                     >
+                        Export CSV
+                     </button>
                  </div>
              </div>
              

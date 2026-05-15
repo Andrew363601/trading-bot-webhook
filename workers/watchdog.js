@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
+import { cleanupOldScanResults } from '../lib/cleanup-scan-results.js'; 
 
 import WebSocket from 'ws'; 
 
@@ -110,6 +111,13 @@ export async function startWatchdog(tenantId) {
     console.log(`[WATCHDOG-${tenantId}] Physical Exchange Janitor online. Sweeping orders...`);
     const apiKeyName = process.env.COINBASE_API_KEY;
     const apiSecret = process.env.COINBASE_API_SECRET;
+
+    // Hourly cleanup of old scan_results (72h retention)
+    setInterval(() => {
+        cleanupOldScanResults();
+    }, 60 * 60 * 1000);
+    // Run once immediately on startup
+    cleanupOldScanResults();
 
     setInterval(async () => {
         try {
