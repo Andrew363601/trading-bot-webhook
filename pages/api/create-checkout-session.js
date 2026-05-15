@@ -56,6 +56,13 @@ export default async function handler(req, res) {
                 metadata: { tenantId: realTenantId }
             });
             customerId = customer.id;
+
+            // 💾 PERSIST: Immediately save stripe_customer_id to subscriptions table
+            await supabase.from('subscriptions').upsert({
+                tenant_id: realTenantId,
+                stripe_customer_id: customerId,
+                updated_at: new Date().toISOString()
+            }, { onConflict: 'tenant_id' });
         }
 
         // 3. Create Checkout Session
@@ -68,7 +75,7 @@ export default async function handler(req, res) {
                 trial_period_days: 14,
                 metadata: { tenantId: realTenantId }
             },
-            success_url: `${siteUrl}/?session_id={CHECKOUT_SESSION_ID}`,
+            success_url: `${siteUrl}/auth?paid=true`,
             cancel_url: `${siteUrl}/plans`,
             metadata: { tenantId: realTenantId, tier }
         });

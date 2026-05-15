@@ -34,18 +34,30 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS billing_tier TEXT DEFAULT 'FREE_TRI
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS subscription_active BOOLEAN DEFAULT TRUE;
 
 -- Add function to handle user creation and default to TRIAL role
+-- Guarded: skips if user already has a tenant (prevents duplicate signups)
 CREATE OR REPLACE FUNCTION public.handle_new_user_onboarding()
 RETURNS TRIGGER AS $$
 DECLARE
     new_tenant_id UUID;
+    existing_tenant UUID;
 BEGIN
+    -- 🛡️ DEDUP GUARD: Skip if this user already has a tenant_users row
+    SELECT tenant_id INTO existing_tenant
+    FROM public.tenant_users
+    WHERE auth_user_id = NEW.id
+    LIMIT 1;
+
+    IF existing_tenant IS NOT NULL THEN
+        RAISE LOG 'User % already has tenant %, skipping onboarding.', NEW.id, existing_tenant;
+        RETURN NEW;
+    END IF;
+
     -- 1. Create a new tenant for the user
     INSERT INTO tenants (name)
     VALUES (NEW.email || ' Tenant')
     RETURNING id INTO new_tenant_id;
 
     -- 2. Add the user to tenant_users as TRIAL role (not ADMIN by default for new public users)
-    -- Note: If we want to allow specific emails to be ADMIN, we can check NEW.email here
     INSERT INTO tenant_users (tenant_id, auth_user_id, role)
     VALUES (new_tenant_id, NEW.id, 'TRIAL');
 
@@ -57,7 +69,10 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Trigger for public user creation (uncomment if you want to automate this in Supabase)
+-- Add unique constraint on tenant_users.auth_user_id to prevent duplicates at DB level
+ALTER TABLE tenant_users ADD CONSTRAINT IF NOT EXISTS tenant_users_auth_user_id_key UNIQUE (auth_user_id);
+
+-- Trigger for public user creation
 DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users

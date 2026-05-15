@@ -13,14 +13,18 @@ export default function PlansPage() {
   useEffect(() => {
     if (session) {
       const checkSub = async () => {
-        // Check billing_tier instead of subscription_active — new users have
-        // subscription_active=TRUE but billing_tier='FREE_TRIAL'
         const { data } = await supabase
           .from('tenant_users')
-          .select('tenants(billing_tier, subscription_active)')
+          .select('role, tenants(billing_tier, subscription_active)')
           .eq('auth_user_id', session.user.id)
           .single();
         
+        // 🛡️ ADMIN GUARD: Admins should never see the plans page
+        if (data?.role === 'ADMIN') {
+          router.replace('/');
+          return;
+        }
+
         // Only redirect if they have an active PAID subscription (not free trial)
         if (data?.tenants?.billing_tier && data.tenants.billing_tier !== 'FREE_TRIAL' && data?.tenants?.subscription_active) {
           router.replace('/');

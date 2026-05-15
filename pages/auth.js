@@ -10,9 +10,11 @@ export default function AuthPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [sessionCheckComplete, setSessionCheckComplete] = useState(false);
+  const [paidPolling, setPaidPolling] = useState(false);
   const router = useRouter();
   const supabase = useSupabaseClient();
   const session = useSession();
+  const { paid } = router.query;
 
   useEffect(() => {
     // Session check for callback processing - redirect after OAuth
@@ -21,17 +23,56 @@ export default function AuthPage() {
         const { data: { session: activeSession } } = await supabase.auth.getSession();
         
         if (activeSession) {
-          // Check billing_tier: FREE_TRIAL users go to plans, paid users go to dashboard
           const { data: userData } = await supabase
             .from('tenant_users')
-            .select('tenants(billing_tier, subscription_active)')
+            .select('tenant_id, role, tenants(billing_tier, subscription_active)')
             .eq('auth_user_id', activeSession.user.id)
             .single();
 
-          const isPaid = userData?.tenants?.billing_tier && 
-            userData.tenants.billing_tier !== 'FREE_TRIAL' && 
-            userData?.tenants?.subscription_active;
+          const role = userData?.role;
+          const billingTier = userData?.tenants?.billing_tier;
+          const subscriptionActive = userData?.tenants?.subscription_active;
 
+          // 🛡️ ADMIN GUARD: Always redirect to dashboard regardless of billing status
+          if (role === 'ADMIN') {
+            router.replace('/');
+            return;
+          }
+
+          // 🛡️ PAID POLLING: If user just came from Stripe checkout (?paid=true)
+          // Poll for up to 10 seconds waiting for webhook to update billing_tier
+          if (paid === 'true' && billingTier === 'FREE_TRIAL') {
+            setPaidPolling(true);
+            let attempts = 0;
+            const poll = setInterval(async () => {
+              attempts++;
+              const { data: freshData } = await supabase
+                .from('tenant_users')
+                .select('tenants(billing_tier, subscription_active)')
+                .eq('auth_user_id', activeSession.user.id)
+                .single();
+
+              const freshTier = freshData?.tenants?.billing_tier;
+              const freshActive = freshData?.tenants?.subscription_active;
+
+              if (freshTier && freshTier !== 'FREE_TRIAL' && freshActive) {
+                clearInterval(poll);
+                setPaidPolling(false);
+                router.replace('/');
+                return;
+              }
+
+              if (attempts >= 10) {
+                clearInterval(poll);
+                setPaidPolling(false);
+                setMessage('Payment confirmed but activation is delayed. Please try logging in again shortly.');
+              }
+            }, 1000);
+            return;
+          }
+
+          // Normal redirect: TRIAL users go to plans, paid users go to dashboard
+          const isPaid = billingTier && billingTier !== 'FREE_TRIAL' && subscriptionActive;
           if (isPaid) {
             router.replace('/');
           } else {
@@ -46,7 +87,7 @@ export default function AuthPage() {
     };
 
     checkSession();
-  }, [supabase, router]);
+  }, [supabase, router, paid]);
 
   const handleMagicLink = async (e) => {
     e.preventDefault();
@@ -124,6 +165,10 @@ export default function AuthPage() {
           </button>
         </div>
 
+        {paidPolling && <div className="mt-4 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-xs text-emerald-300 text-center font-bold flex items-center justify-center gap-2">
+          <div className="w-4 h-4 border-2 border-emerald-500/20 border-t-emerald-400 rounded-full animate-spin" />
+          Confirming your payment...
+        </div>}
         {message && <div className="mt-4 p-4 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-xs text-indigo-300 text-center font-bold">{message}</div>}
       </div>
     </div>
