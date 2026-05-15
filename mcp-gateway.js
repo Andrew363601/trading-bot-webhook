@@ -3,6 +3,7 @@ import express from 'express';
 import { executeTradeMCP } from './lib/execute-trade-mcp.js';
 import { getMarketStateMCP } from './lib/get-market-state-mcp.js';
 import { getAtrLevels } from './lib/get-atr-levels-mcp.js';
+import { getDailyPnlMCP } from './lib/get-daily-pnl-mcp.js';
 
 const app = express();
 app.use(express.json());
@@ -35,6 +36,12 @@ const TOOLS = {
             triggerTimeframe: "string (e.g., '5M', '15M', '1H')",
             options: "object {regime: 'TREND'|'CHOP', macroCandles: [], sweepLow: number, targetPrice: number, side: 'BUY'|'SELL'}"
         }
+    },
+    get_daily_pnl: {
+        description: "Fetch the current day's realized PnL (paper + live) to track progress toward the $1,000 daily target. Use this for bankroll awareness before making decisions.",
+        parameters: {
+            tenant_id: "string (UUID of the tenant)"
+        }
     }
 };
 
@@ -63,6 +70,12 @@ app.post('/mcp/execute', async (req, res) => {
         if (tool === 'get_atr_levels') {
             console.log(`[MCP GATEWAY] Hermes Agent calculating ATR levels`);
             const result = await getAtrLevels(args.triggerCandles, args.triggerTimeframe, args.options);
+            return res.json({ result });
+        }
+
+        if (tool === 'get_daily_pnl') {
+            console.log(`[MCP GATEWAY] Hermes Agent fetching daily PnL for tenant ${args.tenant_id}`);
+            const result = await getDailyPnlMCP(args);
             return res.json({ result });
         }
 

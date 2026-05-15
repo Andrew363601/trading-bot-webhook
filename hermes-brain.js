@@ -110,13 +110,20 @@ app.post('/api/wake', async (req, res) => {
 
         console.log(`[AGENT CORTEX] Pulling X-Ray Telemetry & Native Institutional Intent...`);
         
-        // 🟢 THE UPGRADE: Simplified fetch - natively grabbing all data (including OI and Funding) from Market State
-        const stateResp = await fetch(mcpUrl, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tool: 'get_market_state', arguments: { symbol: asset, macro_tf, trigger_tf } })
-        }).catch(() => ({ json: () => ({ error: "Market State offline" }) }));
+        // 🟢 THE UPGRADE: Fetch market state AND daily PnL in parallel
+        const [stateResp, pnlResp] = await Promise.all([
+            fetch(mcpUrl, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tool: 'get_market_state', arguments: { symbol: asset, macro_tf, trigger_tf, tenant_id } })
+            }).catch(() => ({ json: () => ({ error: "Market State offline" }) })),
+            fetch(mcpUrl, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tool: 'get_daily_pnl', arguments: { tenant_id } })
+            }).catch(() => ({ json: () => ({ result: { total_pnl: 0, target: 1000, remaining_to_target: 1000 } }) }))
+        ]);
 
         const marketState = await stateResp.json();
+        const dailyPnl = (await pnlResp.json()).result || { total_pnl: 0, target: 1000, remaining_to_target: 1000 };
 
         // 🟢 THE FIX: Fetch candles for chart generation if not provided in request
         if (!candles || !indicators) {
@@ -133,10 +140,13 @@ app.post('/api/wake', async (req, res) => {
             }
         }
 
-        console.log(`[AGENT CORTEX] Data acquired. Booting Gemini inference engine...`);
+        console.log(`[AGENT CORTEX] Data acquired. Boot Gemini inference engine...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`;
         
         let instructionText = `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\n`;
+        
+        // 🟢 DAILY PNL: Inject bankroll awareness data
+        instructionText += `--- CURRENT DAILY PNL ---\n${JSON.stringify(dailyPnl, null, 2)}\n\n`;
         
         instructionText += `--- LIVE MULTI-TF MARKET STATE ---\n${JSON.stringify(marketState, null, 2)}\n\n`;
         
