@@ -11,6 +11,7 @@ export default function AuthPage() {
   const [message, setMessage] = useState('');
   const [sessionCheckComplete, setSessionCheckComplete] = useState(false);
   const [paidPolling, setPaidPolling] = useState(false);
+  const [tenantNotFound, setTenantNotFound] = useState(false);
   const router = useRouter();
   const supabase = useSupabaseClient();
   const session = useSession();
@@ -23,15 +24,21 @@ export default function AuthPage() {
         const { data: { session: activeSession } } = await supabase.auth.getSession();
         
         if (activeSession) {
+          // Step 1: Fetch tenant_users record (always works — no nested relationship needed)
           const { data: userData } = await supabase
             .from('tenant_users')
-            .select('tenant_id, role, tenants(billing_tier, subscription_active)')
+            .select('tenant_id, role')
             .eq('auth_user_id', activeSession.user.id)
             .single();
 
+          if (!userData) {
+            setTenantNotFound(true);
+            setSessionCheckComplete(true);
+            return;
+          }
+
           const role = userData?.role;
-          const billingTier = userData?.tenants?.billing_tier;
-          const subscriptionActive = userData?.tenants?.subscription_active;
+          const tenantId = userData?.tenant_id;
 
           // 🛡️ ADMIN GUARD: Always redirect to dashboard regardless of billing status
           if (role === 'ADMIN') {
@@ -39,21 +46,70 @@ export default function AuthPage() {
             return;
           }
 
+          // Step 2: Determine billing status from multiple sources (fallback chain)
+          let billingTier = null;
+          let subscriptionActive = null;
+
+          // Source A: Try nested tenants() relationship
+          if (tenantId) {
+            const { data: tenantData } = await supabase
+              .from('tenants')
+              .select('billing_tier, subscription_active')
+              .eq('id', tenantId)
+              .single();
+
+            if (tenantData) {
+              billingTier = tenantData.billing_tier;
+              subscriptionActive = tenantData.subscription_active;
+            }
+
+            // Source B: Fall back to subscriptions table — check if user has a Stripe subscription ID
+            if (!billingTier || billingTier === 'FREE_TRIAL') {
+              const { data: subData } = await supabase
+                .from('subscriptions')
+                .select('status, tier, stripe_subscription_id')
+                .eq('tenant_id', tenantId)
+                .single();
+
+              // Paid if they have a Stripe subscription ID and it's active/trialing
+              if (subData?.stripe_subscription_id && (subData.status === 'active' || subData.status === 'trialing')) {
+                billingTier = subData.tier || 'RETAIL';
+                subscriptionActive = true;
+              }
+            }
+          }
+
           // 🛡️ PAID POLLING: If user just came from Stripe checkout (?paid=true)
           // Poll for up to 10 seconds waiting for webhook to update billing_tier
-          if (paid === 'true' && billingTier === 'FREE_TRIAL') {
+          if (paid === 'true' && (!billingTier || billingTier === 'FREE_TRIAL')) {
             setPaidPolling(true);
             let attempts = 0;
             const poll = setInterval(async () => {
               attempts++;
-              const { data: freshData } = await supabase
-                .from('tenant_users')
-                .select('tenants(billing_tier, subscription_active)')
-                .eq('auth_user_id', activeSession.user.id)
+
+              // Poll tenants table directly
+              const { data: freshTenant } = await supabase
+                .from('tenants')
+                .select('billing_tier, subscription_active')
+                .eq('id', tenantId)
                 .single();
 
-              const freshTier = freshData?.tenants?.billing_tier;
-              const freshActive = freshData?.tenants?.subscription_active;
+              let freshTier = freshTenant?.billing_tier;
+              let freshActive = freshTenant?.subscription_active;
+
+              // Also poll subscriptions table
+              if (!freshTier || freshTier === 'FREE_TRIAL') {
+                const { data: freshSub } = await supabase
+                  .from('subscriptions')
+                  .select('status, tier, stripe_subscription_id')
+                  .eq('tenant_id', tenantId)
+                  .single();
+
+                if (freshSub?.stripe_subscription_id && (freshSub.status === 'active' || freshSub.status === 'trialing')) {
+                  freshTier = freshSub.tier || 'RETAIL';
+                  freshActive = true;
+                }
+              }
 
               if (freshTier && freshTier !== 'FREE_TRIAL' && freshActive) {
                 clearInterval(poll);
@@ -165,6 +221,10 @@ export default function AuthPage() {
           </button>
         </div>
 
+        {tenantNotFound && <div className="mt-4 p-4 bg-amber-500/20 border border-amber-500/50 rounded-xl text-xs text-amber-300 text-center font-bold">
+          Your account setup is still processing. Try refreshing or logging out and back in.
+          <button onClick={() => window.location.reload()} className="ml-2 underline hover:text-white transition-colors">Refresh</button>
+        </div>}
         {paidPolling && <div className="mt-4 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-xs text-emerald-300 text-center font-bold flex items-center justify-center gap-2">
           <div className="w-4 h-4 border-2 border-emerald-500/20 border-t-emerald-400 rounded-full animate-spin" />
           Confirming your payment...

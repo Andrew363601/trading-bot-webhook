@@ -13,20 +13,55 @@ export default function PlansPage() {
   useEffect(() => {
     if (session) {
       const checkSub = async () => {
-        const { data } = await supabase
+        // Step 1: Fetch tenant_users record directly
+        const { data: userData } = await supabase
           .from('tenant_users')
-          .select('role, tenants(billing_tier, subscription_active)')
+          .select('tenant_id, role')
           .eq('auth_user_id', session.user.id)
           .single();
         
         // 🛡️ ADMIN GUARD: Admins should never see the plans page
-        if (data?.role === 'ADMIN') {
+        if (userData?.role === 'ADMIN') {
           router.replace('/');
           return;
         }
 
+        // Step 2: Determine billing status from multiple sources
+        let billingTier = null;
+        let subscriptionActive = null;
+        const tenantId = userData?.tenant_id;
+
+        // Source A: Try direct query to tenants table
+        if (tenantId) {
+          const { data: tenantData } = await supabase
+            .from('tenants')
+            .select('billing_tier, subscription_active')
+            .eq('id', tenantId)
+            .single();
+
+          if (tenantData) {
+            billingTier = tenantData.billing_tier;
+            subscriptionActive = tenantData.subscription_active;
+          }
+
+          // Source B: Fall back to subscriptions table — check for Stripe subscription ID
+          if (!billingTier || billingTier === 'FREE_TRIAL') {
+            const { data: subData } = await supabase
+              .from('subscriptions')
+              .select('status, tier, stripe_subscription_id')
+              .eq('tenant_id', tenantId)
+              .single();
+
+            // Paid if they have a Stripe subscription ID and it's active/trialing
+            if (subData?.stripe_subscription_id && (subData.status === 'active' || subData.status === 'trialing')) {
+              billingTier = subData.tier || 'RETAIL';
+              subscriptionActive = true;
+            }
+          }
+        }
+
         // Only redirect if they have an active PAID subscription (not free trial)
-        if (data?.tenants?.billing_tier && data.tenants.billing_tier !== 'FREE_TRIAL' && data?.tenants?.subscription_active) {
+        if (billingTier && billingTier !== 'FREE_TRIAL' && subscriptionActive) {
           router.replace('/');
         }
       };

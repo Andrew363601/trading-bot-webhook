@@ -36,7 +36,7 @@ export default async function handler(req, res) {
             .single();
 
         if (userError || !userLink) {
-            throw new Error(`User not found in registry. Please ensure you are logged in correctly.`);
+            throw new Error(`Account registry not found (Tenant: ${tenantId}). Your account might not have finished onboarding. Please try logging out and back in, or contact support if the issue persists.`);
         }
 
         const realTenantId = userLink.tenant_id;
