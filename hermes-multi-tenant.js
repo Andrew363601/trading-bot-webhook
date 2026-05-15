@@ -11,6 +11,7 @@ async function bootSwarm() {
 
         // 2. Initial sync of all active tenants
         await syncAllTenants();
+        console.log("[NEXUS COMMANDER] Tenant sync complete. Workers spawned.");
         
         // 3. Start the background watcher for new tenants
         startTenantWatcher();
