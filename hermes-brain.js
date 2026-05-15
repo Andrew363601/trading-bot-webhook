@@ -335,7 +335,7 @@ app.post('/api/wake', async (req, res) => {
             decisionJson.strategy_id = strategy_id || 'MANUAL';
             decisionJson.version = version || 'v1.0';
             decisionJson.working_thesis = decisionJson.working_thesis || 'Autonomous Execution';
-            decisionJson.qty = decisionJson.qty || qty || 1;
+            decisionJson.qty = qty || decisionJson.qty || 1;
             
             decisionJson.reason = decisionJson.action === "CLOSE" ? `[CLOSE] ${decisionJson.working_thesis}` : decisionJson.working_thesis; 
 

@@ -562,7 +562,7 @@ export async function startWatchdog(tenantId) {
                     }
                 }
 
-                // 🟢 PAPER TRADE TP/SL TRIGGER LOGIC
+                // 🟢 PAPER TRADE TP/SL + TRIPWIRE + TRAILING SL LOGIC
                 if (openTrade.execution_mode === 'PAPER') {
                     if (openTrade.tp_price && openTrade.sl_price) {
                         const rawPriceMove = openTrade.side === 'BUY' 
@@ -577,6 +577,59 @@ export async function startWatchdog(tenantId) {
                             await logAgentActivity(tenantId, "Watchdog", asset, `Heartbeat: Paper ROE: ${(pnlPercent * 100).toFixed(2)}%`, "HEARTBEAT");
                             console.log(`[WATCHDOG RADAR] Asset: ${asset} | Paper ROE: ${(pnlPercent * 100).toFixed(2)}%`);
                             heartbeatTracker[openTrade.id] = now;
+                        }
+
+                        // 🟢 PAPER TRIPWIRE: Fetch strategy config for tripwire/trailing params
+                        const { data: paperConfigData } = await supabase.from('strategy_config').select('*').eq('strategy', openTrade.strategy_id).eq('asset', asset).single();
+                        const paperParams = paperConfigData?.parameters || {};
+                        const paperTripwire = parseFloat(paperParams.tripwire_percent || 0);
+                        const paperTrailStep = parseFloat(paperParams.trail_step_percent || 0);
+                        const paperTrailActivation = parseFloat(paperParams.trail_activation_percent || paperParams.tripwire_percent || 0);
+
+                        // 🟢 PAPER TRIPWIRE: Move SL to break-even when profit target reached
+                        if (paperTripwire > 0 && pnlPercent >= paperTripwire && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
+                            const breakEvenSL = openTrade.side === 'BUY' ? openTrade.entry_price * 1.001 : openTrade.entry_price * 0.999;
+                            const safeBreakEvenSL = parseFloat((Math.round(breakEvenSL / tickSize) * tickSize).toFixed(4));
+                            
+                            const updatedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_ACTIVATED]: Profit reached ${(pnlPercent*100).toFixed(2)}%. SL moved to Break-Even (Paper).`;
+                            await supabase.from('trade_logs').update({ sl_price: safeBreakEvenSL, reason: updatedReason }).eq('id', openTrade.id);
+                            openTrade.sl_price = safeBreakEvenSL;
+                            openTrade.reason = updatedReason;
+
+                            await logAgentActivity(tenantId, "Watchdog", asset, `Paper tripwire hit! Profit at ${(pnlPercent*100).toFixed(2)}%. Moving SL to break-even.`, "TRIPWIRE_HIT");
+                            console.log(`[WATCHDOG] Paper tripwire hit for ${asset} at ${(pnlPercent*100).toFixed(2)}% profit. SL moved to break-even.`);
+
+                            await sendDiscordAlert(tenantId, {
+                                title: `🛡️ Paper Tripwire Activated: ${asset}`,
+                                description: `**Action:** SL moved to Break-Even at $${safeBreakEvenSL}\n**Profit at Trigger:** ${(pnlPercent*100).toFixed(2)}%`,
+                                color: 10181046
+                            });
+                        }
+
+                        // 🟢 PAPER TRAILING SL: Dynamically advance SL as profit increases
+                        if (paperTrailStep > 0 && paperTrailActivation > 0 && pnlPercent >= paperTrailActivation) {
+                            const assetTrailStep = paperTrailStep / leverage;
+                            const dynamicSL = openTrade.side === 'BUY' ? currentPrice * (1 - assetTrailStep) : currentPrice * (1 + assetTrailStep);
+                            const safeDynamicSL = parseFloat((Math.round(dynamicSL / tickSize) * tickSize).toFixed(4));
+                            
+                            let shouldMoveSL = false;
+                            if (openTrade.side === 'BUY' && safeDynamicSL > openTrade.sl_price) shouldMoveSL = true;
+                            if (openTrade.side === 'SELL' && safeDynamicSL < openTrade.sl_price && openTrade.sl_price !== 0) shouldMoveSL = true;
+                            
+                            const diff = Math.abs(safeDynamicSL - openTrade.sl_price);
+                            if (shouldMoveSL && diff > (tickSize * 10)) {
+                                await supabase.from('trade_logs').update({ sl_price: safeDynamicSL }).eq('id', openTrade.id);
+                                openTrade.sl_price = safeDynamicSL;
+
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Paper trailing SL triggered. Moving SL to $${safeDynamicSL}.`, "TRAILING_SL_MOVE");
+                                console.log(`[WATCHDOG] Paper trailing SL triggered for ${asset}. Moving SL up to $${safeDynamicSL}`);
+
+                                await sendDiscordAlert(tenantId, {
+                                    title: `🎯 Paper Trailing SL Updated: ${asset}`,
+                                    description: `**New SL:** $${safeDynamicSL}\n**Direction:** ${openTrade.side === 'BUY' ? 'Up' : 'Down'}`,
+                                    color: 10181046
+                                });
+                            }
                         }
                         
                         let triggerType = null;
