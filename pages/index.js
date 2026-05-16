@@ -108,6 +108,10 @@ function DashboardContent() {
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
 
+  // Risk profile preview state (for profile modal)
+  const [riskPreview, setRiskPreview] = useState(null);
+  const [profileMessage, setProfileMessage] = useState('');
+
   // Onboarding state
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
@@ -1175,6 +1179,24 @@ function DashboardContent() {
 
   displayLogs = filteredByStatus;
 
+  // Fetch risk profile preview when profile modal opens
+  useEffect(() => {
+    if (!showProfileModal || !tenantId) return;
+    const fetchRiskPreview = async () => {
+      try {
+        const { data } = await supabase
+          .from('tenant_settings')
+          .select('account_balance_usd, risk_per_trade_percent, max_position_size_usd, max_leverage, daily_roi_target_usd, max_concurrent_trades')
+          .eq('tenant_id', tenantId)
+          .single();
+        setRiskPreview(data || null);
+      } catch (e) {
+        setRiskPreview(null);
+      }
+    };
+    fetchRiskPreview();
+  }, [showProfileModal, tenantId, supabase]);
+
 
   return (
     <div className="min-h-screen dark:bg-[#020617] dark:text-slate-200 bg-white text-slate-900 px-2 sm:px-4 py-4 font-sans flex flex-col gap-4 relative">
@@ -2018,6 +2040,47 @@ function DashboardContent() {
                   className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all placeholder:text-slate-700"
                   placeholder="https://discord.com/api/webhooks/..."
                 />
+              </div>
+
+              {/* Risk Profile Preview (read-only) */}
+              <div className="border-t border-white/5 pt-4">
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-amber-400 mb-3">⚡ Risk Profile</h3>
+                {riskPreview ? (
+                  <div className="grid grid-cols-2 gap-2 text-[10px]">
+                    <div className="bg-white/[0.03] rounded-lg p-2">
+                      <span className="text-[8px] text-slate-500 uppercase tracking-widest font-black block">Balance</span>
+                      <span className="text-white font-bold font-mono">${riskPreview.account_balance_usd?.toLocaleString() || '--'}</span>
+                    </div>
+                    <div className="bg-white/[0.03] rounded-lg p-2">
+                      <span className="text-[8px] text-slate-500 uppercase tracking-widest font-black block">Risk / Trade</span>
+                      <span className="text-white font-bold font-mono">{riskPreview.risk_per_trade_percent || '--'}%</span>
+                    </div>
+                    <div className="bg-white/[0.03] rounded-lg p-2">
+                      <span className="text-[8px] text-slate-500 uppercase tracking-widest font-black block">Max Position</span>
+                      <span className="text-white font-bold font-mono">${riskPreview.max_position_size_usd?.toLocaleString() || '--'}</span>
+                    </div>
+                    <div className="bg-white/[0.03] rounded-lg p-2">
+                      <span className="text-[8px] text-slate-500 uppercase tracking-widest font-black block">Max Leverage</span>
+                      <span className="text-white font-bold font-mono">{riskPreview.max_leverage || '--'}x</span>
+                    </div>
+                    <div className="bg-white/[0.03] rounded-lg p-2">
+                      <span className="text-[8px] text-slate-500 uppercase tracking-widest font-black block">Daily ROI Target</span>
+                      <span className="text-white font-bold font-mono">${riskPreview.daily_roi_target_usd?.toLocaleString() || '--'}</span>
+                    </div>
+                    <div className="bg-white/[0.03] rounded-lg p-2">
+                      <span className="text-[8px] text-slate-500 uppercase tracking-widest font-black block">Max Trades</span>
+                      <span className="text-white font-bold font-mono">{riskPreview.max_concurrent_trades || '--'}</span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-[9px] text-slate-500 italic">No risk profile configured yet.</p>
+                )}
+                <Link
+                  href="/settings"
+                  className="mt-3 w-full inline-flex items-center justify-center gap-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 border border-amber-500/30 font-black text-[9px] uppercase tracking-widest py-2 rounded-lg transition-all"
+                >
+                  ⚙️ Edit in Settings →
+                </Link>
               </div>
 
               {profileMessage && (

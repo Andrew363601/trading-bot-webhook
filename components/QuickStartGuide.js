@@ -10,6 +10,7 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) =>
   const [currentStep, setCurrentStep] = useState(0);
   const [isVisible, setIsVisible] = useState(true);
   const [tooltipStyle, setTooltipStyle] = useState({});
+  const [ringStyle, setRingStyle] = useState({ display: 'none' });
   const [isMobile, setIsMobile] = useState(false);
 
   // Check viewport size
@@ -89,6 +90,14 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) =>
     }
 
     setTooltipStyle(style);
+
+    // Update highlight ring position
+    setRingStyle({
+      left: rect.left - 4,
+      top: rect.top - 4,
+      width: rect.width + 8,
+      height: rect.height + 8
+    });
   }, [isMobile]);
 
   // Reposition on scroll/resize
@@ -138,8 +147,8 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) =>
 
   return (
     <>
-      {/* Backdrop overlay */}
-      <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm" onClick={handleSkip} />
+      {/* Backdrop overlay — lighter than before so dashboard is visible */}
+      <div className="fixed inset-0 z-[300] bg-black/15 backdrop-blur-[2px]" onClick={handleSkip} />
 
       {/* Highlight ring around target */}
       <div
@@ -149,12 +158,7 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) =>
           borderRadius: '12px',
           boxShadow: '0 0 0 4px rgba(99, 102, 241, 0.15), 0 0 30px rgba(99, 102, 241, 0.2)',
           animation: 'pulse-ring 2s ease-in-out infinite',
-          ...(document.querySelector(step.selector)?.getBoundingClientRect() ? {
-            left: document.querySelector(step.selector).getBoundingClientRect().left - 4,
-            top: document.querySelector(step.selector).getBoundingClientRect().top - 4,
-            width: document.querySelector(step.selector).getBoundingClientRect().width + 8,
-            height: document.querySelector(step.selector).getBoundingClientRect().height + 8
-          } : { display: 'none' })
+          ...ringStyle
         }}
       />
 

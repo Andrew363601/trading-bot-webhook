@@ -255,7 +255,7 @@ export default async function handler(req, res) {
       system: systemPrompt,
       messages: safeMessages, 
       maxSteps: 10,
-      experimental_output: { type: 'text' },
+
       tools: {
         queryTradeLedger: tool({
           description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
@@ -539,16 +539,30 @@ export default async function handler(req, res) {
           parameters: z.object({}),
           execute: async () => {
             try {
-              const { retrieveAPIKey } = await import('../../lib/secrets-manager');
-              const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+              let apiKeyName, apiSecret;
+              try {
+                const { retrieveAPIKey } = await import('../../lib/secrets-manager');
+                const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+                apiKeyName = secrets.apiKey;
+                apiSecret = secrets.apiSecret;
+              } catch (keyErr) {
+                // Keys not in vault or MASTER_ENCRYPTION_KEY missing — fall back to global ENV keys
+                console.warn('[ONBOARDING] No tenant keys in vault, trying global ENV:', keyErr.message);
+                apiKeyName = process.env.COINBASE_API_KEY;
+                apiSecret = process.env.COINBASE_API_SECRET;
+              }
+
+              if (!apiKeyName || !apiSecret) {
+                return { error: 'No API keys configured. Ask the user to enter their balance manually.' };
+              }
               
-              const formattedSecret = secrets.apiSecret.replace(/\\n/g, '\n');
+              const formattedSecret = apiSecret.replace(/\\n/g, '\n');
               const privateKey = crypto.createPrivateKey({ key: formattedSecret, format: 'pem' });
               
               const generateToken = (method, path) => {
                 return jwt.sign(
-                  { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: secrets.apiKey, uri: `${method} api.coinbase.com${path}` },
-                  privateKey, { algorithm: 'ES256', header: { kid: secrets.apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
+                  { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${path}` },
+                  privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
                 );
               };
 
@@ -563,7 +577,9 @@ export default async function handler(req, res) {
                 const balance = cfmData.balance_summary?.total_balance?.value ||
                                 cfmData.balance_summary?.total_usd_balance?.value ||
                                 cfmData.balance_summary?.futures_margin_balance?.value || 0;
-                return { balance: parseFloat(balance), currency: 'USD', source: 'coinbase_cfm' };
+                if (parseFloat(balance) > 0) {
+                  return { balance: parseFloat(balance), currency: 'USD', source: 'coinbase_cfm' };
+                }
               }
 
               // Fallback: fetch spot USD balance
@@ -576,13 +592,15 @@ export default async function handler(req, res) {
                 const spotData = await spotResp.json();
                 const usdAccounts = spotData.accounts?.filter(a => a.currency === 'USD' || a.currency === 'USDC') || [];
                 const balance = usdAccounts.reduce((sum, acc) => sum + parseFloat(acc.available_balance.value), 0);
-                return { balance: parseFloat(balance), currency: 'USD', source: 'coinbase_spot' };
+                if (parseFloat(balance) > 0) {
+                  return { balance: parseFloat(balance), currency: 'USD', source: 'coinbase_spot' };
+                }
               }
 
               return { error: 'Could not fetch balance from Coinbase. Ask the user to enter it manually.' };
             } catch (err) {
               console.error('[ONBOARDING] fetchRealBalance error:', err.message);
-              return { error: `Could not fetch balance: ${err.message}. Ask the user to enter it manually.` };
+              return { error: 'Could not connect to Coinbase. Ask the user to enter their balance manually.' };
             }
           }
         }),
