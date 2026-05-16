@@ -11,10 +11,38 @@ async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
   const { tenantId } = req.tenant;
-  const { strategy, version, config, asset } = req.body;
+  const { strategy, version, config, asset, execution_mode } = req.body;
 
   if (!strategy || !version || !config || !asset) {
     return res.status(400).json({ error: 'Missing strategy, version, asset, or config' });
+  }
+
+  // Validate config is an object
+  if (typeof config !== 'object' || Array.isArray(config)) {
+    return res.status(400).json({ error: 'Config must be a valid JSON object' });
+  }
+
+  // 🔒 LIVE MODE GATE: Check if tenant has Coinbase API keys before allowing LIVE deployment
+  if (execution_mode === 'LIVE') {
+    try {
+      const { data: keyData } = await supabase
+        .from('api_keys_vault')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('exchange', 'COINBASE')
+        .eq('is_active', true)
+        .single();
+
+      if (!keyData) {
+        return res.status(400).json({
+          error: 'LIVE trading requires Coinbase API keys. Please configure them in Settings first, or switch to PAPER mode to start simulated trading.'
+        });
+      }
+    } catch (e) {
+      return res.status(400).json({
+        error: 'Could not verify API keys. Please ensure your Coinbase API keys are configured in Settings before deploying in LIVE mode.'
+      });
+    }
   }
 
   try {
@@ -31,16 +59,17 @@ async function handler(req, res) {
         version,
         config,
         asset,
+        execution_mode: execution_mode || 'PAPER',
         is_active: true,
         updated_at: new Date().toISOString()
     }, { onConflict: ['tenant_id', 'asset'] });
 
     if (error) throw error
 
-    return res.status(200).json({ message: `✅ Strategy ${strategy} deployed for ${asset}` })
+    return res.status(200).json({ message: `✅ Strategy ${strategy} deployed for ${asset} in ${execution_mode || 'PAPER'} mode` })
   } catch (err) {
     console.error('❌ Promotion Error:', err.message)
-    return res.status(500).json({ error: err.message })
+    return res.status(500).json({ error: 'Failed to deploy strategy. Please try again.' })
   }
 }
 

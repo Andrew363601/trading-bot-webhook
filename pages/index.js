@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
 import MarketScanner from '../components/MarketScanner';
+import QuickStartGuide from '../components/QuickStartGuide';
+import ChatNotification from '../components/ChatNotification';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
 
 export default function Dashboard() {
@@ -115,6 +117,12 @@ function DashboardContent() {
     { title: 'Add Your API Keys', desc: 'Go to Profile Settings to add your Coinbase API keys. Use "Trade Only" permissions for security.', target: 'profile' },
     { title: 'Connect Discord', desc: 'Add your Discord webhook URL in Profile Settings to receive real-time trade alerts.', target: 'discord' },
   ];
+
+  // Risk assessment & quick start state
+  const [riskAssessmentComplete, setRiskAssessmentComplete] = useState(true); // default true, set after fetch
+  const [quickStartDismissed, setQuickStartDismissed] = useState(true);
+  const [onboardingMessageSent, setOnboardingMessageSent] = useState(false);
+  const quickStartRef = useRef(null);
 
   // Trial grace period banner
   const [graceBanner, setGraceBanner] = useState(null); // { daysLeft: number } or null
@@ -276,10 +284,29 @@ function DashboardContent() {
     }
   }, [messages, isLoading, session?.access_token]);
 
-  // Persist messages to session storage to avoid losing them on reload
+  // Persist messages to session storage to avoid losing them on reload.
+  // 🔒 SECURITY: Strip sensitive patterns (API keys, secrets) before persisting.
   useEffect(() => {
     if (messages.length > 0) {
-      sessionStorage.setItem('nexus_chat_history', JSON.stringify(messages));
+      const sensitivePatterns = [
+        /-----BEGIN/g,
+        /organizations\//gi,
+        /api[_ ]?key/i,
+        /api[_ ]?secret/i,
+        /private[_ ]?key/i
+      ];
+      const sanitizedMessages = messages.map(m => {
+        if (!m.content || typeof m.content !== 'string') return m;
+        let sanitized = m.content;
+        for (const pattern of sensitivePatterns) {
+          if (pattern.test(sanitized)) {
+            sanitized = '[🔒 Sensitive credentials redacted for security]';
+            break;
+          }
+        }
+        return { ...m, content: sanitized };
+      });
+      sessionStorage.setItem('nexus_chat_history', JSON.stringify(sanitizedMessages));
     }
   }, [messages]);
 
@@ -334,6 +361,22 @@ function DashboardContent() {
         if (users?.tenant_id) {
           setTenantId(users.tenant_id);
           console.log('[DEBUG] Loaded tenant_id for data filtering');
+
+          // Fetch onboarding state
+          try {
+            const { data: settings } = await supabase
+              .from('tenant_settings')
+              .select('risk_assessment_complete, quick_start_dismissed')
+              .eq('tenant_id', users.tenant_id)
+              .single();
+
+            if (settings) {
+              setRiskAssessmentComplete(settings.risk_assessment_complete !== false);
+              setQuickStartDismissed(settings.quick_start_dismissed === true);
+            }
+          } catch (err) {
+            console.error('[ONBOARDING] Failed to fetch settings:', err);
+          }
         }
       } catch (err) {
         console.error('Failed to load tenant_id:', err);
@@ -368,6 +411,20 @@ function DashboardContent() {
     };
     checkOnboarding();
   }, [session?.user?.id, supabase]);
+
+  // Auto-prompt onboarding message in chat if risk assessment not complete
+  useEffect(() => {
+    if (!tenantId || riskAssessmentComplete || onboardingMessageSent || messages.length > 0) return;
+
+    const welcomeMessage = {
+      role: 'assistant',
+      content: "Welcome to Nexus! 🚀 Let's get you set up.\n\nFirst — do you have a Coinbase account? If not, I can help you create one. If you do, I'll guide you through connecting your API keys so I can check your balance and set up your risk profile.",
+      id: 'onboarding-welcome-' + Date.now()
+    };
+
+    setMessages(prev => [welcomeMessage, ...prev]);
+    setOnboardingMessageSent(true);
+  }, [tenantId, riskAssessmentComplete, onboardingMessageSent, messages.length, setMessages]);
 
   // Trial grace period check
   useEffect(() => {
@@ -1155,7 +1212,7 @@ function DashboardContent() {
         </div>
       )}
 
-      <header className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b dark:border-white/5 border-slate-300/5 pb-4 px-4 sm:px-0">
+      <header id="dashboard-header" className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b dark:border-white/5 border-slate-300/5 pb-4 px-4 sm:px-0">
         <div className="flex items-center gap-2 sm:gap-4">
             <h1 className="text-lg sm:text-xl font-black italic tracking-tighter bg-gradient-to-r from-indigo-400 to-cyan-400 bg-clip-text text-transparent uppercase">Nexus</h1>
             <div className="hidden sm:block h-6 w-[1px] bg-white/10 mx-2" />
@@ -1163,7 +1220,7 @@ function DashboardContent() {
                 <Link href="/audit" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Shield className="w-3 h-3" /> Audit
                 </Link>
-                <button onClick={() => setShowProfileModal(true)} className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+                <button id="settings-btn" onClick={() => setShowProfileModal(true)} className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Settings className="w-3 h-3" /> Profile
                 </button>
                 <button 
@@ -1336,7 +1393,7 @@ function DashboardContent() {
         
         <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-[calc(100vh-320px)] sm:h-[calc(100vh-240px)] md:h-[calc(100vh-200px)] lg:h-[calc(100vh-180px)]">
           
-          <div className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
+          <div id="chart-panel" className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
             
             <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-2 right-2 sm:top-4 sm:right-4 z-50 dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-1 sm:p-2 rounded-lg transition-colors backdrop-blur-md">
                 {isChartMaximized ? <Minimize2 size={12} className="sm:size-[14px]"/> : <Maximize2 size={12} className="sm:size-[14px]"/>}
@@ -1554,7 +1611,7 @@ function DashboardContent() {
         </div>
 
                 <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-hidden lg:resize-y pb-2">
-          <div className="dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] p-4 sm:p-6 shadow-2xl flex-shrink-0">
+          <div id="strategy-matrix" className="dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] p-4 sm:p-6 shadow-2xl flex-shrink-0">
             <h3 className="text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 mb-4 flex items-center justify-between">
               <span>Active Matrix</span>
               <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full font-mono uppercase">
@@ -1661,7 +1718,7 @@ function DashboardContent() {
             })()}
           </div>
 
-          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-2xl sm:rounded-[2.5rem] flex flex-col overflow-hidden shadow-2xl min-h-[300px] max-h-[min(400px, calc(100vh - 200px))]">
+          <div id="session-logs" className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-2xl sm:rounded-[2.5rem] flex flex-col overflow-hidden shadow-2xl min-h-[300px] max-h-[min(400px, calc(100vh - 200px))]">
             <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center justify-between flex-shrink-0">
               <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Session Logs</div>
               <select
@@ -1697,9 +1754,16 @@ function DashboardContent() {
                 )}
             </div>
           </div>
-          <div className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-2xl sm:rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[500px]">
+          <div id="nexus-chat" className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-2xl sm:rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[500px]">
           <div className="px-6 py-4 border-b dark:border-white/5 border-slate-300/50 text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 flex items-center justify-between">
-              <div className="flex items-center gap-2"><TerminalIcon size={14} className="text-indigo-400" /> Nexus Agent</div>
+              <div className="flex items-center gap-2">
+                <TerminalIcon size={14} className="text-indigo-400" />
+                {!riskAssessmentComplete ? (
+                  <span className="text-amber-400">⚡ Risk Profile Setup</span>
+                ) : (
+                  <span>Nexus Agent</span>
+                )}
+              </div>
               <button
                 onClick={() => {
                   setMessages([]);
@@ -1743,6 +1807,51 @@ function DashboardContent() {
           </div>
         </div>
       </main>
+
+      {/* Quick Start Guide — Coach Marks */}
+      {tenantId && !quickStartDismissed && (
+        <QuickStartGuide
+          ref={quickStartRef}
+          tenantId={tenantId}
+          onDismiss={async () => {
+            setQuickStartDismissed(true);
+            // Save dismissed state via authenticated API
+            try {
+              await fetch('/api/quick-start', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': session?.access_token ? `Bearer ${session.access_token}` : ''
+                },
+                body: JSON.stringify({ dismissed: true, step: 0 })
+              });
+            } catch (e) {
+              console.error('[QUICKSTART] Failed to save dismissed state:', e);
+            }
+          }}
+          onComplete={async () => {
+            setQuickStartDismissed(true);
+            try {
+              await fetch('/api/quick-start', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': session?.access_token ? `Bearer ${session.access_token}` : ''
+                },
+                body: JSON.stringify({ dismissed: true, step: 8 })
+              });
+            } catch (e) {
+              console.error('[QUICKSTART] Failed to save completion:', e);
+            }
+          }}
+        />
+      )}
+
+      {/* Mobile Chat Notification */}
+      <ChatNotification
+        chatSelector="#nexus-chat"
+        isOnboarding={!riskAssessmentComplete}
+      />
 
       {/* Strategy Edit Modal */}
       {editModalOpen && editingStrategy && (
@@ -1879,20 +1988,23 @@ function DashboardContent() {
 
               <div className="border-t border-white/5 pt-4">
                 <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-3">Coinbase API Keys</h3>
+                <p className="text-[9px] text-amber-400/80 mb-3 italic">🔒 Keys are encrypted with AES-256 before storage. Never share them with anyone.</p>
                 <div className="space-y-3">
                   <input
+                    id="api-key-name-input"
                     type="text"
                     value={profileApiKey}
                     onChange={e => setProfileApiKey(e.target.value)}
                     className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all placeholder:text-slate-700"
-                    placeholder="API Key Name"
+                    placeholder="organizations/..."
                   />
                   <input
+                    id="api-secret-input"
                     type="password"
                     value={profileApiSecret}
                     onChange={e => setProfileApiSecret(e.target.value)}
                     className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all placeholder:text-slate-700"
-                    placeholder="API Secret"
+                    placeholder="-----BEGIN EC PRIVATE KEY-----"
                   />
                 </div>
               </div>
@@ -1913,6 +2025,7 @@ function DashboardContent() {
               )}
 
               <button
+                id="api-key-save-btn"
                 onClick={async () => {
                   setProfileSaving(true);
                   setProfileMessage('');
@@ -1920,7 +2033,10 @@ function DashboardContent() {
                     if (profileApiKey && profileApiSecret) {
                       const keyRes = await fetch('/api/configure-api-keys', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 
+                          'Content-Type': 'application/json',
+                          'Authorization': session?.access_token ? `Bearer ${session.access_token}` : ''
+                        },
                         body: JSON.stringify({ exchange: 'coinbase', apiKey: profileApiKey, apiSecret: profileApiSecret })
                       });
                       if (!keyRes.ok) throw new Error('Failed to save API keys');

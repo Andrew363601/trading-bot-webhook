@@ -123,7 +123,21 @@ app.post('/api/wake', async (req, res) => {
         ]);
 
         const marketState = await stateResp.json();
-        const dailyPnl = (await pnlResp.json()).result || { total_pnl: 0, target: 1000, remaining_to_target: 1000 };
+
+        // Fetch tenant's daily profit target for the fallback
+        let defaultTarget = 1000;
+        try {
+            const { data: settings } = await supabase
+                .from('tenant_settings')
+                .select('daily_roi_target_usd')
+                .eq('tenant_id', tenant_id)
+                .single();
+            if (settings?.daily_roi_target_usd) {
+                defaultTarget = parseFloat(settings.daily_roi_target_usd);
+            }
+        } catch (e) {}
+
+        const dailyPnl = (await pnlResp.json()).result || { total_pnl: 0, target: defaultTarget, remaining_to_target: defaultTarget };
 
         // 🟢 THE FIX: Fetch candles for chart generation if not provided in request
         if (!candles || !indicators) {
@@ -142,11 +156,29 @@ app.post('/api/wake', async (req, res) => {
 
         console.log(`[AGENT CORTEX] Data acquired. Boot Gemini inference engine...`);
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`;
+
+        // Fetch tenant risk profile for AI context
+        let riskContext = '';
+        try {
+            const { data: settings } = await supabase
+                .from('tenant_settings')
+                .select('account_balance_usd, risk_per_trade_percent, max_position_size_usd, max_leverage, max_daily_loss_usd, max_concurrent_trades')
+                .eq('tenant_id', tenant_id)
+                .single();
+            if (settings) {
+                riskContext = `\n\n--- RISK PROFILE ---\nAccount Balance: $${settings.account_balance_usd || 'Not set'}\nRisk Per Trade: ${settings.risk_per_trade_percent || 'Not set'}%\nMax Position Size: $${settings.max_position_size_usd || 'Not set'}\nMax Leverage: ${settings.max_leverage || 'Not set'}x\nMax Daily Loss: $${settings.max_daily_loss_usd || 'Not set'}\nMax Concurrent Trades: ${settings.max_concurrent_trades || 'Not set'}`;
+            }
+        } catch (e) {
+            console.warn("[AGENT CORTEX] Could not fetch risk profile:", e.message);
+        }
         
         let instructionText = `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\n`;
         
         // 🟢 DAILY PNL: Inject bankroll awareness data
         instructionText += `--- CURRENT DAILY PNL ---\n${JSON.stringify(dailyPnl, null, 2)}\n\n`;
+        
+        // 🟢 RISK PROFILE: Inject tenant risk boundaries
+        instructionText += riskContext + '\n\n';
         
         instructionText += `--- LIVE MULTI-TF MARKET STATE ---\n${JSON.stringify(marketState, null, 2)}\n\n`;
         

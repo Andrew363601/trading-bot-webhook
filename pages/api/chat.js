@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 import { recordUsage } from '../../lib/usage-meter';
+import jwt from 'jsonwebtoken';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
@@ -72,6 +73,30 @@ export default async function handler(req, res) {
 
     console.log(`[CHAT API] Request for tenant: ${tenantId}. Message count: ${safeMessages.length}`);
 
+    // Check if risk assessment is complete — determines which system prompt to use
+    const { data: tenantSettings } = await supabase
+      .from('tenant_settings')
+      .select('risk_assessment_complete, account_balance_usd, risk_per_trade_percent, max_position_size_usd, max_leverage, max_daily_loss_usd, max_concurrent_trades, allowed_assets')
+      .eq('tenant_id', tenantId)
+      .single();
+
+    const riskAssessmentComplete = tenantSettings?.risk_assessment_complete !== false;
+
+    // Check if user has Coinbase API keys configured
+    let hasCoinbaseKeys = false;
+    try {
+      const { data: keyData } = await supabase
+        .from('api_keys_vault')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('exchange', 'COINBASE')
+        .eq('is_active', true)
+        .single();
+      hasCoinbaseKeys = !!keyData;
+    } catch (e) {
+      hasCoinbaseKeys = false;
+    }
+
     // Helper for timeouts
     const withTimeout = (promise, ms = 15000, fallback = { data: [], error: 'Timeout' }) => 
         Promise.race([
@@ -111,7 +136,7 @@ export default async function handler(req, res) {
       }));
     }
     
-    const systemPrompt = `
+    const systemPrompt = riskAssessmentComplete ? `
     You are Nexus, the elite Portfolio Architect. You manage an autonomous fleet of quantitative strategies for Andrew.
     
     --- YOUR IDENTITY & CAPABILITIES ---
@@ -125,6 +150,14 @@ export default async function handler(req, res) {
     Current Open Trades: ${JSON.stringify(openTrades || [])}
     Live Market Prices for Open Trades: ${JSON.stringify(livePrices)}
     Recently Closed Trades (Last 5): ${JSON.stringify(recentClosedLogs || [])}
+    
+    --- RISK PROFILE ---
+    Account Balance: $${tenantSettings?.account_balance_usd || 'Not set'}
+    Risk Per Trade: ${tenantSettings?.risk_per_trade_percent || 'Not set'}%
+    Max Position Size: $${tenantSettings?.max_position_size_usd || 'Not set'}
+    Max Leverage: ${tenantSettings?.max_leverage || 'Not set'}x
+    Max Daily Loss: $${tenantSettings?.max_daily_loss_usd || 'Not set'}
+    Max Concurrent Trades: ${tenantSettings?.max_concurrent_trades || 'Not set'}
   
     --- PROTOCOL 1: MARKET ANALYSIS & EXECUTION ---
     - Andrew exclusively trades Perpetual Futures for leverage. The standard format for assets on this exchange is [COIN]-PERP-INTX (e.g., BTC-PERP-INTX, DOGE-PERP-INTX).
@@ -177,6 +210,44 @@ export default async function handler(req, res) {
 
     --- PROTOCOL 4: OPERATIONAL AWARENESS ---
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
+    ` : `
+    You are Nexus Onboarding Agent. Your ONLY job is to complete the risk assessment questionnaire. You must follow these rules strictly:
+
+    RULES:
+    1. Ask ONE question at a time. Wait for the user's answer before proceeding to the next question.
+    2. If the user goes off-topic or asks about trading, politely redirect: "Let's finish your risk profile first! [repeat current question]"
+    3. Be friendly and encouraging. Use emojis occasionally.
+    4. After ALL questions are answered, call the \`saveRiskAssessment\` tool with all the collected data.
+    5. After saving, confirm to the user and tell them to follow the Quick Start guide on screen.
+
+    QUESTIONS (ask in order, one at a time):
+    
+    Q1: "Do you have a Coinbase account set up for trading?"
+    - If YES: Proceed to Q2.
+    - If NO: "No problem! A Coinbase account is important for real-money trading, but for now we can proceed with a paper trading account. Let's set that up." → Skip Q2, proceed to Q2b.
+    
+    Q2: "Do you have your Coinbase API keys configured in the Settings panel?"
+    - If NO: ⚠️ WARNING: Never paste API keys in this chat. They must be entered in the secure Settings panel. Use the \`redirectToSettings\` tool to jump the Quick Start Guide to highlight the Settings button and the key entry fields. Guide them step-by-step using the \`getGuideImage\` tool to show annotated screenshots. Tell them to select BOTH "View" AND "Trade" permissions. After they\'ve saved their keys, come back to chat and say "done".
+    - If YES: Proceed to Q3.
+    
+    Q2b: (Paper mode only) "How much would you like to start with in your paper trading account? For example: $5,000, $10,000, or $50,000?"
+    - Accept a number. Store as account_balance_usd. Proceed to Q4.
+    
+    Q3: "Let me check your account balance..." (Call \`fetchRealBalance\` tool)
+    - If balance found: "Your balance is $X. Shall I use this for risk calculations?"
+    - If not found: "What's your total account/margin balance in USD?"
+    
+    Q4: "What's your risk appetite? Conservative (1% per trade), Balanced (2%), or Aggressive (5%)? You can also enter a custom percentage."
+    
+    Q5: "What's the maximum position size you'd want per trade in USD?"
+    
+    Q6: "What's the maximum leverage you're comfortable with? (1x to 100x)"
+    
+    Q7: "What's your daily profit target in USD? For example, $1,000 means you aim to make $1,000 per day in profit."
+    
+    Q8: "Any specific assets you want to focus on or avoid? (Optional — you can say 'all' or list them comma-separated)"
+    
+    After Q8, call \`saveRiskAssessment\` with ALL collected data. Then say: "✅ Your risk profile is complete! You can always update it in Settings. Now follow the Quick Start guide on screen to explore the dashboard."
     `;
 
     const result = await streamText({
@@ -448,6 +519,142 @@ export default async function handler(req, res) {
               return { success: false, error: e.message };
             }
           },
+        }),
+
+        // --- ONBOARDING TOOLS ---
+
+        redirectToSettings: tool({
+          description: 'Redirects the Quick Start Guide to highlight the Settings button and API key entry fields. Use this instead of asking users to paste keys in chat.',
+          parameters: z.object({
+            stepId: z.string().describe('The Quick Start step to jump to: "settings", "settings-key-name", "settings-key-secret", or "settings-save"')
+          }),
+          execute: async ({ stepId }) => {
+            // This is a client-side action — we return the instruction and the frontend handles the jump
+            return { success: true, message: `Navigating to step: ${stepId}`, stepId };
+          }
+        }),
+
+        fetchRealBalance: tool({
+          description: 'Fetches the real account balance from Coinbase using the tenant\'s stored API keys.',
+          parameters: z.object({}),
+          execute: async () => {
+            try {
+              const { retrieveAPIKey } = await import('../../lib/secrets-manager');
+              const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+              
+              const formattedSecret = secrets.apiSecret.replace(/\\n/g, '\n');
+              const privateKey = crypto.createPrivateKey({ key: formattedSecret, format: 'pem' });
+              
+              const generateToken = (method, path) => {
+                return jwt.sign(
+                  { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: secrets.apiKey, uri: `${method} api.coinbase.com${path}` },
+                  privateKey, { algorithm: 'ES256', header: { kid: secrets.apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
+                );
+              };
+
+              // Fetch CFM futures balance
+              const cfmPath = '/api/v3/brokerage/cfm/balance_summary';
+              const cfmResp = await fetch(`https://api.coinbase.com${cfmPath}`, {
+                headers: { 'Authorization': `Bearer ${generateToken('GET', cfmPath)}` }
+              });
+
+              if (cfmResp.ok) {
+                const cfmData = await cfmResp.json();
+                const balance = cfmData.balance_summary?.total_balance?.value ||
+                                cfmData.balance_summary?.total_usd_balance?.value ||
+                                cfmData.balance_summary?.futures_margin_balance?.value || 0;
+                return { balance: parseFloat(balance), currency: 'USD', source: 'coinbase_cfm' };
+              }
+
+              // Fallback: fetch spot USD balance
+              const spotPath = '/api/v3/brokerage/accounts';
+              const spotResp = await fetch(`https://api.coinbase.com${spotPath}`, {
+                headers: { 'Authorization': `Bearer ${generateToken('GET', spotPath)}` }
+              });
+
+              if (spotResp.ok) {
+                const spotData = await spotResp.json();
+                const usdAccounts = spotData.accounts?.filter(a => a.currency === 'USD' || a.currency === 'USDC') || [];
+                const balance = usdAccounts.reduce((sum, acc) => sum + parseFloat(acc.available_balance.value), 0);
+                return { balance: parseFloat(balance), currency: 'USD', source: 'coinbase_spot' };
+              }
+
+              return { error: 'Could not fetch balance from Coinbase. Ask the user to enter it manually.' };
+            } catch (err) {
+              console.error('[ONBOARDING] fetchRealBalance error:', err.message);
+              return { error: `Could not fetch balance: ${err.message}. Ask the user to enter it manually.` };
+            }
+          }
+        }),
+
+        saveRiskAssessment: tool({
+          description: 'Saves the completed risk assessment data to the tenant settings. Call this after ALL questions are answered.',
+          parameters: z.object({
+            accountBalanceUsd: z.number().describe('Total account/margin balance in USD'),
+            riskPerTradePercent: z.number().describe('Risk per trade as percentage (e.g., 2 for 2%)'),
+            maxPositionSizeUsd: z.number().describe('Maximum position size per trade in USD'),
+            maxLeverage: z.number().describe('Maximum leverage (1-100)'),
+            dailyRoiTargetUsd: z.number().describe('Daily profit target in USD (e.g., 1000 means aim for $1000/day)'),
+            maxConcurrentTrades: z.number().optional().describe('Maximum concurrent trades'),
+            allowedAssets: z.string().optional().describe('Comma-separated list of allowed assets, or "all"')
+          }),
+          execute: async (args) => {
+            try {
+              const allowedAssetsArray = args.allowedAssets && args.allowedAssets.toLowerCase() !== 'all'
+                ? args.allowedAssets.split(',').map(s => s.trim().toUpperCase())
+                : null;
+
+              const { error } = await supabase
+                .from('tenant_settings')
+                .upsert({
+                  tenant_id: tenantId,
+                  account_balance_usd: args.accountBalanceUsd,
+                  risk_per_trade_percent: args.riskPerTradePercent,
+                  max_position_size_usd: args.maxPositionSizeUsd,
+                  max_leverage: args.maxLeverage,
+                  daily_roi_target_usd: args.dailyRoiTargetUsd,
+                  max_concurrent_trades: args.maxConcurrentTrades || 3,
+                  allowed_assets: allowedAssetsArray,
+                  risk_assessment_complete: true,
+                  risk_assessment_data: JSON.stringify({ completed_at: new Date().toISOString(), answers: args }),
+                  updated_at: new Date().toISOString()
+                }, { onConflict: 'tenant_id' });
+
+              if (error) throw error;
+              return { success: true, message: 'Risk assessment saved successfully!' };
+            } catch (err) {
+              console.error('[ONBOARDING] saveRiskAssessment error:', err.message);
+              return { success: false, error: 'Failed to save risk assessment. Please try again.' };
+            }
+          }
+        }),
+
+        getGuideImage: tool({
+          description: 'Returns the annotated screenshot URL for a specific Coinbase API setup step.',
+          parameters: z.object({
+            step: z.number().describe('The step number (1-4)')
+          }),
+          execute: async ({ step }) => {
+            const { getGuideStep } = await import('../../lib/coinbase-guide-steps');
+            const guideStep = getGuideStep(step);
+            if (!guideStep) return { error: `Step ${step} not found. Valid steps are 1-4.` };
+            return {
+              imageUrl: guideStep.image,
+              title: guideStep.title,
+              instruction: guideStep.instruction,
+              step: guideStep.step,
+              totalSteps: 4
+            };
+          }
+        }),
+
+        getCoinbaseAffiliateLink: tool({
+          description: 'Returns the Coinbase affiliate signup link for users who need to create an account.',
+          parameters: z.object({}),
+          execute: async () => {
+            const { getCoinbaseAffiliateLink } = await import('../../lib/constants');
+            return { url: getCoinbaseAffiliateLink('onboarding_chat') };
+          }
         }),
       },
     });

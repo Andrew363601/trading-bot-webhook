@@ -42,6 +42,20 @@ async function handler(req, res) {
     let paperBalance = initialPaperFunds;
     let currentMarketPrice = 0;
 
+    // Read paper starting balance from tenant_settings (set during onboarding)
+    try {
+      const { data: settings } = await supabase
+        .from('tenant_settings')
+        .select('account_balance_usd')
+        .eq('tenant_id', tenantId)
+        .single();
+      if (settings?.account_balance_usd) {
+        paperBalance = parseFloat(settings.account_balance_usd);
+      }
+    } catch (e) {
+      // Fall back to default 5000
+    }
+
     // Fetch LIVE Market Price
     try {
         if (asset) {

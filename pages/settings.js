@@ -23,6 +23,18 @@ function SettingsContent() {
     const [loading, setLoading] = useState(false);
     const [status, setStatus] = useState(null);
 
+    // Risk profile state
+    const [riskFields, setRiskFields] = useState({
+        accountBalance: '',
+        riskPerTrade: '',
+        maxPositionSize: '',
+        maxLeverage: '',
+        dailyRoiTarget: '',
+        maxConcurrentTrades: ''
+    });
+    const [riskSaving, setRiskSaving] = useState(false);
+    const [tenantId, setTenantId] = useState(null);
+
     // Fetch existing settings on component mount
     useEffect(() => {
         const fetchSettings = async () => {
@@ -31,26 +43,44 @@ function SettingsContent() {
                 const { data: { session } } = await supabase.auth.getSession();
                 if (!session) return;
 
-                // Fetch API Keys
+                // Fetch API Keys — resolve tenant_id via tenant_users first
+                const { data: userLink } = await supabase
+                    .from('tenant_users')
+                    .select('tenant_id')
+                    .eq('auth_user_id', session.user.id)
+                    .single();
+
+                const actualTenantId = userLink?.tenant_id || session.user.id;
+                setTenantId(actualTenantId);
+
                 const { data: apiKeys, error: keysError } = await supabase
                     .from('api_keys_vault')
                     .select('exchange, key_encrypted, secret_encrypted')
-                    .eq('tenant_id', session.user.id) // Assuming tenant_id == auth_user_id for now
+                    .eq('tenant_id', actualTenantId)
                     .single();
-                if (keysError && keysError.code !== 'PGRST116') throw keysError; // PGRST116 means no rows found, which is fine
+                if (keysError && keysError.code !== 'PGRST116') throw keysError;
                 if (apiKeys) {
                     setExchange(apiKeys.exchange);
                 }
 
-                // Fetch Tenant Settings for webhook URL
+                // Fetch Tenant Settings for webhook URL + risk profile
                 const { data: tenantSettings, error: settingsError } = await supabase
                     .from('tenant_settings')
-                    .select('notification_webhook_url')
-                    .eq('tenant_id', session.user.id) // Assuming tenant_id == auth_user_id for now
+                    .select('*')
+                    .eq('tenant_id', actualTenantId)
                     .single();
                 if (settingsError && settingsError.code !== 'PGRST116') throw settingsError;
                 if (tenantSettings) {
                     setDiscordWebhookUrl(tenantSettings.notification_webhook_url || '');
+                    // Pre-populate risk fields
+                    setRiskFields({
+                        accountBalance: tenantSettings.account_balance_usd?.toString() || '',
+                        riskPerTrade: tenantSettings.risk_per_trade_percent?.toString() || '',
+                        maxPositionSize: tenantSettings.max_position_size_usd?.toString() || '',
+                        maxLeverage: tenantSettings.max_leverage?.toString() || '',
+                        dailyRoiTarget: tenantSettings.daily_roi_target_usd?.toString() || '',
+                        maxConcurrentTrades: tenantSettings.max_concurrent_trades?.toString() || ''
+                    });
                 }
 
             } catch (err) {
@@ -94,6 +124,94 @@ function SettingsContent() {
             setStatus({ type: 'error', message: err.message });
         } finally {
             setLoading(false);
+        }
+    };
+
+    // Handle Risk Profile submission
+    const handleSaveRiskProfile = async () => {
+        setRiskSaving(true);
+        setStatus(null);
+
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error("No active session");
+
+            const response = await fetch('/api/configure-tenant-settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${session.access_token}`
+                },
+                body: JSON.stringify({
+                    account_balance_usd: parseFloat(riskFields.accountBalance) || null,
+                    risk_per_trade_percent: parseFloat(riskFields.riskPerTrade) || null,
+                    max_position_size_usd: parseFloat(riskFields.maxPositionSize) || null,
+                    max_leverage: parseFloat(riskFields.maxLeverage) || null,
+                    daily_roi_target_usd: parseFloat(riskFields.dailyRoiTarget) || null,
+                    max_concurrent_trades: parseInt(riskFields.maxConcurrentTrades) || null
+                })
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                setStatus({ type: 'success', message: 'Risk profile updated successfully.' });
+            } else {
+                throw new Error(result.error || 'Failed to update risk profile');
+            }
+        } catch (err) {
+            setStatus({ type: 'error', message: err.message });
+        } finally {
+            setRiskSaving(false);
+        }
+    };
+
+    // Handle Quick Start Tour
+    const handleRestartTour = async () => {
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error("No active session");
+
+            const response = await fetch('/api/configure-tenant-settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${session.access_token}`
+                },
+                body: JSON.stringify({
+                    quick_start_dismissed: false,
+                    quick_start_step: 0
+                })
+            });
+
+            if (!response.ok) throw new Error('Failed to reset tour');
+
+            setStatus({ type: 'success', message: 'Quick Start Guide will appear on your next dashboard visit.' });
+        } catch (err) {
+            setStatus({ type: 'error', message: err.message });
+        }
+    };
+
+    const handleDismissTour = async () => {
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error("No active session");
+
+            const response = await fetch('/api/configure-tenant-settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${session.access_token}`
+                },
+                body: JSON.stringify({
+                    quick_start_dismissed: true
+                })
+            });
+
+            if (!response.ok) throw new Error('Failed to dismiss tour');
+
+            setStatus({ type: 'success', message: 'Quick Start Guide dismissed.' });
+        } catch (err) {
+            setStatus({ type: 'error', message: err.message });
         }
     };
 
@@ -228,6 +346,112 @@ function SettingsContent() {
                         Update Notifications
                     </button>
                 </form>
+
+                {/* Risk Profile Section */}
+                <div className="bg-slate-900/50 border border-white/5 p-8 rounded-3xl space-y-6 backdrop-blur-xl">
+                    <div className="flex items-center gap-3 mb-2">
+                        <Shield className="w-5 h-5 text-amber-400" />
+                        <h2 className="text-xl font-black uppercase tracking-tight">Risk Profile</h2>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Account Balance (USD)</label>
+                            <input
+                                type="number"
+                                placeholder="5000"
+                                value={riskFields.accountBalance}
+                                onChange={(e) => setRiskFields(prev => ({ ...prev, accountBalance: e.target.value }))}
+                                className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Risk Per Trade (%)</label>
+                            <input
+                                type="number"
+                                step="0.1"
+                                placeholder="2.0"
+                                value={riskFields.riskPerTrade}
+                                onChange={(e) => setRiskFields(prev => ({ ...prev, riskPerTrade: e.target.value }))}
+                                className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Max Position Size (USD)</label>
+                            <input
+                                type="number"
+                                placeholder="5000"
+                                value={riskFields.maxPositionSize}
+                                onChange={(e) => setRiskFields(prev => ({ ...prev, maxPositionSize: e.target.value }))}
+                                className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Max Leverage (1-100x)</label>
+                            <input
+                                type="number"
+                                placeholder="10"
+                                value={riskFields.maxLeverage}
+                                onChange={(e) => setRiskFields(prev => ({ ...prev, maxLeverage: e.target.value }))}
+                                className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Daily ROI Target (USD)</label>
+                            <input
+                                type="number"
+                                placeholder="1000"
+                                value={riskFields.dailyRoiTarget}
+                                onChange={(e) => setRiskFields(prev => ({ ...prev, dailyRoiTarget: e.target.value }))}
+                                className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
+                            />
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Max Concurrent Trades</label>
+                            <input
+                                type="number"
+                                placeholder="3"
+                                value={riskFields.maxConcurrentTrades}
+                                onChange={(e) => setRiskFields(prev => ({ ...prev, maxConcurrentTrades: e.target.value }))}
+                                className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
+                            />
+                        </div>
+                    </div>
+
+                    <button
+                        onClick={handleSaveRiskProfile}
+                        disabled={riskSaving}
+                        className="w-full bg-amber-600 hover:bg-amber-500 text-white font-black py-4 rounded-xl transition-all flex items-center justify-center gap-2 uppercase text-xs tracking-widest shadow-lg shadow-amber-500/20"
+                    >
+                        {riskSaving ? <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
+                        Save Risk Profile
+                    </button>
+                </div>
+
+                {/* Quick Start Guide Section */}
+                <div className="bg-slate-900/50 border border-white/5 p-8 rounded-3xl space-y-6 backdrop-blur-xl">
+                    <div className="flex items-center gap-3 mb-2">
+                        <AlertCircle className="w-5 h-5 text-cyan-400" />
+                        <h2 className="text-xl font-black uppercase tracking-tight">Quick Start Guide</h2>
+                    </div>
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                        The Quick Start Guide shows coach marks over the dashboard to help you learn the interface.
+                    </p>
+                    <div className="flex gap-4">
+                        <button
+                            onClick={handleRestartTour}
+                            className="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-black py-4 rounded-xl transition-all flex items-center justify-center gap-2 uppercase text-xs tracking-widest shadow-lg shadow-cyan-500/20"
+                        >
+                            Restart Tour
+                        </button>
+                        <button
+                            onClick={handleDismissTour}
+                            className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black py-4 rounded-xl transition-all flex items-center justify-center gap-2 uppercase text-xs tracking-widest"
+                        >
+                            Dismiss Forever
+                        </button>
+                    </div>
+                </div>
 
                 {status && (
                     <div className={`p-4 rounded-xl border flex items-center gap-3 ${status.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
