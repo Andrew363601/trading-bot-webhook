@@ -312,7 +312,7 @@ export async function startWatchdog(tenantId) {
                             if (shouldMoveSL && diff > (tickSize * 10)) {
                                 await logAgentActivity(tenantId, "Watchdog", asset, `Trailing SL triggered. Moving SL to $${safeDynamicSL}.`, "TRAILING_SL_MOVE");
                                 console.log(`[WATCHDOG] Trailing SL triggered for ${asset}. Moving SL up to $${safeDynamicSL}`);
-                                
+
                                 if (openOrders.length > 0) {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                     await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
@@ -331,6 +331,15 @@ export async function startWatchdog(tenantId) {
                                     imageUrl: trailChartUrl
                                 });
                             }
+                        }
+                    }
+
+                    // 🟢 FALLBACK: Log that LIVE trade exists in DB even if no exchange position found
+                    if (!activePosition) {
+                        const now = Date.now();
+                        if (!heartbeatTracker[openTrade.id + '_monitor'] || now - heartbeatTracker[openTrade.id + '_monitor'] >= 120000) {
+                            await logAgentActivity(tenantId, "Watchdog", asset, `Monitoring LIVE trade ${openTrade.id} — no active position on exchange yet.`, "INFO");
+                            heartbeatTracker[openTrade.id + '_monitor'] = now;
                         }
                     }
 
@@ -505,13 +514,13 @@ export async function startWatchdog(tenantId) {
                             const now = Date.now();
                             if (!missingBracketTracker[openTrade.id]) {
                                 missingBracketTracker[openTrade.id] = now;
-                                await logAgentActivity(tenantId, "Watchdog", asset, `Missing OCO Brackets for ${asset} detected. Initiating 10s ceasefire.`, "MISSING_OCO_DETECTED");
-                                console.log(`[WATCHDOG] Missing OCO Brackets detected for ${asset}. Yielding 10s for potential Hermes execution...`);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Missing OCO Brackets for ${asset} detected. Initiating 20s ceasefire.`, "MISSING_OCO_DETECTED");
+                                console.log(`[WATCHDOG] Missing OCO Brackets detected for ${asset}. Yielding 20s for potential Hermes execution...`);
                                 continue;
                             }
                             
-                            // If it has been less than 10 seconds, do nothing and wait for the next sweep
-                            if (now - missingBracketTracker[openTrade.id] < 10000) {
+                            // If it has been less than 20 seconds, do nothing and wait for the next sweep
+                            if (now - missingBracketTracker[openTrade.id] < 20000) {
                                 continue;
                             }
 

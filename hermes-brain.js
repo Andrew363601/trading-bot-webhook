@@ -69,33 +69,33 @@ app.post('/api/wake', async (req, res) => {
     await logAgentActivity(tenant_id, "Agent Cortex", asset, `Awakened. Mode: ${mode}. Initial message: ${message.substring(0, 100)}...`, "AGENT_AWAKENED");
     console.log(`[AGENT CORTEX] Awakened by Sniper. Tenant: ${tenant_id} | Asset: ${asset} | Mode: ${mode}`);
     
-    // 🟢 THESIS INTEGRITY: Prevent new trades if one is already open for this asset
-    if (mode === "ENTRY") {
-        const { data: existingOpenTrades, error: openTradeError } = await supabase
-            .from('trade_logs')
-            .select('id, side, entry_price')
-            .eq('tenant_id', tenant_id)
-            .eq('symbol', asset)
-            .is('exit_price', null);
+    // 🟢 THESIS INTEGRITY: Prevent new trades if one is already open for this asset (ALL modes)
+    let activeOpenTrade = null;
+    const { data: existingOpenTrades, error: openTradeError } = await supabase
+        .from('trade_logs')
+        .select('id, side, entry_price, tp_price, sl_price, qty, strategy_id')
+        .eq('tenant_id', tenant_id)
+        .eq('symbol', asset)
+        .is('exit_price', null);
 
-        if (openTradeError) {
-            console.error("[AGENT CORTEX ERROR]: Failed to check for open trades:", openTradeError.message);
-            await logAgentActivity(tenant_id, "Agent Cortex", asset, `Error checking for open trades: ${openTradeError.message}`, "ERROR");
-            return res.status(500).json({ error: "Failed to check for open trades." });
-        }
+    if (openTradeError) {
+        console.error("[AGENT CORTEX ERROR]: Failed to check for open trades:", openTradeError.message);
+        await logAgentActivity(tenant_id, "Agent Cortex", asset, `Error checking for open trades: ${openTradeError.message}`, "ERROR");
+    }
 
-        if (existingOpenTrades && existingOpenTrades.length > 0) {
-            const activeTrade = existingOpenTrades[0];
-            const conflictMessage = `THESIS CONFLICT: Agent Cortex detected an active ${activeTrade.side} position for ${asset} at $${activeTrade.entry_price}. New entry signals or virtual traps will be ignored. Focus on managing the existing position.`;
-            
-            await logAgentActivity(tenant_id, "Agent Cortex", asset, conflictMessage, "THESIS_CONFLICT");
-            
-            // Send a tailored response to Hermes/Sniper to indicate conflict
+    if (existingOpenTrades && existingOpenTrades.length > 0) {
+        activeOpenTrade = existingOpenTrades[0];
+        const conflictMessage = `THESIS CONFLICT: Agent Cortex detected an active ${activeOpenTrade.side} position for ${asset} at $${activeOpenTrade.entry_price}. New entry signals or virtual traps will be ignored. Focus on managing the existing position.`;
+        
+        await logAgentActivity(tenant_id, "Agent Cortex", asset, conflictMessage, "THESIS_CONFLICT");
+        
+        // If this was an ENTRY mode request, reject immediately
+        if (mode === "ENTRY") {
             return res.status(200).json({
                 status: "Conflict Detected",
                 message: conflictMessage,
                 action_required: "MANAGE_EXISTING_POSITION",
-                open_trade_details: activeTrade
+                open_trade_details: activeOpenTrade
             });
         }
     }
@@ -173,6 +173,11 @@ app.post('/api/wake', async (req, res) => {
         }
         
         let instructionText = `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\n`;
+        
+        // 🟢 THESIS INTEGRITY: If an existing open trade was found, inject conflict warning into AI context
+        if (activeOpenTrade) {
+            instructionText += `⚠️ CRITICAL: There is already an ACTIVE ${activeOpenTrade.side} trade open for ${asset} at $${activeOpenTrade.entry_price} (ID: ${activeOpenTrade.id}). You MUST NOT approve any new entry signals for ${asset}. Only manage the existing position — output HOLD, CLOSE, or adjust TP/SL if needed.\n\n`;
+        }
         
         // 🟢 DAILY PNL: Inject bankroll awareness data
         instructionText += `--- CURRENT DAILY PNL ---\n${JSON.stringify(dailyPnl, null, 2)}\n\n`;
