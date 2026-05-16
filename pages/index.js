@@ -110,7 +110,6 @@ function DashboardContent() {
 
   // Risk profile preview state (for profile modal)
   const [riskPreview, setRiskPreview] = useState(null);
-  const [profileMessage, setProfileMessage] = useState('');
 
   // Onboarding state
   const [showOnboarding, setShowOnboarding] = useState(false);
