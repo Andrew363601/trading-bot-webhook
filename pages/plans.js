@@ -44,16 +44,17 @@ export default function PlansPage() {
             subscriptionActive = tenantData.subscription_active;
           }
 
-          // Source B: Fall back to subscriptions table — check for Stripe subscription ID
+          // Source B: Fall back to subscriptions table — check for Stripe customer or subscription ID
           if (!billingTier || billingTier === 'FREE_TRIAL') {
             const { data: subData } = await supabase
               .from('subscriptions')
-              .select('status, tier, stripe_subscription_id')
+              .select('status, tier, stripe_subscription_id, stripe_customer_id')
               .eq('tenant_id', tenantId)
               .single();
 
-            // Paid if they have a Stripe subscription ID and it's active/trialing
-            if (subData?.stripe_subscription_id && (subData.status === 'active' || subData.status === 'trialing')) {
+            // Paid if they have a Stripe subscription (active/trialing) OR a valid customer record
+            if ((subData?.stripe_subscription_id && (subData.status === 'active' || subData.status === 'trialing')) ||
+                (subData?.stripe_customer_id && subData.stripe_customer_id !== 'undefined')) {
               billingTier = subData.tier || 'RETAIL';
               subscriptionActive = true;
             }

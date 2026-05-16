@@ -63,16 +63,17 @@ export default function AuthPage() {
               subscriptionActive = tenantData.subscription_active;
             }
 
-            // Source B: Fall back to subscriptions table — check if user has a Stripe subscription ID
+            // Source B: Fall back to subscriptions table — check if user has a Stripe customer or subscription ID
             if (!billingTier || billingTier === 'FREE_TRIAL') {
               const { data: subData } = await supabase
                 .from('subscriptions')
-                .select('status, tier, stripe_subscription_id')
+                .select('status, tier, stripe_subscription_id, stripe_customer_id')
                 .eq('tenant_id', tenantId)
                 .single();
 
-              // Paid if they have a Stripe subscription ID and it's active/trialing
-              if (subData?.stripe_subscription_id && (subData.status === 'active' || subData.status === 'trialing')) {
+              // Paid if they have a Stripe subscription (active/trialing) OR a valid customer record
+              if ((subData?.stripe_subscription_id && (subData.status === 'active' || subData.status === 'trialing')) ||
+                  (subData?.stripe_customer_id && subData.stripe_customer_id !== 'undefined')) {
                 billingTier = subData.tier || 'RETAIL';
                 subscriptionActive = true;
               }
@@ -101,11 +102,12 @@ export default function AuthPage() {
               if (!freshTier || freshTier === 'FREE_TRIAL') {
                 const { data: freshSub } = await supabase
                   .from('subscriptions')
-                  .select('status, tier, stripe_subscription_id')
+                  .select('status, tier, stripe_subscription_id, stripe_customer_id')
                   .eq('tenant_id', tenantId)
                   .single();
 
-                if (freshSub?.stripe_subscription_id && (freshSub.status === 'active' || freshSub.status === 'trialing')) {
+                if ((freshSub?.stripe_subscription_id && (freshSub.status === 'active' || freshSub.status === 'trialing')) ||
+                    (freshSub?.stripe_customer_id && freshSub.stripe_customer_id !== 'undefined')) {
                   freshTier = freshSub.tier || 'RETAIL';
                   freshActive = true;
                 }
