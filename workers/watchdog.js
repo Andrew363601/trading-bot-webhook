@@ -136,7 +136,10 @@ export async function startWatchdog(tenantId) {
                 }
 
                 // Cleanup orphaned trades: if trade is > 60s old with no exchange confirmation, mark as failed
-                if (tradeAgeMs > 60000 && openTrade.execution_mode === 'LIVE') {
+                // 🛡️ GUARD: Only clean up if trade was never filled (no entry_price) and wasn't manually reopened
+                // If the trade has an entry_price and exit_price was cleared by user, don't auto-close.
+                const wasManuallyReopened = openTrade.entry_price && !openTrade.exit_price && openTrade.exit_time !== null;
+                if (tradeAgeMs > 60000 && openTrade.execution_mode === 'LIVE' && !wasManuallyReopened) {
                     await logAgentActivity(tenantId, "Watchdog", asset, `Trade ${openTrade.id} has been pending for ${Math.round(tradeAgeMs/1000)}s without exchange confirmation. Cleaning up...`, "TRADE_CLEANUP");
                     console.log(`[WATCHDOG-${tenantId}] Trade ${openTrade.id} has been pending for ${Math.round(tradeAgeMs/1000)}s. Marking as failed.`);
                     await supabase.from('trade_logs').update({
@@ -359,6 +362,12 @@ export async function startWatchdog(tenantId) {
                             await supabase.from('trade_logs').update({ reason: `${openTrade.reason || ''}\n\n[HERMES_NOTIFIED]: Reviewing Stale Limit` }).eq('id', openTrade.id);
                         }
                         continue; 
+                    }
+
+                    // 🛡️ GUARD: Skip auto-close if user manually reopened this trade
+                    if (!activePosition && !entryOrderExists && openTrade.entry_price && !openTrade.exit_price && openTrade.exit_time !== null) {
+                        await logAgentActivity(tenantId, "Watchdog", asset, `Trade ${openTrade.id} has no exchange position but exit_price was cleared by user. Monitoring without closing.`, "INFO");
+                        continue;
                     }
 
                     if (!activePosition && !entryOrderExists) {
