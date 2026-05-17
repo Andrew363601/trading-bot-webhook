@@ -68,18 +68,19 @@ async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, o
         const { data: scanData } = await supabase.from('scan_results').select('telemetry').eq('asset', symbol).order('created_at', { ascending: false }).limit(1);
         if (scanData && scanData.length > 0) telemetry = scanData[0].telemetry || {};
 
+        // 🟢 PUBLIC CANDLE API: Use unauthenticated exchange API for chart data
         const end = Math.floor(Date.now() / 1000);
         const start = end - (300 * 50); 
         let coinbaseProduct = symbol.toUpperCase().trim();
-        if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP');
-        const candlePath = `/api/v3/brokerage/products/${coinbaseProduct}/candles?start=${start}&end=${end}&granularity=FIVE_MINUTE`;
-        const token = generateCoinbaseToken('GET', candlePath, apiKeyName, apiSecret);
-        
-        const candleResp = await fetch(`https://api.coinbase.com${candlePath}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP').replace('-INTX', '');
+        // Map complex symbols to basic format for public API
+        const baseAsset = coinbaseProduct.split('-')[0];
+        const publicProduct = `${baseAsset}-USD`;
+        const candleResp = await fetch(`https://api.exchange.coinbase.com/products/${publicProduct}/candles?start=${start}&end=${end}&granularity=300`);
         let recentCandles = [];
         if (candleResp.ok) {
             const cData = await candleResp.json();
-            recentCandles = cData.candles?.map(c => ({ open: parseFloat(c.open || c.close), high: parseFloat(c.high), low: parseFloat(c.low), close: parseFloat(c.close) })).reverse() || [];
+            recentCandles = (cData || []).map(c => ({ open: parseFloat(c[3] || c[4]), high: parseFloat(c[2]), low: parseFloat(c[1]), close: parseFloat(c[4]) })).reverse() || [];
         }
         
         return await buildRadarChartUrl({
@@ -109,8 +110,6 @@ const missingBracketTracker = {};
 export async function startWatchdog(tenantId) {
     await logAgentActivity(tenantId, "Watchdog", "N/A", "Watchdog worker started.", "WORKER_START");
     console.log(`[WATCHDOG-${tenantId}] Physical Exchange Janitor online. Sweeping orders...`);
-    const apiKeyName = process.env.COINBASE_API_KEY;
-    const apiSecret = process.env.COINBASE_API_SECRET;
 
     // Hourly cleanup of old scan_results (72h retention)
     setInterval(() => {
@@ -121,6 +120,18 @@ export async function startWatchdog(tenantId) {
 
     setInterval(async () => {
         try {
+            // 🔐 Retrieve tenant-specific keys for LIVE trade exchange verification
+            let tenantLiveKeys = null;
+            try {
+                const { retrieveAPIKey } = await import('../lib/secrets-manager.js');
+                const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+                if (secrets.apiKey && secrets.apiSecret) {
+                    tenantLiveKeys = secrets;
+                }
+            } catch (e) {
+                console.warn(`[WATCHDOG-${tenantId}] Cannot retrieve tenant API keys: ${e.message}. LIVE position verification will be skipped. Only PAPER monitoring active.`);
+            }
+
             await logAgentActivity(tenantId, "Watchdog", "N/A", "Sweeping open trades and orders.", "SWEEP_START");
             const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('tenant_id', tenantId).is('exit_price', null);
             if (!openTrades || openTrades.length === 0) return;
@@ -142,8 +153,14 @@ export async function startWatchdog(tenantId) {
                 if (tradeAgeMs > 60000 && openTrade.execution_mode === 'LIVE' && !wasManuallyReopened) {
                     await logAgentActivity(tenantId, "Watchdog", asset, `Trade ${openTrade.id} has been pending for ${Math.round(tradeAgeMs/1000)}s without exchange confirmation. Cleaning up...`, "TRADE_CLEANUP");
                     console.log(`[WATCHDOG-${tenantId}] Trade ${openTrade.id} has been pending for ${Math.round(tradeAgeMs/1000)}s. Marking as failed.`);
+                    const safeExitPrice = parseFloat(openTrade.entry_price) || 0;
+                    if (safeExitPrice === 0) {
+                        // Can't close a trade that never had a price — just log and skip
+                        await logAgentActivity(tenantId, "Watchdog", asset, `Trade ${openTrade.id} has no entry_price. Cannot mark as failed.`, "TRADE_CLEANUP_SKIPPED");
+                        continue;
+                    }
                     await supabase.from('trade_logs').update({
-                        exit_price: openTrade.entry_price || 0,
+                        exit_price: safeExitPrice,
                         pnl: 0,
                         exit_time: new Date().toISOString(),
                         reason: 'ORDER_FAILED'
@@ -154,8 +171,9 @@ export async function startWatchdog(tenantId) {
                 let coinbaseProduct = asset.toUpperCase().trim();
                 if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP'); 
 
-                const tickerPath = `/api/v3/brokerage/products/${coinbaseProduct}/ticker`;
-                const tickerResp = await fetch(`https://api.coinbase.com${tickerPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tickerPath, apiKeyName, apiSecret)}` } });
+                // 🟢 PUBLIC TICKER: Use unauthenticated exchange API for market data
+                const publicTickerPath = `/products/${coinbaseProduct}/ticker`;
+                const tickerResp = await fetch(`https://api.exchange.coinbase.com${publicTickerPath}`);
                 
                 let tickerData;
                 try {
@@ -165,7 +183,7 @@ export async function startWatchdog(tenantId) {
                     continue; 
                 }
                 
-                const currentPrice = parseFloat(tickerData.trades?.[0]?.price || tickerData.best_bid || tickerData.best_ask);
+                const currentPrice = parseFloat(tickerData.price || tickerData.bid || tickerData.ask);
                 
                 if (!currentPrice || isNaN(currentPrice)) {
                     continue;
@@ -174,11 +192,12 @@ export async function startWatchdog(tenantId) {
                 const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
 
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
+                    if (tenantLiveKeys) {
                      await logAgentActivity(tenantId, "Watchdog", asset, `Missing entry price for trade ${openTrade.id}. Attempting to self-heal.`, "SELF_HEAL_START");
                      console.log(`[WATCHDOG] Missing entry price detected for trade ${openTrade.id}. Attempting to self-heal...`);
                      const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
                      try {
-                         const fillResp = await fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, apiKeyName, apiSecret)}` } });
+                         const fillResp = await fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, tenantLiveKeys.apiKey, tenantLiveKeys.apiSecret)}` } });
                          if (fillResp.ok) {
                              const fillData = await fillResp.json();
                              const entryOrder = fillData.orders?.find(o => o.client_order_id === `nx_entry_${openTrade.id}`);
@@ -191,6 +210,10 @@ export async function startWatchdog(tenantId) {
                              }
                          }
                      } catch(e) { console.error("[WATCHDOG SELF-HEAL FAULT]", e.message); }
+                    } else {
+                     await logAgentActivity(tenantId, "Watchdog", asset, `Missing entry price for trade ${openTrade.id}. No tenant keys available for self-heal.`, "SELF_SKIP");
+                     console.log(`[WATCHDOG] Missing entry price for trade ${openTrade.id}. Skipping self-heal (no tenant API keys).`);
+                    }
                      
                      if (!openTrade.entry_price || openTrade.entry_price === 0) continue; 
                 }
@@ -199,12 +222,21 @@ export async function startWatchdog(tenantId) {
                 let openOrders = [];
                 
                 if (openTrade.execution_mode === 'LIVE') {
+                    // 🔒 SECURITY: Only perform exchange operations with tenant-specific keys
+                    if (!tenantLiveKeys) {
+                        await logAgentActivity(tenantId, "Watchdog", asset, `Skipping LIVE verification for ${asset} (no tenant API keys available).`, "LIVE_SKIP");
+                        continue;
+                    }
+
+                    const liveApiKey = tenantLiveKeys.apiKey;
+                    const liveApiSecret = tenantLiveKeys.apiSecret;
+
                     const posPath = '/api/v3/brokerage/cfm/positions';
                     const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
                     
                     const [posResp, orderResp] = await Promise.all([
-                        fetch(`https://api.coinbase.com${posPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', posPath, apiKeyName, apiSecret)}` } }),
-                        fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, apiKeyName, apiSecret)}` } })
+                        fetch(`https://api.coinbase.com${posPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', posPath, liveApiKey, liveApiSecret)}` } }),
+                        fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, liveApiKey, liveApiSecret)}` } })
                     ]);
 
                     if (posResp.ok) {
@@ -225,14 +257,23 @@ export async function startWatchdog(tenantId) {
                     );
 
                     if (activePosition && entryOrderExists) {
-                        const activeQty = Math.abs(parseFloat(activePosition.number_of_contracts));
-                        const expectedQty = Math.abs(parseFloat(openTrade.qty));
-                        
+                        // 🟢 LIVE TRADE CONFIRMED: First time we detect an active position on exchange
+                        if (!heartbeatTracker[`${openTrade.id}_confirmed`]) {
+                            heartbeatTracker[`${openTrade.id}_confirmed`] = true;
+                            const activeQty = Math.abs(parseFloat(activePosition.number_of_contracts));
+                            await sendDiscordAlert(tenantId, {
+                                title: `🟢 LIVE Trade Confirmed: ${asset}`,
+                                description: `**Position Size:** ${activeQty} contracts\n**Entry:** $${openTrade.entry_price || 'awaiting fill'}\n**Trade ID:** ${openTrade.id}`,
+                                color: 5763719
+                            });
+                            await logAgentActivity(tenantId, "Watchdog", asset, `LIVE trade ${openTrade.id} confirmed on exchange with ${activeQty} contracts.`, "LIVE_TRADE_CONFIRMED");
+                        }
+
                         if (activeQty < expectedQty) {
                             const targetOrder = openOrders.find(o => o.client_order_id === entryClientId || (o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)));
                             if (targetOrder) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] }) });
+                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] }) });
                             }
                             const updatedReason = `${openTrade.reason || ''}\n\n[PARTIAL FILL]: Market moved. Remaining ${expectedQty - activeQty} contracts canceled.`;
                             await supabase.from('trade_logs').update({ qty: activeQty, reason: updatedReason }).eq('id', openTrade.id);
@@ -272,7 +313,7 @@ export async function startWatchdog(tenantId) {
                             
                             if (openOrders.length > 0) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                                 openOrders = []; 
                             }
 
@@ -282,7 +323,7 @@ export async function startWatchdog(tenantId) {
                             openTrade.reason = updatedReason;
 
                             // 📊 CHART: Tripwire activated — send chart with new break-even SL
-                            const tripwireChartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade, null, safeBreakEvenSL);
+                            const tripwireChartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveApiSecret, openTrade, null, safeBreakEvenSL);
                             await sendDiscordAlert(tenantId, {
                                 title: `🛡️ Tripwire Activated: ${asset}`,
                                 description: `**Action:** SL moved to Break-Even at $${safeBreakEvenSL}\n**Profit at Trigger:** ${(pnlPercent*100).toFixed(2)}%`,
@@ -318,7 +359,7 @@ export async function startWatchdog(tenantId) {
 
                                 if (openOrders.length > 0) {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                                     openOrders = []; 
                                 }
 
@@ -326,7 +367,7 @@ export async function startWatchdog(tenantId) {
                                 openTrade.sl_price = safeDynamicSL;
 
                                 // 📊 CHART: Trailing SL moved — send chart with new SL
-                                const trailChartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade, null, safeDynamicSL);
+                                const trailChartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveApiSecret, openTrade, null, safeDynamicSL);
                                 await sendDiscordAlert(tenantId, {
                                     title: `🎯 Trailing SL Updated: ${asset}`,
                                     description: `**New SL:** $${safeDynamicSL}\n**Direction:** ${openTrade.side === 'BUY' ? 'Up' : 'Down'}`,
@@ -379,8 +420,8 @@ export async function startWatchdog(tenantId) {
                         const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
                         
                         const [histResp, fillResp] = await Promise.all([
-                            fetch(`https://api.coinbase.com${histPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', histPath, apiKeyName, apiSecret)}` } }),
-                            fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, apiKeyName, apiSecret)}` } })
+                            fetch(`https://api.coinbase.com${histPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', histPath, liveApiKey, liveApiSecret)}` } }),
+                            fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, liveApiKey, liveApiSecret)}` } })
                         ]);
 
                         if (histResp.ok) {
@@ -437,7 +478,7 @@ export async function startWatchdog(tenantId) {
                             
                             await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CANCELED', telemetry: { macro_regime_oracle: `ORDER CANCELED`, oracle_reasoning: updatedReason, open_position: "NONE" } }]);
 
-                            const cancelChartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
+                            const cancelChartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveApiSecret, openTrade);
                             await sendDiscordAlert(tenantId, { title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: cancelChartUrl });
                             await logAgentActivity(tenantId, "Watchdog", asset, `Limit order for ${asset} was canceled. Initiating autopsy.`, "ORDER_CANCELED");
                             
@@ -454,7 +495,7 @@ export async function startWatchdog(tenantId) {
                         } else {
                             if (openOrders.length > 0) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                             }
 
                             if (wasFilled && openTrade.tp_price && openTrade.sl_price && !assumedReason.includes('MANUAL_UI_INTERVENTION') && !assumedReason.includes('HERMES_MARKET_SWEEP')) {
@@ -481,7 +522,7 @@ export async function startWatchdog(tenantId) {
                                 await logAgentActivity(tenantId, "Watchdog", asset, `Position for ${asset} closed. PnL: ${rawPnl.toFixed(4)}. Trigger: ${assumedReason}.`, "POSITION_CLOSED");
                             }
 
-                            const chartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
+const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveApiSecret, openTrade);
 
                             const entryText = safeEntryPrice ? `\n**Entry Price:** $${safeEntryPrice}` : '';
                             const tpText = openTrade.tp_price ? `\n**Target TP:** $${openTrade.tp_price}` : '';
@@ -548,7 +589,7 @@ export async function startWatchdog(tenantId) {
                             };
                             
                             try {
-                                const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
+                                const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
                                 
                                 let ocoResult;
                                 try {
@@ -566,7 +607,7 @@ export async function startWatchdog(tenantId) {
                                     await logAgentActivity(tenantId, "Watchdog", asset, `OCO bracket deployment rejected for ${asset}: ${ocoErrMsg}`, "ERROR");
                                 } else {
                                     // 📊 CHART: Safety Net deployed — send chart with deployed TP/SL
-                                    const safetyNetChartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade, safeTpPrice, safeSlPrice);
+                                    const safetyNetChartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveApiSecret, openTrade, safeTpPrice, safeSlPrice);
                                     await sendDiscordAlert(tenantId, { title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046, imageUrl: safetyNetChartUrl });
                                     await logAgentActivity(tenantId, "Watchdog", asset, `OCO safety net deployed for ${asset}. TP: $${safeTpPrice}, SL: $${safeSlPrice}.`, "SAFETY_NET_SUCCESS");
                                     // Clean up tracker upon successful deployment
@@ -708,8 +749,8 @@ export async function startWatchdog(tenantId) {
                                 
                                 await logAgentActivity(tenantId, "Watchdog", asset, `Paper trade for ${asset} closed. PnL: ${rawPnl.toFixed(4)}. Trigger: ${triggerType}.`, "POSITION_CLOSED");
                                 
-                                // 📊 CHART: Paper trade closed — build chart with TP/SL levels
-                                const paperCloseChartUrl = await buildWatchdogChart(asset, currentPrice, apiKeyName, apiSecret, openTrade);
+                                // 📊 CHART: Paper trade closed — build chart with TP/SL levels (public candle API, no auth needed)
+                                const paperCloseChartUrl = await buildWatchdogChart(asset, currentPrice, null, null, openTrade);
                                 
                                 const entryText = safeEntryPrice ? `\n**Entry Price:** $${safeEntryPrice}` : '';
                                 const tpText = openTrade.tp_price ? `\n**Target TP:** $${openTrade.tp_price}` : '';

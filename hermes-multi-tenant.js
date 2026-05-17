@@ -4,6 +4,14 @@ import { startMCPGateway } from './mcp-gateway.js';
 
 console.log("[NEXUS COMMANDER] Booting multi-tenant autonomous swarm...");
 
+// 🛡️ SECURITY CHECK: Validate MASTER_ENCRYPTION_KEY is present
+if (!process.env.MASTER_ENCRYPTION_KEY) {
+    console.warn("[WARNING] MASTER_ENCRYPTION_KEY is NOT SET. Tenant API key retrieval will FAIL for all tenants. " +
+        "LIVE trading will be blocked. Set this env var in Render dashboard for the Hermes service.");
+} else {
+    console.log("[SECURITY] MASTER_ENCRYPTION_KEY is present. Tenant vault keys can be decrypted.");
+}
+
 async function bootSwarm() {
     try {
         // 1. Boot the MCP Translation Layer (Single instance for all tenants)

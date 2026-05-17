@@ -271,11 +271,11 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
     } catch (e) { return { indicators: {}, crossAsset: {}, orderBook: {}, derivativesData: {} }; }
 }
 
-const tenantRAM = new Map(); // tenantId => { configs, lastMathRun, isProcessingMath, activeProductIds }
+const tenantRAM = new Map(); // tenantId => { configs, lastMathRun, isProcessingMath, activeProductIds, trapLocks }
 
 function getTenantState(tenantId) {
     if (!tenantRAM.has(tenantId)) {
-        tenantRAM.set(tenantId, { configs: [], lastMathRun: {}, isProcessingMath: {}, activeProductIds: [] });
+        tenantRAM.set(tenantId, { configs: [], lastMathRun: {}, isProcessingMath: {}, activeProductIds: [], trapLocks: new Map() });
     }
     return tenantRAM.get(tenantId);
 }
@@ -342,15 +342,20 @@ export async function startSniper(tenantId) {
             const params = config.parameters || {};
 
             if (config.trap_side && config.trap_price && config.trap_expires_at) {
+                // 🔒 TRAP LOCK: Prevent double-trigger from rapid WebSocket ticks
+                if (state.trapLocks.get(config.id)) continue;
+                state.trapLocks.set(config.id, true);
+
                 const expiresAt = new Date(config.trap_expires_at).getTime();
                 let trapSprung = false;
+                let trapSide = config.trap_side; // capture before any mutation
 
                 if (Date.now() > expiresAt) {
                     config.trap_side = null; 
                     await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id).eq('tenant_id', tenantId);
-                } else if (config.trap_side === 'BUY' && currentPrice <= config.trap_price) {
+                } else if (trapSide === 'BUY' && currentPrice <= config.trap_price) {
                     trapSprung = true;
-                } else if (config.trap_side === 'SELL' && currentPrice >= config.trap_price) {
+                } else if (trapSide === 'SELL' && currentPrice >= config.trap_price) {
                     trapSprung = true;
                 }
 
@@ -369,15 +374,15 @@ export async function startSniper(tenantId) {
 
                     if (!trapTpPrice || !trapSlPrice) {
                         const slP = params.sl_percent || 0.01; const tpP = params.tp_percent || 0.02;
-                        trapTpPrice = config.trap_side === 'BUY' ? currentPrice * (1 + tpP) : currentPrice * (1 - tpP);
-                        trapSlPrice = config.trap_side === 'BUY' ? currentPrice * (1 - slP) : currentPrice * (1 + slP);
+                        trapTpPrice = trapSide === 'BUY' ? currentPrice * (1 + tpP) : currentPrice * (1 - tpP);
+                        trapSlPrice = trapSide === 'BUY' ? currentPrice * (1 - slP) : currentPrice * (1 + slP);
                     } 
 
                     const { tickSize } = getAssetMetrics(config.asset);
 
                     const trapPayload = {
                         tenant_id: tenantId,
-                        symbol: config.asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: config.trap_side,
+                        symbol: config.asset, strategy_id: config.strategy, version: config.version || 'v1.0', side: trapSide,
                         order_type: 'MARKET', price: currentPrice, 
                         tp_price: parseFloat((Math.round(trapTpPrice / tickSize) * tickSize).toFixed(4)), 
                         sl_price: parseFloat((Math.round(trapSlPrice / tickSize) * tickSize).toFixed(4)),
@@ -388,16 +393,35 @@ export async function startSniper(tenantId) {
                     };
                     
                     config.trap_side = null; 
-                    await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id).eq('tenant_id', tenantId);
+                    // 🛡️ DB ATOMICITY: Only clear trap in DB if it hasn't already been cleared (race condition guard)
+                    const { data: stillSet } = await supabase.from('strategy_config')
+                        .select('trap_side')
+                        .eq('id', config.id)
+                        .eq('tenant_id', tenantId)
+                        .eq('trap_side', trapSide)
+                        .maybeSingle();
+
+                    if (stillSet) {
+                        await supabase.from('strategy_config').update({ trap_side: null, trap_price: null, trap_tp_price: null, trap_sl_price: null, trap_expires_at: null }).eq('id', config.id).eq('tenant_id', tenantId);
+                    } else {
+                        // Another tick already cleared the trap — skip execution to prevent double-trade
+                        console.log(`[SNIPER] Trap for ${config.asset} was already cleared by another tick. Suppressing duplicate execution.`);
+                        state.trapLocks.delete(config.id);
+                        continue;
+                    }
 
                     executeTradeMCP(trapPayload)
-                        .then(() => logAgentActivity(tenantId, "Sniper", config.asset, `Trade executed for TRAP: ${config.trap_side} ${finalQty} ${config.asset} @ $${currentPrice}.`, "TRADE_EXECUTION"))
+                        .then(() => logAgentActivity(tenantId, "Sniper", config.asset, `Trade executed for TRAP: ${trapSide} ${finalQty} ${config.asset} @ $${currentPrice}.`, "TRADE_EXECUTION"))
                         .catch(e => {
                             console.error(`[SNIPER-${tenantId}] TRAP EXECUTION FATAL:`, e.message);
                             logAgentActivity(tenantId, "Sniper", config.asset, `TRAP EXECUTION FAILED for ${config.asset}: ${e.message}`, "ERROR");
                         });
+                    
+                    state.trapLocks.delete(config.id);
                     continue; 
                 }
+                
+                state.trapLocks.delete(config.id);
             }
 
             const now = Date.now();

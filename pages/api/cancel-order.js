@@ -26,9 +26,8 @@ async function handler(req, res) {
         apiKeyName = secrets.apiKey;
         apiSecret = secrets.apiSecret?.replace(/\\n/g, '\n');
     } catch (e) {
-        console.error(`[CANCEL] No keys for tenant ${tenantId}, falling back to ENV`);
-        apiKeyName = process.env.COINBASE_API_KEY;
-        apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
+        console.error(`[CANCEL] Key retrieval failed for tenant ${tenantId}: ${e.message}. No fallback keys available.`);
+        return res.status(403).json({ error: 'No Coinbase API keys configured for this tenant. Please configure them in Settings.' });
     }
 
     if (!apiKeyName || !apiSecret) {

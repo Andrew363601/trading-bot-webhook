@@ -546,10 +546,8 @@ export default async function handler(req, res) {
                 apiKeyName = secrets.apiKey;
                 apiSecret = secrets.apiSecret;
               } catch (keyErr) {
-                // Keys not in vault or MASTER_ENCRYPTION_KEY missing — fall back to global ENV keys
-                console.warn('[ONBOARDING] No tenant keys in vault, trying global ENV:', keyErr.message);
-                apiKeyName = process.env.COINBASE_API_KEY;
-                apiSecret = process.env.COINBASE_API_SECRET;
+                console.warn('[ONBOARDING] No tenant keys in vault:', keyErr.message);
+                return { error: 'No API keys configured in Settings. Please configure Coinbase API keys in the Settings panel first.' };
               }
 
               if (!apiKeyName || !apiSecret) {

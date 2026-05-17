@@ -1,6 +1,7 @@
 // pages/api/deploy-strategy.js
 import { createClient } from '@supabase/supabase-js'
 import { withTenantAuth } from '../../lib/auth-middleware';
+import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -25,22 +26,19 @@ async function handler(req, res) {
   // 🔒 LIVE MODE GATE: Check if tenant has Coinbase API keys before allowing LIVE deployment
   if (execution_mode === 'LIVE') {
     try {
-      const { data: keyData } = await supabase
-        .from('api_keys_vault')
-        .select('id')
-        .eq('tenant_id', tenantId)
-        .eq('exchange', 'COINBASE')
-        .eq('is_active', true)
-        .single();
-
-      if (!keyData) {
+      // Verify keys exist in vault AND that MASTER_ENCRYPTION_KEY can decrypt them
+      const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+      if (!secrets.apiKey || !secrets.apiSecret) {
         return res.status(400).json({
           error: 'LIVE trading requires Coinbase API keys. Please configure them in Settings first, or switch to PAPER mode to start simulated trading.'
         });
       }
     } catch (e) {
+      const isKeyConfig = e.message.includes('Keys not found') || e.message.includes('Empty keys');
       return res.status(400).json({
-        error: 'Could not verify API keys. Please ensure your Coinbase API keys are configured in Settings before deploying in LIVE mode.'
+        error: isKeyConfig
+          ? 'LIVE trading requires Coinbase API keys. Please configure them in Settings first, or switch to PAPER mode to start simulated trading.'
+          : `Cannot decrypt API keys: ${e.message}. MASTER_ENCRYPTION_KEY may be missing from server environment.`
       });
     }
   }
