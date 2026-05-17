@@ -62,20 +62,35 @@ const getAssetMetrics = (symbol) => {
     return { multiplier, tickSize };
 };
 
+/**
+ * Maps any trading symbol (futures, options, CFM) to its public spot equivalent.
+ * Example: ETP-20DEC30-CDE -> ETH-USD, SOL-PERP-INTX -> SOL-USD
+ */
+const getSpotSymbol = (symbol) => {
+    const base = symbol.split('-')[0].toUpperCase();
+    const spotMap = {
+        'ETP': 'ETH', 'ETH': 'ETH',
+        'BIT': 'BTC', 'BIP': 'BTC', 'BTC': 'BTC',
+        'SLP': 'SOL', 'SOL': 'SOL',
+        'DOP': 'DOGE', 'DOGE': 'DOGE',
+        'LCP': 'LTC', 'LTC': 'LTC',
+        'AVP': 'AVAX', 'AVAX': 'AVAX',
+        'LNP': 'LINK', 'LINK': 'LINK',
+        'XPP': 'XRP', 'XRP': 'XRP'
+    };
+    return `${spotMap[base] || base}-USD`;
+};
+
 async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, openTrade = null, tpPrice = null, slPrice = null) {
     try {
         let telemetry = {};
         const { data: scanData } = await supabase.from('scan_results').select('telemetry').eq('asset', symbol).order('created_at', { ascending: false }).limit(1);
         if (scanData && scanData.length > 0) telemetry = scanData[0].telemetry || {};
 
-        // 🟢 PUBLIC CANDLE API: Use unauthenticated exchange API for chart data
+        // 🟢 PUBLIC CANDLE API: Use unauthenticated exchange API with spot symbol mapping
         const end = Math.floor(Date.now() / 1000);
         const start = end - (300 * 50); 
-        let coinbaseProduct = symbol.toUpperCase().trim();
-        if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP').replace('-INTX', '');
-        // Map complex symbols to basic format for public API
-        const baseAsset = coinbaseProduct.split('-')[0];
-        const publicProduct = `${baseAsset}-USD`;
+        const publicProduct = getSpotSymbol(symbol);
         const candleResp = await fetch(`https://api.exchange.coinbase.com/products/${publicProduct}/candles?start=${start}&end=${end}&granularity=300`);
         let recentCandles = [];
         if (candleResp.ok) {
@@ -160,9 +175,9 @@ export async function startWatchdog(tenantId) {
                 let coinbaseProduct = asset.toUpperCase().trim();
                 if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP'); 
 
-                // 🟢 PUBLIC TICKER: Use unauthenticated exchange API for market data
-                const publicTickerPath = `/products/${coinbaseProduct}/ticker`;
-                const tickerResp = await fetch(`https://api.exchange.coinbase.com${publicTickerPath}`);
+                // 🟢 PUBLIC TICKER: Use unauthenticated exchange API with spot symbol mapping
+                const spotSymbol = getSpotSymbol(asset);
+                const tickerResp = await fetch(`https://api.exchange.coinbase.com/products/${spotSymbol}/ticker`);
                 
                 let tickerData;
                 try {
