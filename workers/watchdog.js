@@ -106,6 +106,7 @@ async function pingHermes(payload) {
 
 const heartbeatTracker = {};
 const missingBracketTracker = {};
+const keyFetchCooldown = {}; // tenantId -> timestamp of last key-fetch warning
 
 export async function startWatchdog(tenantId) {
     await logAgentActivity(tenantId, "Watchdog", "N/A", "Watchdog worker started.", "WORKER_START");
@@ -120,18 +121,6 @@ export async function startWatchdog(tenantId) {
 
     setInterval(async () => {
         try {
-            // 🔐 Retrieve tenant-specific keys for LIVE trade exchange verification
-            let tenantLiveKeys = null;
-            try {
-                const { retrieveAPIKey } = await import('../lib/secrets-manager.js');
-                const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
-                if (secrets.apiKey && secrets.apiSecret) {
-                    tenantLiveKeys = secrets;
-                }
-            } catch (e) {
-                console.warn(`[WATCHDOG-${tenantId}] Cannot retrieve tenant API keys: ${e.message}. LIVE position verification will be skipped. Only PAPER monitoring active.`);
-            }
-
             await logAgentActivity(tenantId, "Watchdog", "N/A", "Sweeping open trades and orders.", "SWEEP_START");
             const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('tenant_id', tenantId).is('exit_price', null);
             if (!openTrades || openTrades.length === 0) return;
@@ -192,27 +181,31 @@ export async function startWatchdog(tenantId) {
                 const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
 
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
-                    if (tenantLiveKeys) {
+                    if (openTrade.execution_mode === 'LIVE') {
                      await logAgentActivity(tenantId, "Watchdog", asset, `Missing entry price for trade ${openTrade.id}. Attempting to self-heal.`, "SELF_HEAL_START");
                      console.log(`[WATCHDOG] Missing entry price detected for trade ${openTrade.id}. Attempting to self-heal...`);
                      const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
                      try {
-                         const fillResp = await fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, tenantLiveKeys.apiKey, tenantLiveKeys.apiSecret)}` } });
-                         if (fillResp.ok) {
-                             const fillData = await fillResp.json();
-                             const entryOrder = fillData.orders?.find(o => o.client_order_id === `nx_entry_${openTrade.id}`);
-                             if (entryOrder && entryOrder.average_filled_price) {
-                                 const trueEntryPrice = parseFloat(entryOrder.average_filled_price);
-                                 await supabase.from('trade_logs').update({ entry_price: trueEntryPrice }).eq('id', openTrade.id);
-                                 openTrade.entry_price = trueEntryPrice;
-                                 await logAgentActivity(tenantId, "Watchdog", asset, `Successfully healed entry price for trade ${openTrade.id} to $${trueEntryPrice}`, "SELF_HEAL_SUCCESS");
-                                 console.log(`[WATCHDOG] Successfully healed entry price for trade ${openTrade.id} to $${trueEntryPrice}`);
+                         const { retrieveAPIKey } = await import('../lib/secrets-manager.js');
+                         const healSecrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+                         if (healSecrets.apiKey && healSecrets.apiSecret) {
+                             const fillResp = await fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, healSecrets.apiKey, healSecrets.apiSecret)}` } });
+                             if (fillResp.ok) {
+                                 const fillData = await fillResp.json();
+                                 const entryOrder = fillData.orders?.find(o => o.client_order_id === `nx_entry_${openTrade.id}`);
+                                 if (entryOrder && entryOrder.average_filled_price) {
+                                     const trueEntryPrice = parseFloat(entryOrder.average_filled_price);
+                                     await supabase.from('trade_logs').update({ entry_price: trueEntryPrice }).eq('id', openTrade.id);
+                                     openTrade.entry_price = trueEntryPrice;
+                                     await logAgentActivity(tenantId, "Watchdog", asset, `Successfully healed entry price for trade ${openTrade.id} to $${trueEntryPrice}`, "SELF_HEAL_SUCCESS");
+                                     console.log(`[WATCHDOG] Successfully healed entry price for trade ${openTrade.id} to $${trueEntryPrice}`);
+                                 }
                              }
                          }
                      } catch(e) { console.error("[WATCHDOG SELF-HEAL FAULT]", e.message); }
                     } else {
                      await logAgentActivity(tenantId, "Watchdog", asset, `Missing entry price for trade ${openTrade.id}. No tenant keys available for self-heal.`, "SELF_SKIP");
-                     console.log(`[WATCHDOG] Missing entry price for trade ${openTrade.id}. Skipping self-heal (no tenant API keys).`);
+                     console.log(`[WATCHDOG] Missing entry price for trade ${openTrade.id}. Skipping self-heal (PAPER trade or no keys).`);
                     }
                      
                      if (!openTrade.entry_price || openTrade.entry_price === 0) continue; 
@@ -222,9 +215,22 @@ export async function startWatchdog(tenantId) {
                 let openOrders = [];
                 
                 if (openTrade.execution_mode === 'LIVE') {
-                    // 🔒 SECURITY: Only perform exchange operations with tenant-specific keys
-                    if (!tenantLiveKeys) {
-                        await logAgentActivity(tenantId, "Watchdog", asset, `Skipping LIVE verification for ${asset} (no tenant API keys available).`, "LIVE_SKIP");
+                    // 🔒 LAZY KEY FETCH: Only retrieve tenant keys when processing a LIVE trade
+                    let tenantLiveKeys = null;
+                    try {
+                        const { retrieveAPIKey } = await import('../lib/secrets-manager.js');
+                        const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+                        if (secrets.apiKey && secrets.apiSecret) {
+                            tenantLiveKeys = secrets;
+                        } else {
+                            throw new Error('Empty keys returned');
+                        }
+                    } catch (e) {
+                        const lastWarn = keyFetchCooldown[tenantId] || 0;
+                        if (Date.now() - lastWarn > 300000) {
+                            console.warn(`[WATCHDOG-${tenantId}] Cannot retrieve tenant API keys: ${e.message}. LIVE operations disabled. Next warning in 5 min.`);
+                            keyFetchCooldown[tenantId] = Date.now();
+                        }
                         continue;
                     }
 
