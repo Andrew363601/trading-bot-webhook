@@ -255,6 +255,7 @@ export default async function handler(req, res) {
       system: systemPrompt,
       messages: safeMessages, 
       maxSteps: 5,
+      timeout: { totalMs: 290000 },
 
       tools: {
         queryTradeLedger: tool({
@@ -675,12 +676,11 @@ export default async function handler(req, res) {
       },
     });
 
-    // 🟢 THE FIX: Collect text parts, filtering out empty thought tokens
+    // 🟢 THE FIX: Collect text across all steps using fullStream (handles text + tool calls)
     let fullText = '';
-    ;
-    for await (const chunk of result.textStream) {
-        if (chunk && chunk.trim()) {
-            fullText += chunk;
+    for await (const chunk of result.fullStream) {
+        if (chunk.type === 'text' && chunk.text && chunk.text.trim()) {
+            fullText += chunk.text;
         }
     }
     res.setHeader('Content-Type', 'text/plain');
