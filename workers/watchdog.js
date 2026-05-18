@@ -151,10 +151,10 @@ export async function startWatchdog(tenantId) {
                 }
 
                 // Cleanup orphaned trades: if trade is > 60s old with no exchange confirmation, mark as failed
-                // 🛡️ GUARD: Only clean up if trade was never filled (no entry_price) and wasn't manually reopened
-                // If the trade has an entry_price and exit_price was cleared by user, don't auto-close.
+                // 🛡️ GUARD: Only clean up if trade was never-filled trades (no entry_price) or manually reopened ones
+                // Trades with entry_price were successfully filled — skip cleanup, let LIVE monitoring handle them
                 const wasManuallyReopened = openTrade.entry_price && !openTrade.exit_price && openTrade.exit_time !== null;
-                if (tradeAgeMs > 60000 && openTrade.execution_mode === 'LIVE' && !wasManuallyReopened) {
+                if (tradeAgeMs > 60000 && openTrade.execution_mode === 'LIVE' && !openTrade.entry_price && !wasManuallyReopened) {
                     await logAgentActivity(tenantId, "Watchdog", asset, `Trade ${openTrade.id} has been pending for ${Math.round(tradeAgeMs/1000)}s without exchange confirmation. Cleaning up...`, "TRADE_CLEANUP");
                     console.log(`[WATCHDOG-${tenantId}] Trade ${openTrade.id} has been pending for ${Math.round(tradeAgeMs/1000)}s. Marking as failed.`);
                     const safeExitPrice = parseFloat(openTrade.entry_price) || 0;
