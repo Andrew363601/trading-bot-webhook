@@ -304,7 +304,7 @@ export async function startWatchdog(tenantId) {
                     }
 
                     if (activePosition && openTrade.entry_price) {
-                        const { data: configData } = await supabase.from('strategy_config').select('*').eq('strategy', openTrade.strategy_id).eq('asset', asset).single();
+                        const { data: configData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
                         const params = configData?.parameters || {};
                         
                         const leverage = parseFloat(openTrade.leverage || 1);
@@ -675,7 +675,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                         }
 
                         // 🟢 PAPER TRIPWIRE: Fetch strategy config for tripwire/trailing params
-                        const { data: paperConfigData } = await supabase.from('strategy_config').select('*').eq('strategy', openTrade.strategy_id).eq('asset', asset).single();
+                        const { data: paperConfigData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
                         const paperParams = paperConfigData?.parameters || {};
                         const paperTripwire = parseFloat(paperParams.tripwire_percent || 0);
                         const paperTrailStep = parseFloat(paperParams.trail_step_percent || 0);
