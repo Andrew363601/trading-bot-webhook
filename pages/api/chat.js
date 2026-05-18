@@ -676,16 +676,13 @@ export default async function handler(req, res) {
       },
     });
 
-    // 🟢 THE FIX: Collect text across all steps using fullStream (handles text + tool calls)
+    // 🟢 THE FIX: Collect text across all steps using textStream (works in Node.js serverless)
     let fullText = '';
-    for await (const chunk of result.fullStream) {
-        if (chunk.type === 'text' && chunk.text && chunk.text.trim()) {
-            fullText += chunk.text;
-        }
+    for await (const chunk of result.textStream) {
+        fullText += chunk;
     }
     res.setHeader('Content-Type', 'text/plain');
-    // Gemini 3 sometimes returns empty text after thought tokens + function calls
-    res.write(fullText || 'I have analyzed the data and am ready to proceed. What specific information would you like me to share?');
+    res.write(fullText);
     res.end();
 
   } catch (err) {
