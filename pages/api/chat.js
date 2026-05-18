@@ -254,7 +254,7 @@ export default async function handler(req, res) {
       model: google('gemini-3-flash-preview'),
       system: systemPrompt,
       messages: safeMessages, 
-      maxSteps: 10,
+      maxSteps: 5,
 
       tools: {
         queryTradeLedger: tool({
@@ -675,11 +675,17 @@ export default async function handler(req, res) {
       },
     });
 
-    // 🟢 THE FIX: Use result.text (Promise<string>) — stable across all ai v6.x versions
-    const text = await result.text;
+    // 🟢 THE FIX: Collect text parts, filtering out empty thought tokens
+    let fullText = '';
+    ;
+    for await (const chunk of result.textStream) {
+        if (chunk && chunk.trim()) {
+            fullText += chunk;
+        }
+    }
     res.setHeader('Content-Type', 'text/plain');
     // Gemini 3 sometimes returns empty text after thought tokens + function calls
-    res.write(text || 'I have analyzed the data and am ready to proceed. What specific information would you like me to share?');
+    res.write(fullText || 'I have analyzed the data and am ready to proceed. What specific information would you like me to share?');
     res.end();
 
   } catch (err) {
