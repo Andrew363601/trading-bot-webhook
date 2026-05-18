@@ -86,6 +86,14 @@ async function handler(req, res) {
                         if (order.product_id !== productId) return;
                         const config = order.order_configuration || {};
                         
+                        // Trigger bracket OCO = contains both TP and SL
+                        if (config.trigger_bracket_gtc) {
+                            const limitPrice = parseFloat(config.trigger_bracket_gtc.limit_price);
+                            const stopPrice = parseFloat(config.trigger_bracket_gtc.stop_trigger_price);
+                            if (!isNaN(limitPrice)) tpPrice = limitPrice;
+                            if (!isNaN(stopPrice)) slPrice = stopPrice;
+                        }
+                        
                         // Stop-limit orders = Stop Loss
                         if (config.stop_limit_stop_limit_gtc) {
                             const stopPrice = parseFloat(config.stop_limit_stop_limit_gtc.stop_price);
