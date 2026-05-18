@@ -676,11 +676,10 @@ export default async function handler(req, res) {
       },
     });
 
-    // 🟢 THE FIX: Collect text across all steps using textStream (works in Node.js serverless)
-    let fullText = '';
-    for await (const chunk of result.textStream) {
-        fullText += chunk;
-    }
+    // 🟢 THE FIX: Use result.text (Promise<string>) which waits for ALL steps to complete
+    // textStream only emits text from the first step — when AI calls a tool in step 1,
+    // no text is emitted and textStream closes before the AI generates its response in step 2.
+    const fullText = await result.text;
     res.setHeader('Content-Type', 'text/plain');
     res.write(fullText);
     res.end();
