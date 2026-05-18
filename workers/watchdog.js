@@ -495,6 +495,13 @@ export async function startWatchdog(tenantId) {
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
                             const safeExitPrice = parseFloat(openTrade.entry_price) || 0;
                             
+                            // 🛡️ GUARD: Prevent zombie trades (exit_time without valid exit_price)
+                            if (safeExitPrice <= 0) {
+                                console.warn(`[WATCHDOG] Skipping trade close for ${openTrade.id}: exit_price would be ${safeExitPrice}`);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Skipped close for trade ${openTrade.id}: invalid exit_price`, "TRADE_CLOSE_SKIPPED");
+                                continue;
+                            }
+                            
                             await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
                             
                             await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CANCELED', telemetry: { macro_regime_oracle: `ORDER CANCELED`, oracle_reasoning: updatedReason, open_position: "NONE" } }]);
@@ -529,6 +536,14 @@ export async function startWatchdog(tenantId) {
 
                             const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
                             const safeExitPrice = parseFloat(exactExitPrice) || parseFloat(currentPrice) || 0;
+                            
+                            // 🛡️ GUARD: Prevent zombie trades (exit_time without valid exit_price)
+                            if (safeExitPrice <= 0) {
+                                console.warn(`[WATCHDOG] Skipping trade close for ${openTrade.id}: exit_price would be ${safeExitPrice}`);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Skipped close for trade ${openTrade.id}: invalid exit_price`, "TRADE_CLOSE_SKIPPED");
+                                continue;
+                            }
+                            
                             const safeQty = parseFloat(openTrade.qty) || 1;
                             const rawPnl = openTrade.side === 'BUY' ? (safeExitPrice - safeEntryPrice) * safeQty * multiplier : (safeEntryPrice - safeExitPrice) * safeQty * multiplier;
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
