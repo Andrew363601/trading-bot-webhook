@@ -390,7 +390,7 @@ app.post('/api/wake', async (req, res) => {
 
 // 🟢 THE EVOLUTION ENDPOINT (Agentic Reflection Loop)
 app.post('/api/autopsy', async (req, res) => {
-    const { asset, entry_price, exit_price, pnl, rolling_ledger, trigger } = req.body;
+    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger } = req.body;
     console.log(`[AGENT CORTEX] Initiating Autopsy for ${asset}. PnL: $${pnl}`);
     
     res.status(200).json({ status: "Autopsy initiated." });
@@ -448,6 +448,7 @@ app.post('/api/autopsy', async (req, res) => {
         console.log(`[AUTOPSY COMPLETE] ${asset} | Rule: ${autopsyJson.lesson_learned}`);
 
         await supabase.from('hermes_core_memory').insert([{
+            tenant_id: tenant_id,
             asset: asset,
             win_loss: winLoss,
             tools_used: autopsyJson.tools_used || "None",
