@@ -3,7 +3,7 @@ export const maxDuration = 300;
 
 // pages/api/chat.js
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { streamText, tool } from 'ai';
+import { streamText, tool, stepCountIs } from 'ai';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
 import fs from 'fs';
@@ -255,6 +255,7 @@ export default async function handler(req, res) {
       system: systemPrompt,
       messages: safeMessages, 
       maxSteps: 5,
+      stopWhen: stepCountIs(5),
       timeout: { totalMs: 290000 },
 
       tools: {
