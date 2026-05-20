@@ -49,6 +49,47 @@ body {
   
 }
 
+/* Custom toggle switches for Agent Settings */
+.toggle {
+  appearance: none;
+  width: 40px;
+  height: 22px;
+  border-radius: 11px;
+  position: relative;
+  cursor: pointer;
+  flex-shrink: 0;
+  border: 2px solid transparent;
+  transition: all 0.2s ease;
+  background-color: #334155;
+}
+
+.toggle::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  top: 1px;
+  left: 1px;
+  background: #94a3b8;
+  transition: all 0.2s ease;
+}
+
+.toggle:checked {
+  background-color: #9333ea;
+  border-color: #a855f7;
+}
+
+.toggle:checked::after {
+  left: 19px;
+  background: #ffffff;
+}
+
+.toggle-purple:checked {
+  background-color: #7c3aed;
+  border-color: #a78bfa;
+}
+
 /* Responsive Table Cell Styling for Mobile */
 .responsive-table-cell {
   @apply px-2 py-2 whitespace-nowrap;

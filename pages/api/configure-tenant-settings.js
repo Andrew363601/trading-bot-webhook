@@ -20,7 +20,13 @@ async function handler(req, res) {
             allowed_assets,
             risk_assessment_complete,
             quick_start_dismissed,
-            quick_start_step
+            quick_start_step,
+            agent_open_trade_enabled,
+            agent_open_trade_reverse,
+            agent_open_trade_close,
+            agent_open_trade_adjust_tp_sl,
+            agent_open_trade_tripwire_adjust,
+            agent_taker_fee_rate
         } = req.body;
         const { tenantId, supabase, role } = req.tenant;
 
@@ -49,6 +55,12 @@ async function handler(req, res) {
         if (risk_assessment_complete !== undefined) updateData.risk_assessment_complete = risk_assessment_complete;
         if (quick_start_dismissed !== undefined) updateData.quick_start_dismissed = quick_start_dismissed;
         if (quick_start_step !== undefined) updateData.quick_start_step = quick_start_step;
+        if (agent_open_trade_enabled !== undefined) updateData.agent_open_trade_enabled = agent_open_trade_enabled;
+        if (agent_open_trade_reverse !== undefined) updateData.agent_open_trade_reverse = agent_open_trade_reverse;
+        if (agent_open_trade_close !== undefined) updateData.agent_open_trade_close = agent_open_trade_close;
+        if (agent_open_trade_adjust_tp_sl !== undefined) updateData.agent_open_trade_adjust_tp_sl = agent_open_trade_adjust_tp_sl;
+        if (agent_open_trade_tripwire_adjust !== undefined) updateData.agent_open_trade_tripwire_adjust = agent_open_trade_tripwire_adjust;
+        if (agent_taker_fee_rate !== undefined) updateData.agent_taker_fee_rate = agent_taker_fee_rate;
 
         // Update or insert tenant settings
         const { error } = await supabase

@@ -1,7 +1,7 @@
 // pages/settings.js
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
-import { Shield, Key, CheckCircle2, AlertCircle, ArrowLeft, Save } from 'lucide-react';
+import { Shield, Key, CheckCircle2, AlertCircle, ArrowLeft, Save, BrainCircuit } from 'lucide-react';
 import Link from 'next/link';
 import AuthGuard from '../components/AuthGuard';
 import { useSupabaseClient } from '@supabase/auth-helpers-react';
@@ -34,6 +34,17 @@ function SettingsContent() {
     });
     const [riskSaving, setRiskSaving] = useState(false);
     const [tenantId, setTenantId] = useState(null);
+
+    // Agent settings state
+    const [agentSettings, setAgentSettings] = useState({
+        openTradeEnabled: false,
+        openTradeReverse: false,
+        openTradeClose: false,
+        openTradeAdjustTpSl: false,
+        openTradeTripwireAdjust: false,
+        takerFeeRate: '0.08'
+    });
+    const [agentSaving, setAgentSaving] = useState(false);
 
     // Fetch existing settings on component mount
     useEffect(() => {
@@ -80,6 +91,15 @@ function SettingsContent() {
                         maxLeverage: tenantSettings.max_leverage?.toString() || '',
                         dailyRoiTarget: tenantSettings.daily_roi_target_usd?.toString() || '',
                         maxConcurrentTrades: tenantSettings.max_concurrent_trades?.toString() || ''
+                    });
+                    // Pre-populate agent settings
+                    setAgentSettings({
+                        openTradeEnabled: tenantSettings.agent_open_trade_enabled || false,
+                        openTradeReverse: tenantSettings.agent_open_trade_reverse || false,
+                        openTradeClose: tenantSettings.agent_open_trade_close || false,
+                        openTradeAdjustTpSl: tenantSettings.agent_open_trade_adjust_tp_sl || false,
+                        openTradeTripwireAdjust: tenantSettings.agent_open_trade_tripwire_adjust || false,
+                        takerFeeRate: tenantSettings.agent_taker_fee_rate?.toString() || '0.08'
                     });
                 }
 
@@ -162,6 +182,44 @@ function SettingsContent() {
             setStatus({ type: 'error', message: err.message });
         } finally {
             setRiskSaving(false);
+        }
+    };
+
+    // Handle Agent Settings submission
+    const handleSaveAgentSettings = async () => {
+        setAgentSaving(true);
+        setStatus(null);
+
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error("No active session");
+
+            const response = await fetch('/api/configure-tenant-settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${session.access_token}`
+                },
+                body: JSON.stringify({
+                    agent_open_trade_enabled: agentSettings.openTradeEnabled,
+                    agent_open_trade_reverse: agentSettings.openTradeReverse,
+                    agent_open_trade_close: agentSettings.openTradeClose,
+                    agent_open_trade_adjust_tp_sl: agentSettings.openTradeAdjustTpSl,
+                    agent_open_trade_tripwire_adjust: agentSettings.openTradeTripwireAdjust,
+                    agent_taker_fee_rate: parseFloat(agentSettings.takerFeeRate) / 100 || 0.0008
+                })
+            });
+
+            const result = await response.json();
+            if (response.ok) {
+                setStatus({ type: 'success', message: 'Agent settings updated successfully.' });
+            } else {
+                throw new Error(result.error || 'Failed to update agent settings');
+            }
+        } catch (err) {
+            setStatus({ type: 'error', message: err.message });
+        } finally {
+            setAgentSaving(false);
         }
     };
 
@@ -425,6 +483,93 @@ function SettingsContent() {
                     >
                         {riskSaving ? <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
                         Save Risk Profile
+                    </button>
+                </div>
+
+                {/* Agent Settings Section */}
+                <div className="bg-slate-900/50 border border-white/5 p-8 rounded-3xl space-y-6 backdrop-blur-xl">
+                    <div className="flex items-center gap-3 mb-2">
+                        <BrainCircuit className="w-5 h-5 text-purple-400" />
+                        <h2 className="text-xl font-black uppercase tracking-tight">Agent Settings</h2>
+                    </div>
+
+                    <div className="bg-slate-950/50 border border-white/5 rounded-2xl p-5 space-y-4">
+                        <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">Active Trade Management</h3>
+                        
+                        <label className="flex items-center justify-between cursor-pointer group">
+                            <span className="text-sm font-bold text-white group-hover:text-purple-300 transition-colors">Enable Active Trade Re-Evaluation</span>
+                            <input
+                                type="checkbox"
+                                checked={agentSettings.openTradeEnabled}
+                                onChange={(e) => setAgentSettings(prev => ({ ...prev, openTradeEnabled: e.target.checked }))}
+                                className="toggle toggle-purple"
+                            />
+                        </label>
+
+                        {agentSettings.openTradeEnabled && (
+                            <div className="ml-4 pl-4 border-l border-white/10 space-y-3">
+                                <label className="flex items-center justify-between cursor-pointer group">
+                                    <span className="text-xs font-bold text-slate-400 group-hover:text-purple-300 transition-colors">Allow Position Reversal</span>
+                                    <input
+                                        type="checkbox"
+                                        checked={agentSettings.openTradeReverse}
+                                        onChange={(e) => setAgentSettings(prev => ({ ...prev, openTradeReverse: e.target.checked }))}
+                                        className="toggle toggle-purple"
+                                    />
+                                </label>
+                                <label className="flex items-center justify-between cursor-pointer group">
+                                    <span className="text-xs font-bold text-slate-400 group-hover:text-purple-300 transition-colors">Allow Early Close (Profit/Loss)</span>
+                                    <input
+                                        type="checkbox"
+                                        checked={agentSettings.openTradeClose}
+                                        onChange={(e) => setAgentSettings(prev => ({ ...prev, openTradeClose: e.target.checked }))}
+                                        className="toggle toggle-purple"
+                                    />
+                                </label>
+                                <label className="flex items-center justify-between cursor-pointer group">
+                                    <span className="text-xs font-bold text-slate-400 group-hover:text-purple-300 transition-colors">Allow TP/SL Adjustment</span>
+                                    <input
+                                        type="checkbox"
+                                        checked={agentSettings.openTradeAdjustTpSl}
+                                        onChange={(e) => setAgentSettings(prev => ({ ...prev, openTradeAdjustTpSl: e.target.checked }))}
+                                        className="toggle toggle-purple"
+                                    />
+                                </label>
+                                <label className="flex items-center justify-between cursor-pointer group">
+                                    <span className="text-xs font-bold text-slate-400 group-hover:text-purple-300 transition-colors">Allow Tripwire/Trailing Stop Adjustment</span>
+                                    <input
+                                        type="checkbox"
+                                        checked={agentSettings.openTradeTripwireAdjust}
+                                        onChange={(e) => setAgentSettings(prev => ({ ...prev, openTradeTripwireAdjust: e.target.checked }))}
+                                        className="toggle toggle-purple"
+                                    />
+                                </label>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1 flex items-center gap-2">
+                            Taker Fee Rate (%)
+                            <span className="text-[8px] text-slate-600 font-normal normal-case italic">Used for R:R cost calculations</span>
+                        </label>
+                        <input
+                            type="number"
+                            step="0.001"
+                            placeholder="0.08"
+                            value={agentSettings.takerFeeRate}
+                            onChange={(e) => setAgentSettings(prev => ({ ...prev, takerFeeRate: e.target.value }))}
+                            className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-purple-500/50 outline-none transition-all font-mono text-sm"
+                        />
+                    </div>
+
+                    <button
+                        onClick={handleSaveAgentSettings}
+                        disabled={agentSaving}
+                        className="w-full bg-purple-600 hover:bg-purple-500 text-white font-black py-4 rounded-xl transition-all flex items-center justify-center gap-2 uppercase text-xs tracking-widest shadow-lg shadow-purple-500/20"
+                    >
+                        {agentSaving ? <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
+                        Save Agent Settings
                     </button>
                 </div>
 

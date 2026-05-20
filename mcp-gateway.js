@@ -11,7 +11,7 @@ app.use(express.json());
 // 🟢 1. THE TOOL REGISTRY (What Hermes reads)
 const TOOLS = {
     execute_order: {
-        description: "Physically place a trade on the exchange. You MUST use this to execute your thesis.",
+        description: "Physically place a trade on the exchange. You MUST use this to execute your thesis. Also used internally for ADJUST_TP_SL bracket swaps when reason contains '[ADJUST_TP_SL]'.",
         parameters: {
             symbol: "string (e.g., ETH-PERP)",
             side: "string (BUY or SELL)",
