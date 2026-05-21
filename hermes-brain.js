@@ -163,8 +163,8 @@ app.post('/api/wake', async (req, res) => {
             }).catch(() => ({ json: () => ({ error: "Market State offline" }) })),
             fetch(mcpUrl, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tool: 'get_daily_pnl', arguments: { tenant_id } })
-            }).catch(() => ({ json: () => ({ result: { total_pnl: 0, target: 1000, remaining_to_target: 1000 } }) }))
+                body: JSON.stringify({ tool: 'get_daily_pnl', arguments: { tenant_id, execution_mode: execution_mode || (mode === 'ENTRY' ? 'PAPER' : null) } })
+            }).catch(() => ({ json: () => ({ result: { total_pnl: 0, mode_pnl: 0, target: 1000, remaining_to_target: 1000 } }) }))
         ]);
 
         const marketState = await stateResp.json();
@@ -280,8 +280,9 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             instructionText += `\n--- CONTRACT COST NOTE ---\nConfigured taker fee rate: ${(feeRate * 100).toFixed(3)}%. Factor estimated fees into R:R calculations.\n\n`;
         }
         
-        // 🟢 DAILY PNL: Inject bankroll awareness data
-        instructionText += `--- CURRENT DAILY PNL ---\n${JSON.stringify(dailyPnl, null, 2)}\n\n`;
+        // 🟢 DAILY PNL: Inject bankroll awareness data (mode-specific if execution_mode is known)
+        const modeLabel = execution_mode || 'combined';
+        instructionText += `--- CURRENT DAILY PNL (${modeLabel}) ---\nTotal: $${dailyPnl.total_pnl?.toFixed(2) || '0.00'} | Mode PnL: $${dailyPnl.mode_pnl?.toFixed(2) || '0.00'} | Target: $${dailyPnl.target || 1000} | Remaining: $${dailyPnl.remaining_to_target || 1000}\n\n`;
         
         // 🟢 RISK PROFILE: Inject tenant risk boundaries
         instructionText += riskContext + '\n\n';

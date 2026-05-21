@@ -98,6 +98,11 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) =>
       width: rect.width + 8,
       height: rect.height + 8
     });
+
+    // Auto-scroll to target on mobile so the highlighted area is visible
+    if (isMobile) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
   }, [isMobile]);
 
   // Reposition on scroll/resize
@@ -147,8 +152,8 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) =>
 
   return (
     <>
-      {/* Backdrop overlay — lighter than before so dashboard is visible */}
-      <div className="fixed inset-0 z-[300] bg-black/15 backdrop-blur-[2px]" onClick={handleSkip} />
+      {/* Backdrop overlay — transparent, allows touch scrolling on mobile */}
+      <div className="fixed inset-0 z-[300]" style={{ background: 'transparent' }} onClick={handleSkip} />
 
       {/* Highlight ring around target */}
       <div
@@ -164,7 +169,7 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) =>
 
       {/* Tooltip card */}
       <div
-        className="fixed z-[302] w-[320px] max-w-[90vw] bg-slate-900 border border-indigo-500/30 rounded-2xl shadow-2xl shadow-indigo-500/10 p-5"
+        className="fixed z-[302] w-[320px] max-w-[90vw] bg-slate-900 border border-indigo-500/30 rounded-2xl shadow-2xl shadow-indigo-500/10 p-5 overflow-x-hidden break-words"
         style={tooltipStyle}
       >
         {/* Arrow pointer */}
@@ -191,7 +196,7 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) =>
         <h3 className="text-sm font-black text-white mb-2 uppercase tracking-tight">{step.title}</h3>
 
         {/* Description */}
-        <p className="text-[11px] text-slate-400 leading-relaxed mb-5">{step.desc}</p>
+        <p className="text-[11px] text-slate-400 leading-relaxed mb-5 break-words">{step.desc}</p>
 
         {/* Progress bar */}
         <div className="w-full h-1 bg-slate-800 rounded-full mb-4 overflow-hidden">

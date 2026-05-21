@@ -1480,7 +1480,7 @@ function DashboardContent() {
             </div>
           </div>
 
-          <div className="flex flex-col h-[55%] sm:h-[40%] overflow-hidden border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
+          <div className="flex flex-col flex-grow min-h-0 overflow-hidden max-h-[65%] sm:max-h-[50%] border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
             <div className="flex items-center gap-6 px-6 pt-5 border-b dark:border-white/5 border-slate-200 dark:bg-slate-950/80 bg-white sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
@@ -1543,9 +1543,9 @@ function DashboardContent() {
               </div>
             </div>
 
-            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[450px] max-h-[min(800px, calc(100vh - 120px))] sm:max-h-[calc(100vh-250px)] resize-y">
+            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[200px] max-h-[calc(100vh-300px)] resize-y">
               {displayLogs.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12">
+                <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12 min-h-[200px]">
                   <Layers size={24} className="mb-2 opacity-50" />
                   <p className="text-[11px] font-bold uppercase tracking-widest">No data available</p>
                 </div>
@@ -2131,29 +2131,29 @@ function DashboardContent() {
 
       {/* Onboarding Tour */}
       {showOnboarding && onboardingSteps[onboardingStep] && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-indigo-500/30 rounded-2xl p-8 w-full max-w-md mx-4 shadow-2xl shadow-[0_0_40px_rgba(99,102,241,0.2)]">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center pointer-events-none">
+          <div className="bg-slate-900 border border-indigo-500/30 rounded-2xl p-4 sm:p-6 w-[calc(100vw-32px)] max-w-md mx-4 shadow-2xl shadow-[0_0_40px_rgba(99,102,241,0.3)] pointer-events-auto overflow-x-hidden break-words">
             <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-full bg-indigo-500/20 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-full bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
                 <Zap className="w-5 h-5 text-indigo-400" />
               </div>
-              <div>
+              <div className="min-w-0">
                 <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400">Step {onboardingStep + 1} of {onboardingSteps.length}</p>
-                <h3 className="text-lg font-bold text-white">{onboardingSteps[onboardingStep].title}</h3>
+                <h3 className="text-lg font-bold text-white break-words">{onboardingSteps[onboardingStep].title}</h3>
               </div>
             </div>
-            <p className="text-slate-400 text-sm leading-relaxed mb-8">{onboardingSteps[onboardingStep].desc}</p>
-            <div className="flex justify-between items-center">
+            <p className="text-slate-400 text-sm leading-relaxed mb-8 break-words">{onboardingSteps[onboardingStep].desc}</p>
+            <div className="flex justify-between items-center gap-2 flex-wrap">
               <button
                 onClick={() => {
                   localStorage.setItem('nexus_onboarding_completed', 'true');
                   setShowOnboarding(false);
                 }}
-                className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors"
+                className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors flex-shrink-0"
               >
                 Skip Tour
               </button>
-              <div className="flex gap-2">
+              <div className="flex gap-2 flex-wrap">
                 {onboardingStep > 0 && (
                   <button
                     onClick={() => setOnboardingStep(s => s - 1)}
