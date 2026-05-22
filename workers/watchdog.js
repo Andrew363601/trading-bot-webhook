@@ -329,6 +329,13 @@ export async function startWatchdog(tenantId) {
                         }
 
                         if (tripwire > 0 && pnlPercent >= tripwire && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
+                            // 🛡️ GUARD: Skip tripwire if the agent recently adjusted TP/SL to avoid race condition
+                            const recentAdjust = openTrade.reason?.includes('[ADJUST_TP_SL]');
+                            const recentlyUpdated = openTrade.updated_at && (Date.now() - new Date(openTrade.updated_at).getTime()) < 60000;
+                            if (recentAdjust || recentlyUpdated) {
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Tripwire skipped for ${asset} — ADJUST_TP_SL was recently applied. Letting agent-managed brackets stand.`, "TRIPWIRE_SKIPPED");
+                                console.log(`[WATCHDOG] Tripwire skipped for ${asset} — recent ADJUST_TP_SL detected.`);
+                            } else {
                             await logAgentActivity(tenantId, "Watchdog", asset, `Tripwire hit! Profit at ${(pnlPercent*100).toFixed(2)}%. Securing capital.`, "TRIPWIRE_HIT");
                             console.log(`[WATCHDOG] Tripwire hit for ${asset} at ${(pnlPercent*100).toFixed(2)}% profit. Securing capital...`);
                             
@@ -365,7 +372,8 @@ export async function startWatchdog(tenantId) {
                                 trigger_tf: params.trigger_tf || 'THIRTY_MINUTE',
                                 previous_thesis: configData?.active_thesis
                             });
-                        }
+                            }
+                            }
 
                         if (trailStep > 0 && trailActivation > 0 && pnlPercent >= trailActivation) {
                             const assetTrailStep = trailStep / leverage; 
@@ -478,7 +486,28 @@ export async function startWatchdog(tenantId) {
                             
                             if (targetFill) {
                                 wasFilled = true;
-                                exactExitPrice = parseFloat(targetFill.average_filled_price || targetFill.order_configuration?.trigger_bracket_gtc?.limit_price || targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || currentPrice);
+                                // 🟢 THE FIX: Extract fill price with trigger-type awareness
+                                // For stop-loss fills, prefer stop_trigger_price over limit_price (which is the TP)
+                                const rawPrice = targetFill.average_filled_price || targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || targetFill.order_configuration?.trigger_bracket_gtc?.limit_price || currentPrice;
+                                exactExitPrice = parseFloat(rawPrice);
+                                
+                                // 🟢 SANITY CHECK: If we have TP/SL on the open trade, verify the exit price
+                                // is within reasonable bounds of the triggered level
+                                if (openTrade.tp_price && openTrade.sl_price) {
+                                    const distToSl = Math.abs(exactExitPrice - openTrade.sl_price);
+                                    const distToTp = Math.abs(exactExitPrice - openTrade.tp_price);
+                                    const slCheck = assumedReason.includes('STOP_LOSS') || (distToSl < distToTp && rawPrice !== currentPrice);
+                                    const tpCheck = assumedReason.includes('TAKE_PROFIT') || (distToTp < distToSl && rawPrice !== currentPrice);
+                                    
+                                    // If price seems wrong (both distances too large), fallback to the closer bracket
+                                    if (slCheck && distToSl > tickSize * 50 && openTrade.sl_price) {
+                                        console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from SL $${openTrade.sl_price}. Using SL price as fallback.`);
+                                        exactExitPrice = parseFloat(openTrade.sl_price);
+                                    } else if (tpCheck && distToTp > tickSize * 50 && openTrade.tp_price) {
+                                        console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from TP $${openTrade.tp_price}. Using TP price as fallback.`);
+                                        exactExitPrice = parseFloat(openTrade.tp_price);
+                                    }
+                                }
                             }
                         }
 
