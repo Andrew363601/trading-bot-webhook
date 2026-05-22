@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
 import { cleanupOldScanResults } from '../lib/cleanup-scan-results.js'; 
+import { cleanupOldAgentLogs } from '../lib/cleanup-agent-logs.js'; 
 
 import WebSocket from 'ws'; 
 
@@ -127,12 +128,14 @@ export async function startWatchdog(tenantId) {
     await logAgentActivity(tenantId, "Watchdog", "N/A", "Watchdog worker started.", "WORKER_START");
     console.log(`[WATCHDOG-${tenantId}] Physical Exchange Janitor online. Sweeping orders...`);
 
-    // Hourly cleanup of old scan_results (72h retention)
+    // Hourly cleanup of old scan_results (72h retention) and agent_session_logs (24h retention)
     setInterval(() => {
         cleanupOldScanResults();
+        cleanupOldAgentLogs();
     }, 60 * 60 * 1000);
     // Run once immediately on startup
     cleanupOldScanResults();
+    cleanupOldAgentLogs();
 
     setInterval(async () => {
         try {

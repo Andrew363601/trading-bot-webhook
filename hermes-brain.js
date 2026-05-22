@@ -204,14 +204,27 @@ app.post('/api/wake', async (req, res) => {
 
         // Fetch tenant risk profile for AI context
         let riskContext = '';
+        let runningBalance = null;
         try {
             const { data: settings } = await supabase
                 .from('tenant_settings')
                 .select('account_balance_usd, risk_per_trade_percent, max_position_size_usd, max_leverage, max_daily_loss_usd, max_concurrent_trades')
                 .eq('tenant_id', tenant_id)
                 .single();
+
+            // Compute running balance from all-time realized PnL for the current mode
             if (settings) {
-                riskContext = `\n\n--- RISK PROFILE ---\nAccount Balance: $${settings.account_balance_usd || 'Not set'}\nRisk Per Trade: ${settings.risk_per_trade_percent || 'Not set'}%\nMax Position Size: $${settings.max_position_size_usd || 'Not set'}\nMax Leverage: ${settings.max_leverage || 'Not set'}x\nMax Daily Loss: $${settings.max_daily_loss_usd || 'Not set'}\nMax Concurrent Trades: ${settings.max_concurrent_trades || 'Not set'}`;
+                const mode = execution_mode || 'PAPER';
+                const { data: allTrades } = await supabase
+                    .from('trade_logs')
+                    .select('pnl')
+                    .eq('tenant_id', tenant_id)
+                    .eq('execution_mode', mode)
+                    .not('pnl', 'is', null);
+                const totalRealizedPnl = (allTrades || []).reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+                runningBalance = (parseFloat(settings.account_balance_usd || 5000) + totalRealizedPnl).toFixed(2);
+
+                riskContext = `\n\n--- RISK PROFILE ---\nAccount Balance: $${runningBalance}\nRisk Per Trade: ${settings.risk_per_trade_percent || 'Not set'}%\nMax Position Size: $${settings.max_position_size_usd || 'Not set'}\nMax Leverage: ${settings.max_leverage || 'Not set'}x\nMax Daily Loss: $${settings.max_daily_loss_usd || 'Not set'}\nMax Concurrent Trades: ${settings.max_concurrent_trades || 'Not set'}`;
             }
         } catch (e) {
             console.warn("[AGENT CORTEX] Could not fetch risk profile:", e.message);
@@ -280,9 +293,10 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             instructionText += `\n--- CONTRACT COST NOTE ---\nConfigured taker fee rate: ${(feeRate * 100).toFixed(3)}%. Factor estimated fees into R:R calculations.\n\n`;
         }
         
-        // 🟢 DAILY PNL: Inject bankroll awareness data (mode-specific if execution_mode is known)
-        const modeLabel = execution_mode || 'combined';
-        instructionText += `--- CURRENT DAILY PNL (${modeLabel}) ---\nTotal: $${dailyPnl.total_pnl?.toFixed(2) || '0.00'} | Mode PnL: $${dailyPnl.mode_pnl?.toFixed(2) || '0.00'} | Target: $${dailyPnl.target || 1000} | Remaining: $${dailyPnl.remaining_to_target || 1000}\n\n`;
+        // 🟢 DAILY PNL: Inject bankroll awareness data (mode-specific only — no cross-mode leakage)
+        const modeLabel = execution_mode || 'PAPER';
+        const displayPnl = dailyPnl.mode_pnl ?? (execution_mode === 'LIVE' ? dailyPnl.live_pnl : dailyPnl.paper_pnl);
+        instructionText += `--- CURRENT DAILY PNL (${modeLabel}) ---\nPnL: $${displayPnl?.toFixed(2) || '0.00'} | Target: $${dailyPnl.target || 1000} | Remaining: $${dailyPnl.remaining_to_target || 1000}\n\n`;
         
         // 🟢 RISK PROFILE: Inject tenant risk boundaries
         instructionText += riskContext + '\n\n';

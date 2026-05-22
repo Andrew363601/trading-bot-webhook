@@ -1328,7 +1328,7 @@ function DashboardContent() {
             </button>
 
             {showScanner && (
-              <div className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-96 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
+              <div id="market-scanner" className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-96 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
                 <div className="flex items-center justify-between p-3 border-b border-white/5">
                    <span className="text-[9px] sm:text-[10px] font-black uppercase text-indigo-400 tracking-widest">Select Asset</span>
                    <button onClick={() => setShowScanner(false)} className="text-slate-500 hover:text-white"><X size={14}/></button>
@@ -1412,7 +1412,7 @@ function DashboardContent() {
 
       <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 md:gap-6 grow overflow-hidden px-4 sm:px-0">
         
-        <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-[calc(100vh-320px)] sm:h-[calc(100vh-240px)] md:h-[calc(100vh-200px)] lg:h-[calc(100vh-180px)]">
+        <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-[calc(100vh-280px)] sm:h-[calc(100vh-240px)] md:h-[calc(100vh-200px)] lg:h-[calc(100vh-180px)]">
           
           <div id="chart-panel" className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
             
@@ -1480,7 +1480,7 @@ function DashboardContent() {
             </div>
           </div>
 
-          <div className="flex flex-col flex-grow min-h-0 overflow-hidden max-h-[65%] sm:max-h-[50%] border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
+          <div id="trade-ledger" className="flex flex-col flex-grow min-h-0 overflow-hidden max-h-[65%] sm:max-h-[50%] border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
             <div className="flex items-center gap-6 px-6 pt-5 border-b dark:border-white/5 border-slate-200 dark:bg-slate-950/80 bg-white sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
@@ -1834,6 +1834,19 @@ function DashboardContent() {
         <QuickStartGuide
           ref={quickStartRef}
           tenantId={tenantId}
+          onBeforeStep={(prevStep, nextStep) => {
+            // Open mobile menu on Step 1 (index 0) so the #dashboard-header hamburger is visible
+            if (typeof window !== 'undefined' && window.innerWidth < 768) {
+              if (nextStep === 0) setShowMobileMenu(true);
+              if (prevStep === 0) setShowMobileMenu(false);
+            }
+          }}
+          onAfterStep={(currentStep) => {
+            // Close mobile menu after leaving Step 1
+            if (typeof window !== 'undefined' && window.innerWidth < 768 && currentStep !== 0) {
+              setShowMobileMenu(false);
+            }
+          }}
           onDismiss={async () => {
             setQuickStartDismissed(true);
             // Save dismissed state via authenticated API

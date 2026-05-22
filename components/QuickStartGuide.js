@@ -6,7 +6,7 @@ import React, { useState, useEffect, useCallback, useImperativeHandle, forwardRe
 import { QUICK_START_STEPS } from '../lib/quick-start-config';
 import { X, ChevronLeft, ChevronRight, SkipForward } from 'lucide-react';
 
-const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) => {
+const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeStep, onAfterStep }, ref) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [isVisible, setIsVisible] = useState(true);
   const [tooltipStyle, setTooltipStyle] = useState({});
@@ -77,16 +77,38 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) =>
         break;
     }
 
+    // Auto-override left/right positions on small viewports
+    let effectivePos = pos;
+    const viewportPadding = 20;
+    if (effectivePos === 'left' && rect.left < 350) {
+      effectivePos = 'bottom';
+    } else if (effectivePos === 'right' && window.innerWidth - rect.right < 350) {
+      effectivePos = 'bottom';
+    }
+
+    // Recalculate if position was overridden
+    if (effectivePos !== pos) {
+      switch (effectivePos) {
+        case 'bottom':
+          style = {
+            left: rect.left + rect.width / 2,
+            top: rect.bottom + gap,
+            transform: 'translateX(-50%)'
+          };
+          break;
+      }
+    }
+
     // Ensure tooltip stays within viewport
     const tooltipWidth = 320;
-    const tooltipHeight = 200;
+    const tooltipHeight = 400;
     if (style.left && typeof style.left === 'number') {
-      if (style.left - tooltipWidth / 2 < 10) style.left = tooltipWidth / 2 + 10;
-      if (style.left + tooltipWidth / 2 > window.innerWidth - 10) style.left = window.innerWidth - tooltipWidth / 2 - 10;
+      if (style.left - tooltipWidth / 2 < viewportPadding) style.left = tooltipWidth / 2 + viewportPadding;
+      if (style.left + tooltipWidth / 2 > window.innerWidth - viewportPadding) style.left = window.innerWidth - tooltipWidth / 2 - viewportPadding;
     }
     if (style.top && typeof style.top === 'number') {
-      if (style.top < 10) style.top = 10;
-      if (style.top + tooltipHeight > window.innerHeight - 10) style.top = window.innerHeight - tooltipHeight - 10;
+      if (style.top < viewportPadding) style.top = viewportPadding;
+      if (style.top + tooltipHeight > window.innerHeight - viewportPadding) style.top = window.innerHeight - tooltipHeight - viewportPadding;
     }
 
     setTooltipStyle(style);
@@ -119,18 +141,27 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete }, ref) =>
   }, [currentStep, isVisible, positionTooltip]);
 
   const handleNext = () => {
-    if (currentStep < QUICK_START_STEPS.length - 1) {
-      setCurrentStep(prev => prev + 1);
-    } else {
+    const nextStep = currentStep + 1;
+    if (onBeforeStep) onBeforeStep(currentStep, nextStep);
+    if (nextStep >= QUICK_START_STEPS.length) {
       handleComplete();
+    } else {
+      setCurrentStep(nextStep);
     }
   };
 
   const handleBack = () => {
-    if (currentStep > 0) {
-      setCurrentStep(prev => prev - 1);
+    const prevStep = currentStep - 1;
+    if (onBeforeStep) onBeforeStep(currentStep, prevStep);
+    if (prevStep >= 0) {
+      setCurrentStep(prevStep);
     }
   };
+
+  // Fire onAfterStep after step state updates
+  useEffect(() => {
+    if (onAfterStep) onAfterStep(currentStep);
+  }, [currentStep]);
 
   const handleSkip = () => {
     setIsVisible(false);
