@@ -486,26 +486,63 @@ export async function startWatchdog(tenantId) {
                             
                             if (targetFill) {
                                 wasFilled = true;
-                                // 🟢 THE FIX: Extract fill price with trigger-type awareness
-                                // For stop-loss fills, prefer stop_trigger_price over limit_price (which is the TP)
-                                const rawPrice = targetFill.average_filled_price || targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || targetFill.order_configuration?.trigger_bracket_gtc?.limit_price || currentPrice;
+                                // 🟢 THE FIX V2: Extract fill price with trigger-type awareness.
+                                // For trigger-bracket fills, average_filled_price is often null and
+                                // order_configuration.trigger_bracket_gtc may be absent (fill is a
+                                // MARKET order, not the bracket itself). Refetch by order_id to get real price.
+                                let rawPrice = targetFill.average_filled_price;
+                                if (!rawPrice) {
+                                    // Try to refetch the individual fill order by its order_id
+                                    try {
+                                        const fillOrderId = targetFill.order_id;
+                                        if (fillOrderId) {
+                                            const singlePath = `/api/v3/brokerage/orders/historical/${fillOrderId}`;
+                                            const singleResp = await fetch(`https://api.coinbase.com${singlePath}`, {
+                                                headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', singlePath, liveApiKey, liveApiSecret)}` }
+                                            });
+                                            if (singleResp.ok) {
+                                                const singleData = await singleResp.json();
+                                                if (singleData.order?.average_filled_price) {
+                                                    rawPrice = singleData.order.average_filled_price;
+                                                    console.log(`[WATCHDOG PRICE REFETCH] Got real fill price $${rawPrice} for order ${fillOrderId}`);
+                                                }
+                                            }
+                                        }
+                                    } catch (refetchErr) {
+                                        console.error("[WATCHDOG PRICE REFETCH FAILED]:", refetchErr.message);
+                                    }
+                                }
+                                if (!rawPrice) {
+                                    rawPrice = targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || targetFill.order_configuration?.trigger_bracket_gtc?.limit_price || currentPrice;
+                                }
                                 exactExitPrice = parseFloat(rawPrice);
                                 
-                                // 🟢 SANITY CHECK: If we have TP/SL on the open trade, verify the exit price
-                                // is within reasonable bounds of the triggered level
+                                // 🟢 SANITY CHECK V2: If we have TP/SL on the open trade, verify the exit price
+                                // is within reasonable bounds of the triggered level.
+                                // CRITICAL: Use assumedReason for primary classification, NOT rawPrice !== currentPrice
+                                // because the failure mode IS rawPrice === currentPrice (all fallbacks exhausted).
                                 if (openTrade.tp_price && openTrade.sl_price) {
                                     const distToSl = Math.abs(exactExitPrice - openTrade.sl_price);
                                     const distToTp = Math.abs(exactExitPrice - openTrade.tp_price);
-                                    const slCheck = assumedReason.includes('STOP_LOSS') || (distToSl < distToTp && rawPrice !== currentPrice);
-                                    const tpCheck = assumedReason.includes('TAKE_PROFIT') || (distToTp < distToSl && rawPrice !== currentPrice);
+                                    const isSlTrigger = assumedReason.includes('STOP_LOSS');
+                                    const isTpTrigger = assumedReason.includes('TAKE_PROFIT');
                                     
-                                    // If price seems wrong (both distances too large), fallback to the closer bracket
-                                    if (slCheck && distToSl > tickSize * 50 && openTrade.sl_price) {
-                                        console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from SL $${openTrade.sl_price}. Using SL price as fallback.`);
+                                    // If we can't determine trigger from reason, use distance heuristic
+                                    const likelySl = !isSlTrigger && !isTpTrigger ? (distToSl < distToTp) : isSlTrigger;
+                                    const likelyTp = !isSlTrigger && !isTpTrigger ? (distToTp <= distToSl) : isTpTrigger;
+                                    
+                                    // If price seems wrong (too far from expected bracket), snap to the bracket
+                                    if (likelySl && distToSl > tickSize * 50 && openTrade.sl_price) {
+                                        console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from SL $${openTrade.sl_price} (dist: ${distToSl}). Using SL price as fallback.`);
                                         exactExitPrice = parseFloat(openTrade.sl_price);
-                                    } else if (tpCheck && distToTp > tickSize * 50 && openTrade.tp_price) {
-                                        console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from TP $${openTrade.tp_price}. Using TP price as fallback.`);
+                                    } else if (likelyTp && distToTp > tickSize * 50 && openTrade.tp_price) {
+                                        console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from TP $${openTrade.tp_price} (dist: ${distToTp}). Using TP price as fallback.`);
                                         exactExitPrice = parseFloat(openTrade.tp_price);
+                                    } else if (exactExitPrice === parseFloat(currentPrice) && openTrade.sl_price && openTrade.tp_price) {
+                                        // Last resort: exit price equals current ticker and we have brackets — pick the closer one
+                                        const fallbackExit = distToSl < distToTp ? openTrade.sl_price : openTrade.tp_price;
+                                        console.log(`[WATCHDOG PRICE SANITY] Exit price matches current ticker $${exactExitPrice}. Using closer bracket $${fallbackExit}.`);
+                                        exactExitPrice = parseFloat(fallbackExit);
                                     }
                                 }
                             }
@@ -518,14 +555,17 @@ export async function startWatchdog(tenantId) {
                             } else {
                                 console.log(`[WATCHDOG BRUTE FORCE] Position missing for ${asset}. Tags wiped. Assuming manual UI close.`);
                                 wasFilled = true;
-                                exactExitPrice = currentPrice; 
+                                // 🟢 THE FIX V2: Use bracket prices as fallback before falling to currentPrice
+                                exactExitPrice = openTrade.sl_price || openTrade.tp_price || currentPrice;
                                 assumedReason = 'MANUAL_UI_INTERVENTION (TAGS_WIPED)';
                             }
                         }
 
                         if (wasCanceled || (openTrade.order_type === 'LIMIT' && !wasFilled)) {
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
-                            const safeExitPrice = parseFloat(openTrade.entry_price) || 0;
+                            // 🟢 THE FIX V2: For cancellations, use SL price as exit for accuracy.
+                            // Using entry_price creates misleading $0 PnL records. SL is more representative.
+                            const safeExitPrice = parseFloat(openTrade.sl_price || openTrade.entry_price) || 0;
                             
                             // 🛡️ GUARD: Prevent zombie trades (exit_time without valid exit_price)
                             if (safeExitPrice <= 0) {
