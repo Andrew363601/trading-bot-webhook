@@ -135,7 +135,23 @@ export default async function handler(req, res) {
             
             let safeTp = null;
             let safeSl = null;
- 
+
+            // 🛡️ ACCOUNTANT PROTOCOL: Enforce hard R/R >= 1.5 floor before any bracket adjustment
+            const proposedTp = verdict.tp_price;
+            const proposedSl = verdict.sl_price;
+            if (proposedTp && proposedSl && trade.entry_price) {
+                const entryPrice = parseFloat(trade.entry_price);
+                const tpDist = Math.abs(proposedTp - entryPrice);
+                const slDist = Math.abs(entryPrice - proposedSl);
+                const riskReward = slDist > 0 ? (tpDist / slDist) : 0;
+                if (riskReward < 1.5) {
+                    console.warn(`[ACCOUNTANT PROTOCOL] Reevaluate ADJUST_LIMITS REJECTED for ${trade.symbol}. R/R ${riskReward.toFixed(2)} < 1.5. TP: $${proposedTp}, SL: $${proposedSl}, Entry: $${entryPrice}`);
+                    await sendDiscordAlert(`🚫 Accountant Veto: ${trade.symbol}`, `**Action:** ADJUST_LIMITS blocked\n**New R/R:** ${riskReward.toFixed(2)} (minimum 1.5)\n**Proposed TP:** $${proposedTp}\n**Proposed SL:** $${proposedSl}\n**Entry:** $${entryPrice}\n**Oracle:** ${verdict.reasoning}`, 15548997);
+                    return res.status(200).json({ status: "RR_VETOED", reasoning: `R/R ${riskReward.toFixed(2)} < 1.5 floor` });
+                }
+                console.log(`[ACCOUNTANT PROTOCOL] Reevaluate ADJUST_LIMITS R/R check passed: ${riskReward.toFixed(2)} >= 1.5`);
+            }
+
             if (trade.execution_mode === 'LIVE') {
                 const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
                 const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, apiKeyName, apiSecret)}` } });

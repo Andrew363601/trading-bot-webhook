@@ -534,6 +534,28 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             else if (decisionJson.action === "ADJUST_TP_SL" && openTrade) {
                 const newTp = decisionJson.new_tp_price || decisionJson.tp_price;
                 const newSl = decisionJson.new_sl_price || decisionJson.sl_price;
+                const entryPrice = parseFloat(openTrade.entry_price);
+                
+                // 🛡️ ACCOUNTANT PROTOCOL: Enforce hard R/R >= 1.5 floor in the decision layer
+                if (newTp && newSl && entryPrice) {
+                    const tpDist = Math.abs(parseFloat(newTp) - entryPrice);
+                    const slDist = Math.abs(entryPrice - parseFloat(newSl));
+                    const riskReward = slDist > 0 ? (tpDist / slDist) : 0;
+                    if (riskReward < 1.5) {
+                        console.warn(`[ACCOUNTANT PROTOCOL] Agent ADJUST_TP_SL REJECTED for ${asset}. R/R ${riskReward.toFixed(2)} < 1.5. TP: $${newTp}, SL: $${newSl}, Entry: $${entryPrice}`);
+                        await sendDiscordAlert(tenant_id, {
+                            title: `🚫 Accountant Veto: ${asset}`,
+                            description: `**Action:** ADJUST_TP_SL blocked\n**New R/R:** ${riskReward.toFixed(2)} (minimum 1.5)\n**Proposed TP:** $${newTp}\n**Proposed SL:** $${newSl}\n**Entry:** $${entryPrice}\n**Reason:** Agent attempted to degrade R/R below hard floor. Macro thesis cannot override immutable risk parameters.`,
+                            color: 15548997
+                        });
+                        const timeStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
+                        const vetoEntry = `\n[${timeStr}Z] [ACCOUNTANT VETO]: ADJUST_TP_SL blocked — R/R ${riskReward.toFixed(2)} < 1.5`;
+                        const rollingLedger = (openTrade.reason || '') + vetoEntry;
+                        await supabase.from('trade_logs').update({ reason: rollingLedger }).eq('id', openTrade.id);
+                        return res.status(200).json({ status: "RR_VETOED", message: `R/R ${riskReward.toFixed(2)} < 1.5 floor` });
+                    }
+                    console.log(`[ACCOUNTANT PROTOCOL] Agent ADJUST_TP_SL R/R check passed: ${riskReward.toFixed(2)} >= 1.5`);
+                }
                 
                 // Update DB immediately
                 const updateFields = {};
