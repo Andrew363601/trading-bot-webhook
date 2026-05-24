@@ -29,6 +29,8 @@ export default function Dashboard() {
 function DashboardContent() {
   const supabase = useSupabaseClient();
   const session = useSession();
+  // Phase 3.4 test UX: local toggle to demonstrate prompts in UI without affecting production flow
+  const [phase3Test, setPhase3Test] = useState(false);
   // Phase 3.4 UX prompts state
   const [phase3Pending, setPhase3Pending] = useState(null); // { mode: 'PAPER'|'LIVE', source: 'chat'|'ui', message?: string }
   const [theme, setTheme] = useState('dark'); // Default to dark mode
