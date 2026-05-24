@@ -2,6 +2,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
+import { setPendingMode, consumePendingMode, isPendingMode } from '../../lib/phase3-mode.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -45,6 +46,36 @@ async function handler(req, res) {
 
   try {
     // Phase 3.2: Persist using the existing 'strategy' column (no separate strategy_name)
+    // Determine asset category and normalize execution mode
+    const isCDEAsset = (asset || '').toString().toUpperCase().includes('-CDE');
+    // Phase 3.4: UI flow differentiation - prompt for mode depending on source (chat vs UI)
+    const source = req.body?.source;
+    let pendingModeFlag = false;
+    let chatPrompt = '';
+    let uiPrompt = false;
+    if (execution_mode === undefined) {
+      pendingModeFlag = true;
+      // Default to PAPER for now; if source===chat, prompt in chat instead
+      setPendingMode(tenantId, asset, 'PAPER');
+      if (source === 'chat') {
+        chatPrompt = 'Please choose mode for this strategy on asset ' + asset + ': LIVE or PAPER?';
+      } else {
+        uiPrompt = true;
+      }
+    }
+    // If LIVE requested but asset is not a CDE, reject with guidance
+    if (execution_mode === 'LIVE' && !isCDEAsset) {
+      return res.status(400).json({ error: 'LIVE mode is restricted to Coinbase CDE futures only. Use PAPER mode for non-CDE assets.' });
+    }
+      // Phase 3.4: If mode is not provided (Nexus chat flow), prompt to set mode by default to PAPER
+      let pendingModeFlag = false;
+      if (execution_mode === undefined) {
+        // Default to PAPER and mark as needing confirmation to go LIVE in Nexus chat flow
+        pendingModeFlag = true;
+        setPendingMode(tenantId, asset, 'PAPER');
+      }
+    const modeToPersist = (execution_mode === 'LIVE' && isCDEAsset) ? 'LIVE' : (execution_mode || 'PAPER');
+
     // Build payload for upsert using the canonical strategy name in `strategy`
     let payload = {
       tenant_id: tenantId,
@@ -52,7 +83,7 @@ async function handler(req, res) {
       version,
       config,
       asset,
-      execution_mode: execution_mode || 'PAPER',
+      execution_mode: modeToPersist,
       is_active: true,
       updated_at: new Date().toISOString()
     };
@@ -70,10 +101,21 @@ async function handler(req, res) {
     })();
 
     // Step 2: Upsert the new configuration
+    // If there is a pending mode prompt for this strategy, resolve it now
+    if (isPendingMode(tenantId, asset)) {
+      payload.execution_mode = consumePendingMode(tenantId, asset) || payload.execution_mode;
+    }
     let { error } = await supabase.from('strategy_config').upsert(payload, { onConflict: ['tenant_id', 'asset'] });
     if (error) throw error
 
-    return res.status(200).json({ message: `✅ Strategy ${strategy} deployed for ${asset} in ${execution_mode || 'PAPER'} mode` })
+    // Build user-facing mode string for response (respecting pending mode prompts)
+    const responseMode = payload.execution_mode || 'PAPER';
+    const pendingLabel = (typeof pendingModeFlag !== 'undefined' && pendingModeFlag) ? ' (mode-prompt)' : '';
+    const pendingState = (typeof pendingModeFlag !== 'undefined' && pendingModeFlag) || isPendingMode(tenantId, asset);
+    return res.status(200).json({
+      message: `✅ Strategy ${strategy} deployed for ${asset} in ${responseMode} mode${pendingLabel}`,
+      pending_mode: !!pendingState
+    })
   } catch (err) {
     console.error('❌ Promotion Error:', err.message)
     return res.status(500).json({ error: 'Failed to deploy strategy. Please try again.' })

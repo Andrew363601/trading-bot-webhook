@@ -1591,7 +1591,7 @@ function DashboardContent() {
                         <td className="responsive-table-cell context text-center px-1.5 sm:px-2 py-1 sm:py-1.5">
                             <div className="flex flex-col items-center gap-0.5">
                                 <span className="text-[7px] sm:text-[8px] font-black uppercase px-1.5 sm:px-2 py-0.5 rounded border bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10">
-                                    {log.strategy_id?.replace('_V1', '')}
+                                  {log.strategy_id ?? ''}
                                 </span>
                                 {isShadow && <span className="text-[6px] sm:text-[7px] bg-red-500/20 text-red-300 px-1 rounded uppercase tracking-widest">VETO</span>}
                                 {isReversal && !isShadow && <span className="text-[6px] sm:text-[7px] bg-purple-500/20 text-purple-300 px-1 rounded uppercase tracking-widest">REV</span>}
