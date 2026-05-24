@@ -67,13 +67,6 @@ async function handler(req, res) {
     if (execution_mode === 'LIVE' && !isCDEAsset) {
       return res.status(400).json({ error: 'LIVE mode is restricted to Coinbase CDE futures only. Use PAPER mode for non-CDE assets.' });
     }
-      // Phase 3.4: If mode is not provided (Nexus chat flow), prompt to set mode by default to PAPER
-      let pendingModeFlag = false;
-      if (execution_mode === undefined) {
-        // Default to PAPER and mark as needing confirmation to go LIVE in Nexus chat flow
-        pendingModeFlag = true;
-        setPendingMode(tenantId, asset, 'PAPER');
-      }
     const modeToPersist = (execution_mode === 'LIVE' && isCDEAsset) ? 'LIVE' : (execution_mode || 'PAPER');
 
     // Build payload for upsert using the canonical strategy name in `strategy`

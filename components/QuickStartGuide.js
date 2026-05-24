@@ -26,6 +26,7 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeS
     if (onInitialize) {
       onInitialize(currentStep);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Expose jumpToStep to parent via ref
@@ -176,7 +177,7 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeS
   // Fire onAfterStep after step state updates
   useEffect(() => {
     if (onAfterStep) onAfterStep(currentStep);
-  }, [currentStep]);
+  }, [currentStep, onAfterStep]);
 
   const handleSkip = () => {
     setIsVisible(false);
