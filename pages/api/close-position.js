@@ -8,6 +8,39 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// Helper to fetch current market price from Coinbase public API
+async function getCurrentMarketPrice(symbol) {
+  try {
+    // Normalize symbol (e.g., "ETH-PERP-INTX" → "ETH" for spot ticker)
+    const baseAsset = symbol.split('-')[0].toUpperCase();
+    const spotMap = { 
+      'ETP': 'ETH', 'BIT': 'BTC', 'BIP': 'BTC', 'SLP': 'SOL', 'DOP': 'DOGE',
+      'LCP': 'LTC', 'AVP': 'AVAX', 'LNP': 'LINK', 'XPP': 'XRP'
+    };
+    const spotBase = spotMap[baseAsset] || baseAsset;
+    
+    const resp = await fetch(`https://api.exchange.coinbase.com/products/${spotBase}-USD/ticker`, { timeout: 5000 });
+    if (!resp.ok) {
+      console.warn(`[CLOSE-POSITION] Price fetch failed for ${spotBase}-USD: ${resp.status}`);
+      return null;
+    }
+    
+    const data = await resp.json();
+    const price = parseFloat(data.price);
+    
+    if (!price || isNaN(price) || price <= 0) {
+      console.warn(`[CLOSE-POSITION] Invalid price returned for ${spotBase}: ${data.price}`);
+      return null;
+    }
+    
+    console.log(`[CLOSE-POSITION] Current market price for ${baseAsset}: $${price}`);
+    return price;
+  } catch (err) {
+    console.error(`[CLOSE-POSITION] Market price fetch error: ${err.message}`);
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -71,6 +104,19 @@ export default async function handler(req, res) {
 
     console.log(`[CLOSE-POSITION API] Closing trade ${trade_id} for ${symbol} (Tenant: ${tenantId})`);
 
+    // Fetch current market price if not provided by user
+    let exitPrice = price;
+    if (!exitPrice || exitPrice === 0) {
+      const currentPrice = await getCurrentMarketPrice(symbol);
+      if (currentPrice) {
+        exitPrice = currentPrice;
+        console.log(`[CLOSE-POSITION API] Using market price: $${exitPrice} (trade ${trade_id})`);
+      } else {
+        console.warn(`[CLOSE-POSITION API] Could not fetch current market price for ${symbol}. Falling back to user-provided price.`);
+        exitPrice = price || 0;
+      }
+    }
+
     // Call executeTradeMCP directly
     const closePayload = {
       symbol,
@@ -79,7 +125,7 @@ export default async function handler(req, res) {
       side,
       execution_mode: trade.execution_mode || 'PAPER',
       qty,
-      price: price || 0,
+      price: exitPrice,
       leverage: trade.leverage || 1,
       market_type: trade.market_type || 'FUTURES',
       order_type: 'MARKET',

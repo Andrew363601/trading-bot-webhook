@@ -410,7 +410,8 @@ export async function startSniper(tenantId) {
                         continue;
                     }
 
-                    executeTradeMCP(trapPayload)
+                    // Ensure we wait for trade execution to complete to avoid racing two trades
+                    await executeTradeMCP(trapPayload)
                         .then(() => logAgentActivity(tenantId, "Sniper", config.asset, `Trade executed for TRAP: ${trapSide} ${finalQty} ${config.asset} @ $${currentPrice}.`, "TRADE_EXECUTION"))
                         .catch(e => {
                             console.error(`[SNIPER-${tenantId}] TRAP EXECUTION FATAL:`, e.message);
