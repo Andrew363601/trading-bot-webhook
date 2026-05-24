@@ -6,7 +6,7 @@ import React, { useState, useEffect, useCallback, useImperativeHandle, forwardRe
 import { QUICK_START_STEPS } from '../lib/quick-start-config';
 import { X, ChevronLeft, ChevronRight, SkipForward } from 'lucide-react';
 
-const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeStep, onAfterStep }, ref) => {
+const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeStep, onAfterStep, onInitialize }, ref) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [isVisible, setIsVisible] = useState(true);
   const [tooltipStyle, setTooltipStyle] = useState({});
@@ -19,6 +19,13 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeS
     check();
     window.addEventListener('resize', check);
     return () => window.removeEventListener('resize', check);
+  }, []);
+
+  // Call onInitialize when component first mounts to set up initial state
+  useEffect(() => {
+    if (onInitialize) {
+      onInitialize(currentStep);
+    }
   }, []);
 
   // Expose jumpToStep to parent via ref
@@ -102,13 +109,22 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeS
     // Ensure tooltip stays within viewport
     const tooltipWidth = 320;
     const tooltipHeight = 400;
+    const viewportPadding = 20;
+    
     if (style.left && typeof style.left === 'number') {
-      if (style.left - tooltipWidth / 2 < viewportPadding) style.left = tooltipWidth / 2 + viewportPadding;
-      if (style.left + tooltipWidth / 2 > window.innerWidth - viewportPadding) style.left = window.innerWidth - tooltipWidth / 2 - viewportPadding;
+      // Constrain left position
+      let minLeft = tooltipWidth / 2 + viewportPadding;
+      let maxLeft = window.innerWidth - tooltipWidth / 2 - viewportPadding;
+      if (style.left < minLeft) style.left = minLeft;
+      if (style.left > maxLeft) style.left = maxLeft;
     }
+    
     if (style.top && typeof style.top === 'number') {
-      if (style.top < viewportPadding) style.top = viewportPadding;
-      if (style.top + tooltipHeight > window.innerHeight - viewportPadding) style.top = window.innerHeight - tooltipHeight - viewportPadding;
+      // Constrain top position
+      let minTop = viewportPadding;
+      let maxTop = window.innerHeight - tooltipHeight - viewportPadding;
+      if (style.top < minTop) style.top = minTop;
+      if (style.top > maxTop) style.top = maxTop;
     }
 
     setTooltipStyle(style);

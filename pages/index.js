@@ -1480,23 +1480,23 @@ function DashboardContent() {
             </div>
           </div>
 
-          <div id="trade-ledger" className="flex flex-col flex-grow min-h-0 overflow-hidden max-h-[65%] sm:max-h-[50%] border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
+          <div id="trade-ledger" className="flex flex-col flex-grow min-h-0 overflow-hidden max-h-[85%] sm:max-h-[80%] md:max-h-[50%] border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
             <div className="flex items-center gap-6 px-6 pt-5 border-b dark:border-white/5 border-slate-200 dark:bg-slate-950/80 bg-white sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
-                  className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'OPEN_ORDERS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+                  className={`pb-3 text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'OPEN_ORDERS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
                >
                   Open Orders {openOrders.length > 0 && <span className="ml-1 bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-full text-[8px]">{openOrders.length}</span>}
                </button>
                <button 
                   onClick={() => setActiveTab('POSITIONS')} 
-                  className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'POSITIONS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+                  className={`pb-3 text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'POSITIONS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
                >
                   Positions {openPositions.length > 0 && <span className="ml-1 bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded-full text-[8px]">{openPositions.length}</span>}
                </button>
                <button 
                   onClick={() => setActiveTab('TRADE_HISTORY')} 
-                  className={`pb-3 text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'TRADE_HISTORY' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
+                  className={`pb-3 text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'TRADE_HISTORY' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
                >
                   Trade History
                </button>
@@ -1551,18 +1551,18 @@ function DashboardContent() {
                 </div>
               ) : (
                 <table className="w-full min-w-max text-left">
-                  <thead className="dark:bg-slate-950/40 bg-slate-100 text-[9px] font-black dark:text-slate-600 text-slate-700 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
+                  <thead className="dark:bg-slate-950/40 bg-slate-100 text-[8px] sm:text-[9px] font-black dark:text-slate-600 text-slate-700 uppercase tracking-widest sticky top-0 backdrop-blur-md z-10">
                     <tr>
-                      <th className="px-2 py-2 whitespace-nowrap min-w-[70px]">Date</th>
-                      <th className="px-2 py-2 whitespace-nowrap min-w-[100px] text-center">Context</th>
-                      <th className="px-2 py-2 whitespace-nowrap min-w-[60px] text-center">Vector</th>
-                      <th className="px-2 py-2 whitespace-nowrap min-w-[80px] text-center">Entry</th>
-                      <th className="px-2 py-2 whitespace-nowrap min-w-[80px] text-center">Targets</th>
-                      <th className="px-2 py-2 whitespace-nowrap min-w-[70px]">Status</th>
-                      <th className="px-2 py-2 whitespace-nowrap min-w-[70px] text-right">PnL</th>
+                      <th className="px-1.5 sm:px-2 py-1.5 sm:py-2 whitespace-nowrap min-w-[60px] sm:min-w-[70px]">Date</th>
+                      <th className="px-1.5 sm:px-2 py-1.5 sm:py-2 whitespace-nowrap min-w-[80px] sm:min-w-[100px] text-center">Context</th>
+                      <th className="px-1.5 sm:px-2 py-1.5 sm:py-2 whitespace-nowrap min-w-[50px] sm:min-w-[60px] text-center">Vector</th>
+                      <th className="px-1.5 sm:px-2 py-1.5 sm:py-2 whitespace-nowrap min-w-[60px] sm:min-w-[80px] text-center">Entry</th>
+                      <th className="px-1.5 sm:px-2 py-1.5 sm:py-2 whitespace-nowrap min-w-[70px] sm:min-w-[80px] text-center">Targets</th>
+                      <th className="px-1.5 sm:px-2 py-1.5 sm:py-2 whitespace-nowrap min-w-[60px] sm:min-w-[70px]">Status</th>
+                      <th className="px-1.5 sm:px-2 py-1.5 sm:py-2 whitespace-nowrap min-w-[60px] sm:min-w-[70px] text-right">PnL</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-white/5 font-mono text-xs text-slate-400">
+                  <tbody className="divide-y divide-white/5 font-mono text-[8px] sm:text-xs text-slate-400">
                     {displayLogs.map((log, i) => {
                       const isShadow = log.execution_mode === 'SHADOW';
                       const isReversal = log.reason && log.reason.includes('[REVERSAL');
@@ -1585,43 +1585,43 @@ function DashboardContent() {
 
                       return (
                       <tr key={i} className={`hover:bg-white/[0.02] transition-colors ${isShadow ? 'opacity-50' : ''}`}>
-                        <td className="responsive-table-cell date text-[9px] text-slate-500">
-                            <div className="flex flex-col"><span className="text-[10px] font-bold text-slate-400">{formattedTime}</span></div>
+                        <td className="responsive-table-cell date text-[8px] sm:text-[9px] text-slate-500 px-1.5 sm:px-2 py-1 sm:py-1.5">
+                            <div className="flex flex-col"><span className="text-[8px] sm:text-[10px] font-bold text-slate-400">{formattedTime}</span></div>
                         </td>
-                        <td className="responsive-table-cell context text-center">
-                            <div className="flex flex-col items-center gap-1">
-                                <span className="text-[8px] font-black uppercase px-2 py-0.5 rounded border bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10">
+                        <td className="responsive-table-cell context text-center px-1.5 sm:px-2 py-1 sm:py-1.5">
+                            <div className="flex flex-col items-center gap-0.5">
+                                <span className="text-[7px] sm:text-[8px] font-black uppercase px-1.5 sm:px-2 py-0.5 rounded border bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10">
                                     {log.strategy_id?.replace('_V1', '')}
                                 </span>
-                                {isShadow && <span className="text-[7px] bg-red-500/20 text-red-300 px-1 rounded uppercase tracking-widest">SHADOW VETO</span>}
-                                {isReversal && !isShadow && <span className="text-[7px] bg-purple-500/20 text-purple-300 px-1 rounded uppercase tracking-widest">REVERSAL</span>}
-                                {isTripwire && !isShadow && <span className="text-[7px] bg-amber-500/20 text-amber-300 px-1 rounded uppercase tracking-widest">TRIPWIRE</span>}
+                                {isShadow && <span className="text-[6px] sm:text-[7px] bg-red-500/20 text-red-300 px-1 rounded uppercase tracking-widest">VETO</span>}
+                                {isReversal && !isShadow && <span className="text-[6px] sm:text-[7px] bg-purple-500/20 text-purple-300 px-1 rounded uppercase tracking-widest">REV</span>}
+                                {isTripwire && !isShadow && <span className="text-[6px] sm:text-[7px] bg-amber-500/20 text-amber-300 px-1 rounded uppercase tracking-widest">TRIP</span>}
                             </div>
                         </td>
-                        <td className="responsive-table-cell vector text-center">
-                            <span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${isShadow ? 'bg-slate-800 text-slate-500' : (log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400')}`}>
+                        <td className="responsive-table-cell vector text-center px-1.5 sm:px-2 py-1 sm:py-1.5">
+                            <span className={`px-1.5 sm:px-2 py-0.5 rounded-full text-[7px] sm:text-[9px] font-black whitespace-nowrap ${isShadow ? 'bg-slate-800 text-slate-500' : (log.side === 'BUY' || log.side === 'LONG' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400')}`}>
                                 {log.side} {log.qty > 0 ? `(${log.qty})` : ''}
                             </span>
                         </td>
-                        <td className="responsive-table-cell entry text-[10px] text-slate-300 text-center">
+                        <td className="responsive-table-cell entry text-[8px] sm:text-[10px] text-slate-300 text-center px-1.5 sm:px-2 py-1 sm:py-1.5">
                             {log.entry_price ? `$${log.entry_price.toFixed(2)}` : '---'}
                         </td>
-                        <td className="responsive-table-cell targets text-center">
-                            {isShadow ? <span className="text-slate-700 italic text-[9px]">Rejected</span> : 
+                        <td className="responsive-table-cell targets text-center px-1.5 sm:px-2 py-1 sm:py-1.5">
+                            {isShadow ? <span className="text-slate-700 italic text-[7px] sm:text-[9px]">Rejected</span> : 
                              (log.tp_price || log.sl_price ? (
-                                <div className="flex flex-col text-[8px] tracking-tighter uppercase">
+                                <div className="flex flex-col text-[7px] sm:text-[8px] tracking-tighter uppercase">
                                     <span className="text-emerald-500/60">TP: ${log.tp_price ? log.tp_price.toFixed(2) : '---'}</span>
                                     <span className="text-red-500/60">SL: ${log.sl_price ? log.sl_price.toFixed(2) : '---'}</span>
                                 </div>
-                            ) : <span className="text-slate-700 italic text-[9px]">Dynamic</span>)}
+                            ) : <span className="text-slate-700 italic text-[7px] sm:text-[9px]">Dynamic</span>)}
                         </td>
-                        <td className="responsive-table-cell status text-center">
-                            {isShadow ? <span className="text-[9px] text-red-400 font-bold">VETOED</span> :
-                            (log.exit_price ? <span className="text-[10px] text-slate-400">${log.exit_price.toFixed(2)}</span> : 
-                             <><span className="text-indigo-400 animate-pulse font-black text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
-                             <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-2 py-0.5 rounded text-[8px] font-black">X</button></>)}
+                        <td className="responsive-table-cell status text-center px-1.5 sm:px-2 py-1 sm:py-1.5">
+                            {isShadow ? <span className="text-[8px] sm:text-[9px] text-red-400 font-bold">VETOED</span> :
+                            (log.exit_price ? <span className="text-[8px] sm:text-[10px] text-slate-400">${log.exit_price.toFixed(2)}</span> : 
+                             <><span className="text-indigo-400 animate-pulse font-black text-[8px] sm:text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
+                             <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-1 sm:ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-1 sm:px-2 py-0.5 rounded text-[7px] sm:text-[8px] font-black">X</button></>)}
                         </td>
-                        <td className="responsive-table-cell pnl text-right font-black text-[10px]">{pnlDisplay}</td>
+                        <td className="responsive-table-cell pnl text-right font-black text-[8px] sm:text-[10px] px-1.5 sm:px-2 py-1 sm:py-1.5">{pnlDisplay}</td>
                       </tr>
                     )})}
                   </tbody>
@@ -1835,16 +1835,30 @@ function DashboardContent() {
           ref={quickStartRef}
           tenantId={tenantId}
           onBeforeStep={(prevStep, nextStep) => {
-            // Open mobile menu on Step 1 (index 0) so the #dashboard-header hamburger is visible
+            // Step 1 (index 0): Open mobile menu so #dashboard-header is visible
             if (typeof window !== 'undefined' && window.innerWidth < 768) {
               if (nextStep === 0) setShowMobileMenu(true);
-              if (prevStep === 0) setShowMobileMenu(false);
+              if (prevStep === 0 && nextStep !== 2) setShowMobileMenu(false);
             }
+            // Step 3 (index 2): Open market scanner so #market-scanner is visible
+            if (nextStep === 2) setShowScanner(true);
+            if (prevStep === 2) setShowScanner(false);
           }}
           onAfterStep={(currentStep) => {
-            // Close mobile menu after leaving Step 1
-            if (typeof window !== 'undefined' && window.innerWidth < 768 && currentStep !== 0) {
+            // Ensure mobile menu is closed after leaving Step 1 (except when moving to Step 2)
+            if (typeof window !== 'undefined' && window.innerWidth < 768 && currentStep !== 0 && currentStep !== 2) {
               setShowMobileMenu(false);
+            }
+            // Ensure market scanner stays open during Step 3
+            if (currentStep !== 2) setShowScanner(false);
+          }}
+          onInitialize={(currentStep) => {
+            // Initialize state for the current step when guide first mounts
+            if (typeof window !== 'undefined' && window.innerWidth < 768 && currentStep === 0) {
+              setShowMobileMenu(true);
+            }
+            if (currentStep === 2) {
+              setShowScanner(true);
             }
           }}
           onDismiss={async () => {
