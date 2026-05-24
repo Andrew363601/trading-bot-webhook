@@ -7,12 +7,34 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// Simple in-memory idempotency cache (per-process, best-effort)
+const _idempotencyCache = new Map();
+function _cleanupIdem(key) {
+  const ts = _idempotencyCache.get(key);
+  if (!ts) return;
+  if (Date.now() - ts > 60 * 1000) {
+    _idempotencyCache.delete(key);
+  } else {
+    setTimeout(() => _cleanupIdem(key), 30 * 1000);
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method === 'GET') return res.status(200).send("🛰️ Nexus Webhook Online.");
 
   if (req.method === 'POST') {
     try {
       let data = req.body;
+      // Idempotency key handling: allow clients to supply a per-request key to avoid duplicate processing
+      const idempotencyKey = (req.headers && req.headers['idempotency-key']) || data?.idempotency_key;
+      if (idempotencyKey) {
+        // Check in-memory cache to prevent duplicates (best-effort)
+        if (_idempotencyCache.has(idempotencyKey)) {
+          return res.status(200).json({ status: 'duplicate', idempotency_key: idempotencyKey, note: 'Duplicate within short window' });
+        }
+        _idempotencyCache.set(idempotencyKey, Date.now());
+        _cleanupIdem(idempotencyKey);
+      }
       const { tenant_id } = req.query; // Support multi-tenant isolation via query param
 
       if (!tenant_id) {

@@ -410,13 +410,24 @@ export async function startSniper(tenantId) {
                         continue;
                     }
 
-                    // Ensure we wait for trade execution to complete to avoid racing two trades
-                    await executeTradeMCP(trapPayload)
-                        .then(() => logAgentActivity(tenantId, "Sniper", config.asset, `Trade executed for TRAP: ${trapSide} ${finalQty} ${config.asset} @ $${currentPrice}.`, "TRADE_EXECUTION"))
-                        .catch(e => {
-                            console.error(`[SNIPER-${tenantId}] TRAP EXECUTION FATAL:`, e.message);
-                            logAgentActivity(tenantId, "Sniper", config.asset, `TRAP EXECUTION FAILED for ${config.asset}: ${e.message}`, "ERROR");
-                        });
+                                        // Simple in-memory lock to avoid duplicate trap executions for same asset/tenant
+                                        const trapLockKey = `${tenantId}:${config.asset}:${trapSide}`;
+                                        if (!global.__trapLocks) global.__trapLocks = new Set();
+                                        if (global.__trapLocks.has(trapLockKey)) {
+                                            console.log(`[SNIPER-LOCK] Skipping trap execution for ${trapLockKey} (already running)`);
+                                            continue;
+                                        }
+                                        global.__trapLocks.add(trapLockKey);
+                                        // Execute synchronously to prevent race conditions
+                                        try {
+                                            const result = await executeTradeMCP(trapPayload);
+                                            logAgentActivity(tenantId, "Sniper", config.asset, `Trade executed for TRAP: ${trapSide} ${finalQty} ${config.asset} @ $${currentPrice}.`, "TRADE_EXECUTION");
+                                        } catch (e) {
+                                            console.error(`[SNIPER-${tenantId}] TRAP EXECUTION FATAL:`, e.message);
+                                            logAgentActivity(tenantId, "Sniper", config.asset, `TRAP EXECUTION FAILED for ${config.asset}: ${e.message}`, "ERROR");
+                                        } finally {
+                                            global.__trapLocks.delete(trapLockKey);
+                                        }
                     
                     state.trapLocks.delete(config.id);
                     continue; 
