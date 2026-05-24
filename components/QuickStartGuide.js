@@ -109,7 +109,6 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeS
     // Ensure tooltip stays within viewport
     const tooltipWidth = 320;
     const tooltipHeight = 400;
-    const viewportPadding = 20;
     
     if (style.left && typeof style.left === 'number') {
       // Constrain left position
