@@ -44,24 +44,33 @@ async function handler(req, res) {
   }
 
   try {
+    // Phase 3.2: Persist using the existing 'strategy' column (no separate strategy_name)
+    // Build payload for upsert using the canonical strategy name in `strategy`
+    let payload = {
+      tenant_id: tenantId,
+      strategy,
+      version,
+      config,
+      asset,
+      execution_mode: execution_mode || 'PAPER',
+      is_active: true,
+      updated_at: new Date().toISOString()
+    };
+
     // Step 1: Deactivate any active strategy FOR THIS TENANT AND ASSET
-    await supabase.from('strategy_config')
-      .update({ is_active: false })
-      .eq('tenant_id', tenantId)
-      .eq('asset', asset);
+    await (async () => {
+      try {
+        await supabase.from('strategy_config')
+          .update({ is_active: false })
+          .eq('tenant_id', tenantId)
+          .eq('asset', asset);
+      } catch (e) {
+        console.warn('[DEPLOY_STRATEGY] Could not deactivate previous strategies:', e.message);
+      }
+    })();
 
     // Step 2: Upsert the new configuration
-    const { error } = await supabase.from('strategy_config').upsert({
-        tenant_id: tenantId,
-        strategy,
-        version,
-        config,
-        asset,
-        execution_mode: execution_mode || 'PAPER',
-        is_active: true,
-        updated_at: new Date().toISOString()
-    }, { onConflict: ['tenant_id', 'asset'] });
-
+    let { error } = await supabase.from('strategy_config').upsert(payload, { onConflict: ['tenant_id', 'asset'] });
     if (error) throw error
 
     return res.status(200).json({ message: `✅ Strategy ${strategy} deployed for ${asset} in ${execution_mode || 'PAPER'} mode` })

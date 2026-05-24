@@ -30,7 +30,8 @@ async function handler(req, res) {
         } = req.body;
         const { tenantId, supabase, role } = req.tenant;
 
-        if (role !== 'ADMIN' && role !== 'TRADER') {
+        // Allow ADMIN, TRADER, and TRIAL roles to configure settings (trial users for now)
+        if (role !== 'ADMIN' && role !== 'TRADER' && role !== 'TRIAL') {
             return res.status(403).json({ error: 'Unauthorized role' });
         }
 
