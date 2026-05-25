@@ -23,6 +23,17 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing asset or strategy' });
   }
 
+  // Phase 3.4: Extract execution_mode from parameters with LIVE gating
+  const executionMode = parameters?.execution_mode || 'PAPER';
+  const isCDEAsset = (asset || '').toString().toUpperCase().includes('-CDE');
+  // If LIVE requested but asset is not CDE, reject
+  if (executionMode === 'LIVE' && !isCDEAsset) {
+    return res.status(400).json({
+      error: 'LIVE mode is restricted to Coinbase CDE futures only. Use PAPER mode for non-CDE assets.',
+      source: req.body?.source
+    });
+  }
+
   // Verify JWT and extract tenant_id
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -106,6 +117,7 @@ export default async function handler(req, res) {
       finalConfigData = {
         is_active: true,
         last_updated: new Date().toISOString(),
+        execution_mode: executionMode,
         // IMPORTANT: Retain existing parameters, do not overwrite with new 'parameters' from req.body
         // The front-end editor handles parameter changes for existing strategies.
         parameters: existingStrategy.parameters // Use existing parameters
@@ -132,6 +144,7 @@ export default async function handler(req, res) {
         exchange,
         product_type,
         parameters: mergedParameters,
+        execution_mode: executionMode,
         is_active: true,
       };
     }

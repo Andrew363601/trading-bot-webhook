@@ -1163,7 +1163,7 @@ function DashboardContent() {
   // Filter by strategy
   let filteredByStrategy = baseDisplayLogs;
   if (logStrategyFilter !== 'ALL') {
-    filteredByStrategy = baseDisplayLogs.filter(log => log.strategy_id === logStrategyFilter || log.strategy_id?.replace('_V1', '') === logStrategyFilter);
+    filteredByStrategy = baseDisplayLogs.filter(log => log.strategy_id === logStrategyFilter);
   }
 
   // Filter by status (for trade history: WINNER/LOSER/SHADOW, for positions: ACTIVE, for orders: PENDING)
@@ -1517,7 +1517,7 @@ function DashboardContent() {
                 >
                   <option value="ALL">All</option>
                   {[...new Set(baseDisplayLogs.map(log => log.strategy_id).filter(Boolean))].map(strat => (
-                    <option key={strat} value={strat}>{strat?.replace('_V1', '')}</option>
+                    <option key={strat} value={strat}>{strat}</option>
                   ))}
                 </select>
               </div>
@@ -1672,8 +1672,8 @@ function DashboardContent() {
                       
                       <div className="flex justify-between items-start">
                           <div className="flex flex-col">
-                            <span className={`text-[13px] font-black uppercase tracking-tighter ${strat.is_active ? 'dark:text-white text-slate-900' : 'text-slate-500'}`}>
-                              {strat.strategy.replace('_V1','').replace(/_/g, ' ')}
+                            <span className={`text-[13px] font-black tracking-tighter ${strat.is_active ? 'dark:text-white text-slate-900' : 'text-slate-500'}`}>
+                              {strat.strategy || ''}
                             </span>
                             <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">
                               {strat.execution_mode || 'PAPER'} MODE

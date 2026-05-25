@@ -51,22 +51,16 @@ async function handler(req, res) {
     // Phase 3.4: UI flow differentiation - prompt for mode depending on source (chat vs UI)
     const source = req.body?.source;
     let pendingModeFlag = false;
-    let chatPrompt = '';
-    let uiPrompt = false;
     if (execution_mode === undefined) {
       pendingModeFlag = true;
-      // Default to PAPER for now; if source===chat, prompt in chat instead
+      // If LIVE not requested (or asset not CDE), default to PAPER with a pending mode prompt
       setPendingMode(tenantId, asset, 'PAPER');
-      if (source === 'chat') {
-        chatPrompt = 'Please choose mode for this strategy on asset ' + asset + ': LIVE or PAPER?';
-      } else {
-        uiPrompt = true;
-      }
     }
     // If LIVE requested but asset is not a CDE, reject with guidance
     if (execution_mode === 'LIVE' && !isCDEAsset) {
       return res.status(400).json({ error: 'LIVE mode is restricted to Coinbase CDE futures only. Use PAPER mode for non-CDE assets.' });
     }
+    // If LIVE requested without API keys, reject with guidance
     const modeToPersist = (execution_mode === 'LIVE' && isCDEAsset) ? 'LIVE' : (execution_mode || 'PAPER');
 
     // Build payload for upsert using the canonical strategy name in `strategy`
@@ -101,13 +95,18 @@ async function handler(req, res) {
     let { error } = await supabase.from('strategy_config').upsert(payload, { onConflict: ['tenant_id', 'asset'] });
     if (error) throw error
 
-    // Build user-facing mode string for response (respecting pending mode prompts)
+    // Build response with per-source prompt fields
     const responseMode = payload.execution_mode || 'PAPER';
-    const pendingLabel = (typeof pendingModeFlag !== 'undefined' && pendingModeFlag) ? ' (mode-prompt)' : '';
     const pendingState = (typeof pendingModeFlag !== 'undefined' && pendingModeFlag) || isPendingMode(tenantId, asset);
+    const responseChatPrompt = (source === 'chat' && pendingState)
+      ? `Please choose mode for ${strategy} on ${asset}: LIVE or PAPER? (LIVE requires Coinbase CDE futures and API keys)`
+      : undefined;
+    const responseUiPrompt = (source !== 'chat' && pendingState);
     return res.status(200).json({
-      message: `✅ Strategy ${strategy} deployed for ${asset} in ${responseMode} mode${pendingLabel}`,
-      pending_mode: !!pendingState
+      message: `✅ Strategy ${strategy} deployed for ${asset} in ${responseMode} mode`,
+      pending_mode: !!pendingState,
+      chat_prompt: responseChatPrompt || null,
+      ui_prompt: responseUiPrompt || false
     })
   } catch (err) {
     console.error('❌ Promotion Error:', err.message)
