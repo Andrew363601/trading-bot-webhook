@@ -20,6 +20,7 @@ function SettingsContent() {
     const [apiKey, setApiKey] = useState('');
     const [apiSecret, setApiSecret] = useState('');
     const [discordWebhookUrl, setDiscordWebhookUrl] = useState(''); // New state for Discord webhook
+    const [nexusDiscordWebhookUrl, setNexusDiscordWebhookUrl] = useState(''); // Nexus agent Discord webhook
     const [loading, setLoading] = useState(false);
     const [status, setStatus] = useState(null);
 
@@ -83,6 +84,7 @@ function SettingsContent() {
                 if (settingsError && settingsError.code !== 'PGRST116') throw settingsError;
                 if (tenantSettings) {
                     setDiscordWebhookUrl(tenantSettings.notification_webhook_url || '');
+                    setNexusDiscordWebhookUrl(tenantSettings.notification_nexus_webhook_url || '');
                     // Pre-populate risk fields
                     setRiskFields({
                         accountBalance: tenantSettings.account_balance_usd?.toString() || '',
@@ -289,7 +291,10 @@ function SettingsContent() {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${session.access_token}`
                 },
-                body: JSON.stringify({ notification_webhook_url: discordWebhookUrl })
+                body: JSON.stringify({
+                  notification_webhook_url: discordWebhookUrl,
+                  notification_nexus_webhook_url: nexusDiscordWebhookUrl
+                })
             });
 
             const result = await response.json();
@@ -384,7 +389,7 @@ function SettingsContent() {
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Discord Webhook URL</label>
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Discord Alerts Webhook URL</label>
                         <input
                             type="url"
                             placeholder="https://discord.com/api/webhooks/..."
@@ -392,7 +397,19 @@ function SettingsContent() {
                             onChange={(e) => setDiscordWebhookUrl(e.target.value)}
                             className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
                         />
-                        <p className="text-[9px] text-slate-500 ml-1 italic">Signals, Executions, and Autopsies will be pushed to this channel.</p>
+                        <p className="text-[9px] text-slate-500 ml-1 italic">Trade signals, executions, and autopsies pushed here.</p>
+                    </div>
+
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Nexus Agent Discord Webhook URL</label>
+                        <input
+                            type="url"
+                            placeholder="https://discord.com/api/webhooks/..."
+                            value={nexusDiscordWebhookUrl}
+                            onChange={(e) => setNexusDiscordWebhookUrl(e.target.value)}
+                            className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
+                        />
+                        <p className="text-[9px] text-slate-500 ml-1 italic">Nexus AI agent responses and interactions routed here.</p>
                     </div>
 
                     <button 

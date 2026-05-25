@@ -109,6 +109,7 @@ function DashboardContent() {
   const [profileApiKey, setProfileApiKey] = useState('');
   const [profileApiSecret, setProfileApiSecret] = useState('');
   const [profileWebhookUrl, setProfileWebhookUrl] = useState('');
+  const [profileNexusWebhookUrl, setProfileNexusWebhookUrl] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
 
@@ -2062,11 +2063,19 @@ function DashboardContent() {
               </div>
 
               <div className="border-t border-white/5 pt-4">
-                <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">Discord Webhook</h3>
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">Discord Alerts Webhook</h3>
                 <input
                   type="url"
                   value={profileWebhookUrl}
                   onChange={e => setProfileWebhookUrl(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all placeholder:text-slate-700"
+                  placeholder="https://discord.com/api/webhooks/..."
+                />
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3 mt-3">Nexus Agent Discord Webhook</h3>
+                <input
+                  type="url"
+                  value={profileNexusWebhookUrl}
+                  onChange={e => setProfileNexusWebhookUrl(e.target.value)}
                   className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all placeholder:text-slate-700"
                   placeholder="https://discord.com/api/webhooks/..."
                 />
@@ -2134,11 +2143,14 @@ function DashboardContent() {
                       });
                       if (!keyRes.ok) throw new Error('Failed to save API keys');
                     }
-                    if (profileWebhookUrl) {
+                    const webhookPayload = {};
+                    if (profileWebhookUrl) webhookPayload.notification_webhook_url = profileWebhookUrl;
+                    if (profileNexusWebhookUrl) webhookPayload.notification_nexus_webhook_url = profileNexusWebhookUrl;
+                    if (Object.keys(webhookPayload).length > 0) {
                       const webhookRes = await fetch('/api/configure-tenant-settings', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ notification_webhook_url: profileWebhookUrl })
+                        body: JSON.stringify(webhookPayload)
                       });
                       if (!webhookRes.ok) throw new Error('Failed to save webhook');
                     }

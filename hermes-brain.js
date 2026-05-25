@@ -34,10 +34,10 @@ async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_t
 
 const skillMemory = fs.readFileSync('./SKILL.md', 'utf-8');
 
-async function sendDiscordAlert(tenant_id, { title, description, color, fields = [], imageUrl = null }) {
+async function sendDiscordAlert(tenant_id, { title, description, color, fields = [], imageUrl = null, useNexusWebhook = false }) {
     const { data: settings, error: settingsError } = await supabase
         .from('tenant_settings')
-        .select('notification_webhook_url')
+        .select('notification_webhook_url, notification_nexus_webhook_url')
         .eq('tenant_id', tenant_id)
         .single();
 
@@ -45,7 +45,11 @@ async function sendDiscordAlert(tenant_id, { title, description, color, fields =
         console.error("[DISCORD ALERT ERROR]: Failed to fetch webhook URL for tenant:", settingsError.message);
         return;
     }
-    const webhookUrl = settings?.notification_webhook_url;
+    // For Nexus agent messages, prefer the dedicated Nexus webhook; fall back to alert webhook
+    let webhookUrl = settings?.notification_webhook_url;
+    if (useNexusWebhook && settings?.notification_nexus_webhook_url) {
+        webhookUrl = settings.notification_nexus_webhook_url;
+    }
 
     if (!webhookUrl) {
         console.warn("[DISCORD ALERT WARNING]: No Discord webhook URL configured for tenant", tenant_id);

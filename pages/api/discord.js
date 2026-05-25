@@ -1,6 +1,12 @@
 //force again
 
 import { verifyKey } from 'discord-interactions';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 export const config = {
   api: { bodyParser: false }, // Required to read the raw Node stream
@@ -46,6 +52,52 @@ export default async function handler(req, res) {
     const userPrompt = message.data.options?.[0]?.value || "Empty command";
     console.log(`🤖 Command trigger: ${userPrompt}`);
     
+    // Try to route to Nexus chat API
+    try {
+      // Attempt to forward to the internal chat handler
+      const guildId = message.guild_id;
+      const userId = message.member?.user?.id || message.user?.id;
+
+      if (guildId && process.env.NEXT_PUBLIC_SITE_URL) {
+        // Map Discord guild to tenant via tenant_settings stored nexus_discord_guild_id
+        const { data: tenantSettings, error: settingsErr } = await supabase
+          .from('tenant_settings')
+          .select('tenant_id')
+          .eq('discord_guild_id', guildId)
+          .maybeSingle();
+
+        if (!settingsErr && tenantSettings?.tenant_id) {
+          // Forward to Nexus chat API with tenant context
+          const chatResponse = await fetch(
+            `${process.env.NEXT_PUBLIC_SITE_URL}/api/chat`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                messages: [{ role: 'user', content: userPrompt }],
+                tenant_id: tenantSettings.tenant_id,
+                source: 'discord'
+              })
+            }
+          ).catch(() => null);
+
+          if (chatResponse && chatResponse.ok) {
+            const chatData = await chatResponse.json();
+            const reply = chatData?.choices?.[0]?.message?.content || 
+                         chatData?.message?.content || 
+                         "Nexus processed your request.";
+            return res.status(200).json({
+              type: 4,
+              data: { content: `🤖 **Nexus:** ${reply.substring(0, 1900)}` }
+            });
+          }
+        }
+      }
+    } catch (forwardErr) {
+      console.error("[DISCORD NEXUS] Forward to chat failed:", forwardErr.message);
+    }
+
+    // Fallback: basic echo response
     return res.status(200).json({
       type: 4, 
       data: { content: `🤖 **Nexus Agent Received:** "${userPrompt}"\n\n*(System is listening!)*` }
