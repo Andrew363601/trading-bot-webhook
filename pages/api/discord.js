@@ -20,19 +20,38 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).end();
+  const startTime = Date.now();
+  console.log(`[DISCORD_DEBUG] 🟡 Handler invoked. Method: ${req.method}, URL: ${req.url}`);
+
+  if (req.method !== 'POST') {
+    console.log(`[DISCORD_DEBUG] 🔴 Not POST, returning 405`);
+    return res.status(405).end();
+  }
 
   const signature = req.headers['x-signature-ed25519'];
   const timestamp = req.headers['x-signature-timestamp'];
 
-  if (!signature || !timestamp) return res.status(401).end('Missing headers');
+  console.log(`[DISCORD_DEBUG] Headers present - signature: ${!!signature}, timestamp: ${!!timestamp}`);
+  console.log(`[DISCORD_DEBUG] signature (first 20): ${signature?.substring(0, 20)}`);
+  console.log(`[DISCORD_DEBUG] timestamp: ${timestamp}`);
+
+  if (!signature || !timestamp) {
+    console.log(`[DISCORD_DEBUG] 🔴 Missing headers, returning 401`);
+    return res.status(401).end('Missing headers');
+  }
 
   // 🛡️ Flawless raw body stream reader for Next.js Pages router
   const rawBody = await new Promise((resolve) => {
     let data = '';
     req.on('data', (chunk) => { data += chunk; });
-    req.on('end', () => resolve(data));
+    req.on('end', () => {
+      console.log(`[DISCORD_DEBUG] Raw body length: ${data.length} bytes, first 100 chars: ${data.substring(0, 100)}`);
+      resolve(data);
+    });
   });
+
+  const publicKey = process.env.DISCORD_PUBLIC_KEY;
+  console.log(`[DISCORD_DEBUG] Public key (first 20): ${publicKey?.substring(0, 20)}, length: ${publicKey?.length}`);
 
   let isValidRequest;
   try {
@@ -40,24 +59,31 @@ export default async function handler(req, res) {
       rawBody,
       signature,
       timestamp,
-      process.env.DISCORD_PUBLIC_KEY
+      publicKey
     );
+    console.log(`[DISCORD_DEBUG] verifyKey result: ${isValidRequest}`);
   } catch (e) {
-    console.error("[DISCORD] verifyKey threw:", e.message);
+    console.error(`[DISCORD_DEBUG] 🔴 verifyKey threw:`, e.message, e.stack);
     return res.status(401).end('Bad signature');
   }
 
   if (!isValidRequest) {
+    console.log(`[DISCORD_DEBUG] 🔴 Invalid signature, returning 401`);
     return res.status(401).end('Bad signature');
   }
 
   const message = JSON.parse(rawBody);
+  const elapsed = Date.now() - startTime;
+  console.log(`[DISCORD_DEBUG] ✅ Signature valid! Message type: ${message.type}, elapsed: ${elapsed}ms`);
 
   // 1. Respond to Discord's PING — ULTRA-FAST PATH, no Supabase needed
   if (message.type === 1) {
-    console.log('✅ NODE RUNTIME PING SUCCESSFUL');
+    console.log(`[DISCORD_DEBUG] ✅ PONG PATH - sending response at ${Date.now() - startTime}ms`);
     res.setHeader('Content-Type', 'application/json');
-    res.status(200).send('{"type":1}');
+    const payload = '{"type":1}';
+    console.log(`[DISCORD_DEBUG] Sending raw payload: ${payload}`);
+    res.status(200).send(payload);
+    console.log(`[DISCORD_DEBUG] ✅ Response sent. Total time: ${Date.now() - startTime}ms`);
     return;
   }
 
