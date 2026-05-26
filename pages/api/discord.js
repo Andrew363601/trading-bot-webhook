@@ -1,19 +1,12 @@
 //force again
 
 import { verifyKey } from 'discord-interactions';
+import { createClient } from '@supabase/supabase-js';
 
-// 🟢 Lazily initialize Supabase — avoids cold-start penalty for PINGs
-let _supabase = null;
-async function getSupabase() {
-  if (!_supabase) {
-    const { createClient } = await import('@supabase/supabase-js');
-    _supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY
-    );
-  }
-  return _supabase;
-}
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 export const config = {
   api: { bodyParser: false }, // Required to read the raw Node stream
@@ -60,8 +53,11 @@ export default async function handler(req, res) {
 
   // 2. Handle the /nexus command — DEFERRED RESPONSE PATTERN
   if (message.type === 2 && message.data?.name === 'nexus') {
-    const userPrompt = message.data.options?.[0]?.value || "Empty command";
-    console.log(`🤖 Command trigger: ${userPrompt}`);
+    // 🟢 Handle options flexibly: Discord can send them in different shapes
+    const options = message.data.options || [];
+    const option0 = options[0] || {};
+    const userPrompt = option0.value || options.prompt?.value || "Empty command";
+    console.log(`🤖 Command trigger: ${userPrompt} | guild: ${message.guild_id} | options: ${JSON.stringify(options.map(o => ({n:o.name, v:o.value})))}`);
 
     const guildId = message.guild_id;
     const userId = message.member?.user?.id || message.user?.id;
@@ -76,7 +72,7 @@ export default async function handler(req, res) {
     (async () => {
       try {
         if (guildId && process.env.NEXT_PUBLIC_SITE_URL) {
-          const { data: tenantSettings, error: settingsErr } = await getSupabase()
+          const { data: tenantSettings, error: settingsErr } = await supabase
             .from('tenant_settings')
             .select('tenant_id')
             .eq('discord_guild_id', guildId)
