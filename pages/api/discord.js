@@ -1,12 +1,19 @@
 //force again
 
 import { verifyKey } from 'discord-interactions';
-import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+// 🟢 Lazily initialize Supabase — avoids cold-start penalty for PINGs
+let _supabase = null;
+async function getSupabase() {
+  if (!_supabase) {
+    const { createClient } = await import('@supabase/supabase-js');
+    _supabase = createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    );
+  }
+  return _supabase;
+}
 
 export const config = {
   api: { bodyParser: false }, // Required to read the raw Node stream
@@ -27,12 +34,18 @@ export default async function handler(req, res) {
     req.on('end', () => resolve(data));
   });
 
-  const isValidRequest = verifyKey(
-    rawBody,
-    signature,
-    timestamp,
-    process.env.DISCORD_PUBLIC_KEY
-  );
+  let isValidRequest;
+  try {
+    isValidRequest = verifyKey(
+      rawBody,
+      signature,
+      timestamp,
+      process.env.DISCORD_PUBLIC_KEY
+    );
+  } catch (e) {
+    console.error("[DISCORD] verifyKey threw:", e.message);
+    return res.status(401).end('Bad signature');
+  }
 
   if (!isValidRequest) {
     return res.status(401).end('Bad signature');
@@ -40,11 +53,12 @@ export default async function handler(req, res) {
 
   const message = JSON.parse(rawBody);
 
-  // 1. Respond to Discord's PING
+  // 1. Respond to Discord's PING — ULTRA-FAST PATH, no Supabase needed
   if (message.type === 1) {
     console.log('✅ NODE RUNTIME PING SUCCESSFUL');
-    // Native Next.js JSON handler (Automatically sets Content-Length and Headers perfectly)
-    return res.status(200).json({ type: 1 });
+    res.setHeader('Content-Type', 'application/json');
+    res.status(200).send('{"type":1}');
+    return;
   }
 
   // 2. Handle the /nexus command — DEFERRED RESPONSE PATTERN
@@ -65,7 +79,7 @@ export default async function handler(req, res) {
     (async () => {
       try {
         if (guildId && process.env.NEXT_PUBLIC_SITE_URL) {
-          const { data: tenantSettings, error: settingsErr } = await supabase
+          const { data: tenantSettings, error: settingsErr } = await getSupabase()
             .from('tenant_settings')
             .select('tenant_id')
             .eq('discord_guild_id', guildId)
