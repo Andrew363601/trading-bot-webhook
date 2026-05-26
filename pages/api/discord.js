@@ -93,10 +93,9 @@ export default async function handler(req, res) {
             ).catch(() => null);
 
             if (chatResponse && chatResponse.ok) {
-              const chatData = await chatResponse.json();
-              const reply = chatData?.choices?.[0]?.message?.content ||
-                           chatData?.message?.content ||
-                           "Nexus processed your request.";
+              // 🟢 /api/chat returns text/plain raw response, not JSON
+              const reply = await chatResponse.text();
+              const trimmed = reply?.trim()?.substring(0, 1900) || "Nexus processed your request.";
 
               await fetch(
                 `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`,
@@ -104,7 +103,7 @@ export default async function handler(req, res) {
                   method: 'PATCH',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
-                    content: `🤖 **Nexus:** ${reply.substring(0, 1900)}`
+                    content: `🤖 **Nexus:** ${trimmed}`
                   })
                 }
               );
