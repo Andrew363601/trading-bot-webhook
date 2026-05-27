@@ -72,13 +72,19 @@ export default async function handler(req, res) {
     (async () => {
       try {
         if (guildId && process.env.NEXT_PUBLIC_SITE_URL) {
+          console.log(`[DISCORD NEXUS] Looking up guild ${guildId} in tenant_settings`);
           const { data: tenantSettings, error: settingsErr } = await supabase
             .from('tenant_settings')
             .select('tenant_id')
             .eq('discord_guild_id', guildId)
             .maybeSingle();
 
+          if (settingsErr) {
+            console.error(`[DISCORD NEXUS] Supabase error:`, settingsErr.message);
+          }
+
           if (!settingsErr && tenantSettings?.tenant_id) {
+            console.log(`[DISCORD NEXUS] Found tenant ${tenantSettings.tenant_id}, calling /api/chat`);
             const chatResponse = await fetch(
               `${process.env.NEXT_PUBLIC_SITE_URL}/api/chat`,
               {
@@ -90,14 +96,18 @@ export default async function handler(req, res) {
                   source: 'discord'
                 })
               }
-            ).catch(() => null);
+            ).catch((err) => {
+              console.error(`[DISCORD NEXUS] Fetch to /api/chat failed:`, err.message);
+              return null;
+            });
 
             if (chatResponse && chatResponse.ok) {
               // 🟢 /api/chat returns text/plain raw response, not JSON
               const reply = await chatResponse.text();
+              console.log(`[DISCORD NEXUS] Chat response received, length: ${reply?.length || 0}`);
               const trimmed = reply?.trim()?.substring(0, 1900) || "Nexus processed your request.";
 
-              await fetch(
+              const patchRes = await fetch(
                 `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`,
                 {
                   method: 'PATCH',
@@ -107,24 +117,22 @@ export default async function handler(req, res) {
                   })
                 }
               );
+              if (!patchRes.ok) {
+                const patchText = await patchRes.text().catch(() => '');
+                console.error(`[DISCORD NEXUS] Discord PATCH failed (${patchRes.status}): ${patchText.substring(0, 200)}`);
+              } else {
+                console.log(`[DISCORD NEXUS] ✅ Response patched to Discord successfully`);
+              }
               return;
+            } else {
+              console.warn(`[DISCORD NEXUS] Chat API returned status: ${chatResponse?.status || 'no response'}`);
             }
+          } else {
+            console.warn(`[DISCORD NEXUS] No tenant found for guild ${guildId}`);
           }
+        } else {
+          console.warn(`[DISCORD NEXUS] Missing guildId or NEXT_PUBLIC_SITE_URL`);
         }
-
-        // Fallback: patch with a simple echo
-        await fetch(
-          `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`,
-          {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              content: `🤖 **Nexus Agent Received:** "${userPrompt}"\n\n*(System is listening!)*`
-            })
-          }
-        );
-      } catch (err) {
-        console.error("[DISCORD NEXUS] Async handler failed:", err.message);
         try {
           await fetch(
             `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`,
