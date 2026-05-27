@@ -102,7 +102,6 @@ export default async function handler(req, res) {
             });
 
             if (chatResponse && chatResponse.ok) {
-              // 🟢 /api/chat returns text/plain raw response, not JSON
               const reply = await chatResponse.text();
               console.log(`[DISCORD NEXUS] Chat response received, length: ${reply?.length || 0}`);
               const trimmed = reply?.trim()?.substring(0, 1900) || "Nexus processed your request.";
@@ -112,9 +111,7 @@ export default async function handler(req, res) {
                 {
                   method: 'PATCH',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    content: `🤖 **Nexus:** ${trimmed}`
-                  })
+                  body: JSON.stringify({ content: `🤖 **Nexus:** ${trimmed}` })
                 }
               );
               if (!patchRes.ok) {
@@ -133,20 +130,31 @@ export default async function handler(req, res) {
         } else {
           console.warn(`[DISCORD NEXUS] Missing guildId or NEXT_PUBLIC_SITE_URL`);
         }
+
+        // Fallback echo
+        const fbRes = await fetch(
+          `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: `🤖 **Nexus Agent Received:** "${userPrompt}"` })
+          }
+        );
+        if (!fbRes.ok) console.error(`[DISCORD NEXUS] Fallback PATCH failed:`, await fbRes.text().catch(() => ''));
+      } catch (err) {
+        console.error("[DISCORD NEXUS] Async handler failed:", err.message);
         try {
           await fetch(
             `https://discord.com/api/v10/webhooks/${applicationId}/${interactionToken}/messages/@original`,
             {
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                content: `❌ **Nexus Error:** The agent encountered an issue processing your request.`
-              })
+              body: JSON.stringify({ content: `❌ **Nexus Error:** The agent encountered an issue processing your request.` })
             }
           );
         } catch (_) {}
       }
-    })();
+    })().catch(err => console.error("[DISCORD NEXUS] Unhandled:", err.message));
 
     return; // Response already sent via res.json({ type: 5 }) above
   }
