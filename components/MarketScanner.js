@@ -25,6 +25,31 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   const [executionMode, setExecutionMode] = useState('PAPER'); // PAPER or LIVE
   const [favoritesLoading, setFavoritesLoading] = useState({}); // Track individual favorite toggle states
   const [tenantId, setTenantId] = useState(null); // Cache tenant_id to avoid repeated queries
+  const tabBarRef = useRef(null); // Ref for mobile touch-drag scrolling on tab bar
+  const tabDragState = useRef({ isDragging: false, startX: 0, scrollLeft: 0 });
+
+  // 🟢 MOBILE TAB DRAG: Touch handlers for smooth swipe-to-scroll on the tab bar
+  const handleTabTouchStart = useCallback((e) => {
+    const container = tabBarRef.current;
+    if (!container) return;
+    tabDragState.current.isDragging = true;
+    tabDragState.current.startX = e.touches[0].pageX - container.offsetLeft;
+    tabDragState.current.scrollLeft = container.scrollLeft;
+  }, []);
+
+  const handleTabTouchMove = useCallback((e) => {
+    if (!tabDragState.current.isDragging) return;
+    e.preventDefault();
+    const container = tabBarRef.current;
+    if (!container) return;
+    const x = e.touches[0].pageX - container.offsetLeft;
+    const walk = (x - tabDragState.current.startX) * 1.5; // Speed multiplier
+    container.scrollLeft = tabDragState.current.scrollLeft - walk;
+  }, []);
+
+  const handleTabTouchEnd = useCallback(() => {
+    tabDragState.current.isDragging = false;
+  }, []);
 
   // Helper to normalize asset symbols for consistent comparison
   const normalizeAssetSymbol = (symbol) => {
@@ -225,8 +250,14 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
 
   return (
     <div className="bg-slate-950/50 rounded-2xl p-3 space-y-4 max-h-[500px] overflow-y-auto custom-scrollbar">
-      {/* Tabs */}
-      <div className="flex gap-4 border-b border-white/10 overflow-x-auto no-scrollbar justify-start md:justify-between min-w-max">
+      {/* Tabs — swipeable on mobile, full-width on desktop */}
+      <div 
+        ref={tabBarRef}
+        onTouchStart={handleTabTouchStart}
+        onTouchMove={handleTabTouchMove}
+        onTouchEnd={handleTabTouchEnd}
+        className="flex gap-4 border-b border-white/10 overflow-x-auto md:overflow-x-visible no-scrollbar justify-start md:justify-between min-w-max md:min-w-0 md:w-full cursor-grab active:cursor-grabbing"
+      >
         <button
           onClick={() => setActiveTab('FAVORITES')}
           className={`px-3 py-2 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${

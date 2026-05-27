@@ -172,8 +172,29 @@ export default async function handler(req, res) {
     - ALWAYS use the \`fetchHistoricalData\` tool with the -PERP-INTX symbol to analyze market context before deploying a new strategy or answering queries.
     - If asked to run the genetic optimizer, use the runOptimizer tool.
 
-    --- PROTOCOL 2: NEW STRATEGY CREATION (HUMAN HANDOFF) ---
-    If Andrew asks to "Start a new strategy" or design a new algorithm:
+    --- PROTOCOL 2: STRATEGY UPSERT RULES (CREATE vs UPDATE) ---
+    
+    ⚠️ CRITICAL: You MUST follow these rules precisely to prevent duplicate rows and race conditions.
+    
+    **When Creating a NEW strategy on a NEW asset:**
+    - This is only for activating a strategy on an asset that has NO existing row in the Strategy Matrix.
+    - Use the \`manageStrategy\` tool with \`is_active: false\` and \`version: "v1.0"\`.
+    - The \`strategy_id\` MUST match the exact filename of the strategy logic file (e.g., KELTNER_EXECUTION_V1).
+    - After calling the tool, inform Andrew: "I have designed the [STRATEGY_NAME] architecture and staged it in the database. Please create the file \`lib/strategies/[strategy_name].js\`, paste the code below, add the explicit import to \`strategy-router.js\`, and push the deployment."
+    
+    **When UPDATING an existing strategy:**
+    - Look at the Strategy Matrix above — find the EXACT \`strategy_id\` (value in the \`strategy\` column) for the existing row.
+    - Call \`manageStrategy\` with that EXACT \`strategy_id\`. Never invent, modify, or truncate the strategy name.
+    - You MUST increment the version number (e.g., v1.0 to v1.1).
+    - The \`strategy\` column MUST always be populated — never leave it blank.
+
+    **When activating an existing strategy on a different asset (copy):**
+    - If the same strategy logic already exists for this asset in the matrix, UPDATE that row.
+    - If no row exists for this asset yet, INSERT a new row.
+    - The \`strategy\` column MUST always be populated with the correct strategy name.
+
+    --- PROTOCOL 3: STRATEGY CODE GENERATION (HUMAN HANDOFF) ---
+    If Andrew asks to design a NEW algorithm for a strategy:
     1. Use \`fetchHistoricalData\` to backtest your thesis and find the optimal timeframe/parameters.
     2. Generate the COMPLETE JavaScript code for the new strategy. You MUST strictly adhere to the following architectural template:
 
@@ -209,10 +230,6 @@ export default async function handler(req, res) {
     
     3. Use the \`manageStrategy\` tool to stage the database row. You MUST set \`is_active: false\` and \`version: "v1.0"\`.
     4. Inform Andrew exactly like this: "I have designed the [STRATEGY_NAME] architecture and staged it in the database. Please create the file \`lib/strategies/[strategy_name].js\`, paste the code below, add the explicit import to \`strategy-router.js\`, and push the deployment."
-
-    --- PROTOCOL 3: VERSION CONTROL & OPTIMIZATION ---
-    If modifying an EXISTING strategy via \`manageStrategy\`:
-    1. You MUST increment the version number (e.g., v1.0 to v1.1).
 
     --- PROTOCOL 4: OPERATIONAL AWARENESS ---
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
@@ -330,10 +347,10 @@ export default async function handler(req, res) {
         }),
 
         manageStrategy: tool({
-          description: 'Creates or updates a strategy config.',
+          description: 'Creates or updates a strategy config. Uses upsert logic: updates existing row if found by tenant_id+asset+strategy, otherwise inserts a new row.',
           parameters: z.object({
             asset: z.string().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
-            strategy_id: z.string().describe('The name of the logic, e.g., LTC_4x4_STF'),
+            strategy_id: z.string().describe('The name of the strategy logic file, e.g., LTC_4x4_STF. This must match the existing strategy name when UPDATING.'),
             version: z.string().describe('The version number, e.g., v1.0 or v1.1'), 
             execution_mode: z.enum(['LIVE', 'PAPER']).optional(),
             is_active: z.boolean().optional(),
@@ -342,33 +359,60 @@ export default async function handler(req, res) {
           }),
           execute: async (args) => {
             const runManage = async () => {
-                const { data: existing, error: existingError } = await supabase
-                .from('strategy_config')
-                .select('id')
-                .eq('asset', args.asset)
-                .eq('strategy', args.strategy_id)
-                .eq('tenant_id', tenantId)
-                .maybeSingle();
+                // 🟢 UPSERT FIX: First try to match by strategy name (most specific)
+                let existing = null;
+                
+                // Step 1: Lookup by (tenant_id + asset + strategy_id)
+                const result1 = await supabase
+                  .from('strategy_config')
+                  .select('id')
+                  .eq('asset', args.asset)
+                  .eq('strategy', args.strategy_id)
+                  .eq('tenant_id', tenantId)
+                  .maybeSingle();
+                
+                if (result1.error) throw result1.error;
+                existing = result1.data;
 
-                if (existingError) throw existingError;
+                // Step 2: Fallback — if no match by strategy name, check if any row exists for this asset+tenant
+                // This prevents accidental duplicate row creation when the agent sends a mismatched strategy_id
+                if (!existing) {
+                  const result2 = await supabase
+                    .from('strategy_config')
+                    .select('id, strategy')
+                    .eq('asset', args.asset)
+                    .eq('tenant_id', tenantId)
+                    .limit(1)
+                    .maybeSingle();
+                  
+                  if (result2.error) throw result2.error;
+                  existing = result2.data;
+                  
+                  if (existing) {
+                    console.warn("[UPSERT FALLBACK] Matched by tenant+asset (strategy mismatch). Found existing strategy:", existing.strategy, "— updating row instead of creating duplicate.");
+                    // Preserve the original strategy name so it is NEVER left blank
+                    args.strategy_id = existing.strategy;
+                  }
+                }
 
                 const payload = {
-                tenant_id: tenantId,
-                asset: args.asset,
-                strategy: args.strategy_id,
-                execution_mode: args.execution_mode || 'PAPER',
-                is_active: args.is_active ?? false, 
-                version: args.version || "v1.0", 
-                parameters: args.parameters || {},
-                last_updated: new Date().toISOString(),
-                reasoning: args.reasoning
+                  tenant_id: tenantId,
+                  asset: args.asset,
+                  strategy: args.strategy_id,  // Always populated — never blank
+                  execution_mode: args.execution_mode || 'PAPER',
+                  is_active: args.is_active ?? false, 
+                  version: args.version || "v1.0", 
+                  parameters: args.parameters || {},
+                  last_updated: new Date().toISOString(),
+                  reasoning: args.reasoning
                 };
                 
                 let result;
                 if (existing) {
-                result = await supabase.from('strategy_config').update(payload).eq('id', existing.id).eq('tenant_id', tenantId);
+                  result = await supabase.from('strategy_config').update(payload).eq('id', existing.id).eq('tenant_id', tenantId);
                 } else {
-                result = await supabase.from('strategy_config').insert([payload]);
+                  // Only INSERT if no row exists for this asset+tenant at all (new asset)
+                  result = await supabase.from('strategy_config').insert([payload]);
                 }
         
                 if (result.error) throw result.error;

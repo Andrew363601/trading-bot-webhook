@@ -92,7 +92,8 @@ async function handler(req, res) {
     if (isPendingMode(tenantId, asset)) {
       payload.execution_mode = consumePendingMode(tenantId, asset) || payload.execution_mode;
     }
-    let { error } = await supabase.from('strategy_config').upsert(payload, { onConflict: ['tenant_id', 'asset'] });
+    // 🟢 UPSERT FIX: Include 'strategy' in the conflict target so different strategies on the same asset don't overwrite each other
+    let { error } = await supabase.from('strategy_config').upsert(payload, { onConflict: ['tenant_id', 'asset', 'strategy'] });
     if (error) throw error
 
     // Build response with per-source prompt fields
