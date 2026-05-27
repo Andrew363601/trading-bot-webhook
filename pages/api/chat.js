@@ -62,10 +62,10 @@ export default async function handler(req, res) {
       tenantId = userLink?.tenant_id;
     }
 
-    // 🟢 Allow Discord-originated requests (already verified via Ed25519 signature)
-    if (!tenantId && data.source === 'discord' && data.tenant_id) {
+    // 🟢 Allow Discord-originated requests (already verified via Ed25519 signature or trusted bridge)
+    if (!tenantId && (data.source === 'discord' || data.source === 'discord_text') && data.tenant_id) {
       tenantId = data.tenant_id;
-      console.log(`[CHAT API] Discord-sourced request for tenant: ${tenantId}`);
+      console.log(`[CHAT API] Discord-sourced request for tenant: ${tenantId} (source: ${data.source})`);
     }
 
     // HARD ENFORCEMENT: Reject unauthenticated requests to prevent cross-tenant data leakage

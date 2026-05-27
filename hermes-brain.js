@@ -781,3 +781,18 @@ const PORT = process.env.PORT || 8000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`[AGENT CORTEX] Online. Listening for Sniper flares on port ${PORT}`);
 });
+
+// 🟢 Boot the Discord text bridge (dynamic import — only needed at runtime on VPS)
+(async () => {
+  try {
+    const { default: bridge } = await import('./lib/discord-bridge.js');
+    const active = await bridge.start();
+    console.log(`[AGENT CORTEX] Discord bridge ${active ? '✅ active' : '❌ disabled (check env vars)'}`);
+  } catch (e) {
+    if (e.code === 'ERR_MODULE_NOT_FOUND' || e.message?.includes('discord.js')) {
+      console.warn('[AGENT CORTEX] Discord bridge not available (discord.js not installed in this environment)');
+    } else {
+      console.error('[AGENT CORTEX] Discord bridge failed to boot:', e.message);
+    }
+  }
+})();
