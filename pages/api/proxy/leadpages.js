@@ -13,15 +13,17 @@ export default async function handler(req, res) {
   }
 
   try {
-    const payload = req.body;
+    const leadpagesUrl = `https://leadpages.com/api/pages/my-page`;
 
-    const leadpagesResponse = await fetch('https://api.htmlpub.com/api/v1/pages', {
-      method: 'POST',
+    const leadpagesResponse = await fetch(leadpagesUrl, {
+      method: 'PUT',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        html: req.body.html || `<h1>${req.body.title}</h1><p>${req.body.content}</p>`,
+      }),
     });
 
     const body = await leadpagesResponse.json();
