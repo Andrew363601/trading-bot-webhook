@@ -15,7 +15,7 @@ export default async function handler(req, res) {
   try {
     const payload = req.body;
 
-    const leadpagesResponse = await fetch('https://api.leadpages.com/api/v1/pages', {
+    const leadpagesResponse = await fetch('https://api.htmlpub.com/api/v1/pages', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
