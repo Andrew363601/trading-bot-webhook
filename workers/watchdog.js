@@ -512,16 +512,20 @@ export async function startWatchdog(tenantId) {
                                         console.error("[WATCHDOG PRICE REFETCH FAILED]:", refetchErr.message);
                                     }
                                 }
+                                // 🟢 THE FIX V3: Track whether we got a real fill price from the order_id refetch.
+                                // If we did, trust it unconditionally — it's the source of truth from Coinbase.
+                                const gotRealFillPrice = rawPrice && rawPrice !== currentPrice && rawPrice !== targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price && rawPrice !== targetFill.order_configuration?.trigger_bracket_gtc?.limit_price;
+                                
                                 if (!rawPrice) {
                                     rawPrice = targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || targetFill.order_configuration?.trigger_bracket_gtc?.limit_price || currentPrice;
                                 }
                                 exactExitPrice = parseFloat(rawPrice);
                                 
-                                // 🟢 SANITY CHECK V2: If we have TP/SL on the open trade, verify the exit price
-                                // is within reasonable bounds of the triggered level.
-                                // CRITICAL: Use assumedReason for primary classification, NOT rawPrice !== currentPrice
-                                // because the failure mode IS rawPrice === currentPrice (all fallbacks exhausted).
-                                if (openTrade.tp_price && openTrade.sl_price) {
+                                // 🟢 SANITY CHECK V3: Only apply sanity override when we DON'T have a real fill price.
+                                // If the order_id refetch returned average_filled_price, that IS the source of truth.
+                                // Use a percentage-based threshold instead of fixed tickSize * 50, which is too tight
+                                // for PERP markets where stop-loss triggers can slip $50-100+.
+                                if (!gotRealFillPrice && openTrade.tp_price && openTrade.sl_price) {
                                     const distToSl = Math.abs(exactExitPrice - openTrade.sl_price);
                                     const distToTp = Math.abs(exactExitPrice - openTrade.tp_price);
                                     const isSlTrigger = assumedReason.includes('STOP_LOSS');
@@ -531,12 +535,18 @@ export async function startWatchdog(tenantId) {
                                     const likelySl = !isSlTrigger && !isTpTrigger ? (distToSl < distToTp) : isSlTrigger;
                                     const likelyTp = !isSlTrigger && !isTpTrigger ? (distToTp <= distToSl) : isTpTrigger;
                                     
+                                    // Percentage-based threshold: 3% of bracket price, minimum tickSize * 100
+                                    const sanityThreshold = Math.max(
+                                        likelySl ? openTrade.sl_price * 0.03 : openTrade.tp_price * 0.03,
+                                        tickSize * 100
+                                    );
+                                    
                                     // If price seems wrong (too far from expected bracket), snap to the bracket
-                                    if (likelySl && distToSl > tickSize * 50 && openTrade.sl_price) {
-                                        console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from SL $${openTrade.sl_price} (dist: ${distToSl}). Using SL price as fallback.`);
+                                    if (likelySl && distToSl > sanityThreshold && openTrade.sl_price) {
+                                        console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from SL $${openTrade.sl_price} (dist: ${distToSl}, threshold: ${sanityThreshold.toFixed(2)}). Using SL price as fallback.`);
                                         exactExitPrice = parseFloat(openTrade.sl_price);
-                                    } else if (likelyTp && distToTp > tickSize * 50 && openTrade.tp_price) {
-                                        console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from TP $${openTrade.tp_price} (dist: ${distToTp}). Using TP price as fallback.`);
+                                    } else if (likelyTp && distToTp > sanityThreshold && openTrade.tp_price) {
+                                        console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from TP $${openTrade.tp_price} (dist: ${distToTp}, threshold: ${sanityThreshold.toFixed(2)}). Using TP price as fallback.`);
                                         exactExitPrice = parseFloat(openTrade.tp_price);
                                     } else if (exactExitPrice === parseFloat(currentPrice) && openTrade.sl_price && openTrade.tp_price) {
                                         // Last resort: exit price equals current ticker and we have brackets — pick the closer one
@@ -544,6 +554,8 @@ export async function startWatchdog(tenantId) {
                                         console.log(`[WATCHDOG PRICE SANITY] Exit price matches current ticker $${exactExitPrice}. Using closer bracket $${fallbackExit}.`);
                                         exactExitPrice = parseFloat(fallbackExit);
                                     }
+                                } else if (gotRealFillPrice) {
+                                    console.log(`[WATCHDOG PRICE SANITY] Trusting real fill price $${exactExitPrice} from order_id refetch (source of truth). Skipping sanity override.`);
                                 }
                             }
                         }
