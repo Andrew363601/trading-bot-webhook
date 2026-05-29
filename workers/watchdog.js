@@ -123,6 +123,9 @@ async function pingHermes(payload) {
 const heartbeatTracker = {};
 const missingBracketTracker = {};
 const keyFetchCooldown = {}; // tenantId -> timestamp of last key-fetch warning
+const deployedSafetyNets = new Set(); // Track which assets already have Safety Net brackets deployed this sweep
+const closingNow = new Set(); // Track which assets are being closed this sweep to prevent duplicate closes
+let tripwireJustFired = false; // Flag to prevent trailing SL firing on same sweep as tripwire
 
 export async function startWatchdog(tenantId) {
     await logAgentActivity(tenantId, "Watchdog", "N/A", "Watchdog worker started.", "WORKER_START");
@@ -139,6 +142,11 @@ export async function startWatchdog(tenantId) {
 
     setInterval(async () => {
         try {
+            // 🟢 Per-sweep reset of tracking state
+            deployedSafetyNets.clear();
+            closingNow.clear();
+            tripwireJustFired = false;
+
             await logAgentActivity(tenantId, "Watchdog", "N/A", "Sweeping open trades and orders.", "SWEEP_START");
             const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('tenant_id', tenantId).is('exit_price', null);
             if (!openTrades || openTrades.length === 0) return;
@@ -372,10 +380,19 @@ export async function startWatchdog(tenantId) {
                                 trigger_tf: params.trigger_tf || 'THIRTY_MINUTE',
                                 previous_thesis: configData?.active_thesis
                             });
+
+                            // 🟢 Set flag so trailing SL skips this sweep — it'll fire naturally on the next cycle
+                            // This prevents the trailing SL from overriding break-even before the tripwire settles.
+                            tripwireJustFired = true;
                             }
                             }
 
-                        if (trailStep > 0 && trailActivation > 0 && pnlPercent >= trailActivation) {
+                        // 🟢 Skip trailing SL on the same sweep where tripwire just fired to avoid
+                        // overriding the break-even price. The trailing SL will fire naturally on
+                        // the next sweep cycle with the correct SL from the tripwire.
+                        if (tripwireJustFired) {
+                            console.log(`[WATCHDOG] Trailing SL skipped for ${asset} — tripwire just fired this sweep. Will evaluate next cycle.`);
+                        } else if (trailStep > 0 && trailActivation > 0 && pnlPercent >= trailActivation) {
                             const assetTrailStep = trailStep / leverage; 
                             const dynamicSL = openTrade.side === 'BUY' ? currentPrice * (1 - assetTrailStep) : currentPrice * (1 + assetTrailStep);
                             const safeDynamicSL = parseFloat((Math.round(dynamicSL / tickSize) * tickSize).toFixed(4));
@@ -573,6 +590,24 @@ export async function startWatchdog(tenantId) {
                             }
                         }
 
+                        // 🟢 CLOSE DEDUP: If this asset is already being closed in this sweep,
+                        // skip to prevent two trade_log entries for one exchange position.
+                        if (wasFilled && closingNow.has(asset)) {
+                            console.warn(`[WATCHDOG] Duplicate close detected for ${asset} (trade ${openTrade.id}). Asset already being closed this sweep. Skipping to prevent duplicate trade_log.`);
+                            await logAgentActivity(tenantId, "Watchdog", asset, `Duplicate close suppressed for trade ${openTrade.id} — ${asset} already closing.`, "DUPLICATE_CLOSE_SKIPPED");
+                            // Clean up the trade_log entry entirely since the position is gone
+                            await supabase.from('trade_logs').update({
+                                exit_price: parseFloat(exactExitPrice) || 0,
+                                pnl: 0,
+                                exit_time: new Date().toISOString(),
+                                reason: `[SUPPRESSED]: Trade ${openTrade.id} was a duplicate — position already closed under another trade_log entry.`
+                            }).eq('id', openTrade.id);
+                            continue;
+                        }
+                        if (wasFilled) {
+                            closingNow.add(asset);
+                        }
+
                         if (wasCanceled || (openTrade.order_type === 'LIMIT' && !wasFilled)) {
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
                             // 🟢 THE FIX V2: For cancellations, use SL price as exit for accuracy.
@@ -680,6 +715,13 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
 
                         if (!hasBracket && openTrade.tp_price && openTrade.sl_price) {
                             
+                            // 🟢 SAFETY NET DEDUP: Skip if another trade_log for this asset already deployed
+                            // brackets this sweep. Only one Safety Net per asset per sweep is needed.
+                            if (deployedSafetyNets.has(asset)) {
+                                console.log(`[WATCHDOG] Safety Net already deployed for ${asset} this sweep. Skipping duplicate deployment for trade ${openTrade.id}.`);
+                                continue;
+                            }
+
                             // 🟢 THE FIX: 10-Second Ceasefire Protocol
                             const now = Date.now();
                             if (!missingBracketTracker[openTrade.id]) {
@@ -730,6 +772,8 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                     const safetyNetChartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveApiSecret, openTrade, safeTpPrice, safeSlPrice);
                                     await sendDiscordAlert(tenantId, { title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046, imageUrl: safetyNetChartUrl });
                                     await logAgentActivity(tenantId, "Watchdog", asset, `OCO safety net deployed for ${asset}. TP: $${safeTpPrice}, SL: $${safeSlPrice}.`, "SAFETY_NET_SUCCESS");
+                                    // Track deployed asset so no duplicate Safety Net per sweep
+                                    deployedSafetyNets.add(asset);
                                     // Clean up tracker upon successful deployment
                                     delete missingBracketTracker[openTrade.id];
                                 }
