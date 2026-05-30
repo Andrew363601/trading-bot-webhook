@@ -59,8 +59,28 @@ export default async function handler(req, res) {
       data.execution_mode = mode; 
       data.tenant_id = tenant_id; // Pass tenant_id to the engine
 
+      // 🛡️ PHASE M: Ensure a stable idempotency key flows to the execute engine.
+      // Order of preference:
+      //   1. Explicit `Idempotency-Key` header (TradingView template can set this).
+      //   2. data.idempotency_key already in the payload.
+      //   3. Derived bucket key: tenant_id + strategy_id + symbol + side + 60s window.
+      // The engine (executeTradeMCP) uses this to build a deterministic Coinbase
+      // client_order_id so duplicate retries are rejected exchange-side.
+      if (!data.idempotency_key) {
+        if (idempotencyKey) {
+          data.idempotency_key = idempotencyKey;
+        } else {
+          const sym = (data.symbol || 'NA').toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
+          const strat = (data.strategy_id || 'MANUAL').toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
+          const sd = (data.side || 'NA').toString().toUpperCase().replace(/[^A-Z0-9]/g, '');
+          const bucket = Math.floor(Date.now() / 60000); // 60-second bucket
+          // Hash-style compact key; the engine truncates to 24 safe chars for client_order_id.
+          data.idempotency_key = `${tenant_id?.slice(0, 6) || 'tn'}_${strat.slice(0, 4)}_${sym.slice(0, 6)}_${sd[0] || 'X'}_${bucket}`;
+        }
+      }
+
       // 2. Direct call to Coinbase Engine (no HTTP, no exposed endpoint)
-      console.log(`[ROUTER] Executing trade for ${data.symbol} (Tenant: ${tenant_id}, Mode: ${mode})`);
+      console.log(`[ROUTER] Executing trade for ${data.symbol} (Tenant: ${tenant_id}, Mode: ${mode}, IdemKey: ${data.idempotency_key})`);
 
       const engineResult = await executeTradeMCP(data);
 

@@ -509,8 +509,27 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
                             reason: `[REVERSE_CLOSE] ${decisionJson.working_thesis}`
                         }
                     })
-                }).then(r => r.json());
-                
+                }).then(r => r.json()).catch(e => ({ error: e.message }));
+
+                // 🛡️ PHASE K: VERIFY STEP 1 CLOSED before opening the opposite leg.
+                // executeTradeMCP returns either:
+                //   { status: 'closed_position', ... }   ← good
+                //   { status: 'already_closed_natively' } ← good (exchange already flat)
+                //   { error: '...' }                     ← step 2 must abort
+                // The MCP gateway wraps the response in { result: <executeTradeMCP return> }.
+                const closePayload = closeResult?.result || closeResult || {};
+                const closeOk = closePayload.status === 'closed_position' || closePayload.status === 'already_closed_natively';
+                if (!closeOk) {
+                    const reason = closePayload.error || closePayload.status || 'unknown';
+                    console.error(`[AGENT CORTEX] 🛑 REVERSE step 1 did NOT confirm close (status=${reason}). Aborting step 2 to prevent double-position.`);
+                    await sendDiscordAlert(tenant_id, {
+                        title: `🛑 REVERSE Aborted: ${asset}`,
+                        description: `Step 1 (close ${activeOpenTrade.side}) did not confirm. Step 2 (open ${decisionJson.side}) suppressed to prevent dual-direction exposure.\n**Engine status:** ${reason}\n**Action:** Manual review required.`,
+                        color: 15158332
+                    });
+                    return res.status(200).json({ status: 'REVERSE_ABORTED', reason });
+                }
+
                 // STEP 2: Wait for exchange clearing
                 console.log(`[AGENT CORTEX] ⏳ REVERSE pause: Waiting 2s for bracket clearing...`);
                 await new Promise(resolve => setTimeout(resolve, 2000));

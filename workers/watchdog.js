@@ -356,6 +356,52 @@ export async function startWatchdog(tenantId) {
                                 openOrders = []; 
                             }
 
+                            // 🛡️ PHASE I: INLINE bracket replacement — eliminates the 20-80s naked
+                            // window that used to exist between cancelling the old bracket and the
+                            // separate Safety Net Deployment path picking it up next sweep.
+                            // Tenant could have manually adjusted contracts; re-read cfm/positions
+                            // for the true size right before posting the new bracket.
+                            let tripwireQty = Math.abs(parseFloat(activePosition.number_of_contracts));
+                            try {
+                                const liveQtyPath = '/api/v3/brokerage/cfm/positions';
+                                const liveQtyResp = await fetch(`https://api.coinbase.com${liveQtyPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', liveQtyPath, liveApiKey, liveApiSecret)}` } });
+                                if (liveQtyResp.ok) {
+                                    const liveQtyData = await liveQtyResp.json();
+                                    const livePos = liveQtyData.positions?.find(p => p.product_id === coinbaseProduct);
+                                    if (livePos) tripwireQty = Math.abs(parseFloat(livePos.number_of_contracts)) || tripwireQty;
+                                }
+                            } catch (e) { console.error('[TRIPWIRE QTY RECONCILE] Failed:', e.message); }
+
+                            const tripwireClosingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
+                            const tripwireTpStr = openTrade.tp_price ? (Math.round(parseFloat(openTrade.tp_price) / tickSize) * tickSize).toFixed(4) : null;
+                            const tripwireSlStr = safeBreakEvenSL.toFixed(4);
+
+                            if (tripwireQty > 0 && tripwireTpStr) {
+                                const tripwirePath = '/api/v3/brokerage/orders';
+                                const tripwirePayload = {
+                                    client_order_id: `nx_wd_tw_${openTrade.id}_${Date.now()}`,
+                                    product_id: coinbaseProduct,
+                                    side: tripwireClosingSide,
+                                    order_configuration: { trigger_bracket_gtc: { limit_price: tripwireTpStr, stop_trigger_price: tripwireSlStr, base_size: tripwireQty.toString() } }
+                                };
+                                try {
+                                    const twResp = await fetch(`https://api.coinbase.com${tripwirePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', tripwirePath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tripwirePayload) });
+                                    const twResult = await twResp.json();
+                                    if (!twResp.ok || twResult.success === false) {
+                                        const twErr = twResult.error_response?.preview_failure_reason || twResult.error_response?.error || JSON.stringify(twResult);
+                                        console.error(`[TRIPWIRE BRACKET REJECT]:`, twErr);
+                                        await sendDiscordAlert(tenantId, { title: `🚨 Tripwire Bracket Failed: ${asset}`, description: `SL cancelled but new BE bracket REJECTED: ${twErr}. **${tripwireQty} contracts unprotected.** Safety Net will retry next sweep.`, color: 15158332 });
+                                    } else {
+                                        console.log(`[TRIPWIRE BRACKET] BE bracket deployed inline: TP ${tripwireTpStr} / SL ${tripwireSlStr} on ${tripwireQty} contracts.`);
+                                    }
+                                } catch (twEx) {
+                                    console.error('[TRIPWIRE BRACKET FATAL]:', twEx.message);
+                                    await sendDiscordAlert(tenantId, { title: `🚨 Tripwire Bracket Exception: ${asset}`, description: `${twEx.message}. **${tripwireQty} contracts unprotected.** Safety Net will retry next sweep.`, color: 15158332 });
+                                }
+                            } else if (!tripwireTpStr) {
+                                console.warn(`[TRIPWIRE] No stored TP for trade ${openTrade.id} — cannot deploy BE bracket inline. Safety Net will redeploy with SL only on next sweep.`);
+                            }
+
                             const updatedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_ACTIVATED]: Profit reached ${(pnlPercent*100).toFixed(2)}%. SL moved to Break-Even.`;
                             await supabase.from('trade_logs').update({ sl_price: safeBreakEvenSL, reason: updatedReason }).eq('id', openTrade.id);
                             openTrade.sl_price = safeBreakEvenSL;
@@ -410,6 +456,46 @@ export async function startWatchdog(tenantId) {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                     await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
                                     openOrders = []; 
+                                }
+
+                                // 🛡️ PHASE I: INLINE bracket replacement for trailing SL.
+                                // Reconcile qty against cfm/positions first (tenant may have added/removed contracts).
+                                let trailQty = Math.abs(parseFloat(activePosition.number_of_contracts));
+                                try {
+                                    const tQtyPath = '/api/v3/brokerage/cfm/positions';
+                                    const tQtyResp = await fetch(`https://api.coinbase.com${tQtyPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tQtyPath, liveApiKey, liveApiSecret)}` } });
+                                    if (tQtyResp.ok) {
+                                        const tQtyData = await tQtyResp.json();
+                                        const livePos = tQtyData.positions?.find(p => p.product_id === coinbaseProduct);
+                                        if (livePos) trailQty = Math.abs(parseFloat(livePos.number_of_contracts)) || trailQty;
+                                    }
+                                } catch (e) { console.error('[TRAIL QTY RECONCILE] Failed:', e.message); }
+
+                                const trailClosingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
+                                const trailTpStr = openTrade.tp_price ? (Math.round(parseFloat(openTrade.tp_price) / tickSize) * tickSize).toFixed(4) : null;
+                                const trailSlStr = safeDynamicSL.toFixed(4);
+
+                                if (trailQty > 0 && trailTpStr) {
+                                    const trailPath = '/api/v3/brokerage/orders';
+                                    const trailPayload = {
+                                        client_order_id: `nx_wd_tr_${openTrade.id}_${Date.now()}`,
+                                        product_id: coinbaseProduct,
+                                        side: trailClosingSide,
+                                        order_configuration: { trigger_bracket_gtc: { limit_price: trailTpStr, stop_trigger_price: trailSlStr, base_size: trailQty.toString() } }
+                                    };
+                                    try {
+                                        const trResp = await fetch(`https://api.coinbase.com${trailPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', trailPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(trailPayload) });
+                                        const trResult = await trResp.json();
+                                        if (!trResp.ok || trResult.success === false) {
+                                            const trErr = trResult.error_response?.preview_failure_reason || trResult.error_response?.error || JSON.stringify(trResult);
+                                            console.error(`[TRAIL BRACKET REJECT]:`, trErr);
+                                            await sendDiscordAlert(tenantId, { title: `🚨 Trailing SL Bracket Failed: ${asset}`, description: `Old bracket cancelled but new trailing SL REJECTED: ${trErr}. **${trailQty} contracts unprotected.** Safety Net will retry.`, color: 15158332 });
+                                        } else {
+                                            console.log(`[TRAIL BRACKET] Trailing bracket deployed inline: TP ${trailTpStr} / SL ${trailSlStr} on ${trailQty} contracts.`);
+                                        }
+                                    } catch (trEx) {
+                                        console.error('[TRAIL BRACKET FATAL]:', trEx.message);
+                                    }
                                 }
 
                                 await supabase.from('trade_logs').update({ sl_price: safeDynamicSL }).eq('id', openTrade.id);
@@ -640,6 +726,68 @@ export async function startWatchdog(tenantId) {
 
                             continue; 
                         } else {
+                            // 🛡️ PHASE H: FINAL FLAT-CHECK before any state-mutating action.
+                            // `activePosition` was captured at the top of this sweep. Tenant could
+                            // have manually added contracts in the interim (10-30s+). Re-query
+                            // cfm/positions one more time as the absolute final word. If a
+                            // position now exists, ABORT this close path entirely — exchange is
+                            // the source of truth and the bot must not cancel brackets / write
+                            // exit_price against a live position.
+                            try {
+                                const finalPosPath = '/api/v3/brokerage/cfm/positions';
+                                const finalPosResp = await fetch(`https://api.coinbase.com${finalPosPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', finalPosPath, liveApiKey, liveApiSecret)}` } });
+                                if (finalPosResp.ok) {
+                                    const finalPosData = await finalPosResp.json();
+                                    const livePos = finalPosData.positions?.find(p => p.product_id === coinbaseProduct);
+                                    const liveQty = livePos ? Math.abs(parseFloat(livePos.number_of_contracts)) : 0;
+                                    if (liveQty > 0) {
+                                        console.warn(`[WATCHDOG STATE DRIFT] About to mark trade ${openTrade.id} closed, but cfm/positions now shows ${liveQty} contracts for ${coinbaseProduct}. Tenant likely re-opened mid-sweep. Aborting close, reconciling DB qty, and ensuring brackets exist.`);
+                                        await logAgentActivity(tenantId, "Watchdog", asset, `State drift detected for trade ${openTrade.id}: position re-emerged with ${liveQty} contracts. Aborting auto-close. Trusting exchange.`, "STATE_DRIFT_ABORT");
+
+                                        // Reconcile DB qty to exchange truth.
+                                        if (Math.abs(liveQty - (parseFloat(openTrade.qty) || 0)) > 0.0001) {
+                                            await supabase.from('trade_logs').update({ qty: liveQty, reason: `${openTrade.reason || ''}\n\n[STATE DRIFT RECONCILE]: qty resynced to exchange truth (${liveQty}).` }).eq('id', openTrade.id);
+                                            openTrade.qty = liveQty;
+                                        }
+
+                                        // If protective brackets exist already, leave them alone (tenant may have moved them).
+                                        // If none exist and we have stored TP/SL, deploy a fresh safety net.
+                                        const hasLiveBracket = openOrders.some(o => o.order_configuration?.trigger_bracket_gtc);
+                                        if (!hasLiveBracket && openTrade.tp_price && openTrade.sl_price) {
+                                            const safeTpStr = (Math.round(parseFloat(openTrade.tp_price) / tickSize) * tickSize).toFixed(4);
+                                            const safeSlStr = (Math.round(parseFloat(openTrade.sl_price) / tickSize) * tickSize).toFixed(4);
+                                            const restoreSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
+                                            const restorePath = '/api/v3/brokerage/orders';
+                                            const restorePayload = {
+                                                client_order_id: `nx_wd_restore_${openTrade.id}_${Date.now()}`,
+                                                product_id: coinbaseProduct,
+                                                side: restoreSide,
+                                                order_configuration: { trigger_bracket_gtc: { limit_price: safeTpStr, stop_trigger_price: safeSlStr, base_size: liveQty.toString() } }
+                                            };
+                                            try {
+                                                const rResp = await fetch(`https://api.coinbase.com${restorePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', restorePath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(restorePayload) });
+                                                const rResult = await rResp.json();
+                                                if (!rResp.ok || rResult.success === false) {
+                                                    const rErr = rResult.error_response?.preview_failure_reason || rResult.error_response?.error || JSON.stringify(rResult);
+                                                    await sendDiscordAlert(tenantId, { title: `🚨 NAKED POSITION: ${asset}`, description: `Watchdog detected state drift (${liveQty} contracts re-emerged) but bracket restore failed: ${rErr}. Manual intervention required.`, color: 15158332 });
+                                                } else {
+                                                    await sendDiscordAlert(tenantId, { title: `🛡️ Watchdog State Drift Recovery: ${asset}`, description: `Tenant re-opened position to ${liveQty} contracts mid-sweep. Brackets redeployed.\n**TP:** $${safeTpStr}\n**SL:** $${safeSlStr}`, color: 15844367 });
+                                                }
+                                            } catch (rEx) {
+                                                console.error('[WATCHDOG STATE DRIFT] Bracket restore exception:', rEx.message);
+                                                await sendDiscordAlert(tenantId, { title: `🚨 NAKED POSITION: ${asset}`, description: `Watchdog state-drift bracket restore threw: ${rEx.message}. ${liveQty} contracts unprotected.`, color: 15158332 });
+                                            }
+                                        }
+                                        continue; // do NOT mark trade_log closed; the trade is still live
+                                    }
+                                }
+                            } catch (driftCheckErr) {
+                                console.error('[WATCHDOG STATE DRIFT CHECK] Failed final cfm/positions read:', driftCheckErr.message);
+                                // Conservative: if we can't confirm flat, do NOT proceed with destructive close.
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Aborting auto-close for trade ${openTrade.id}: could not verify exchange flatness. Will retry next sweep.`, "STATE_DRIFT_UNVERIFIED");
+                                continue;
+                            }
+
                             if (openOrders.length > 0) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                 await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });

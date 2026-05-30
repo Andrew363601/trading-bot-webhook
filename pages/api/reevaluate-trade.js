@@ -153,40 +153,35 @@ export default async function handler(req, res) {
             }
 
             if (trade.execution_mode === 'LIVE') {
-                const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
-                const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, apiKeyName, apiSecret)}` } });
-                
-                if (orderResp.ok) {
-                    const data = await orderResp.json();
-                    if (data.orders && data.orders.length > 0) {
-                        const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                        await fetch(`https://api.coinbase.com${cancelPath}`, {
-                            method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, 
-                            body: JSON.stringify({ order_ids: data.orders.map(o => o.order_id) })
-                        });
-                    }
+                // 🛡️ PHASE G: Delegate ADJUST_LIMITS to the hardened executeTradeMCP path.
+                // That path already handles: cfm/positions reconcile, bracket cancel,
+                // new bracket POST with exchange-truth qty, accountant R/R floor,
+                // and Discord alerts on rejection. Single source of truth for close-side logic.
+                const delegatePayload = {
+                    symbol: trade.symbol,
+                    strategy_id: trade.strategy_id || 'MANUAL',
+                    version: trade.version || 'v1.0',
+                    side: trade.side, // executeTradeMCP looks up openTrade by trade_id; side here is informational
+                    trade_id: trade.id,
+                    tp_price: verdict.tp_price,
+                    sl_price: verdict.sl_price,
+                    qty: trade.qty,
+                    execution_mode: 'LIVE',
+                    market_type: trade.market_type || 'FUTURES',
+                    leverage: trade.leverage || 1,
+                    reason: '[ADJUST_TP_SL] Sniper manual review bracket update',
+                    tenant_id: trade.tenant_id
+                };
+                const delegateResult = await executeTradeMCP(delegatePayload);
+                if (delegateResult?.status === 'rr_vetoed') {
+                    await sendDiscordAlert(`🚫 Sniper R/R Veto: ${trade.symbol}`, `**Reason:** ${delegateResult.reason || 'R/R floor'}`, 15548997);
+                    return res.status(200).json({ status: 'RR_VETOED', reasoning: delegateResult.reason });
                 }
-
-                let tickSize = 0.01;
-                if (coinbaseProduct.includes('ETP') || coinbaseProduct.includes('ETH')) tickSize = 0.50;
-                if (coinbaseProduct.includes('BIT') || coinbaseProduct.includes('BTC')) tickSize = 1.00;
-
-                safeTp = verdict.tp_price ? (Math.round(verdict.tp_price / tickSize) * tickSize).toFixed(2) : null;
-                safeSl = verdict.sl_price ? (Math.round(verdict.sl_price / tickSize) * tickSize).toFixed(2) : null;
-
-                if (safeTp && safeSl) {
-                    const executePath = '/api/v3/brokerage/orders';
-                    const ocoPayload = {
-                        client_order_id: `nx_adj_${Date.now()}`, product_id: coinbaseProduct, side: trade.side === 'BUY' ? 'SELL' : 'BUY',
-                        order_configuration: { trigger_bracket_gtc: { limit_price: safeTp.toString(), stop_trigger_price: safeSl.toString(), base_size: trade.qty.toString() } }
-                    };
-                    const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, apiKeyName, apiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
-                    const ocoResult = await ocoResp.json();
-                    if (!ocoResp.ok || ocoResult.success === false) {
-                        console.error(`[BRACKET REJECT] OCO Failed:`, JSON.stringify(ocoResult));
-                        await sendDiscordAlert(`⚠️ Sniper Bracket Failed: ${trade.symbol}`, `**Action:** Failed to update TP/SL!\n**Details:** Exchange rejected the OCO order.`, 15548997);
-                    }
+                if (delegateResult?.error) {
+                    await sendDiscordAlert(`⚠️ Sniper Bracket Failed: ${trade.symbol}`, `**Action:** Failed to update TP/SL via execute engine.\n**Details:** ${delegateResult.error}`, 15548997);
                 }
+                safeTp = verdict.tp_price;
+                safeSl = verdict.sl_price;
             } else {
                 safeTp = verdict.tp_price;
                 safeSl = verdict.sl_price;
