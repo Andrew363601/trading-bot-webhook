@@ -129,15 +129,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // 2. Check if the specific strategy-asset combo already exists for this tenant
-    const { data: existingStrategy, error: existingError } = await supabase
-      .from('strategy_config')
-      .select('id, parameters')
-      .eq('tenant_id', actualTenantId)
-      .eq('asset', asset)
-      .eq('strategy', strategy)
-      .maybeSingle();
-
     if (activeError) {
       console.error("[SUBSCRIBE STRATEGY ERROR]: Failed to check for active strategies:", activeError.message);
       return res.status(500).json({ error: "Failed to check active strategies.", details: activeError.message });
