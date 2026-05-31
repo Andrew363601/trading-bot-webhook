@@ -47,8 +47,10 @@ export default async function handler(req, res) {
         .limit(500),
       supabase
         .from('strategy_config')
-        .select('strategy, asset, is_active, execution_mode')
-        .eq('tenant_id', DEMO_TENANT_ID),
+        .select('strategy, asset, is_active, execution_mode, last_updated')
+        .eq('tenant_id', DEMO_TENANT_ID)
+        .eq('is_active', true)   // Only currently-running strategies surface on the landing page.
+        .order('last_updated', { ascending: false }),
     ]);
 
     // Cache at the edge for 10s to keep the landing page snappy and cheap.

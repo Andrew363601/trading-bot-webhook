@@ -367,6 +367,7 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             try {
                 await supabase.from('strategy_config')
                     .update(updatePayload)
+                    .eq('tenant_id', tenant_id)
                     .eq('strategy', strategy_id || 'MANUAL')
                     .eq('asset', asset);
             } catch (error) {

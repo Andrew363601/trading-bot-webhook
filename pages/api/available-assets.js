@@ -136,7 +136,11 @@ async function handler(req, res) {
       console.error('[AVAILABLE ASSETS ERROR]: Coinbase fetch exception:', e.message);
     }
 
-    // Combine and deduplicate
+    // Combine and deduplicate. Mark our priority list so we can guarantee it
+    // is NEVER sliced off the end (previous behaviour: zero-volume entries got
+    // pushed to the bottom and dropped by .slice(0, 100), which is why the
+    // user only saw ETH-PERP and DOGE-PERP in the picker).
+    const TOP_RANK = new Map(topAssets.map((id, idx) => [id, idx]));
     const combined = [...futuresProducts];
     topAssets.forEach(id => {
       if (!combined.find(p => p.id === id)) {
@@ -144,9 +148,16 @@ async function handler(req, res) {
       }
     });
 
-    const finalSelection = combined
-      .sort((a, b) => (b.volume_24h || 0) - (a.volume_24h || 0))
-      .slice(0, 100);
+    // Sort by: (1) is-priority asc by priority rank → priority list always wins;
+    // then (2) volume desc inside each bucket.
+    const sorted = combined.sort((a, b) => {
+      const aRank = TOP_RANK.has(a.id) ? TOP_RANK.get(a.id) : Infinity;
+      const bRank = TOP_RANK.has(b.id) ? TOP_RANK.get(b.id) : Infinity;
+      if (aRank !== bRank) return aRank - bRank;
+      return (b.volume_24h || 0) - (a.volume_24h || 0);
+    });
+
+    const finalSelection = sorted.slice(0, 100);
 
     return res.status(200).json({
       count: finalSelection.length,

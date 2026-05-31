@@ -16,6 +16,16 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
 import crypto from 'crypto';
 
+// 🛡️ Short-lived in-memory dedupe for manageStrategy. The AI sometimes calls the
+// tool twice within a single turn (e.g. v1.0 stage + v1.1 activate). Within a 5s
+// window we ignore re-writes of the EXACT same (tenant, asset, strategy) — this
+// prevents duplicate rows / clobbering. Keyed by tenantId|asset|strategy.
+const MANAGE_STRATEGY_DEDUPE = new Map();
+const MANAGE_STRATEGY_DEDUPE_TTL_MS = 5000;
+function dedupeKey(tenantId, asset, strategy) {
+  return `${tenantId}|${(asset || '').toUpperCase()}|${(strategy || '').toUpperCase()}`;
+}
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -192,20 +202,25 @@ export default async function handler(req, res) {
     - If asked to run the genetic optimizer, use the runOptimizer tool.
     ${liveTradingComplianceBlock}
     --- PROTOCOL 2: STRATEGY UPSERT RULES (CREATE vs UPDATE) ---
-    
+
+    ⚠️ CRITICAL TOOL CONTRACT (read this carefully — getting it wrong drops the row):
+    - When calling \`manageStrategy\`, the parameter is \`strategy\`. This maps to the \`strategy\` column in the DB.
+    - The value MUST be the exact strategy filename (e.g. "wld_trend_v1", "KELTNER_EXECUTION_V1"). Never blank, never null, never just whitespace.
+    - Do NOT call \`manageStrategy\` twice in the same turn for the same (asset, strategy). One call only — use \`is_active\` and \`version\` correctly the first time. Duplicate calls within 5 seconds are ignored.
+
     ⚠️ CRITICAL: You MUST follow these rules precisely to prevent duplicate rows and race conditions.
-    
+
     **When Creating a NEW strategy on a NEW asset:**
     - This is only for activating a strategy on an asset that has NO existing row in the Strategy Matrix.
     - Use the \`manageStrategy\` tool with \`is_active: false\` and \`version: "v1.0"\`.
-    - The \`strategy_id\` MUST match the exact filename of the strategy logic file (e.g., KELTNER_EXECUTION_V1).
+    - The \`strategy\` parameter MUST match the exact filename of the strategy logic file (e.g., KELTNER_EXECUTION_V1).
     - After calling the tool, inform Andrew: "I have designed the [STRATEGY_NAME] architecture and staged it in the database. Please create the file \`lib/strategies/[strategy_name].js\`, paste the code below, add the explicit import to \`strategy-router.js\`, and push the deployment."
     
     **When UPDATING an existing strategy:**
-    - Look at the Strategy Matrix above — find the EXACT \`strategy_id\` (value in the \`strategy\` column) for the existing row.
-    - Call \`manageStrategy\` with that EXACT \`strategy_id\`. Never invent, modify, or truncate the strategy name.
+    - Look at the Strategy Matrix above — find the EXACT \`strategy\` name (value in the \`strategy\` column) for the existing row.
+    - Call \`manageStrategy\` with that EXACT \`strategy\` name. Never invent, modify, or truncate the strategy name.
     - You MUST increment the version number (e.g., v1.0 to v1.1).
-    - The \`strategy\` column MUST always be populated — never leave it blank.
+    - The \`strategy\` parameter MUST always be populated — never leave it blank.
 
     **When activating an existing strategy on a different asset (copy):**
     - If the same strategy logic already exists for this asset in the matrix, UPDATE that row.
@@ -305,15 +320,15 @@ export default async function handler(req, res) {
           description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
           parameters: z.object({
             asset: z.string().optional().describe('Filter by asset symbol, e.g., DOGE-PERP-INTX. Leave undefined for all assets.'),
-            strategy_id: z.string().optional().describe('Filter by strategy, e.g., KELTNER_EXECUTION_V1. Leave undefined for all strategies.'),
+            strategy: z.string().optional().describe('Filter by strategy, e.g., KELTNER_EXECUTION_V1. Leave undefined for all strategies.'),
             days_back: z.number().optional().describe('Number of days back to search (e.g., 7 for this week). Leave undefined for all-time.')
           }),
-          execute: async ({ asset, strategy_id, days_back }) => {
+          execute: async ({ asset, strategy, days_back }) => {
             const runQuery = async () => {
                 let query = supabase.from('trade_logs').select('*').not('exit_price', 'is', null).eq('tenant_id', tenantId);
 
                 if (asset) query = query.eq('symbol', asset);
-                if (strategy_id) query = query.eq('strategy_id', strategy_id);
+                if (strategy) query = query.eq('strategy_id', strategy);
                 if (days_back) {
                 const dateLimit = new Date(Date.now() - days_back * 24 * 60 * 60 * 1000).toISOString();
                 query = query.gte('exit_time', dateLimit);
@@ -346,7 +361,7 @@ export default async function handler(req, res) {
 
                 return {
                 timeframe: days_back ? `Last ${days_back} days` : 'All-Time',
-                filters: { asset: asset || 'ALL', strategy: strategy_id || 'ALL' },
+                filters: { asset: asset || 'ALL', strategy: strategy || 'ALL' },
                 summary: {
                     total_trades: totalTrades,
                     total_pnl: parseFloat(totalPnL.toFixed(4)),
@@ -366,76 +381,99 @@ export default async function handler(req, res) {
         }),
 
         manageStrategy: tool({
-          description: 'Creates or updates a strategy config. Uses upsert logic: updates existing row if found by tenant_id+asset+strategy, otherwise inserts a new row.',
+          description: 'Creates or updates a strategy config row for the CURRENT tenant. Always upserts by (tenant_id, asset, strategy). Strategy name MUST be non-blank.',
           parameters: z.object({
-            asset: z.string().describe('The asset symbol, e.g., DOGE-PERP-INTX'),
-            strategy_id: z.string().describe('The name of the strategy logic file, e.g., LTC_4x4_STF. This must match the existing strategy name when UPDATING.'),
-            version: z.string().describe('The version number, e.g., v1.0 or v1.1'), 
+            asset: z.string().min(1).describe('The asset symbol, e.g., DOGE-PERP-INTX. Required.'),
+            strategy: z.string().describe('Canonical strategy name (matches the filename in lib/strategies). Must be non-blank.'),
+            version: z.string().describe('The version number, e.g., v1.0 or v1.1'),
             execution_mode: z.enum(['LIVE', 'PAPER']).optional(),
             is_active: z.boolean().optional(),
             parameters: z.record(z.any()).optional(),
             reasoning: z.string().describe('Technical reasoning for this deployment or mutation.')
           }),
           execute: async (args) => {
-            const runManage = async () => {
-                // 🟢 UPSERT FIX: First try to match by strategy name (most specific)
-                let existing = null;
-                
-                // Step 1: Lookup by (tenant_id + asset + strategy_id)
-                const result1 = await supabase
-                  .from('strategy_config')
-                  .select('id')
-                  .eq('asset', args.asset)
-                  .eq('strategy', args.strategy_id)
-                  .eq('tenant_id', tenantId)
-                  .maybeSingle();
-                
-                if (result1.error) throw result1.error;
-                existing = result1.data;
+            // 🛡️ DEFENSE 1: normalize + validate strategy name.
+            const rawStrategy = (args.strategy || '').toString().trim();
+            if (!rawStrategy) {
+              return { success: false, error: 'Refused: strategy name is required and cannot be blank. Pass the exact strategy filename (e.g. "wld_trend_v1") in the `strategy` field.' };
+            }
+            const rawAsset = (args.asset ?? '').toString().trim();
+            if (!rawAsset) {
+              return { success: false, error: 'Refused: asset is required and cannot be blank.' };
+            }
+            // 🛡️ DEFENSE 2: tenant must be resolved. We never write strategy rows
+            // without a verified tenantId (we already enforce 401 above, but be paranoid).
+            if (!tenantId) {
+              return { success: false, error: 'Refused: no tenant context. Re-authenticate and try again.' };
+            }
 
-                // Step 2: Fallback — if no match by strategy name, check if any row exists for this asset+tenant
-                // This prevents accidental duplicate row creation when the agent sends a mismatched strategy_id
-                if (!existing) {
-                  const result2 = await supabase
-                    .from('strategy_config')
-                    .select('id, strategy')
-                    .eq('asset', args.asset)
-                    .eq('tenant_id', tenantId)
-                    .limit(1)
-                    .maybeSingle();
-                  
-                  if (result2.error) throw result2.error;
-                  existing = result2.data;
-                  
-                  if (existing) {
-                    console.warn("[UPSERT FALLBACK] Matched by tenant+asset (strategy mismatch). Found existing strategy:", existing.strategy, "— updating row instead of creating duplicate.");
-                    // Preserve the original strategy name so it is NEVER left blank
-                    args.strategy_id = existing.strategy;
-                  }
-                }
+            // 🛡️ DEFENSE 3: dedupe consecutive identical calls within a short window.
+            // streamText with maxSteps=5 often emits manageStrategy twice (v1.0 then v1.1)
+            // in the same turn; without this guard the second call double-writes the row.
+            const key = dedupeKey(tenantId, rawAsset, rawStrategy);
+            const prev = MANAGE_STRATEGY_DEDUPE.get(key);
+            if (prev && Date.now() - prev.ts < MANAGE_STRATEGY_DEDUPE_TTL_MS) {
+              return { success: true, deduped: true, message: `Strategy ${rawStrategy} on ${rawAsset} was just written; ignoring duplicate within ${MANAGE_STRATEGY_DEDUPE_TTL_MS}ms.` };
+            }
+
+            const runManage = async () => {
+                // Look up by canonical key (tenant_id + asset + strategy). The PK
+                // column is `id` and we use it for the UPDATE target.
+                const { data: existing, error: lookupError } = await supabase
+                  .from('strategy_config')
+                  .select('id, tenant_id')
+                  .eq('tenant_id', tenantId)
+                  .eq('asset', rawAsset)
+                  .eq('strategy', rawStrategy)
+                  .maybeSingle();
+                if (lookupError) throw lookupError;
 
                 const payload = {
                   tenant_id: tenantId,
-                  asset: args.asset,
-                  strategy: args.strategy_id,  // Always populated — never blank
+                  asset: rawAsset,
+                  strategy: rawStrategy,        // ALWAYS the validated non-blank value
                   execution_mode: args.execution_mode || 'PAPER',
-                  is_active: args.is_active ?? false, 
-                  version: args.version || "v1.0", 
+                  is_active: args.is_active ?? false,
+                  version: args.version || "v1.0",
                   parameters: args.parameters || {},
                   last_updated: new Date().toISOString(),
                   reasoning: args.reasoning
                 };
-                
-                let result;
+
+                let writeResult;
                 if (existing) {
-                  result = await supabase.from('strategy_config').update(payload).eq('id', existing.id).eq('tenant_id', tenantId);
+                  // Defensive: also constrain by tenant_id to make cross-tenant writes
+                  // structurally impossible even if `existing.id` were ever stale.
+                  writeResult = await supabase
+                    .from('strategy_config')
+                    .update(payload)
+                    .eq('id', existing.id)
+                    .eq('tenant_id', tenantId)
+                    .select('id, tenant_id, strategy, asset')
+                    .single();
                 } else {
-                  // Only INSERT if no row exists for this asset+tenant at all (new asset)
-                  result = await supabase.from('strategy_config').insert([payload]);
+                  writeResult = await supabase
+                    .from('strategy_config')
+                    .insert([payload])
+                    .select('id, tenant_id, strategy, asset')
+                    .single();
                 }
-        
-                if (result.error) throw result.error;
-                return { success: true, message: `Strategy ${args.strategy_id} updated to ${payload.version}.` };
+                if (writeResult.error) throw writeResult.error;
+
+                // 🛡️ DEFENSE 4: verify the row that came back is OURS. If the DB
+                // somehow returned a row for a different tenant (it shouldn't, but
+                // we never want to leak cross-tenant writes), undo and error out.
+                const written = writeResult.data;
+                if (!written || written.tenant_id !== tenantId) {
+                  console.error('[MANAGE STRATEGY SECURITY] Post-write tenant mismatch.', { expected: tenantId, got: written?.tenant_id });
+                  if (written?.id) {
+                    await supabase.from('strategy_config').delete().eq('id', written.id).eq('tenant_id', written.tenant_id);
+                  }
+                  return { success: false, error: 'Refused: post-write tenant verification failed. Write reverted.' };
+                }
+
+                MANAGE_STRATEGY_DEDUPE.set(key, { ts: Date.now() });
+                return { success: true, message: `Strategy ${rawStrategy} on ${rawAsset} updated to ${payload.version}.` };
             };
 
             try {

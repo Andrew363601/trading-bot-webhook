@@ -66,21 +66,41 @@ export default async function handler(req, res) {
 
                 const isBillingActive = sub.status === 'active' || sub.status === 'trialing';
 
+                // Keep the per-tier active-strategy quota in sync with the user's plan.
+                // Single source of truth — see TIER_CONCURRENT_LIMITS in lib/tenant-context.js.
+                const TIER_LIMITS = { FREE_TRIAL: 1, RETAIL: 3, PRO: 10, INSTITUTIONAL: 20, ADMIN: 9999 };
+                const tierLimit = TIER_LIMITS[(tier || '').toUpperCase()] ?? TIER_LIMITS.FREE_TRIAL;
+
                 await supabase.from('tenants').update({
                     billing_tier: tier,
                     subscription_active: isBillingActive,
+                    max_concurrent_strategies: tierLimit,
                     updated_at: new Date().toISOString() // Track timestamp for grace period
                 }).eq('id', tenantId);
 
                 // 🔒 If a subscription transitions into a non-active state (past_due, unpaid,
                 // canceled, incomplete_expired), force ALL active strategies OFF immediately.
                 // This protects the account from continuing to trade without valid billing.
+                // 🛠️ Exception: respect admin manual overrides on PAID/ADMIN tiers — we just
+                // wrote the new tier, so re-read and skip the lockdown for those.
                 if (!isBillingActive) {
-                    await supabase.from('strategy_config')
-                        .update({ is_active: false, updated_at: new Date().toISOString() })
-                        .eq('tenant_id', tenantId)
-                        .eq('is_active', true);
-                    console.warn(`[STRIPE_WEBHOOK] Deactivated strategies for ${tenantId} (status=${sub.status}).`);
+                    const PAID_TIERS = ['RETAIL', 'PRO', 'INSTITUTIONAL', 'ADMIN'];
+                    const { data: tenantAfter } = await supabase
+                        .from('tenants')
+                        .select('subscription_active, billing_tier')
+                        .eq('id', tenantId)
+                        .single();
+                    const manualOverride = tenantAfter?.subscription_active === true
+                        && PAID_TIERS.includes((tenantAfter?.billing_tier || '').toUpperCase());
+                    if (!manualOverride) {
+                        await supabase.from('strategy_config')
+                            .update({ is_active: false, updated_at: new Date().toISOString() })
+                            .eq('tenant_id', tenantId)
+                            .eq('is_active', true);
+                        console.warn(`[STRIPE_WEBHOOK] Deactivated strategies for ${tenantId} (status=${sub.status}).`);
+                    } else {
+                        console.log(`[STRIPE_WEBHOOK] Skipping lockdown for ${tenantId} due to manual override (tier=${tenantAfter.billing_tier}).`);
+                    }
                 }
             }
             break;

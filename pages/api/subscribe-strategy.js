@@ -3,6 +3,8 @@
 
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 import { createClient } from '@supabase/supabase-js';
+import { retrieveAPIKey } from '../../lib/secrets-manager.js';
+import { getConcurrentStrategyQuota, checkHasCoinbaseKeys } from '../../lib/tenant-context.js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
@@ -69,6 +71,23 @@ export default async function handler(req, res) {
 
     const actualTenantId = tenantUser.tenant_id;
 
+    // 🔒 LIVE MODE GATE: Block LIVE activation if Coinbase API keys aren't configured.
+    // (deploy-strategy.js had this; subscribe-strategy.js was missing it — closing that gap.)
+    if (executionMode === 'LIVE') {
+      try {
+        const secrets = await retrieveAPIKey(supabase, actualTenantId, 'COINBASE');
+        if (!secrets?.apiKey || !secrets?.apiSecret) {
+          return res.status(400).json({
+            error: 'LIVE trading requires Coinbase API keys. Add them in Settings → API Keys, or switch to PAPER mode to start simulated trading.'
+          });
+        }
+      } catch (e) {
+        return res.status(400).json({
+          error: 'LIVE trading requires Coinbase API keys. Add them in Settings → API Keys, or switch to PAPER mode to start simulated trading.'
+        });
+      }
+    }
+
     // 1. Check for any existing active strategy for this asset and tenant
     const { data: existingActiveStrategies, error: activeError } = await supabase
       .from('strategy_config')
@@ -76,6 +95,48 @@ export default async function handler(req, res) {
       .eq('tenant_id', actualTenantId)
       .eq('asset', asset)
       .eq('is_active', true);
+
+    // DEACTIVATE any currently active strategy on this asset (enforce 1-active-per-asset limit)
+    // NOTE: This runs BEFORE the quota check because if we are replacing an active strategy,
+    // we don't want it to erroneously trigger the max-concurrent limit.
+    if (existingActiveStrategies && existingActiveStrategies.length > 0) {
+      const idsToDeactivate = existingActiveStrategies.map(s => s.id);
+      
+      const { error: deactivateError } = await supabase
+        .from('strategy_config')
+        .update({ is_active: false })
+        .in('id', idsToDeactivate);
+
+      if (deactivateError) {
+        console.error('Error deactivating existing strategies:', deactivateError);
+        // Continue anyway; the unique DB constraint (if added) or just cleanup
+        // will handle it, but we log the issue.
+      }
+    }
+
+    // 🪟 PLAN GATE: enforce per-tier ceiling on concurrently active strategies.
+    // Reactivating an existing strategy of THIS asset is fine (it doesn't grow the
+    // active count); only block when adding a NEW active row beyond the quota.
+    {
+      const quota = await getConcurrentStrategyQuota(actualTenantId);
+      // Because we just deactivated conflicting strategies, the active count is true.
+      // If quota.hasRoom is false now, they literally cannot add another one.
+      if (!quota.hasRoom) {
+        return res.status(403).json({
+          error: `Your ${quota.tier} plan allows up to ${quota.limit} active strategy${quota.limit === 1 ? '' : 'ies'} at a time (currently ${quota.active}). Deactivate another strategy or upgrade your plan to add more.`,
+          quota
+        });
+      }
+    }
+
+    // 2. Check if the specific strategy-asset combo already exists for this tenant
+    const { data: existingStrategy, error: existingError } = await supabase
+      .from('strategy_config')
+      .select('id, parameters')
+      .eq('tenant_id', actualTenantId)
+      .eq('asset', asset)
+      .eq('strategy', strategy)
+      .maybeSingle();
 
     if (activeError) {
       console.error("[SUBSCRIBE STRATEGY ERROR]: Failed to check for active strategies:", activeError.message);

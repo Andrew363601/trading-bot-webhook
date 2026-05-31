@@ -319,7 +319,17 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   });
 
   return (
-    <div className="bg-slate-950/50 rounded-2xl p-3 space-y-4 max-h-[500px] md:max-h-none overflow-y-auto custom-scrollbar">
+    /* 🛠️ Hard-fixed height on desktop so the panel never grows past what fits
+       in the dropdown window. Mobile keeps a viewport-relative cap. Horizontal
+       scrolling is locked off here — only the inner tab strip is allowed to pan
+       horizontally, which fixes the "scrolling the bottom moves the FULL menu"
+       bug. touchAction: pan-y tells mobile browsers we only want vertical pan
+       on this surface, so the OS won't translate horizontal swipes into a
+       full-panel drag. */
+    <div
+      className="bg-slate-950/50 rounded-2xl p-3 space-y-4 max-h-[calc(100vh-180px)] md:max-h-[520px] md:h-[520px] overflow-y-auto overflow-x-hidden custom-scrollbar"
+      style={{ touchAction: 'pan-y' }}
+    >
       {/* Tabs.
           • Mobile: a draggable strip — only the tabs move (drag the bar below to scroll
             through them); no page-level horizontal scrollbar.

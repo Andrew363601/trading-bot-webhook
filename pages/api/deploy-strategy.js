@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 import { setPendingMode, consumePendingMode, isPendingMode } from '../../lib/phase3-mode.js';
+import { getConcurrentStrategyQuota } from '../../lib/tenant-context.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -74,6 +75,38 @@ async function handler(req, res) {
       is_active: true,
       updated_at: new Date().toISOString()
     };
+
+    // 🪟 PLAN GATE: enforce per-tier ceiling on concurrently active strategies.
+    // Reactivating this same (asset, strategy) is fine; only block when it would
+    // be a NET-NEW active row beyond the tier quota. We allow per-asset replacement
+    // because Step 1 below first deactivates any conflicting active strategy on
+    // the same asset (net count does not grow in that case).
+    {
+      const quota = await getConcurrentStrategyQuota(tenantId);
+      const { data: alreadyActiveSame } = await supabase
+        .from('strategy_config')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('asset', asset)
+        .eq('strategy', strategy)
+        .eq('is_active', true)
+        .maybeSingle();
+      const { data: anyActiveOnAsset } = await supabase
+        .from('strategy_config')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('asset', asset)
+        .eq('is_active', true)
+        .maybeSingle();
+      const replacesExistingOnAsset = !!anyActiveOnAsset; // Step 1 will turn that off
+      const wouldBeNetNewActive = !alreadyActiveSame && !replacesExistingOnAsset;
+      if (wouldBeNetNewActive && !quota.hasRoom) {
+        return res.status(403).json({
+          error: `Your ${quota.tier} plan allows up to ${quota.limit} active strategy${quota.limit === 1 ? '' : 'ies'} at a time (currently ${quota.active}). Deactivate another strategy or upgrade your plan to add more.`,
+          quota
+        });
+      }
+    }
 
     // Step 1: Deactivate any active strategy FOR THIS TENANT AND ASSET
     await (async () => {

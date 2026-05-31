@@ -39,10 +39,12 @@ export default function LandingPage() {
     const toLog = (l) => ({
       type: l.agent_name === 'Agent Cortex' ? 'CORTEX' : (l.agent_name === 'Watchdog' ? 'WATCHDOG' : 'SNIPER'),
       text: l.log_message,
+      timestamp: l.timestamp || null,   // Preserve so the terminal can show DATE/TIME, not just text.
       color: l.agent_name === 'Agent Cortex' ? 'text-purple-400' : (l.agent_name === 'Watchdog' ? 'text-emerald-400' : 'text-cyan-400'),
     });
 
     let cancelled = false;
+    let hasRealData = false;   // Once we paint real demo data, never let synthetic stats clobber it.
 
     // Fetch the demo data from the public, server-side, service-role endpoint.
     // (Direct anon Supabase reads are blocked by tenant-scoped RLS.)
@@ -53,37 +55,40 @@ export default function LandingPage() {
         const data = await res.json();
         if (cancelled) return;
 
-        // If the demo tenant isn't configured or has no data, keep the synthetic view.
         const hasAny = (data.logs?.length || 0) + (data.trades?.length || 0) + (data.configs?.length || 0) > 0;
+        // Only fall back to synthetic if we have NEVER painted real data. Once we
+        // have real data, an empty poll (transient blip) must not clobber it back
+        // to "67.3% / $4,892.15".
         if (!data.configured || !hasAny) {
-          setSynthetic();
+          if (!hasRealData) setSynthetic();
           return;
         }
+        hasRealData = true;
 
         if (data.logs?.length) setLogs(data.logs.map(toLog));
-        if (data.configs?.length) setDemoConfigs(data.configs);
+        // Configs are pre-filtered to is_active=true by /api/demo-feed.
+        setDemoConfigs(data.configs || []);
 
-        if (data.trades?.length) {
-          const trades = data.trades;
-          setDemoTrades(trades);
-          const closed = trades.filter(t => t.exit_price !== null && t.exit_price !== undefined);
-          const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
-          const winRate = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(1) + '%' : '0%';
-          const totalPnLVal = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
-          setDemoStats({ winRate, totalTrades: closed.length, totalPnL: `$${totalPnLVal.toFixed(2)}` });
+        // Trades drive stats. Always recompute against the latest payload so the
+        // win rate and PnL reflect what the demo tenant is actually doing.
+        const trades = data.trades || [];
+        setDemoTrades(trades);
+        const closed = trades.filter(t => t.exit_price !== null && t.exit_price !== undefined);
+        const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+        const winRate = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(1) + '%' : '0%';
+        const totalPnLVal = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+        setDemoStats({ winRate, totalTrades: closed.length, totalPnL: `$${totalPnLVal.toFixed(2)}` });
 
-          const open = trades.find(t => t.exit_price === null || t.exit_price === undefined);
-          setActiveDemoTrade(open || null);
+        const open = trades.find(t => t.exit_price === null || t.exit_price === undefined);
+        setActiveDemoTrade(open || null);
 
-          // Surface a brief rationalization flash if a Cortex log just landed.
-          if (data.logs?.some(l => l.agent_name === 'Agent Cortex')) {
-            setShowRationalization(true);
-            setTimeout(() => { if (!cancelled) setShowRationalization(false); }, 8000);
-          }
+        if (data.logs?.some(l => l.agent_name === 'Agent Cortex')) {
+          setShowRationalization(true);
+          setTimeout(() => { if (!cancelled) setShowRationalization(false); }, 8000);
         }
       } catch (e) {
         console.warn('[DEMO] feed unavailable, using synthetic data:', e.message);
-        if (!cancelled) setSynthetic();
+        if (!cancelled && !hasRealData) setSynthetic();
       }
     };
 
@@ -120,16 +125,38 @@ export default function LandingPage() {
     return { winRate, totalPnL: totalPnL.toFixed(2), history };
   };
 
-  const showcaseStrategies = [
-    { id: 'ORACLE_PRICE_ACTION_V1', asset: 'BTC-PERP', name: 'Oracle Breakout', color: 'indigo' },
-    { id: 'KELTNER_EXECUTION_V1', asset: 'ETH-PERP', name: 'Keltner Execution', color: 'cyan' },
-    { id: 'SOL_RANGE_REVERSION_V1', asset: 'SOL-PERP', name: 'Range Reversion', color: 'purple' },
-    { id: 'DOGE_HF_SCALPER_V1', asset: 'DOGE-PERP', name: 'HF Scalper', color: 'emerald' },
-  ];
+  // Display metadata for well-known strategy IDs. Anything not in this lookup
+  // gets a humanised fallback name so any strategy the demo tenant runs will
+  // still render a card (BUG FIX: previously a hardcoded filter discarded any
+  // strategy whose ID wasn't in this list, which is why manually-added strategies
+  // never appeared on the landing page).
+  const STRATEGY_DISPLAY = {
+    ORACLE_PRICE_ACTION_V1: { name: 'Oracle Breakout', color: 'indigo' },
+    KELTNER_EXECUTION_V1:   { name: 'Keltner Execution', color: 'cyan' },
+    SOL_RANGE_REVERSION_V1: { name: 'Range Reversion', color: 'purple' },
+    DOGE_HF_SCALPER_V1:     { name: 'HF Scalper', color: 'emerald' },
+  };
 
-  const activeShowcaseStrategies = showcaseStrategies.filter(s => 
-    demoConfigs.some(c => c.strategy === s.id)
-  );
+  const humaniseStrategy = (id) => {
+    if (!id) return 'Strategy';
+    return id.replace(/_v?\d+$/i, '')      // drop trailing _V1 / _v2 / _v1
+             .replace(/_/g, ' ')
+             .toLowerCase()
+             .replace(/\b\w/g, c => c.toUpperCase());
+  };
+
+  // Render cards dynamically from the LIVE demoConfigs. Each row in demoConfigs
+  // is already filtered server-side to is_active=true, so this list always
+  // reflects what the demo tenant is actually running right now.
+  const activeShowcaseStrategies = demoConfigs.map((c) => {
+    const meta = STRATEGY_DISPLAY[c.strategy] || {};
+    return {
+      id: c.strategy,
+      asset: c.asset,
+      name: meta.name || humaniseStrategy(c.strategy),
+      color: meta.color || 'indigo',
+    };
+  });
 
   const coinbaseLink = getCoinbaseAffiliateLink('landing_page');
 
@@ -344,6 +371,11 @@ export default function LandingPage() {
                 <div className="p-6 font-mono text-sm text-slate-300 space-y-2 h-[400px] overflow-y-auto">
                   {filteredLogs.map((log, i) => (
                     <p key={i} className={log.color || 'text-slate-300'}>
+                      {log.timestamp && (
+                        <span className="text-slate-600 mr-2 text-[11px]">
+                          [{new Date(log.timestamp).toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })}]
+                        </span>
+                      )}
                       &gt; [{log.type}] {log.text}
                     </p>
                   ))}

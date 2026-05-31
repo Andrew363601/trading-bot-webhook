@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 // 🟢 THE FIX: Explicitly import AreaSeries for V5 compatibility
 import { createChart, AreaSeries } from 'lightweight-charts';
 import { 
-  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers
+  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers, Activity, ChevronDown, ChevronUp
 } from 'lucide-react';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { createServerSupabaseClient } from '@supabase/auth-helpers-nextjs';
@@ -36,6 +36,7 @@ function PerformanceLogContent() {
   const [isMounted, setIsMounted] = useState(false);
   const [loading, setLoading] = useState(true);
   const supabase = useSupabaseClient();
+  const session = useSession();
   
   const [allValidTrades, setAllValidTrades] = useState([]);
   
@@ -43,7 +44,12 @@ function PerformanceLogContent() {
   const [strategyFilter, setStrategyFilter] = useState('ALL');
   const [modeFilter, setModeFilter] = useState('ALL'); // ALL | LIVE | PAPER
   const [selectedDate, setSelectedDate] = useState(null);
-  const [logFilter, setLogFilter] = useState('ALL'); 
+  const [logFilter, setLogFilter] = useState('ALL');
+  // Per-row toggle for the (often very long) oracle rationale. Keyed by trade.id.
+  const [expandedThesis, setExpandedThesis] = useState({});
+  // In-flight ids for the action buttons so the UI can disable them while a request runs.
+  const [reviewingId, setReviewingId] = useState(null);
+  const [closingId, setClosingId] = useState(null);
   // Real calendar: track the visible month (first of month).
   const [calendarMonth, setCalendarMonth] = useState(() => {
     const d = new Date();
@@ -83,19 +89,29 @@ function PerformanceLogContent() {
   // The set of actual date strings in the visible month (used for daily stats).
   const calendarDays = useMemo(() => calendarCells.filter(Boolean), [calendarCells]);
 
+  // Open positions are tracked separately so that all of the historical math
+  // below (calendar, equity curve, daily stats) keeps working off CLOSED
+  // trades only. Open trades surface as actionable rows at the top of the
+  // Execution Logs section (Reevaluate / Close).
+  const [openPositions, setOpenPositions] = useState([]);
+
   const fetchPerformance = useCallback(async () => {
     setLoading(true);
     try {
-      const { data: trades } = await supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('exit_time', { ascending: true }); 
+      const [{ data: closedTrades }, { data: liveTrades }] = await Promise.all([
+        supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('exit_time', { ascending: true }),
+        supabase.from('trade_logs').select('*').is('exit_price', null).order('created_at', { ascending: false }),
+      ]);
 
-      const valid = (trades || []).filter(t => {
+      const valid = (closedTrades || []).filter(t => {
           if (!t || !t.exit_time) return false;
-          if (isNaN(new Date(t.exit_time).getTime())) return false; 
-          if (parseFloat(t.pnl || 0) === 0 && t.entry_price === t.exit_price) return false; 
+          if (isNaN(new Date(t.exit_time).getTime())) return false;
+          if (parseFloat(t.pnl || 0) === 0 && t.entry_price === t.exit_price) return false;
           return true;
       });
 
       setAllValidTrades(valid);
+      setOpenPositions(liveTrades || []);
       setSelectedDate(toLocalDateStr(new Date()));
     } catch (err) {
       console.error("Performance Fetch Error:", err);
@@ -107,6 +123,63 @@ function PerformanceLogContent() {
   useEffect(() => { 
       if (isMounted) fetchPerformance(); 
   }, [fetchPerformance, isMounted]);
+
+  // 🔁 Force-review an open trade through the Oracle. Mirrors handler in pages/audit.js
+  // so the user can act from the Performance view without context-switching.
+  const handleForceReview = useCallback(async (tradeId) => {
+    if (!session?.access_token || !tradeId) return;
+    setReviewingId(tradeId);
+    try {
+      const res = await fetch('/api/reevaluate-trade', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ trade_id: tradeId })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `Review failed (${res.status})`);
+      alert(`Oracle Verdict: ${data.status}\n\n${data.reasoning || ''}`);
+      fetchPerformance();
+    } catch (err) {
+      alert(`Review Failed: ${err.message}`);
+    } finally {
+      setReviewingId(null);
+    }
+  }, [session, fetchPerformance]);
+
+  // 🛑 Force-close an open trade. Same payload shape as pages/audit.js handleClosePosition.
+  const handleClosePosition = useCallback(async (trade) => {
+    if (!session?.access_token || !trade) return;
+    const ok = window.confirm(`Cancel/close the active setup for ${trade.symbol}?`);
+    if (!ok) return;
+    setClosingId(trade.id);
+    try {
+      const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
+      const res = await fetch('/api/close-position', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({
+          trade_id: trade.id,
+          symbol: trade.symbol,
+          side: closingSide,
+          qty: trade.qty,
+          price: 0
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `Close failed (${res.status})`);
+      fetchPerformance();
+    } catch (e) {
+      alert(`Cancel Failed: ${e.message}`);
+    } finally {
+      setClosingId(null);
+    }
+  }, [session, fetchPerformance]);
 
   // Normalize a trade's execution mode to 'LIVE' or 'PAPER'. Defaults to PAPER
   // (simulated) when no explicit mode is recorded — the safe assumption.
@@ -441,14 +514,52 @@ function PerformanceLogContent() {
           </div>
 
           <div className="lg:col-span-3 space-y-4">
-             <div className="flex items-center justify-between pl-2">
+             {/* Open Positions strip — actionable Reevaluate / Close buttons for
+                 currently-running trades. Sits ABOVE the closed-trade history so
+                 users can act on live positions without leaving this page. */}
+             {openPositions.length > 0 && (
+                 <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-3 space-y-2">
+                     <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-300 flex items-center gap-2"><Activity size={12}/> Open Positions ({openPositions.length})</h3>
+                     {openPositions.map((t) => (
+                         <div key={t.id} className="flex flex-wrap items-center gap-2 sm:gap-3 bg-slate-900/40 border border-white/5 rounded-xl px-3 py-2">
+                             <div className="flex-1 min-w-0">
+                                 <div className="flex items-center gap-2 flex-wrap">
+                                     <span className="text-[11px] font-black text-white">{t.symbol}</span>
+                                     <span className={`text-[9px] font-black uppercase px-1.5 rounded ${(t.side === 'BUY' || t.side === 'LONG') ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300'}`}>{t.side}</span>
+                                     <span className="text-[10px] font-mono text-slate-400">@ ${t.entry_price}</span>
+                                     <span className="text-[9px] font-mono text-slate-500 truncate">{t.strategy_id}</span>
+                                 </div>
+                             </div>
+                             <div className="flex gap-2 w-full sm:w-auto">
+                                 <button
+                                     onClick={() => handleForceReview(t.id)}
+                                     disabled={reviewingId === t.id}
+                                     className={`flex-1 sm:flex-none whitespace-nowrap flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${reviewingId === t.id ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50 cursor-not-allowed' : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/40'}`}
+                                 >
+                                     {reviewingId === t.id ? 'Analyzing…' : (<><Target size={11} /> Reevaluate</>)}
+                                 </button>
+                                 <button
+                                     onClick={() => handleClosePosition(t)}
+                                     disabled={closingId === t.id}
+                                     className={`flex-1 sm:flex-none whitespace-nowrap flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${closingId === t.id ? 'bg-red-500/20 text-red-400 border border-red-500/50 cursor-not-allowed' : 'bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20'}`}
+                                 >
+                                     {closingId === t.id ? 'Closing…' : (<>Close</>)}
+                                 </button>
+                             </div>
+                         </div>
+                     ))}
+                 </div>
+             )}
+
+             {/* Header row: stacks on mobile so the CSV button is never clipped. */}
+             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pl-2">
                  <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2"><Clock size={14}/> Execution Logs</h3>
-                 <div className="flex gap-2 items-center">
+                 <div className="flex flex-wrap gap-1.5 sm:gap-2 items-center">
                      {['ALL', 'WIN', 'LOSS', 'LONG', 'SHORT'].map(f => (
-                         <button 
-                            key={f} 
-                            onClick={() => setLogFilter(f)} 
-                            className={`text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border ${logFilter === f ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}
+                         <button
+                            key={f}
+                            onClick={() => setLogFilter(f)}
+                            className={`text-[9px] font-black uppercase tracking-widest px-2 sm:px-3 py-1 rounded-lg border whitespace-nowrap ${logFilter === f ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}
                          >
                             {f}
                          </button>
@@ -474,7 +585,7 @@ function PerformanceLogContent() {
                             a.click();
                             URL.revokeObjectURL(url);
                         }}
-                        className="text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-lg border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 ml-2"
+                        className="text-[9px] font-black uppercase tracking-widest px-2 sm:px-3 py-1 rounded-lg border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 whitespace-nowrap flex-shrink-0"
                      >
                         Export CSV
                      </button>
@@ -506,8 +617,20 @@ function PerformanceLogContent() {
                      <div className="flex flex-col gap-3 pl-2">
                         {pipeline.reasoning && (
                           <div className="border-l-2 border-amber-500/30 pl-4 py-1">
-                             <h4 className="text-[9px] font-black uppercase tracking-widest text-amber-400 flex items-center gap-2 mb-1"><BrainCircuit size={10}/> Oracle Rationale</h4>
-                             <p className="text-[11px] text-slate-400 italic whitespace-pre-wrap">&quot;{pipeline.reasoning}&quot;</p>
+                             <div className="flex items-center justify-between mb-1">
+                               <h4 className="text-[9px] font-black uppercase tracking-widest text-amber-400 flex items-center gap-2"><BrainCircuit size={10}/> Oracle Rationale</h4>
+                               {pipeline.reasoning.length > 220 && (
+                                 <button
+                                   onClick={() => setExpandedThesis(prev => ({ ...prev, [t.id]: !prev[t.id] }))}
+                                   className="text-[9px] font-black uppercase tracking-widest text-amber-300 hover:text-amber-200 flex items-center gap-1"
+                                 >
+                                   {expandedThesis[t.id] ? <>Collapse <ChevronUp size={10}/></> : <>Expand <ChevronDown size={10}/></>}
+                                 </button>
+                               )}
+                             </div>
+                             <p className={`text-[11px] text-slate-400 italic whitespace-pre-wrap ${expandedThesis[t.id] ? '' : 'line-clamp-3'}`}>
+                               &quot;{pipeline.reasoning}&quot;
+                             </p>
                           </div>
                         )}
                         

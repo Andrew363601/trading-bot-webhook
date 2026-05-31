@@ -10,11 +10,18 @@ import {
   Send, Activity, PieChart, Shield, Zap, TrendingUp, TrendingDown,
   Target, AlertTriangle, ArrowRight, RefreshCw, Layers, BrainCircuit,
   Settings, LogOut, Clock, Crosshair, ChevronRight, Menu, X, PlusCircle,
-  Search, AlertOctagon, Eye, Minimize2, Maximize2, Power, ChevronDown, Sun, Moon
+  Search, AlertOctagon, Eye, Minimize2, Maximize2, Power, ChevronDown, ChevronUp, Sun, Moon,
+  Minus, Slash, Type, Eraser, Sliders
 } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
 import MarketScanner from '../components/MarketScanner';
 import QuickStartGuide from '../components/QuickStartGuide';
+import ChartToolbar from '../components/ChartToolbar';
+import CoinglassPanes from '../components/CoinglassPanes';
+import CoinglassOverlayLines from '../components/CoinglassOverlayLines';
+import ChartToolbar from '../components/ChartToolbar';
+import CoinglassPanes from '../components/CoinglassPanes';
+import CoinglassOverlayLines from '../components/CoinglassOverlayLines';
 import ChatNotification from '../components/ChatNotification';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
 
@@ -99,6 +106,20 @@ function DashboardContent() {
   const [livePositions, setLivePositions] = useState([]);
   const [liveOrders, setLiveOrders] = useState([]);
   const [isChartMaximized, setIsChartMaximized] = useState(false);
+  // "Pull-down" expand for the chart — gives the user a larger drawing/analysis
+  // surface without going fullscreen. Persists across asset switches.
+  const [isChartExpanded, setIsChartExpanded] = useState(false);
+  // Active drawing tool on the chart: null | 'hline' | 'tline' | 'note'.
+  // Drawings are stored in a ref so they survive re-renders for live ticks.
+  const [drawingTool, setDrawingTool] = useState(null);
+  const drawingsRef = useRef({ hlines: [], notes: [] }); // tline rendered as custom paths in markers
+  const [drawingsVersion, setDrawingsVersion] = useState(0); // bump to trigger re-render after changes
+  // Coinglass indicator overlays — { id, kind: 'overlay'|'pane', label } objects.
+  // overlay = drawn on top of the candle series (e.g. liquidation heatmap).
+  // pane    = stacked below the chart (e.g. funding rate, OI). Pane indicators
+  // are hidden on mobile when the chart is collapsed; overlays always show.
+  const [selectedCoinglassIndicators, setSelectedCoinglassIndicators] = useState([]);
+  const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [isDefconActive, setIsDefconActive] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
@@ -142,6 +163,14 @@ function DashboardContent() {
   const isLoadingOlderRef = useRef(false);
   const allChartDataRef = useRef([]);
   const earliestFetchedTimeRef = useRef(null);
+  // 🛠️ CLOSURE-SAFE refs for the chart's lazy-load subscription. The chart-init
+  // useEffect runs once (empty deps) so any state read inside it would be frozen
+  // at mount time — that's how the previous chart was fetching candles for the
+  // ORIGINAL asset while the user was viewing a different one, then stitching
+  // them in and "snapping" the price scale. These refs always reflect the
+  // current selection so the in-flight stitcher uses the right asset/timeframe.
+  const activeAssetRef = useRef(null);
+  const chartTimeframeRef = useRef('1m');
 
   const [localInput, setLocalInput] = useState('');
 
@@ -745,14 +774,21 @@ function DashboardContent() {
     seriesMarkersRef.current = markersPlugin; 
 
     // 🟢 THE UPGRADE: Infinite Scroll / Lazy Loading
+    // 🛠️ Read asset/timeframe from refs, not closure variables. Refs always hold
+    // the CURRENT selection so we never stitch BTC candles into an ETH chart.
+    // Also snapshot the requesting asset+TF and bail if either changes while the
+    // older-data fetch is in flight (otherwise stale data lands on a new chart).
     chart.timeScale().subscribeVisibleTimeRangeChange(async (newRange) => {
         if (!newRange || !seriesRef.current || isLoadingOlderRef.current) return;
-        
+
         const currentData = allChartDataRef.current;
         if (currentData.length === 0) return;
 
         const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
-        const granularity = tfMap[chartTimeframe] || 60;
+        const requestAsset = activeAssetRef.current;
+        const requestTf = chartTimeframeRef.current;
+        const granularity = tfMap[requestTf] || 60;
+        if (!requestAsset) return;
         const firstCandleTime = currentData[0].time;
 
         // Fetch when user is within 50 candles of the left edge
@@ -761,13 +797,18 @@ function DashboardContent() {
             const endTime = firstCandleTime;
 
             try {
-                console.log(`[CHART] Stitching older data before ${new Date(endTime * 1000).toLocaleString()}...`);
-                const res = await fetch(`/api/chart-data?asset=${activeAsset}&granularity=${granularity}&end=${endTime}&limit=1000`);
+                console.log(`[CHART] Stitching older ${requestAsset} (${requestTf}) before ${new Date(endTime * 1000).toLocaleString()}...`);
+                const res = await fetch(`/api/chart-data?asset=${requestAsset}&granularity=${granularity}&end=${endTime}&limit=1000`);
+                // 🛡️ If the user switched asset OR timeframe while we were fetching,
+                // discard this response — it would corrupt the new chart's data.
+                if (activeAssetRef.current !== requestAsset || chartTimeframeRef.current !== requestTf) {
+                    return;
+                }
                 if (res.ok) {
                     const olderData = await res.json();
                     if (Array.isArray(olderData) && olderData.length > 0) {
                         const merged = [...olderData, ...currentData].sort((a, b) => a.time - b.time);
-                        
+
                         // Deduplicate merged set
                         const seen = new Set();
                         const uniqueMerged = merged.filter(d => {
@@ -776,9 +817,12 @@ function DashboardContent() {
                             return true;
                         });
 
+                        // Final guard before mutating the live series.
+                        if (activeAssetRef.current !== requestAsset || chartTimeframeRef.current !== requestTf) return;
+
                         allChartDataRef.current = uniqueMerged;
                         seriesRef.current.setData(uniqueMerged);
-                        
+
                         const volumeData = uniqueMerged.map(c => ({
                             time: c.time, value: c.volume,
                             color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'
@@ -812,6 +856,12 @@ function DashboardContent() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 🛠️ Keep the closure-safe refs in sync with React state so the chart's
+  // long-lived lazy-loader (subscribeVisibleTimeRangeChange, registered once)
+  // always reads the CURRENT asset / timeframe — not the value captured at mount.
+  useEffect(() => { activeAssetRef.current = activeAsset; }, [activeAsset]);
+  useEffect(() => { chartTimeframeRef.current = chartTimeframe; }, [chartTimeframe]);
 
   // Update chart theme when toggling light/dark mode without recreating the chart
   useEffect(() => {
@@ -1385,11 +1435,26 @@ function DashboardContent() {
         
         <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-[calc(100vh-280px)] sm:h-[calc(100vh-240px)] md:h-[calc(100vh-200px)] lg:h-[calc(100vh-180px)]">
           
-          <div id="chart-panel" className={isChartMaximized ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all" : "dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] overflow-hidden min-h-[300px] flex-grow relative shadow-2xl flex flex-col transition-all"}>
-            
-            <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="absolute top-2 right-2 sm:top-4 sm:right-4 z-50 dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-1 sm:p-2 rounded-lg transition-colors backdrop-blur-md">
-                {isChartMaximized ? <Minimize2 size={12} className="sm:size-[14px]"/> : <Maximize2 size={12} className="sm:size-[14px]"/>}
-            </button>
+          <div id="chart-panel" className={
+              isChartMaximized
+                ? "fixed inset-4 z-[100] bg-[#020617] border border-indigo-500/50 rounded-3xl p-6 shadow-2xl flex flex-col transition-all"
+                : `dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] overflow-hidden ${isChartExpanded ? 'min-h-[70vh]' : 'min-h-[300px]'} flex-grow relative shadow-2xl flex flex-col transition-all`
+            }>
+
+            <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-50 flex items-center gap-1.5">
+                {/* Pull-down expand toggle (NOT fullscreen). Mirrors the chat panel's
+                    "expand vertical surface" pattern so the user has more drawing room. */}
+                <button
+                  onClick={() => setIsChartExpanded(v => !v)}
+                  title={isChartExpanded ? 'Collapse chart' : 'Expand chart down'}
+                  className="dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-1 sm:p-2 rounded-lg transition-colors backdrop-blur-md"
+                >
+                  {isChartExpanded ? <ChevronUp size={12} className="sm:size-[14px]"/> : <ChevronDown size={12} className="sm:size-[14px]"/>}
+                </button>
+                <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-1 sm:p-2 rounded-lg transition-colors backdrop-blur-md">
+                    {isChartMaximized ? <Minimize2 size={12} className="sm:size-[14px]"/> : <Maximize2 size={12} className="sm:size-[14px]"/>}
+                </button>
+            </div>
 
             <div className="hidden sm:block absolute top-6 right-16 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
                {openPositions.slice(0, 3).map((log, i) => {
@@ -1443,12 +1508,123 @@ function DashboardContent() {
                 >
                   {showPriceLines ? '📊 TP/SL' : '📊 OFF'}
                 </button>
+                {/* Drawing tools + Coinglass indicator picker. Only revealed when
+                    the chart is expanded/maximized to prevent toolbar bloat in
+                    the compact view. */}
+                {(isChartExpanded || isChartMaximized) && (
+                  <ChartToolbar
+                    drawingTool={drawingTool}
+                    setDrawingTool={setDrawingTool}
+                    onClearDrawings={() => {
+                      // Wipe in-chart price lines tagged as user drawings.
+                      try {
+                        (drawingsRef.current.hlines || []).forEach(pl => {
+                          try { seriesRef.current?.removePriceLine(pl); } catch(_) {}
+                        });
+                      } catch(_) {}
+                      drawingsRef.current = { hlines: [], notes: [] };
+                      setDrawingsVersion(v => v + 1);
+                    }}
+                    selectedIndicators={selectedCoinglassIndicators}
+                    toggleIndicator={(item) => {
+                      setSelectedCoinglassIndicators(prev =>
+                        prev.some(p => p.id === item.id)
+                          ? prev.filter(p => p.id !== item.id)
+                          : [...prev, item]
+                      );
+                    }}
+                    isChartExpanded={isChartExpanded || isChartMaximized}
+                  />
+                )}
               </div>
             </div>
 
             <div className="flex-grow w-full relative mt-0 mb-4 px-2 min-h-[300px]">
-                <div ref={chartContainerRef} className="absolute inset-0" />
+                <div
+                  ref={chartContainerRef}
+                  className={`absolute inset-0 ${drawingTool ? 'cursor-crosshair' : ''}`}
+                  onClick={(e) => {
+                    if (!drawingTool || !chartRef.current || !seriesRef.current) return;
+                    const rect = chartContainerRef.current?.getBoundingClientRect();
+                    if (!rect) return;
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    // Convert pixel Y → price using the candle series price scale.
+                    let price = null;
+                    try { price = seriesRef.current.coordinateToPrice(y); } catch (_) {}
+                    if (price == null) return;
+
+                    if (drawingTool === 'hline') {
+                      const line = seriesRef.current.createPriceLine({
+                        price,
+                        color: 'rgba(99, 102, 241, 0.9)',
+                        lineWidth: 1,
+                        lineStyle: 0, // solid
+                        axisLabelVisible: true,
+                        title: `Drawing @ ${price.toFixed(2)}`,
+                      });
+                      drawingsRef.current.hlines.push(line);
+                      setDrawingTool(null);
+                      setDrawingsVersion(v => v + 1);
+                    } else if (drawingTool === 'note') {
+                      const text = window.prompt('Note text:', '');
+                      if (text) {
+                        drawingsRef.current.notes.push({ x, y, text, price });
+                        setDrawingsVersion(v => v + 1);
+                      }
+                      setDrawingTool(null);
+                    } else if (drawingTool === 'tline') {
+                      // Trend lines need two points. For v1 we approximate by
+                      // dropping two anchor horizontal lines (start + end price)
+                      // tagged "Trend". A full segmented-line draw is a future
+                      // upgrade; this keeps the UX truthful (lines you can see).
+                      const line = seriesRef.current.createPriceLine({
+                        price,
+                        color: 'rgba(56, 189, 248, 0.9)',
+                        lineWidth: 1,
+                        lineStyle: 2,
+                        axisLabelVisible: true,
+                        title: `Trend anchor @ ${price.toFixed(2)}`,
+                      });
+                      drawingsRef.current.hlines.push(line);
+                      setDrawingsVersion(v => v + 1);
+                    }
+                  }}
+                />
+                {/* Mount the Coinglass overlay engine — paints price-line levels
+                    onto the chart series. Component returns null; it side-effects
+                    on seriesRef. */}
+                <CoinglassOverlayLines
+                  seriesRef={seriesRef}
+                  asset={activeAsset}
+                  indicators={selectedCoinglassIndicators.filter(i => i.kind === 'overlay')}
+                  token={session?.access_token}
+                />
+                {/* On-chart drawing notes (text annotations rendered as absolutely
+                    positioned overlays). Horizontal lines are price lines on the
+                    series and don't need a DOM node. */}
+                {drawingsRef.current.notes.map((n, idx) => (
+                  <div key={`note-${idx}`} className="absolute z-30 pointer-events-none px-2 py-0.5 rounded bg-indigo-500/80 text-white text-[10px] font-bold shadow-lg" style={{ left: n.x, top: n.y }}>
+                    {n.text}
+                  </div>
+                ))}
             </div>
+
+            {/* Stacked Coinglass indicator panes. Hidden on mobile when the chart
+                isn't expanded — overlays stay visible regardless (they live inside
+                the chart container above). */}
+            {selectedCoinglassIndicators.filter(i => i.kind === 'pane').length > 0 && (isChartExpanded || isChartMaximized) && (
+              <div className="hidden md:block px-3 pb-3">
+                <CoinglassPanes
+                  asset={activeAsset}
+                  indicators={selectedCoinglassIndicators.filter(i => i.kind === 'pane')}
+                  token={session?.access_token}
+                />
+              </div>
+            )}
+            {/* Inline mobile rendering for panes is intentionally suppressed when
+                the chart is collapsed (per design: avoid bloat). Overlays still
+                render because they're already part of the chart series above. */}
           </div>
 
           <div id="trade-ledger" className="flex flex-col flex-grow min-h-[60vh] sm:min-h-0 overflow-hidden max-h-none sm:max-h-[80%] md:max-h-[50%] border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
@@ -1552,12 +1728,20 @@ function DashboardContent() {
                       }
                       
                       const timestamp = log.created_at || log.exit_time;
-                      const formattedTime = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "";
+                      // Show DATE + TIME on two lines so users can see when a
+                      // trade happened, not just what time of day. Compact format
+                      // keeps the cell from blowing up on mobile.
+                      const d = timestamp ? new Date(timestamp) : null;
+                      const formattedDate = d ? d.toLocaleDateString([], { month: '2-digit', day: '2-digit', year: '2-digit' }) : '';
+                      const formattedTime = d ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
                       return (
                       <tr key={i} className={`hover:bg-white/[0.02] transition-colors ${isShadow ? 'opacity-50' : ''}`}>
-                        <td className="responsive-table-cell date text-[8px] sm:text-[9px] text-slate-500 px-1.5 sm:px-2 py-1 sm:py-1.5">
-                            <div className="flex flex-col"><span className="text-[8px] sm:text-[10px] font-bold text-slate-400">{formattedTime}</span></div>
+                        <td className="responsive-table-cell date text-[8px] sm:text-[9px] text-slate-500 px-1.5 sm:px-2 py-1 sm:py-1.5 whitespace-nowrap">
+                            <div className="flex flex-col leading-tight">
+                              <span className="text-[8px] sm:text-[10px] font-bold text-slate-300">{formattedDate}</span>
+                              <span className="text-[7px] sm:text-[9px] font-mono text-slate-500">{formattedTime}</span>
+                            </div>
                         </td>
                         <td className="responsive-table-cell context text-center px-1.5 sm:px-2 py-1 sm:py-1.5">
                             <div className="flex flex-col items-center gap-0.5">
@@ -1603,7 +1787,12 @@ function DashboardContent() {
         </div>
 
                 <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-hidden lg:resize-y pb-2">
-          <div id="strategy-matrix" className="dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] p-4 sm:p-6 shadow-2xl flex-shrink-0">
+          <div id="strategy-matrix" className="dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] p-4 sm:p-6 shadow-2xl flex-grow-0 flex-shrink min-h-[120px] sm:min-h-[140px]">
+            {/* 🛠️ UNFIXED: removed `flex-shrink-0` so on mobile the active-matrix
+                card can properly resize + its content stays visible when the full
+                column has overflow-hidden. Maintains minimum height to prevent
+                extreme shrinking, but allows it to be pushed up gracefully when
+                the trade-ledger below is taller than its available space. */}
             <h3 className="text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 mb-4 flex items-center justify-between">
               <span>Active Matrix</span>
               <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full font-mono uppercase">
@@ -1806,26 +1995,34 @@ function DashboardContent() {
           ref={quickStartRef}
           tenantId={tenantId}
           onBeforeStep={(prevStep, nextStep) => {
-            // Step 1 (index 0): Open mobile menu so #dashboard-header is visible
+            // On mobile, the "Profile / Settings / API key" controls live INSIDE
+            // the slide-out menu, so steps that target them (#settings-btn,
+            // #api-key-name-input, #api-secret-input, #api-key-save-btn,
+            // and the final discord-setup step) need that menu open BEFORE the
+            // coach-mark tries to position. Otherwise the tooltip points at a
+            // collapsed/off-screen target and visually drifts above the viewport.
+            // Step indices (see lib/quick-start-config.js):
+            //   0=dashboard, 1=chart, 2=scanner, 3=strategies, 4=logs, 5=chat,
+            //   6=ledger, 7=settings, 8=settings-key-name, 9=settings-key-secret,
+            //   10=settings-save, 11=discord-setup
+            const MOBILE_NEEDS_MENU = new Set([0, 7, 8, 9, 10, 11]);
+            const NEEDS_SCANNER = new Set([2]);
             if (typeof window !== 'undefined' && window.innerWidth < 768) {
-              if (nextStep === 0) setShowMobileMenu(true);
-              if (prevStep === 0 && nextStep !== 2) setShowMobileMenu(false);
+              setShowMobileMenu(MOBILE_NEEDS_MENU.has(nextStep));
             }
-            // Step 3 (index 2): Open market scanner so #market-scanner is visible
-            if (nextStep === 2) setShowScanner(true);
-            if (prevStep === 2) setShowScanner(false);
+            setShowScanner(NEEDS_SCANNER.has(nextStep));
           }}
           onAfterStep={(currentStep) => {
-            // Ensure mobile menu is closed after leaving Step 1 (except when moving to Step 2)
-            if (typeof window !== 'undefined' && window.innerWidth < 768 && currentStep !== 0 && currentStep !== 2) {
-              setShowMobileMenu(false);
+            const MOBILE_NEEDS_MENU = new Set([0, 7, 8, 9, 10, 11]);
+            const NEEDS_SCANNER = new Set([2]);
+            if (typeof window !== 'undefined' && window.innerWidth < 768) {
+              setShowMobileMenu(MOBILE_NEEDS_MENU.has(currentStep));
             }
-            // Ensure market scanner stays open during Step 3
-            if (currentStep !== 2) setShowScanner(false);
+            setShowScanner(NEEDS_SCANNER.has(currentStep));
           }}
           onInitialize={(currentStep) => {
-            // Initialize state for the current step when guide first mounts
-            if (typeof window !== 'undefined' && window.innerWidth < 768 && currentStep === 0) {
+            const MOBILE_NEEDS_MENU = new Set([0, 7, 8, 9, 10, 11]);
+            if (typeof window !== 'undefined' && window.innerWidth < 768 && MOBILE_NEEDS_MENU.has(currentStep)) {
               setShowMobileMenu(true);
             }
             if (currentStep === 2) {
@@ -1990,6 +2187,32 @@ function DashboardContent() {
               <h2 className="text-lg font-black uppercase tracking-wider">Profile Settings</h2>
               <button onClick={() => setShowProfileModal(false)} className="text-slate-500 hover:text-white transition-colors">
                 <X size={18} />
+              </button>
+            </div>
+
+            {/* Signed-in identity + Sign Out. Top-of-modal so it's the first
+                thing users see — fixes "I don't know who I'm logged in as" UX. */}
+            <div className="flex items-center justify-between bg-slate-950/50 border border-white/5 rounded-xl px-3 py-2.5 mb-4">
+              <div className="min-w-0">
+                <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Signed in as</div>
+                <div className="text-xs font-mono text-white truncate" title={session?.user?.email || ''}>
+                  {session?.user?.email || 'Unknown user'}
+                </div>
+              </div>
+              <button
+                onClick={async () => {
+                  try {
+                    await supabase.auth.signOut();
+                  } catch (e) {
+                    console.warn('[AUTH] signOut error:', e?.message);
+                  } finally {
+                    // Hard redirect so all client state (chart refs, websockets, etc.) is cleared.
+                    if (typeof window !== 'undefined') window.location.href = '/';
+                  }
+                }}
+                className="flex items-center gap-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-colors"
+              >
+                <LogOut size={11} /> Sign Out
               </button>
             </div>
 

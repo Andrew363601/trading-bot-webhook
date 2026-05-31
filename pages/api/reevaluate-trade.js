@@ -77,11 +77,40 @@ export default async function handler(req, res) {
 
         const microstructure = await fetchMicrostructure(triggerCandles);
 
+        // 🪙 TOKEN OPTIMISATION: we used to ship the FULL trade object to the
+        // oracle on every manual review — including trade.reason, which the app
+        // appends a new [MANUAL REVIEW ...] block to on every prior re-eval.
+        // After a few reviews that field is multi-KB of redundant history that
+        // bloats every Gemini call. The model only needs the LAST thesis to
+        // continue reasoning, so we pull it from strategy_config.active_thesis
+        // (the source of truth written by execute-trade-mcp.js), fall back to
+        // the most recent [MANUAL REVIEW ...] block, and ship a sanitised
+        // trade object with `reason` collapsed to just that latest snippet.
+        let lastThesis = '';
+        try {
+            const { data: cfg } = await supabase
+                .from('strategy_config')
+                .select('active_thesis')
+                .eq('tenant_id', trade.tenant_id)
+                .eq('strategy', trade.strategy_id)
+                .eq('asset', trade.symbol)
+                .maybeSingle();
+            lastThesis = cfg?.active_thesis || '';
+        } catch (_) { /* non-fatal */ }
+        if (!lastThesis && typeof trade.reason === 'string' && trade.reason.includes('[MANUAL REVIEW')) {
+            // last "[MANUAL REVIEW - HH:MM:SS]: ..." chunk
+            lastThesis = trade.reason.split('[MANUAL REVIEW').pop().split(']:').slice(1).join(']:').trim();
+        }
+        if (!lastThesis && typeof trade.reason === 'string') {
+            lastThesis = trade.reason.slice(-600);   // hard cap fallback so we never balloon
+        }
+        const sanitizedTrade = { ...trade, reason: lastThesis };
+
         // 4. CALL THE ORACLE IN SNIPER MODE
         const verdict = await evaluateTradeIdea({
-            mode: 'MANUAL_REVIEW', asset: trade.symbol, strategy: trade.strategy_id, currentPrice, 
-            candles: triggerCandles, macroCandles, indicators: microstructure.indicators, 
-            pnlPercent, openTrade: trade
+            mode: 'MANUAL_REVIEW', asset: trade.symbol, strategy: trade.strategy_id, currentPrice,
+            candles: triggerCandles, macroCandles, indicators: microstructure.indicators,
+            pnlPercent, openTrade: sanitizedTrade, activeThesis: lastThesis
         });
 
         let coinbaseProduct = trade.symbol.toUpperCase().trim();
