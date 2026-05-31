@@ -419,7 +419,7 @@ export default function LandingPage() {
                     
                     <div className="space-y-4">
                     <div className="flex justify-between items-end">
-                        <span className="text-xs text-slate-400 uppercase font-black tracking-widest">Success Rate</span>
+                        <span className="text-xs text-slate-400 uppercase font-black tracking-widest">Win Rate</span>
                         <span className="text-xl font-black text-white">{stats.winRate}</span>
                     </div>
                     
@@ -495,43 +495,41 @@ export default function LandingPage() {
                 <span className="text-4xl font-extrabold">$49</span><span className="text-slate-500">/mo</span>
               </div>
               <ul className="space-y-4 mb-8 flex-1 text-slate-400">
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> 1 Active Asset</li>
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Standard Execution Routing</li>
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Discord Alerts</li>
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Static Risk Rules</li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Included Capital/Assets: Up to 3 Active Assets (e.g., BTC and ETH simultaneously)</span></li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Telemetry Data Speed: Standard polling</span></li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Metered Overages: Base plan includes 500 API/execution events per month. ($0.05 per 10 calls overage)</span></li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Features Included: Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Hermes Memory</span></li>
               </ul>
-              <Link href="/auth" className="w-full text-center bg-slate-800 border border-slate-700 py-3 rounded-lg hover:bg-slate-700 transition font-bold block">Start Retail</Link>
+              <Link href="/auth" className="w-full text-center bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-xl transition-colors">Start 7-Day Trial</Link>
             </div>
-
-            <div className="bg-slate-900/60 backdrop-blur-md p-8 rounded-2xl flex flex-col relative transform md:-translate-y-4 ring-2 ring-cyan-400 shadow-[0_0_30px_rgba(34,211,238,0.15)]">
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-4 py-1 rounded-full text-sm font-bold shadow-lg">MOST POPULAR</div>
-              <h3 className="text-2xl font-bold text-white">Pro</h3>
+            
+            <div className="bg-slate-900/80 backdrop-blur-md border border-cyan-500/50 p-8 rounded-2xl flex flex-col relative transform md:-translate-y-4 shadow-[0_0_30px_rgba(34,211,238,0.1)]">
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cyan-500 text-slate-900 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">Most Popular</div>
+              <h3 className="text-2xl font-bold text-white">Pro Agent</h3>
               <div className="mt-4 mb-8">
-                <span className="text-4xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-400">$149</span><span className="text-slate-500">/mo</span>
+                <span className="text-4xl font-extrabold text-white">$149</span><span className="text-slate-400">/mo</span>
               </div>
-              <ul className="space-y-4 mb-8 flex-1 text-slate-200">
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> 5 Active Assets</li>
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> High-Priority Routing</li>
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Multi-TF X-Ray Telemetry</li>
-                <li className="flex items-center font-semibold text-white"><svg className="w-5 h-5 text-purple-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> Agentic Reflection (Self-Learning)</li>
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Standard Nexus Card</li>
+              <ul className="space-y-4 mb-8 flex-1 text-slate-300">
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Included Capital/Assets: Up to 10 Active Assets</span></li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Telemetry Data Speed: High-Priority / Sub-second streaming updates</span></li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Metered Overages: Base plan includes 1,000 execution events. Premium metered rate on overage.</span></li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Features Included: Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Hermes Memory</span></li>
               </ul>
-              <Link href="/auth" className="w-full text-center bg-white text-slate-950 py-3 rounded-lg transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)] font-bold block">Deploy Pro Agent</Link>
+              <Link href="/auth" className="w-full text-center bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-bold py-3 rounded-xl transition-colors">Start 7-Day Trial</Link>
             </div>
 
             <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl flex flex-col">
               <h3 className="text-2xl font-bold text-slate-300">Institutional</h3>
               <div className="mt-4 mb-8">
-                <span className="text-4xl font-extrabold">$499</span><span className="text-slate-500">/mo</span>
+                <span className="text-4xl font-extrabold text-white">$499</span><span className="text-slate-500">/mo</span>
               </div>
               <ul className="space-y-4 mb-8 flex-1 text-slate-400">
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Unlimited Assets</li>
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Colocated HFT Speeds</li>
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Full Order Book Depth</li>
-                <li className="flex items-center"><svg className="w-5 h-5 text-purple-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> Agentic Reflection</li>
-                <li className="flex items-center"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> Metal Nexus Card + Cash Back</li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Included Capital/Assets: Unlimited Active Assets</span></li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Telemetry Data Speed: Direct raw websocket pipeline / Zero throttling</span></li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Metered Overages: Massive inclusion pools (50,000 API calls included). Purely usage-based custom pricing.</span></li>
+                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Features Included: Custom AI Model via OpenRouter, Full Agentic Reflection, Multi-TF X-Ray, Multi-Account API routing, and custom Risk-to-Reward Accountant Protocol hard-locks.</span></li>
               </ul>
-              <Link href="/auth" className="w-full text-center bg-slate-800 border border-slate-700 py-3 rounded-lg hover:bg-slate-700 transition font-bold block">Apply Now</Link>
+              <Link href="/auth" className="w-full text-center bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-xl transition-colors">Start 7-Day Trial</Link>
             </div>
           </div>
         </div>

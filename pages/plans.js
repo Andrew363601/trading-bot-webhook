@@ -99,7 +99,7 @@ export default function PlansPage() {
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-16">
           <h1 className="text-4xl md:text-6xl font-black tracking-tighter mb-4 italic uppercase">Nexus Intelligence</h1>
-          <p className="text-slate-400 text-lg">Pick your execution tier. 14-day free trial included.</p>
+          <p className="text-slate-400 text-lg">Pick your execution tier. 7-day free trial included.</p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
@@ -108,9 +108,10 @@ export default function PlansPage() {
             <h3 className="text-xl font-bold text-slate-400 mb-2">Retail</h3>
             <div className="text-4xl font-black mb-6">$49<span className="text-sm font-normal text-slate-500">/mo</span></div>
             <ul className="space-y-4 mb-10 flex-1">
-              <li className="flex items-center gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400" /> 1 Active Asset</li>
-              <li className="flex items-center gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400" /> Standard Execution</li>
-              <li className="flex items-center gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400" /> Discord Push Alerts</li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Included Capital/Assets: Up to 3 Active Assets</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Telemetry Data Speed: Standard polling</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Metered Overages: Base plan includes 500 API events/mo ($0.05 per 10 calls overage)</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Features Included: Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Hermes Memory</span></li>
             </ul>
             <button 
               onClick={() => handleSelectTier('RETAIL')}
@@ -127,10 +128,10 @@ export default function PlansPage() {
             <h3 className="text-xl font-bold text-white mb-2">Pro Agent</h3>
             <div className="text-4xl font-black mb-6">$149<span className="text-sm font-normal text-slate-500">/mo</span></div>
             <ul className="space-y-4 mb-10 flex-1">
-              <li className="flex items-center gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400" /> 5 Active Assets</li>
-              <li className="flex items-center gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400" /> Agentic Reflection</li>
-              <li className="flex items-center gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400" /> High-Priority Routing</li>
-              <li className="flex items-center gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400" /> Multi-TF X-Ray</li>
+              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Included Capital/Assets: Up to 10 Active Assets</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Telemetry Data Speed: High-Priority / Sub-second updates</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Metered Overages: Base plan includes 1,000 API events. Premium metered rate on overage.</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Features Included: Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Hermes Memory</span></li>
             </ul>
             <button 
               onClick={() => handleSelectTier('PRO')}
@@ -146,9 +147,10 @@ export default function PlansPage() {
             <h3 className="text-xl font-bold text-slate-400 mb-2">Institutional</h3>
             <div className="text-4xl font-black mb-6">$499<span className="text-sm font-normal text-slate-500">/mo</span></div>
             <ul className="space-y-4 mb-10 flex-1">
-              <li className="flex items-center gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400" /> Unlimited Assets</li>
-              <li className="flex items-center gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400" /> HFT Colocation</li>
-              <li className="flex items-center gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400" /> Full Order Book Depth</li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Included Capital/Assets: Unlimited Active Assets</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Telemetry Data Speed: Direct raw websocket pipeline / Zero throttling</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Metered Overages: Massive inclusion pools (50,000 API calls). Usage-based pricing.</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Features Included: Custom AI Model via OpenRouter, Risk-to-Reward Accountant Protocol hard-locks.</span></li>
             </ul>
             <button 
               onClick={() => handleSelectTier('INSTITUTIONAL')}
@@ -161,7 +163,7 @@ export default function PlansPage() {
         </div>
 
         <p className="mt-12 text-center text-slate-500 text-sm">
-          Payment processed securely by Stripe. No charge until your 14-day trial ends.
+          Payment processed securely by Stripe. No charge until your 7-day trial ends.
         </p>
       </div>
     </div>

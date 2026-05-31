@@ -116,7 +116,7 @@ BEGIN
 
     -- 3. Initialize default trial subscription
     INSERT INTO public.subscriptions (tenant_id, status, tier, trial_start, trial_end)
-    VALUES (new_tenant_id, 'trialing', 'RETAIL', NOW(), NOW() + INTERVAL '14 days');
+    VALUES (new_tenant_id, 'trialing', 'RETAIL', NOW(), NOW() + INTERVAL '7 days');
 
     -- 4. Initialize basic tenant settings
     INSERT INTO public.tenant_settings (tenant_id, risk_profile, default_leverage)
@@ -160,7 +160,7 @@ BEGIN
     ON CONFLICT (auth_user_id) DO NOTHING;
 
     INSERT INTO public.subscriptions (tenant_id, status, tier, trial_start, trial_end)
-    VALUES (new_tenant_id, 'trialing', 'RETAIL', NOW(), NOW() + INTERVAL '14 days')
+    VALUES (new_tenant_id, 'trialing', 'RETAIL', NOW(), NOW() + INTERVAL '7 days')
     ON CONFLICT (tenant_id) DO NOTHING;
 
     INSERT INTO public.tenant_settings (tenant_id, risk_profile, default_leverage)

@@ -91,6 +91,7 @@ function DashboardContent() {
   const [portfolio, setPortfolio] = useState({ live: { balance: 0 }, paper: { balance: 5000, initial: 5000 } });
   const [loading, setLoading] = useState(true);
   const [tenantId, setTenantId] = useState(null); // Cache tenant_id for data filtering
+  const [billingTier, setBillingTier] = useState('FREE_TRIAL'); // Track user tier for banners
   
   // Header metrics state for reactive updates
   const [latestScan, setLatestScan] = useState(null);
@@ -377,7 +378,7 @@ function DashboardContent() {
       try {
         const { data: users, error } = await supabase
           .from('tenant_users')
-          .select('tenant_id')
+          .select('tenant_id, tenants(billing_tier)')
           .eq('auth_user_id', session.user.id)
           .single();
 
@@ -387,6 +388,9 @@ function DashboardContent() {
         }
         if (users?.tenant_id) {
           setTenantId(users.tenant_id);
+          if (users.tenants?.billing_tier) {
+            setBillingTier(users.tenants.billing_tier);
+          }
           console.log('[DEBUG] Loaded tenant_id for data filtering');
 
           // Fetch onboarding state
@@ -440,9 +444,9 @@ function DashboardContent() {
         const created = new Date(userData.tenants.created_at);
         const now = new Date();
         const daysSinceCreation = (now - created) / (1000 * 60 * 60 * 24);
-        // Trial is 14 days, grace period is 3 days after trial ends
-        if (daysSinceCreation > 14 && daysSinceCreation <= 17) {
-          const daysLeft = Math.ceil(17 - daysSinceCreation);
+        // Trial is 7 days, grace period is 3 days after trial ends
+        if (daysSinceCreation > 7 && daysSinceCreation <= 10) {
+          const daysLeft = Math.ceil(10 - daysSinceCreation);
           setGraceBanner({ daysLeft });
         } else {
           setGraceBanner(null);
@@ -704,7 +708,7 @@ function DashboardContent() {
   const formattedLivePositions = useMemo(() => livePositions.map(pos => ({
       side: pos.side === 'LONG' ? 'BUY' : 'SELL',
       entry_price: parseFloat(pos.vwap || 0),
-      qty: parseFloat(pos.number_of_contracts || 0),
+      qty: parseFloat(pos.size || pos.number_of_contracts || 0),
       symbol: pos.product_id,
       execution_mode: 'LIVE (EXCHANGE)',
       strategy_id: 'ACTIVE_DERIVATIVE',
@@ -765,6 +769,30 @@ function DashboardContent() {
 
     const markersPlugin = createSeriesMarkers(series, []);
 
+    const updateNotesPositions = () => {
+        if (!chartRef.current || !seriesRef.current) return;
+        if (!drawingsRef.current || !drawingsRef.current.notes) return;
+        drawingsRef.current.notes.forEach((n, idx) => {
+            const el = document.getElementById(`drawing-note-${idx}`);
+            if (el && n.time) {
+                try {
+                    const x = chartRef.current.timeScale().timeToCoordinate(n.time);
+                    const y = seriesRef.current.priceToCoordinate(n.price);
+                    if (x !== null && y !== null) {
+                        el.style.left = `${x}px`;
+                        el.style.top = `${y}px`;
+                        el.style.display = 'block';
+                    } else {
+                        el.style.display = 'none';
+                    }
+                } catch(e) {}
+            }
+        });
+    };
+
+    chart.timeScale().subscribeVisibleTimeRangeChange(updateNotesPositions);
+    chart.subscribeCrosshairMove(updateNotesPositions);
+
     chartRef.current = chart;
     seriesRef.current = series;
     volumeSeriesRef.current = volumeSeries;
@@ -781,7 +809,7 @@ function DashboardContent() {
         const currentData = allChartDataRef.current;
         if (currentData.length === 0) return;
 
-        const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
+        const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '6h': 21600, '1d': 86400 };
         const requestAsset = activeAssetRef.current;
         const requestTf = chartTimeframeRef.current;
         const granularity = tfMap[requestTf] || 60;
@@ -886,7 +914,7 @@ function DashboardContent() {
     const loadChartData = async (isLiveTick = false) => {
         if(!seriesRef.current || !volumeSeriesRef.current || !chartRef.current) return;
 
-        const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
+        const tfMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '6h': 21600, '1d': 86400 };
         const granularity = tfMap[chartTimeframe] || 60;
 
         try {
@@ -966,7 +994,7 @@ function DashboardContent() {
 
       try {
           const markers = [];
-          const secondsMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400 };
+          const secondsMap = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '6h': 21600, '1d': 86400 };
           const granularity = secondsMap[chartTimeframe] || 60;
           
           const currentData = seriesRef.current.data();
@@ -1233,6 +1261,24 @@ function DashboardContent() {
          </div>
       )}
 
+      {/* Free Trial Banner */}
+      {billingTier === 'FREE_TRIAL' && !graceBanner && (
+        <div className="max-w-[1800px] w-full mx-auto mt-2 px-4 sm:px-0">
+          <div className="bg-blue-600/20 border border-blue-500/30 rounded-2xl p-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-blue-400 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-bold text-blue-300">Free Trial Active</p>
+                <p className="text-xs text-blue-400/80">You are currently limited to 1 active strategy. Upgrade your plan to unlock more concurrent assets.</p>
+              </div>
+            </div>
+            <Link href="/plans" className="text-[10px] font-black uppercase tracking-widest bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 border border-blue-500/50 px-4 py-2 rounded-lg transition-all flex-shrink-0">
+              View Plans
+            </Link>
+          </div>
+        </div>
+      )}
+
       {/* Trial Grace Period Banner */}
       {graceBanner && (
         <div className="max-w-[1800px] w-full mx-auto mt-2 px-4 sm:px-0">
@@ -1329,7 +1375,7 @@ function DashboardContent() {
       )}
 
       {/* 🔴 NEW COINBASE STYLE TICKER BAR */}
-      <div className="max-w-[1800px] w-full mx-auto bg-slate-900/40 border border-white/5 rounded-2xl p-2 px-4 sm:px-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-0 backdrop-blur-md relative z-40">
+      <div className="max-w-[1800px] w-full mx-auto bg-slate-900/40 border border-white/5 rounded-2xl p-2 px-4 sm:px-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-0 backdrop-blur-md relative z-[60]">
         <div className="w-full sm:w-auto flex flex-col sm:flex-row items-start sm:items-center gap-4 sm:gap-8">
           <div className="relative w-full sm:w-auto">
             <button 
@@ -1478,10 +1524,10 @@ function DashboardContent() {
                })}
             </div>
 
-            <div className="px-6 py-3 flex items-center justify-between border-b dark:border-white/5 border-slate-200 dark:bg-black/20 bg-slate-100 backdrop-blur-md rounded-t-[2rem]">
+            <div className="px-6 py-3 flex items-center justify-between border-b dark:border-white/5 border-slate-200 dark:bg-black/20 bg-slate-100 backdrop-blur-md rounded-t-[2rem] relative z-[50]">
               <div className="flex items-center gap-4">
                 <div className="flex dark:bg-black/40 bg-slate-200 p-1 rounded-xl border dark:border-white/5 border-slate-300 gap-1">
-                  {['1m', '5m', '15m', '1h', '4h'].map(tf => (
+                  {['1m', '5m', '15m', '1h', '6h', '1d'].map(tf => (
                     <button 
                       key={tf} 
                       onClick={() => setChartTimeframe(tf)}
@@ -1548,8 +1594,12 @@ function DashboardContent() {
                     const y = e.clientY - rect.top;
                     // Convert pixel Y → price using the candle series price scale.
                     let price = null;
-                    try { price = seriesRef.current.coordinateToPrice(y); } catch (_) {}
-                    if (price == null) return;
+                    let time = null;
+                    try { 
+                      price = seriesRef.current.coordinateToPrice(y); 
+                      time = chartRef.current.timeScale().coordinateToTime(x);
+                    } catch (_) {}
+                    if (price == null || time == null) return;
 
                     if (drawingTool === 'hline') {
                       const line = seriesRef.current.createPriceLine({
@@ -1566,7 +1616,7 @@ function DashboardContent() {
                     } else if (drawingTool === 'note') {
                       const text = window.prompt('Note text:', '');
                       if (text) {
-                        drawingsRef.current.notes.push({ x, y, text, price });
+                        drawingsRef.current.notes.push({ x, y, time, price, text });
                         setDrawingsVersion(v => v + 1);
                       }
                       setDrawingTool(null);
@@ -1600,11 +1650,21 @@ function DashboardContent() {
                 {/* On-chart drawing notes (text annotations rendered as absolutely
                     positioned overlays). Horizontal lines are price lines on the
                     series and don't need a DOM node. */}
-                {drawingsRef.current.notes.map((n, idx) => (
-                  <div key={`note-${idx}`} className="absolute z-30 pointer-events-none px-2 py-0.5 rounded bg-indigo-500/80 text-white text-[10px] font-bold shadow-lg" style={{ left: n.x, top: n.y }}>
-                    {n.text}
-                  </div>
-                ))}
+                {drawingsRef.current.notes.map((n, idx) => {
+                  let px = n.x; let py = n.y;
+                  try {
+                    if (chartRef.current && seriesRef.current && n.time) {
+                      const computedX = chartRef.current.timeScale().timeToCoordinate(n.time);
+                      const computedY = seriesRef.current.priceToCoordinate(n.price);
+                      if (computedX !== null && computedY !== null) { px = computedX; py = computedY; }
+                    }
+                  } catch(e) {}
+                  return (
+                    <div id={`drawing-note-${idx}`} key={`note-${idx}`} className="absolute z-30 pointer-events-none px-2 py-0.5 rounded bg-indigo-500/80 text-white text-[10px] font-bold shadow-lg" style={{ left: px, top: py }}>
+                      {n.text}
+                    </div>
+                  );
+                })}
             </div>
 
             {/* Stacked Coinglass indicator panes. Hidden on mobile when the chart
@@ -1625,7 +1685,7 @@ function DashboardContent() {
           </div>
 
           <div id="trade-ledger" className="flex flex-col flex-grow min-h-[60vh] sm:min-h-0 overflow-hidden max-h-none sm:max-h-[80%] md:max-h-[50%] border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
-            <div className="flex items-center gap-6 px-6 pt-5 border-b dark:border-white/5 border-slate-200 dark:bg-slate-950/80 bg-white sticky top-0 z-20">
+            <div className="flex items-center gap-6 px-6 pt-5 border-b dark:border-white/5 border-slate-200 dark:bg-slate-950/80 bg-white sticky top-0 z-20 overflow-x-auto whitespace-nowrap [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
                   className={`pb-3 text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'OPEN_ORDERS' ? 'text-indigo-400 border-b-2 border-indigo-400' : 'text-slate-500 hover:text-slate-300'}`}
@@ -1783,8 +1843,8 @@ function DashboardContent() {
           </div>
         </div>
 
-                <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-hidden lg:resize-y pb-2">
-          <div id="strategy-matrix" className="dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] p-4 sm:p-6 shadow-2xl flex-grow-0 flex-shrink min-h-[120px] sm:min-h-[140px]">
+                <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-y-auto lg:overflow-hidden lg:resize-y pb-2">
+          <div id="strategy-matrix" className="dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] p-4 sm:p-6 shadow-2xl flex-grow-0 flex-shrink-0 min-h-[120px] sm:min-h-[140px]">
             {/* 🛠️ UNFIXED: removed `flex-shrink-0` so on mobile the active-matrix
                 card can properly resize + its content stays visible when the full
                 column has overflow-hidden. Maintains minimum height to prevent
@@ -1806,13 +1866,10 @@ function DashboardContent() {
                 const stratLogs = tradeLogs.filter(l => (l.strategy_id === strat.strategy || l.strategy_id === strat.id) && l.execution_mode !== 'SHADOW' && l.exit_price);
                 const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
                 
-                // ROI Calculation: (PnL / (Entry Price * Qty)) * 100
-                const avgRoi = stratLogs.length > 0 
-                  ? (stratLogs.reduce((sum, l) => {
-                      const cost = l.entry_price * l.qty;
-                      return sum + (cost > 0 ? (l.pnl / cost) * 100 : 0);
-                    }, 0) / stratLogs.length).toFixed(2)
-                  : "0.00";
+                // Win Rate Calculation: (Winning Trades / Total Trades) * 100
+                const winRate = stratLogs.length > 0 
+                  ? ((stratLogs.filter(l => l.pnl > 0).length / stratLogs.length) * 100).toFixed(1)
+                  : "0.0";
 
                 // Description from metadata (fallback if not loaded yet)
                 const meta = strategyMetadata.find(m => m.id === strat.strategy);
@@ -1864,9 +1921,9 @@ function DashboardContent() {
                           </span>
                         </div>
                         <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-3">
-                          <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-1">Realized ROI</span>
-                          <span className={`text-[12px] font-mono font-black ${parseFloat(avgRoi) >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>
-                            {avgRoi}%
+                          <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest block mb-1">Win Rate</span>
+                          <span className={`text-[12px] font-mono font-black ${parseFloat(winRate) >= 50 ? 'text-cyan-400' : 'text-amber-400'}`}>
+                            {winRate}%
                           </span>
                         </div>
                       </div>
@@ -2113,7 +2170,7 @@ function DashboardContent() {
                   <div className="space-y-3">
                     {Object.entries(editingParameters).map(([key, value]) => {
                       const isTimeframe = key.toLowerCase().includes('_tf') || key.toLowerCase().includes('timeframe');
-                      const timeframeOptions = ['1m', '5m', '15m', '30m', '1hr', '2hr', '4hr', '1d'];
+                      const timeframeOptions = ['1m', '5m', '15m', '1h', '6h', '1d'];
                       
                       return (
                         <div key={key}>
@@ -2179,7 +2236,7 @@ function DashboardContent() {
       {/* Profile Settings Modal */}
       {showProfileModal && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowProfileModal(false)}>
-          <div className="bg-slate-900 border border-white/10 rounded-2xl p-6 w-full max-w-md mx-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="bg-slate-900 border border-white/10 rounded-2xl p-6 w-full max-w-md mx-4 shadow-2xl overflow-y-auto max-h-[90vh]" onClick={e => e.stopPropagation()}>
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-lg font-black uppercase tracking-wider">Profile Settings</h2>
               <button onClick={() => setShowProfileModal(false)} className="text-slate-500 hover:text-white transition-colors">
@@ -2248,7 +2305,7 @@ function DashboardContent() {
                 </div>
               </div>
 
-              <div className="border-t border-white/5 pt-4">
+              <div className="border-t border-white/5 pt-4 hidden sm:block">
                 <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-3">Discord Alerts Webhook</h3>
                 <input
                   type="url"

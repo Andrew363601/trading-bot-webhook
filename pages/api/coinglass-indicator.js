@@ -48,10 +48,8 @@ async function handler(req, res) {
     try {
         const fn = await entry.loader();
         // Most indicators expect the base symbol (e.g. "BTC") rather than the
-        // full perpetual product. Strip common suffixes for safety.
-        const cleanSymbol = String(symbol)
-            .toUpperCase()
-            .replace(/(-PERP-INTX|-CDE|-PERP|-USDT|-USD)$/g, '');
+        // full perpetual product.
+        const cleanSymbol = String(symbol).toUpperCase().split('-')[0];
         const data = await fn(cleanSymbol);
         // Light edge cache so repeated chart redraws don't burn quota.
         res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=120');

@@ -88,6 +88,9 @@ function DashResultsContent() {
           .single();
         if (updateError && updateError.code !== 'PGRST116') throw updateError;
         setActiveStrategy(updatedActiveStrategy);
+      } else if (response.status === 409) {
+        // 🛡️ Alert the user of conflicting active strategies on the same asset
+        alert('Conflict: ' + (result.error || result.conflict || 'Only one strategy can be active per asset. Please deactivate the existing strategy first.'));
       } else {
         alert('Failed to promote strategy: ' + (result.error || 'Unknown error'));
       }

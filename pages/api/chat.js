@@ -417,25 +417,30 @@ export default async function handler(req, res) {
             }
 
             const runManage = async () => {
-                // Look up by canonical key (tenant_id + asset + strategy). The PK
-                // column is `id` and we use it for the UPDATE target.
+                // Look up by canonical key (tenant_id + asset + strategy).
                 const { data: existing, error: lookupError } = await supabase
                   .from('strategy_config')
-                  .select('id, tenant_id')
+                  .select('id, tenant_id, execution_mode, parameters, is_active')
                   .eq('tenant_id', tenantId)
                   .eq('asset', rawAsset)
                   .eq('strategy', rawStrategy)
                   .maybeSingle();
                 if (lookupError) throw lookupError;
 
+                // Merge existing parameters if present, rather than wiping them.
+                const existingParams = existing?.parameters || {};
+                const incomingParams = args.parameters || {};
+                const mergedParams = { ...existingParams, ...incomingParams };
+
                 const payload = {
                   tenant_id: tenantId,
                   asset: rawAsset,
                   strategy: rawStrategy,        // ALWAYS the validated non-blank value
-                  execution_mode: args.execution_mode || 'PAPER',
-                  is_active: args.is_active ?? false,
+                  // Retain existing execution mode if not explicitly changing it, default to PAPER
+                  execution_mode: args.execution_mode ?? existing?.execution_mode ?? 'PAPER',
+                  is_active: args.is_active ?? (existing?.is_active ?? false),
                   version: args.version || "v1.0",
-                  parameters: args.parameters || {},
+                  parameters: mergedParams,
                   last_updated: new Date().toISOString(),
                   reasoning: args.reasoning
                 };
