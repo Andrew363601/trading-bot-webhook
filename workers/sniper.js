@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import WebSocket from 'ws'; 
 import { evaluateStrategy } from '../lib/strategy-router.js';
 import { executeTradeMCP } from '../lib/execute-trade-mcp.js'; 
+import { isTenantBillingActive, deactivateTenantStrategies } from '../lib/tenant-context.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -290,6 +291,19 @@ export async function startSniper(tenantId) {
 
     const syncConfigs = async () => {
         try {
+            // 🔒 BILLING GUARD (defense-in-depth): workers bypass RLS via the service role,
+            // so we must independently verify the tenant is allowed to trade. If billing is
+            // inactive (canceled / trial expired / past due), force strategies off and stop.
+            const billing = await isTenantBillingActive(tenantId);
+            if (!billing.active) {
+                if (state.configs && state.configs.length > 0) {
+                    await deactivateTenantStrategies(tenantId, billing.reason);
+                    await logAgentActivity(tenantId, "Sniper", "N/A", `Trading halted — ${billing.reason}. All strategies deactivated.`, "BILLING_HALT");
+                }
+                state.configs = [];
+                return;
+            }
+
             const { data } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).eq('is_active', true);
             if (data) {
                 state.configs = data;

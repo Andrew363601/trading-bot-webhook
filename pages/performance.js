@@ -41,8 +41,14 @@ function PerformanceLogContent() {
   
   const [assetFilter, setAssetFilter] = useState('ALL');
   const [strategyFilter, setStrategyFilter] = useState('ALL');
+  const [modeFilter, setModeFilter] = useState('ALL'); // ALL | LIVE | PAPER
   const [selectedDate, setSelectedDate] = useState(null);
   const [logFilter, setLogFilter] = useState('ALL'); 
+  // Real calendar: track the visible month (first of month).
+  const [calendarMonth, setCalendarMonth] = useState(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
 
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -51,13 +57,31 @@ function PerformanceLogContent() {
       setIsMounted(true);
   }, []);
 
-  const calendarDays = useMemo(() => {
-    return [...Array(28)].map((_, i) => {
-      const d = new Date();
-      d.setDate(d.getDate() - (27 - i));
-      return d.toISOString().split('T')[0];
-    });
-  }, []);
+  // Helper: format a Date as a local YYYY-MM-DD (avoids UTC off-by-one issues).
+  const toLocalDateStr = (d) => {
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dy = String(d.getDate()).padStart(2, '0');
+    return `${yr}-${mo}-${dy}`;
+  };
+
+  // Build a full month grid: leading blanks for the first weekday, then each day
+  // of the visible month. `null` entries render as empty cells.
+  const calendarCells = useMemo(() => {
+    const year = calendarMonth.getFullYear();
+    const month = calendarMonth.getMonth();
+    const firstWeekday = new Date(year, month, 1).getDay(); // 0=Sun
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const cells = [];
+    for (let i = 0; i < firstWeekday; i++) cells.push(null);
+    for (let day = 1; day <= daysInMonth; day++) {
+      cells.push(toLocalDateStr(new Date(year, month, day)));
+    }
+    return cells;
+  }, [calendarMonth]);
+
+  // The set of actual date strings in the visible month (used for daily stats).
+  const calendarDays = useMemo(() => calendarCells.filter(Boolean), [calendarCells]);
 
   const fetchPerformance = useCallback(async () => {
     setLoading(true);
@@ -72,25 +96,33 @@ function PerformanceLogContent() {
       });
 
       setAllValidTrades(valid);
-      setSelectedDate(calendarDays[calendarDays.length - 1]);
+      setSelectedDate(toLocalDateStr(new Date()));
     } catch (err) {
       console.error("Performance Fetch Error:", err);
     } finally {
       setLoading(false);
     }
-  }, [calendarDays, supabase]);
+  }, [supabase]);
 
   useEffect(() => { 
       if (isMounted) fetchPerformance(); 
   }, [fetchPerformance, isMounted]);
 
+  // Normalize a trade's execution mode to 'LIVE' or 'PAPER'. Defaults to PAPER
+  // (simulated) when no explicit mode is recorded — the safe assumption.
+  const tradeMode = (t) => {
+      const raw = (t.execution_mode || t.mode || '').toString().toUpperCase();
+      return raw === 'LIVE' ? 'LIVE' : 'PAPER';
+  };
+
   const globalFilteredTrades = useMemo(() => {
       return allValidTrades.filter(t => {
           if (assetFilter !== 'ALL' && t.symbol !== assetFilter) return false;
           if (strategyFilter !== 'ALL' && t.strategy_id !== strategyFilter) return false;
+          if (modeFilter !== 'ALL' && tradeMode(t) !== modeFilter) return false;
           return true;
       });
-  }, [allValidTrades, assetFilter, strategyFilter]);
+  }, [allValidTrades, assetFilter, strategyFilter, modeFilter]);
 
   const chartData = useMemo(() => {
       const data = [];
@@ -116,7 +148,7 @@ function PerformanceLogContent() {
       calendarDays.forEach(day => stats[day] = { pnl: 0, trades: 0 });
       
       globalFilteredTrades.forEach(t => {
-          const dateStr = new Date(t.exit_time).toISOString().split('T')[0];
+          const dateStr = toLocalDateStr(new Date(t.exit_time));
           if (stats[dateStr]) {
               stats[dateStr].pnl += (parseFloat(t.pnl) || 0);
               stats[dateStr].trades += 1;
@@ -177,7 +209,7 @@ function PerformanceLogContent() {
   const displayLogs = useMemo(() => {
       const reversed = [...globalFilteredTrades].reverse(); 
       return reversed.filter(t => {
-          const dateStr = new Date(t.exit_time).toISOString().split('T')[0];
+          const dateStr = toLocalDateStr(new Date(t.exit_time));
           if (selectedDate && dateStr !== selectedDate) return false;
 
           const pnl = parseFloat(t.pnl) || 0;
@@ -189,7 +221,7 @@ function PerformanceLogContent() {
       }).map(t => {
           const originalReason = typeof t.reason === 'string' ? t.reason.split('[EXIT TRIGGER]:')[0].trim() : '';
           return {
-              dateStr: new Date(t.exit_time).toISOString().split('T')[0],
+              dateStr: toLocalDateStr(new Date(t.exit_time)),
               timeStr: new Date(t.exit_time).toLocaleTimeString(),
               asset: t.symbol || 'UNKNOWN',
               strategy: t.strategy_id || 'UNKNOWN',
@@ -222,7 +254,7 @@ function PerformanceLogContent() {
       }
   };
 
-  const dailyLogs = globalFilteredTrades.filter(t => new Date(t.exit_time).toISOString().split('T')[0] === selectedDate);
+  const dailyLogs = globalFilteredTrades.filter(t => toLocalDateStr(new Date(t.exit_time)) === selectedDate);
   const dailyPnl = dailyLogs.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
   const dailyWins = dailyLogs.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
   const dailyLosses = dailyLogs.filter(t => (parseFloat(t.pnl) || 0) <= 0).length;
@@ -274,6 +306,24 @@ function PerformanceLogContent() {
                     {uniqueStrategies.map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
             </div>
+            {/* LIVE vs PAPER segmented control */}
+            <div className="flex items-center gap-1 px-2 border-l border-white/10">
+                {['ALL', 'LIVE', 'PAPER'].map(m => (
+                    <button
+                        key={m}
+                        onClick={() => setModeFilter(m)}
+                        className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
+                            modeFilter === m
+                                ? (m === 'LIVE' ? 'bg-red-500/20 border-red-500/50 text-red-300'
+                                   : m === 'PAPER' ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-300'
+                                   : 'bg-slate-700/40 border-white/20 text-white')
+                                : 'border-white/5 text-slate-500 hover:bg-white/5'
+                        }`}
+                    >
+                        {m}
+                    </button>
+                ))}
+            </div>
         </div>
       </header>
 
@@ -301,31 +351,59 @@ function PerformanceLogContent() {
           </div>
       </div>
 
-      <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-6 shadow-2xl overflow-x-auto">
-        <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center gap-2"><Calendar size={14}/> 4-Week Rolling Calendar</h3>
-        
-        <div className="grid grid-cols-7 gap-2 min-w-[600px]">
+      <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl overflow-x-auto">
+        <div className="flex items-center justify-between mb-4">
+            <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
+                <Calendar size={14}/> PnL Calendar
+                {modeFilter !== 'ALL' && (
+                    <span className={`ml-1 px-2 py-0.5 rounded-full text-[8px] ${modeFilter === 'LIVE' ? 'bg-red-500/20 text-red-300' : 'bg-cyan-500/20 text-cyan-300'}`}>{modeFilter}</span>
+                )}
+            </h3>
+            <div className="flex items-center gap-2">
+                <button
+                    onClick={() => setCalendarMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
+                    className="px-2 py-1 rounded-lg border border-white/10 text-slate-400 hover:bg-white/5 text-xs"
+                    aria-label="Previous month"
+                >‹</button>
+                <span className="text-[11px] font-black uppercase tracking-widest text-slate-300 min-w-[120px] text-center">
+                    {calendarMonth.toLocaleString(undefined, { month: 'long', year: 'numeric' })}
+                </span>
+                <button
+                    onClick={() => setCalendarMonth(m => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
+                    className="px-2 py-1 rounded-lg border border-white/10 text-slate-400 hover:bg-white/5 text-xs"
+                    aria-label="Next month"
+                >›</button>
+                <button
+                    onClick={() => setCalendarMonth(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); })}
+                    className="ml-1 px-2 py-1 rounded-lg border border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/10 text-[9px] font-black uppercase tracking-widest"
+                >Today</button>
+            </div>
+        </div>
+
+        <div className="grid grid-cols-7 gap-1.5 md:gap-2 min-w-[600px]">
             {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(day => (
                 <div key={day} className="text-center text-[9px] font-black uppercase tracking-widest text-slate-600 mb-2">{day}</div>
             ))}
-            {calendarDays.map((day) => {
+            {calendarCells.map((day, idx) => {
+                if (!day) return <div key={`blank-${idx}`} className="h-16 md:h-20" />;
                 const stat = dailyStats[day];
                 const pnl = parseFloat(stat?.pnl || 0);
                 const isSelected = selectedDate === day;
                 const hasTrades = (stat?.trades || 0) > 0;
+                const isToday = day === toLocalDateStr(new Date());
                 
                 return (
                     <button 
                         key={day} 
                         onClick={() => setSelectedDate(day)}
-                        className={`h-20 rounded-xl p-2 flex flex-col justify-between items-start transition-all border ${
+                        className={`h-16 md:h-20 rounded-xl p-1.5 md:p-2 flex flex-col justify-between items-start transition-all border ${
                             isSelected ? 'bg-slate-800 border-indigo-500 shadow-[0_0_15px_-3px_rgba(99,102,241,0.4)]' : 
-                            hasTrades ? 'bg-slate-900 border-white/5 hover:bg-slate-800' : 'bg-black/20 border-transparent opacity-50 hover:bg-white/5'
-                        }`}
+                            hasTrades ? 'bg-slate-900 border-white/5 hover:bg-slate-800' : 'bg-black/20 border-transparent opacity-60 hover:bg-white/5'
+                        } ${isToday && !isSelected ? 'ring-1 ring-indigo-400/40' : ''}`}
                     >
-                        <span className={`text-[10px] font-mono font-bold ${isSelected ? 'text-indigo-400' : 'text-slate-500'}`}>{day.substring(5)}</span>
+                        <span className={`text-[10px] font-mono font-bold ${isSelected ? 'text-indigo-400' : (isToday ? 'text-indigo-300' : 'text-slate-500')}`}>{parseInt(day.split('-')[2], 10)}</span>
                         {hasTrades && (
-                            <span className={`text-[12px] font-black font-mono w-full text-right ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                            <span className={`text-[10px] md:text-[12px] font-black font-mono w-full text-right ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                                 {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
                             </span>
                         )}

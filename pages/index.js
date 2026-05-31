@@ -116,17 +116,10 @@ function DashboardContent() {
   // Risk profile preview state (for profile modal)
   const [riskPreview, setRiskPreview] = useState(null);
 
-  // Onboarding state
-  const [showOnboarding, setShowOnboarding] = useState(false);
-  const [onboardingStep, setOnboardingStep] = useState(0);
-  const onboardingSteps = [
-    { title: 'Activate Your First Strategy', desc: 'Select an asset from the market scanner, then choose a strategy and toggle it to PAPER mode to start simulated trading.', target: 'strategy-matrix' },
-    { title: 'Connect Coinbase', desc: 'Create a Coinbase account to fund your live trading. Click the button below to get started.', target: 'coinbase', action: true, actionLabel: 'Create Coinbase Account', actionUrl: getCoinbaseAffiliateLink('onboarding') },
-    { title: 'Add Your API Keys', desc: 'Go to Profile Settings to add your Coinbase API keys. Use "Trade Only" permissions for security.', target: 'profile' },
-    { title: 'Connect Discord', desc: 'Add your Discord webhook URL in Profile Settings to receive real-time trade alerts.', target: 'discord' },
-  ];
-
   // Risk assessment & quick start state
+  // NOTE: The legacy 4-step onboarding modal was removed. The 12-step Quick Start
+  // coach-mark guide (QuickStartGuide / quick-start-config.js) is the single source
+  // of onboarding truth, gated by tenant_settings.quick_start_dismissed.
   const [riskAssessmentComplete, setRiskAssessmentComplete] = useState(true); // default true, set after fetch
   const [quickStartDismissed, setQuickStartDismissed] = useState(true);
   const [onboardingMessageSent, setOnboardingMessageSent] = useState(false);
@@ -391,33 +384,6 @@ function DashboardContent() {
       }
     };
     loadTenantId();
-  }, [session?.user?.id, supabase]);
-
-  // Onboarding check: show tour for first 5 days
-  useEffect(() => {
-    if (!session?.user?.id) return;
-    const checkOnboarding = async () => {
-      const completed = localStorage.getItem('nexus_onboarding_completed');
-      if (completed === 'true') return;
-
-      // Check account age from tenants table
-      const { data: userData } = await supabase
-        .from('tenant_users')
-        .select('tenants(created_at)')
-        .eq('auth_user_id', session.user.id)
-        .single();
-
-      if (userData?.tenants?.created_at) {
-        const created = new Date(userData.tenants.created_at);
-        const now = new Date();
-        const daysSinceCreation = (now - created) / (1000 * 60 * 60 * 24);
-        if (daysSinceCreation <= 5) {
-          setShowOnboarding(true);
-          setOnboardingStep(0);
-        }
-      }
-    };
-    checkOnboarding();
   }, [session?.user?.id, supabase]);
 
   // Auto-prompt onboarding message in chat if risk assessment not complete
@@ -1333,7 +1299,7 @@ function DashboardContent() {
             </button>
 
             {showScanner && (
-              <div id="market-scanner" className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-96 bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
+              <div id="market-scanner" className="absolute top-full left-0 mt-2 w-full sm:w-[calc(100vw-32px)] md:w-[520px] md:max-w-[520px] bg-[#020617] border border-white/10 rounded-3xl shadow-2xl z-50 p-2 overflow-hidden animate-in fade-in slide-in-from-top-2 max-h-[calc(100vh-150px)]">
                 <div className="flex items-center justify-between p-3 border-b border-white/5">
                    <span className="text-[9px] sm:text-[10px] font-black uppercase text-indigo-400 tracking-widest">Select Asset</span>
                    <button onClick={() => setShowScanner(false)} className="text-slate-500 hover:text-white"><X size={14}/></button>
@@ -1485,7 +1451,7 @@ function DashboardContent() {
             </div>
           </div>
 
-          <div id="trade-ledger" className="flex flex-col flex-grow min-h-0 overflow-hidden max-h-[85%] sm:max-h-[80%] md:max-h-[50%] border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
+          <div id="trade-ledger" className="flex flex-col flex-grow min-h-[60vh] sm:min-h-0 overflow-hidden max-h-none sm:max-h-[80%] md:max-h-[50%] border dark:border-white/5 border-slate-200 rounded-2xl sm:rounded-[2rem] dark:bg-slate-900/30 bg-slate-100 pb-2">
             <div className="flex items-center gap-6 px-6 pt-5 border-b dark:border-white/5 border-slate-200 dark:bg-slate-950/80 bg-white sticky top-0 z-20">
                <button 
                   onClick={() => setActiveTab('OPEN_ORDERS')} 
@@ -1548,7 +1514,7 @@ function DashboardContent() {
               </div>
             </div>
 
-            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[200px] max-h-[calc(100vh-300px)] resize-y">
+            <div className="overflow-y-auto overflow-x-auto custom-scrollbar flex-grow min-h-[50vh] sm:min-h-[200px] max-h-[60vh] sm:max-h-[calc(100vh-300px)] resize-y">
               {displayLogs.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-slate-500 py-12 min-h-[200px]">
                   <Layers size={24} className="mb-2 opacity-50" />
@@ -2167,77 +2133,6 @@ function DashboardContent() {
               >
                 {profileSaving ? 'Saving...' : 'Save Settings'}
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Onboarding Tour */}
-      {showOnboarding && onboardingSteps[onboardingStep] && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center pointer-events-none">
-          <div className="bg-slate-900 border border-indigo-500/30 rounded-2xl p-4 sm:p-6 w-[calc(100vw-32px)] max-w-md mx-4 shadow-2xl shadow-[0_0_40px_rgba(99,102,241,0.3)] pointer-events-auto overflow-x-hidden break-words">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-full bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
-                <Zap className="w-5 h-5 text-indigo-400" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400">Step {onboardingStep + 1} of {onboardingSteps.length}</p>
-                <h3 className="text-lg font-bold text-white break-words">{onboardingSteps[onboardingStep].title}</h3>
-              </div>
-            </div>
-            <p className="text-slate-400 text-sm leading-relaxed mb-8 break-words">{onboardingSteps[onboardingStep].desc}</p>
-            <div className="flex justify-between items-center gap-2 flex-wrap">
-              <button
-                onClick={() => {
-                  localStorage.setItem('nexus_onboarding_completed', 'true');
-                  setShowOnboarding(false);
-                }}
-                className="text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors flex-shrink-0"
-              >
-                Skip Tour
-              </button>
-              <div className="flex gap-2 flex-wrap">
-                {onboardingStep > 0 && (
-                  <button
-                    onClick={() => setOnboardingStep(s => s - 1)}
-                    className="text-[10px] font-black uppercase tracking-widest bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg transition-colors"
-                  >
-                    Back
-                  </button>
-                )}
-                {onboardingSteps[onboardingStep].action ? (
-                  <a
-                    href={onboardingSteps[onboardingStep].actionUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[10px] font-black uppercase tracking-widest bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-4 py-2 rounded-lg transition-all hover:-translate-y-0.5"
-                    onClick={() => {
-                      if (onboardingStep < onboardingSteps.length - 1) {
-                        setOnboardingStep(s => s + 1);
-                      } else {
-                        localStorage.setItem('nexus_onboarding_completed', 'true');
-                        setShowOnboarding(false);
-                      }
-                    }}
-                  >
-                    {onboardingSteps[onboardingStep].actionLabel}
-                  </a>
-                ) : (
-                  <button
-                    onClick={() => {
-                      if (onboardingStep < onboardingSteps.length - 1) {
-                        setOnboardingStep(s => s + 1);
-                      } else {
-                        localStorage.setItem('nexus_onboarding_completed', 'true');
-                        setShowOnboarding(false);
-                      }
-                    }}
-                    className="text-[10px] font-black uppercase tracking-widest bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg transition-all"
-                  >
-                    {onboardingStep < onboardingSteps.length - 1 ? 'Next' : 'Get Started'}
-                  </button>
-                )}
-              </div>
             </div>
           </div>
         </div>

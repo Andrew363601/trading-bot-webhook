@@ -308,8 +308,8 @@ function AuditLogContent() {
               : (isVeto ? 'bg-red-950/10 border-red-500/20' : 'bg-slate-900/30 border-white/10')
             }`}>
               
-              <div className="flex justify-between items-start mb-4 border-b border-white/5 pb-4">
-                 <div className="flex flex-col gap-2">
+              <div className="flex flex-col sm:flex-row justify-between items-start gap-3 sm:gap-2 mb-4 border-b border-white/5 pb-4">
+                 <div className="flex flex-col gap-2 min-w-0">
                     <div className="flex items-center gap-4">
                         <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2 ${isOpenTrade ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : isFullTrade ? 'bg-indigo-500/20 text-indigo-300' : (isVeto ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-800 text-slate-400')}`}>
                         {isOpenTrade && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />}
@@ -321,13 +321,14 @@ function AuditLogContent() {
                     <span className="text-[11px] text-slate-500 font-mono pl-1">{new Date(pipeline.timestamp).toLocaleString()}</span>
                  </div>
                  
-                 {/* 🟢 THE FIX: Dual Control Panel for Active Trades */}
+                 {/* 🟢 THE FIX: Dual Control Panel for Active Trades.
+                     Mobile: full-width, wraps, buttons never shrink/clip off the edge. */}
                  {isOpenTrade && (
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2 w-full sm:w-auto shrink-0">
                         <button 
                             onClick={() => handleForceReview(t.id)}
                             disabled={reviewingId === t.id}
-                            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                            className={`flex-1 sm:flex-none whitespace-nowrap flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
                                 reviewingId === t.id 
                                 ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50 cursor-not-allowed' 
                                 : 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/40 hover:shadow-[0_0_15px_-3px_rgba(99,102,241,0.4)]'
@@ -340,7 +341,7 @@ function AuditLogContent() {
                         <button 
                             onClick={() => handleClosePosition(t)}
                             disabled={closingId === t.id}
-                            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
+                            className={`flex-1 sm:flex-none whitespace-nowrap flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
                                 closingId === t.id 
                                 ? 'bg-red-500/20 text-red-400 border border-red-500/50 cursor-not-allowed' 
                                 : 'bg-red-500/10 text-red-400 border border-red-500/30 hover:bg-red-500/20 hover:shadow-[0_0_15px_-3px_rgba(239,68,68,0.4)]'

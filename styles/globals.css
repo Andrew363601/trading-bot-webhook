@@ -2,6 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Hide scrollbars (used by the draggable tab strips on mobile) while keeping
+   the element scrollable via touch-drag. */
+.no-scrollbar {
+  -ms-overflow-style: none;   /* IE/Edge */
+  scrollbar-width: none;      /* Firefox */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;              /* Chrome/Safari */
+}
+
 /* Custom scrollbar for a clean, quantitative aesthetic */
 ::-webkit-scrollbar {
   width: 6px;

@@ -3,12 +3,10 @@
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
-import { useSupabaseClient } from '@supabase/auth-helpers-react';
 import { Activity, ChevronRight, TrendingUp } from 'lucide-react';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
 
 export default function LandingPage() {
-  const supabase = useSupabaseClient();
   const [logs, setLogs] = useState([]);
   const [showRationalization, setShowRationalization] = useState(false);
   const [terminalFilter, setTerminalFilter] = useState('ALL');
@@ -17,11 +15,10 @@ export default function LandingPage() {
   const [demoTrades, setDemoTrades] = useState([]);
   const [demoConfigs, setDemoConfigs] = useState([]);
   const [selectedStrategy, setSelectedStrategy] = useState(null);
-  const demoTenantId = process.env.NEXT_PUBLIC_DEMO_TENANT_ID;
 
   useEffect(() => {
-    if (!demoTenantId) {
-      // No demo tenant configured — use synthetic fallback data
+    const setSynthetic = () => {
+      // Synthetic fallback so the marketing page is never blank.
       setLogs([
         { type: 'CORTEX', text: 'Nexus Cortex v2.4.1 — Demo Environment (Synthetic)', color: 'text-purple-400' },
         { type: 'WATCHDOG', text: 'Watchdog online. Monitoring BTC-PERP, ETH-PERP, SOL-PERP...', color: 'text-emerald-400' },
@@ -37,122 +34,69 @@ export default function LandingPage() {
         { strategy: 'SOL_RANGE_REVERSION_V1', asset: 'SOL-PERP' },
         { strategy: 'DOGE_HF_SCALPER_V1', asset: 'DOGE-PERP' },
       ]);
-      return;
-    }
-
-    let logChannel;
-    let tradeChannel;
-
-    const setupSubscriptions = () => {
-        // Subscribe to real-time logs for dummy account
-        logChannel = supabase
-          .channel('dummy-logs')
-          .on('postgres_changes', { 
-            event: 'INSERT', 
-            schema: 'public', 
-            table: 'agent_session_logs',
-            filter: `tenant_id=eq.${demoTenantId}` 
-          }, (payload) => {
-            const newLog = payload.new;
-            
-            // Live ROI Extraction from Watchdog logs
-            if (newLog.agent_name === 'Watchdog' && newLog.log_message.includes('Live ROE:')) {
-                const roeMatch = newLog.log_message.match(/Live ROE: ([\d.-]+)%/);
-                if (roeMatch) {
-                    const roe = roeMatch[1];
-                    setActiveDemoTrade(prev => prev ? { ...prev, current_roe: roe } : null);
-                }
-            }
-
-            setLogs(prev => [{
-              type: newLog.agent_name === 'Agent Cortex' ? 'CORTEX' : (newLog.agent_name === 'Watchdog' ? 'WATCHDOG' : 'SNIPER'),
-              text: newLog.log_message,
-              color: newLog.agent_name === 'Agent Cortex' ? 'text-purple-400' : (newLog.agent_name === 'Watchdog' ? 'text-emerald-400' : 'text-cyan-400')
-            }, ...prev].slice(0, 30));
-
-            if (newLog.agent_name === 'Agent Cortex') {
-              setShowRationalization(true);
-              setTimeout(() => setShowRationalization(false), 8000);
-            }
-          })
-          .subscribe((status) => {
-            if (status === 'CLOSED') {
-                console.warn("[REALTIME] Log channel closed. Retrying...");
-                setTimeout(setupSubscriptions, 3000);
-            }
-          });
-
-        // Subscribe to trade updates for dummy account
-        tradeChannel = supabase
-          .channel('dummy-trades')
-          .on('postgres_changes', { 
-            event: '*', 
-            schema: 'public', 
-            table: 'trade_logs',
-            filter: `tenant_id=eq.${demoTenantId}` 
-          }, () => {
-            fetchDemoPerformance();
-          })
-          .subscribe();
     };
 
-    // Fetch initial logs for dummy account
-    const fetchInitialLogs = async () => {
-      const { data } = await supabase
-        .from('agent_session_logs')
-        .select('agent_name, log_message, log_type, timestamp')
-        .eq('tenant_id', demoTenantId)
-        .order('timestamp', { ascending: false })
-        .limit(20);
-      
-      if (data) {
-        setLogs(data.map(l => ({ 
-          type: l.agent_name === 'Agent Cortex' ? 'CORTEX' : (l.agent_name === 'Watchdog' ? 'WATCHDOG' : 'SNIPER'), 
-          text: l.log_message,
-          color: l.agent_name === 'Agent Cortex' ? 'text-purple-400' : (l.agent_name === 'Watchdog' ? 'text-emerald-400' : 'text-cyan-400')
-        })));
+    const toLog = (l) => ({
+      type: l.agent_name === 'Agent Cortex' ? 'CORTEX' : (l.agent_name === 'Watchdog' ? 'WATCHDOG' : 'SNIPER'),
+      text: l.log_message,
+      color: l.agent_name === 'Agent Cortex' ? 'text-purple-400' : (l.agent_name === 'Watchdog' ? 'text-emerald-400' : 'text-cyan-400'),
+    });
+
+    let cancelled = false;
+
+    // Fetch the demo data from the public, server-side, service-role endpoint.
+    // (Direct anon Supabase reads are blocked by tenant-scoped RLS.)
+    const fetchFeed = async () => {
+      try {
+        const res = await fetch('/api/demo-feed');
+        if (!res.ok) throw new Error(`demo-feed ${res.status}`);
+        const data = await res.json();
+        if (cancelled) return;
+
+        // If the demo tenant isn't configured or has no data, keep the synthetic view.
+        const hasAny = (data.logs?.length || 0) + (data.trades?.length || 0) + (data.configs?.length || 0) > 0;
+        if (!data.configured || !hasAny) {
+          setSynthetic();
+          return;
+        }
+
+        if (data.logs?.length) setLogs(data.logs.map(toLog));
+        if (data.configs?.length) setDemoConfigs(data.configs);
+
+        if (data.trades?.length) {
+          const trades = data.trades;
+          setDemoTrades(trades);
+          const closed = trades.filter(t => t.exit_price !== null && t.exit_price !== undefined);
+          const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+          const winRate = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(1) + '%' : '0%';
+          const totalPnLVal = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+          setDemoStats({ winRate, totalTrades: closed.length, totalPnL: `$${totalPnLVal.toFixed(2)}` });
+
+          const open = trades.find(t => t.exit_price === null || t.exit_price === undefined);
+          setActiveDemoTrade(open || null);
+
+          // Surface a brief rationalization flash if a Cortex log just landed.
+          if (data.logs?.some(l => l.agent_name === 'Agent Cortex')) {
+            setShowRationalization(true);
+            setTimeout(() => { if (!cancelled) setShowRationalization(false); }, 8000);
+          }
+        }
+      } catch (e) {
+        console.warn('[DEMO] feed unavailable, using synthetic data:', e.message);
+        if (!cancelled) setSynthetic();
       }
     };
 
-    const fetchDemoPerformance = async () => {
-        const { data: trades } = await supabase
-            .from('trade_logs')
-            .select('*')
-            .eq('tenant_id', demoTenantId);
-        
-        const { data: configs } = await supabase
-            .from('strategy_config')
-            .select('*')
-            .eq('tenant_id', demoTenantId);
+    // Initial paint with synthetic data, then hydrate from the feed and poll.
+    setSynthetic();
+    fetchFeed();
+    const interval = setInterval(fetchFeed, 5000);
 
-        if (configs) setDemoConfigs(configs);
-        if (trades) {
-            setDemoTrades(trades);
-            const closed = trades.filter(t => t.exit_price !== null);
-            const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
-            const winRate = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(1) + '%' : '0%';
-            const totalPnLVal = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
-            
-            setDemoStats({
-                winRate,
-                totalTrades: closed.length,
-                totalPnL: `$${totalPnLVal.toFixed(2)}`
-            });
-
-            const open = trades.find(t => t.exit_price === null);
-            setActiveDemoTrade(open);
-        }
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
     };
-
-    fetchInitialLogs();
-    fetchDemoPerformance();
-    setupSubscriptions();
-
-    return () => { 
-        if (logChannel) supabase.removeChannel(logChannel); 
-        if (tradeChannel) supabase.removeChannel(tradeChannel);
-    };
-  }, [demoTenantId, supabase]);
+  }, []);
 
   const filteredLogs = logs.filter(l => terminalFilter === 'ALL' || l.type === terminalFilter);
 

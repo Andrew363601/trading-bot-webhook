@@ -19,12 +19,51 @@ const google = createGoogleGenerativeAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
 
+// 🔒 PROTECTED FIELDS: the optimizer may ONLY tune indicator/strategy parameters.
+// It must NEVER change position sizing, risk limits, execution mode, or the asset.
+// These are stripped at the code layer regardless of what the model returns.
+const PROTECTED_PARAM_KEYS = [
+  'qty', 'target_usd', 'leverage',
+  'tripwire_percent', 'sl_percent', 'tp_percent',
+  'trail_step_percent', 'veto_cooldown_minutes',
+  'market_type', 'execution_mode', 'asset', 'strategy'
+];
+
+/**
+ * Returns a safe parameter object: starts from the existing (trusted) parameters,
+ * then layers ONLY non-protected keys from the model's proposal on top. This makes
+ * it impossible for the optimizer to alter qty/size/risk/execution fields.
+ */
+function buildSafeParameters(existingParams = {}, proposedParams = {}) {
+  const safe = { ...(existingParams || {}) };
+  for (const [key, value] of Object.entries(proposedParams || {})) {
+    if (PROTECTED_PARAM_KEYS.includes(key)) continue; // never overwrite protected fields
+    safe[key] = value;
+  }
+  // Hard-restore protected fields to their original trusted values.
+  for (const key of PROTECTED_PARAM_KEYS) {
+    if (existingParams && key in existingParams) safe[key] = existingParams[key];
+  }
+  return safe;
+}
+
 export default async function handler(req, res) {
   try {
     const apiKeyName = process.env.COINBASE_API_KEY;
     const apiSecret = process.env.COINBASE_API_SECRET?.replace(/\\n/g, '\n');
 
-    const { data: configs } = await supabase.from('strategy_config').select('*');
+    // 🔒 TENANT SCOPING: the optimizer must ONLY ever touch the requesting tenant's
+    // strategies — never other tenants'. The tenant_id is supplied by the caller
+    // (chat runOptimizer tool / scheduled per-tenant job).
+    const tenantId = req.body?.tenant_id || req.query?.tenant_id;
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Missing tenant_id. The optimizer is tenant-scoped and cannot run globally.' });
+    }
+
+    const { data: configs } = await supabase
+      .from('strategy_config')
+      .select('*')
+      .eq('tenant_id', tenantId);
     if (!configs || configs.length === 0) return res.status(200).json({ status: "No strategies found." });
 
     const portfolioActions = [];
@@ -37,6 +76,7 @@ export default async function handler(req, res) {
       const { data: trades } = await supabase
         .from('trade_logs')
         .select('pnl, side, entry_price, exit_price, exit_time')
+        .eq('tenant_id', tenantId) // 🔒 only this tenant's trades
         .eq('symbol', config.asset) // Fixed the hyphen-stripping bug
         .eq('strategy_id', config.strategy)
         .not('exit_price', 'is', null)
@@ -209,24 +249,28 @@ if (object.action === 'REACTIVATE') is_active_new = true;
 
 // Execute update only if an action was taken to minimize DB writes
 if (object.action !== 'MAINTAIN') {
-    // 1. Update the live configuration
+    // 🔒 Strip any attempt to mutate protected fields (qty/size/risk/mode/asset).
+    const safeParameters = buildSafeParameters(config.parameters, object.parameters);
+
+    // 1. Update the live configuration (tenant-scoped — never touch other tenants)
     await supabase.from('strategy_config').update({
       is_active: is_active_new,
-      parameters: object.parameters || config.parameters,
+      parameters: safeParameters,
       reasoning: `[AUTO-${object.action}] ${object.reasoning}`,
       version: object.new_version || config.version,
       last_updated: new Date().toISOString()
-    }).eq('id', config.id);
+    }).eq('id', config.id).eq('tenant_id', tenantId);
 
     // 2. NEW: Save the exact historical reasoning to the ledger for Nexus to read
     await supabase.from('optimization_logs').insert({
+      tenant_id: tenantId,
       asset: config.asset,
       strategy: config.strategy,
       action: object.action,
       old_version: config.version,
       new_version: object.new_version || config.version,
       reasoning: object.reasoning,
-      parameters: object.parameters || config.parameters
+      parameters: safeParameters
     });
 }
 

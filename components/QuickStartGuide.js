@@ -107,16 +107,27 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeS
       }
     }
 
-    // Ensure tooltip stays within viewport
-    const tooltipWidth = 320;
+    // Ensure tooltip stays within viewport.
+    // The card width is min(320, 90vw); clamping MUST account for the horizontal
+    // transform (-50% centered, -100% right-anchored, or 0 left-anchored), otherwise
+    // edge-anchored steps (e.g. the Settings / API-key steps 8–11) overflow and get cut off.
+    const tooltipWidth = Math.min(320, window.innerWidth * 0.9);
     const tooltipHeight = 400;
-    
-    if (style.left && typeof style.left === 'number') {
-      // Constrain left position
-      let minLeft = tooltipWidth / 2 + viewportPadding;
-      let maxLeft = window.innerWidth - tooltipWidth / 2 - viewportPadding;
-      if (style.left < minLeft) style.left = minLeft;
-      if (style.left > maxLeft) style.left = maxLeft;
+    const transform = style.transform || '';
+
+    if (typeof style.left === 'number') {
+      // Compute the card's actual left/right edges given the transform, then shift
+      // `left` so both edges stay inside the viewport padding.
+      let edgeLeft;
+      if (transform.includes('translateX(-50%)')) edgeLeft = style.left - tooltipWidth / 2;
+      else if (transform.includes('translateX(-100%)')) edgeLeft = style.left - tooltipWidth;
+      else edgeLeft = style.left;
+
+      const minEdge = viewportPadding;
+      const maxEdge = window.innerWidth - tooltipWidth - viewportPadding;
+      let clampedEdge = Math.max(minEdge, Math.min(edgeLeft, maxEdge));
+      const delta = clampedEdge - edgeLeft;
+      style.left = style.left + delta;
     }
     
     if (style.top && typeof style.top === 'number') {
@@ -216,7 +227,7 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeS
 
       {/* Tooltip card */}
       <div
-        className="fixed z-[302] w-[320px] max-w-[90vw] bg-slate-900 border border-indigo-500/30 rounded-2xl shadow-2xl shadow-indigo-500/10 p-5 overflow-x-hidden break-words"
+        className="fixed z-[302] w-[320px] max-w-[calc(100vw-32px)] bg-slate-900 border border-indigo-500/30 rounded-2xl shadow-2xl shadow-indigo-500/10 p-5 overflow-x-hidden overflow-y-auto break-words max-h-[calc(100vh-40px)]"
         style={tooltipStyle}
       >
         {/* Arrow pointer */}

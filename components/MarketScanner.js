@@ -24,6 +24,10 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   const [strategyParams, setStrategyParams] = useState({});
   const [executionMode, setExecutionMode] = useState('PAPER'); // PAPER or LIVE
   const [favoritesLoading, setFavoritesLoading] = useState({}); // Track individual favorite toggle states
+  const [conflictModal, setConflictModal] = useState(null); // { asset, activeStrategy, requestedStrategy, strategy }
+  const [subscribing, setSubscribing] = useState(false); // Prevent double-submits during replace
+  const [liveWarning, setLiveWarning] = useState(null); // { reason, strategy } — LIVE eligibility popup
+  const [hasCoinbaseKeys, setHasCoinbaseKeys] = useState(null); // null = unknown, true/false once checked
   const [tenantId, setTenantId] = useState(null); // Cache tenant_id to avoid repeated queries
   const tabBarRef = useRef(null); // Ref for mobile touch-drag scrolling on tab bar
   const tabDragState = useRef({ isDragging: false, startX: 0, scrollLeft: 0 });
@@ -129,6 +133,29 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     loadFavorites();
   }, [loadFavorites]);
 
+  // Check whether the tenant has Coinbase API keys configured (gates LIVE trading).
+  useEffect(() => {
+    const checkKeys = async () => {
+      if (!tenantId) return;
+      try {
+        const { data } = await supabase
+          .from('api_keys_vault')
+          .select('id')
+          .eq('tenant_id', tenantId)
+          .eq('exchange', 'COINBASE')
+          .eq('is_active', true)
+          .maybeSingle();
+        setHasCoinbaseKeys(!!data);
+      } catch (e) {
+        setHasCoinbaseKeys(false);
+      }
+    };
+    checkKeys();
+  }, [tenantId, supabase]);
+
+  // Determine if an asset is a Coinbase CDE-approved future (only these may go LIVE).
+  const isCDEAsset = (assetId) => (assetId || '').toString().toUpperCase().includes('-CDE');
+
   // When asset selected, fetch applicable strategies
   useEffect(() => {
     const fetchStrategies = async () => {
@@ -193,9 +220,38 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     }
   };
 
-  const subscribeToStrategy = async (strategy) => {
+  const subscribeToStrategy = async (strategy, forceReplace = false, liveConfirmed = false) => {
     if (!selectedAsset || !token) return;
 
+    // 🔒 LIVE eligibility gate (popup warning). Only CDE assets, only with Coinbase API
+    // keys configured. Server enforces this too; this is the friendly front-line warning.
+    if (executionMode === 'LIVE' && !liveConfirmed) {
+      if (!isCDEAsset(selectedAsset.id)) {
+        setLiveWarning({
+          strategy,
+          blocking: true,
+          reason: `${selectedAsset.id} is not a Coinbase CDE-approved future. LIVE trading is restricted to CDE derivatives only. Use PAPER mode for this asset.`,
+        });
+        return;
+      }
+      if (hasCoinbaseKeys === false) {
+        setLiveWarning({
+          strategy,
+          blocking: true,
+          reason: 'LIVE trading requires Coinbase API keys. Add them in Settings → API Keys first, or switch to PAPER mode to start simulated trading.',
+        });
+        return;
+      }
+      // CDE asset + keys present (or unknown): require an explicit risk acknowledgement.
+      setLiveWarning({
+        strategy,
+        blocking: false,
+        reason: `You are about to deploy "${strategy.name || strategy.id}" on ${selectedAsset.id} in LIVE mode. Real funds will be at risk. Continue?`,
+      });
+      return;
+    }
+
+    setSubscribing(true);
     try {
       const res = await fetch('/api/subscribe-strategy', {
         method: 'POST',
@@ -208,6 +264,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
           strategy: strategy.id,
           exchange: 'COINBASE',
           product_type: 'FUTURES',
+          force_replace: forceReplace,
           parameters: {
             ...strategy.parameters,
             ...strategyParams[strategy.id],
@@ -217,10 +274,21 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
       });
 
       if (res.ok) {
+        setConflictModal(null);
         alert(`✅ Subscribed to ${strategy.name} for ${selectedAsset.id}`);
         setStrategyParams({});
         // Call onSelectAsset if provided to refresh parent state
         if (onSelectAsset) onSelectAsset(selectedAsset.id);
+      } else if (res.status === 409) {
+        // 🛡️ One-active-strategy-per-asset conflict: surface a confirmation popup
+        // rather than silently overriding. Protects against conflicting orders.
+        const conflict = await res.json();
+        setConflictModal({
+          asset: conflict.asset || selectedAsset.id,
+          activeStrategy: conflict.active_strategy,
+          requestedStrategy: strategy.name || strategy.id,
+          strategy, // keep the full object so we can re-submit with force_replace
+        });
       } else {
         const errorData = await res.json();
         alert(`❌ ${errorData.error || 'Failed to subscribe'}`);
@@ -228,6 +296,8 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     } catch (err) {
       console.error('Failed to subscribe:', err);
       alert('Failed to subscribe to strategy');
+    } finally {
+      setSubscribing(false);
     }
   };
 
@@ -249,14 +319,17 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   });
 
   return (
-    <div className="bg-slate-950/50 rounded-2xl p-3 space-y-4 max-h-[500px] overflow-y-auto custom-scrollbar">
-      {/* Tabs — swipeable on mobile, full-width on desktop */}
+    <div className="bg-slate-950/50 rounded-2xl p-3 space-y-4 max-h-[500px] md:max-h-none overflow-y-auto custom-scrollbar">
+      {/* Tabs.
+          • Mobile: a draggable strip — only the tabs move (drag the bar below to scroll
+            through them); no page-level horizontal scrollbar.
+          • Desktop: locked, all tabs visible at once (panel widened to fit). */}
       <div 
         ref={tabBarRef}
         onTouchStart={handleTabTouchStart}
         onTouchMove={handleTabTouchMove}
         onTouchEnd={handleTabTouchEnd}
-        className="flex gap-4 border-b border-white/10 overflow-x-auto md:overflow-x-visible no-scrollbar justify-start md:justify-between min-w-max md:min-w-0 md:w-full cursor-grab active:cursor-grabbing"
+        className="flex gap-3 md:gap-1 border-b border-white/10 overflow-x-auto md:overflow-x-visible no-scrollbar justify-start md:justify-between min-w-max md:min-w-0 md:w-full cursor-grab active:cursor-grabbing select-none"
       >
         <button
           onClick={() => setActiveTab('FAVORITES')}
@@ -314,6 +387,19 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
           Futures
         </button>
       </div>
+
+      {/* Mobile-only drag bar: drag this to scroll the tab strip above.
+          Hidden on desktop where all tabs are already visible. */}
+      <button
+        type="button"
+        aria-label="Drag to scroll tabs"
+        onTouchStart={handleTabTouchStart}
+        onTouchMove={handleTabTouchMove}
+        onTouchEnd={handleTabTouchEnd}
+        className="md:hidden -mt-3 mx-auto flex h-4 w-24 items-center justify-center cursor-grab active:cursor-grabbing touch-none"
+      >
+        <span className="h-1 w-16 rounded-full bg-white/15" />
+      </button>
 
       {/* Search */}
       <form 
@@ -495,6 +581,85 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
           )}
         </div>
       </div>
+
+      {/* 🛡️ One-active-strategy-per-asset confirmation popup */}
+      {conflictModal && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl p-5 w-full max-w-sm shadow-2xl shadow-[0_0_40px_rgba(245,158,11,0.25)]">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-9 h-9 rounded-full bg-amber-500/15 flex items-center justify-center flex-shrink-0">
+                <AlertCircle className="w-5 h-5 text-amber-400" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-black text-white uppercase tracking-wide">Active Strategy Conflict</h3>
+                <p className="text-[10px] text-amber-300/80 font-bold uppercase tracking-widest">{conflictModal.asset}</p>
+              </div>
+            </div>
+            <p className="text-slate-300 text-xs leading-relaxed mb-3">
+              Only <span className="font-black text-white">one strategy</span> can be active per asset.
+              Running two on the same asset can cause conflicting orders and unexpected closures
+              that may blow up your account.
+            </p>
+            <p className="text-slate-400 text-xs leading-relaxed mb-5">
+              Activating <span className="font-bold text-indigo-300">{conflictModal.requestedStrategy}</span> will
+              deactivate <span className="font-bold text-red-300">{conflictModal.activeStrategy}</span> on {conflictModal.asset}.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConflictModal(null)}
+                disabled={subscribing}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-[10px] uppercase tracking-widest py-2.5 rounded-xl transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => subscribeToStrategy(conflictModal.strategy, true)}
+                disabled={subscribing}
+                className="flex-1 bg-amber-600 hover:bg-amber-500 text-white font-black text-[10px] uppercase tracking-widest py-2.5 rounded-xl transition-colors disabled:opacity-50"
+              >
+                {subscribing ? 'Replacing…' : 'Replace & Activate'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 🔒 LIVE trading eligibility / risk warning popup */}
+      {liveWarning && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <div className={`bg-slate-900 border rounded-2xl p-5 w-full max-w-sm shadow-2xl ${liveWarning.blocking ? 'border-red-500/40 shadow-[0_0_40px_rgba(239,68,68,0.25)]' : 'border-amber-500/40 shadow-[0_0_40px_rgba(245,158,11,0.25)]'}`}>
+            <div className="flex items-start gap-3 mb-4">
+              <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 ${liveWarning.blocking ? 'bg-red-500/15' : 'bg-amber-500/15'}`}>
+                {liveWarning.blocking ? <Lock className="w-5 h-5 text-red-400" /> : <AlertCircle className="w-5 h-5 text-amber-400" />}
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-black text-white uppercase tracking-wide">
+                  {liveWarning.blocking ? 'LIVE Trading Blocked' : 'Confirm LIVE Deployment'}
+                </h3>
+                <p className={`text-[10px] font-bold uppercase tracking-widest ${liveWarning.blocking ? 'text-red-300/80' : 'text-amber-300/80'}`}>{selectedAsset?.id}</p>
+              </div>
+            </div>
+            <p className="text-slate-300 text-xs leading-relaxed mb-5">{liveWarning.reason}</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setLiveWarning(null)}
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-[10px] uppercase tracking-widest py-2.5 rounded-xl transition-colors"
+              >
+                {liveWarning.blocking ? 'Close' : 'Cancel'}
+              </button>
+              {!liveWarning.blocking && (
+                <button
+                  onClick={() => { const s = liveWarning.strategy; setLiveWarning(null); subscribeToStrategy(s, false, true); }}
+                  disabled={subscribing}
+                  className="flex-1 bg-red-600 hover:bg-red-500 text-white font-black text-[10px] uppercase tracking-widest py-2.5 rounded-xl transition-colors disabled:opacity-50"
+                >
+                  {subscribing ? 'Deploying…' : 'Deploy LIVE'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

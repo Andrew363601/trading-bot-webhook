@@ -64,11 +64,24 @@ export default async function handler(req, res) {
                     updated_at: new Date().toISOString()
                 }, { onConflict: 'tenant_id' });
 
+                const isBillingActive = sub.status === 'active' || sub.status === 'trialing';
+
                 await supabase.from('tenants').update({
                     billing_tier: tier,
-                    subscription_active: sub.status === 'active' || sub.status === 'trialing',
+                    subscription_active: isBillingActive,
                     updated_at: new Date().toISOString() // Track timestamp for grace period
                 }).eq('id', tenantId);
+
+                // 🔒 If a subscription transitions into a non-active state (past_due, unpaid,
+                // canceled, incomplete_expired), force ALL active strategies OFF immediately.
+                // This protects the account from continuing to trade without valid billing.
+                if (!isBillingActive) {
+                    await supabase.from('strategy_config')
+                        .update({ is_active: false, updated_at: new Date().toISOString() })
+                        .eq('tenant_id', tenantId)
+                        .eq('is_active', true);
+                    console.warn(`[STRIPE_WEBHOOK] Deactivated strategies for ${tenantId} (status=${sub.status}).`);
+                }
             }
             break;
 
@@ -86,6 +99,14 @@ export default async function handler(req, res) {
                     subscription_active: false,
                     updated_at: new Date().toISOString() // Start grace period timer
                 }).eq('id', deletedTenantId);
+
+                // 🔒 Force-disable all active strategies on cancellation so no further
+                // LIVE or PAPER execution occurs once the subscription is gone.
+                await supabase.from('strategy_config')
+                    .update({ is_active: false, updated_at: new Date().toISOString() })
+                    .eq('tenant_id', deletedTenantId)
+                    .eq('is_active', true);
+                console.warn(`[STRIPE_WEBHOOK] Subscription deleted — deactivated strategies for ${deletedTenantId}.`);
             }
             break;
     }

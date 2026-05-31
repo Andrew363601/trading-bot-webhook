@@ -17,7 +17,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const { asset, strategy, exchange = 'COINBASE', product_type = 'FUTURES', parameters = {} } = req.body;
+  const { asset, strategy, exchange = 'COINBASE', product_type = 'FUTURES', parameters = {}, force_replace = false } = req.body;
 
   if (!asset || !strategy) {
     return res.status(400).json({ error: 'Missing asset or strategy' });
@@ -84,12 +84,34 @@ export default async function handler(req, res) {
 
     const currentActiveStrategy = existingActiveStrategies?.[0];
 
-    // 2. Enforce "one active strategy per asset" rule
+    // 2. Enforce "one active strategy per asset" rule.
+    // 🛡️ ACCOUNT PROTECTION: Two strategies active on the same asset (LIVE or PAPER)
+    // can issue conflicting orders and cause unexpected position closures. We allow the
+    // user to *replace* the active strategy, but only with an explicit confirmation
+    // (force_replace=true) so it is never silent.
     if (currentActiveStrategy && currentActiveStrategy.strategy !== strategy) {
-      // A different strategy is already active for this asset
-      return res.status(409).json({
-        error: `Only one strategy can be active at a time for ${asset}. Please deactivate "${currentActiveStrategy.strategy}" first.`,
-      });
+      if (!force_replace) {
+        // Signal the UI to show a confirmation popup before overriding.
+        return res.status(409).json({
+          conflict: true,
+          asset,
+          active_strategy: currentActiveStrategy.strategy,
+          requested_strategy: strategy,
+          error: `Only one strategy can be active at a time for ${asset}. Activating "${strategy}" will deactivate "${currentActiveStrategy.strategy}".`,
+        });
+      }
+      // Explicit override confirmed: deactivate the conflicting active strategy first.
+      const { error: deactivateError } = await supabase
+        .from('strategy_config')
+        .update({ is_active: false, last_updated: new Date().toISOString() })
+        .eq('tenant_id', actualTenantId)
+        .eq('asset', asset)
+        .eq('is_active', true)
+        .neq('strategy', strategy);
+      if (deactivateError) {
+        console.error("[SUBSCRIBE STRATEGY ERROR]: Failed to deactivate conflicting strategy:", deactivateError.message);
+        return res.status(500).json({ error: "Failed to replace active strategy.", details: deactivateError.message });
+      }
     }
 
     let finalConfigData;

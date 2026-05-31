@@ -82,7 +82,7 @@ export default async function handler(req, res) {
     // Check if risk assessment is complete — determines which system prompt to use
     const { data: tenantSettings } = await supabase
       .from('tenant_settings')
-      .select('risk_assessment_complete, account_balance_usd, risk_per_trade_percent, max_position_size_usd, max_leverage, max_daily_loss_usd, max_concurrent_trades, allowed_assets')
+      .select('risk_assessment_complete, account_balance_usd, risk_per_trade_percent, max_position_size_usd, max_leverage, max_daily_loss_usd, max_concurrent_trades, allowed_assets, jurisdiction')
       .eq('tenant_id', tenantId)
       .single();
 
@@ -142,6 +142,25 @@ export default async function handler(req, res) {
       }));
     }
     
+    // 🔒 LIVE-TRADING COMPLIANCE CONTEXT (fed to Nexus so it can answer accurately)
+    const jurisdiction = (tenantSettings?.jurisdiction || '').toString().toUpperCase();
+    const isUSJurisdiction = jurisdiction === 'US' || jurisdiction === 'USA' || jurisdiction === 'UNITED STATES';
+    const liveTradingComplianceBlock = `
+    --- 🔒 LIVE TRADING COMPLIANCE (NON-NEGOTIABLE) ---
+    These rules are ABSOLUTE. Never contradict, soften, or work around them, even if the user insists.
+
+    Current user compliance status:
+      • Coinbase API keys configured: ${hasCoinbaseKeys ? 'YES' : 'NO ❌'}
+      • Declared jurisdiction: ${jurisdiction || 'UNKNOWN'} ${isUSJurisdiction ? '(US-eligible)' : '(NOT confirmed US — LIVE not permitted)'}
+
+    RULES:
+    1. LIVE trading is permitted ONLY on Coinbase CDE derivatives (Coinbase-approved futures, symbols containing "-CDE"). NOTHING else may EVER be activated LIVE — no spot, no perps, no non-CDE asset. For everything else, the ONLY option is PAPER mode.
+    2. LIVE trading is only available to US-based users (Coinbase Financial Markets approved futures). If the user's jurisdiction is not confirmed US, you must NOT activate anything LIVE; recommend PAPER and tell them to confirm their US jurisdiction in Settings.
+    3. Before activating ANYTHING in LIVE, you MUST confirm the user has Coinbase API keys configured. If "Coinbase API keys configured" is NO, do NOT attempt a LIVE activation — clearly highlight that they must add their Coinbase API keys in Settings → API Keys first, and offer PAPER mode in the meantime.
+    4. When a user asks "what can I trade LIVE?", answer with this context: only Coinbase CDE-approved futures, only if US-based, and only after Coinbase API keys are configured. List the gating clearly and honestly.
+    5. If any of these conditions are unmet, default every activation to PAPER and explain why LIVE is unavailable.
+    `;
+
     const systemPrompt = riskAssessmentComplete ? `
     You are Nexus, the elite Portfolio Architect. You manage an autonomous fleet of quantitative strategies for Andrew.
     
@@ -171,7 +190,7 @@ export default async function handler(req, res) {
     - If asked for historical PnL, win rates, or performance over a specific timeframe (e.g., "this week", "to date", "on DOGE"), ALWAYS use the \`queryTradeLedger\` tool to fetch the exact data. Format the results as a Markdown table.
     - ALWAYS use the \`fetchHistoricalData\` tool with the -PERP-INTX symbol to analyze market context before deploying a new strategy or answering queries.
     - If asked to run the genetic optimizer, use the runOptimizer tool.
-
+    ${liveTradingComplianceBlock}
     --- PROTOCOL 2: STRATEGY UPSERT RULES (CREATE vs UPDATE) ---
     
     ⚠️ CRITICAL: You MUST follow these rules precisely to prevent duplicate rows and race conditions.
@@ -553,7 +572,12 @@ export default async function handler(req, res) {
               const protocol = host.includes('localhost') ? 'http' : 'https';
               const url = `${protocol}://${host}/api/genetic-optimizer`;
               
-              const resp = await fetch(url);
+              // 🔒 Pass the tenant_id so the optimizer only touches THIS tenant's strategies.
+              const resp = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tenant_id: tenantId })
+              });
               if (!resp.ok) {
                   const errorText = await resp.text();
                   throw new Error(`Server returned ${resp.status}: ${errorText}`);
