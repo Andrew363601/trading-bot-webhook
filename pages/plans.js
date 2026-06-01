@@ -108,10 +108,10 @@ export default function PlansPage() {
             <h3 className="text-xl font-bold text-slate-400 mb-2">Retail</h3>
             <div className="text-4xl font-black mb-6">$49<span className="text-sm font-normal text-slate-500">/mo</span></div>
             <ul className="space-y-4 mb-10 flex-1">
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Included Capital/Assets: Up to 3 Active Assets</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Telemetry Data Speed: Standard polling</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Metered Overages: Base plan includes 500 API events/mo ($0.05 per 10 calls overage)</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Features Included: Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Hermes Memory</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Up to 3 active trading models simultaneously (e.g., BTC, ETH, and SOL)</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Standard polling execution pipeline</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Flat-rate fair use — no complex metered overages</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, and hermes_core_memory logging</span></li>
             </ul>
             <button 
               onClick={() => handleSelectTier('RETAIL')}
@@ -128,10 +128,10 @@ export default function PlansPage() {
             <h3 className="text-xl font-bold text-white mb-2">Pro Agent</h3>
             <div className="text-4xl font-black mb-6">$149<span className="text-sm font-normal text-slate-500">/mo</span></div>
             <ul className="space-y-4 mb-10 flex-1">
-              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Included Capital/Assets: Up to 10 Active Assets</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Telemetry Data Speed: High-Priority / Sub-second updates</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Metered Overages: Base plan includes 1,000 API events. Premium metered rate on overage.</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Features Included: Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Hermes Memory</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Up to 10 active trading models simultaneously</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>High-priority, sub-second streaming updates</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Flat-rate fair use optimized for high-frequency strategies</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-200"><Check className="w-4 h-4 text-indigo-400 mt-1" /> <span>Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Nexus Chat AI, and hermes_core_memory logging</span></li>
             </ul>
             <button 
               onClick={() => handleSelectTier('PRO')}
@@ -147,10 +147,10 @@ export default function PlansPage() {
             <h3 className="text-xl font-bold text-slate-400 mb-2">Institutional</h3>
             <div className="text-4xl font-black mb-6">$499<span className="text-sm font-normal text-slate-500">/mo</span></div>
             <ul className="space-y-4 mb-10 flex-1">
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Included Capital/Assets: Unlimited Active Assets</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Telemetry Data Speed: Direct raw websocket pipeline / Zero throttling</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Metered Overages: Massive inclusion pools (50,000 API calls). Usage-based pricing.</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Features Included: Custom AI Model via OpenRouter, Risk-to-Reward Accountant Protocol hard-locks.</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Unlimited active trading models</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Direct raw WebSocket pipeline with zero throttling</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Uncapped custom execution pool</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-purple-400 mt-1" /> <span>Custom AI Model integration via OpenRouter, Full Agentic Reflection, Multi-TF X-Ray, and custom Risk-to-Reward Accountant Protocol hard-locks</span></li>
             </ul>
             <button 
               onClick={() => handleSelectTier('INSTITUTIONAL')}

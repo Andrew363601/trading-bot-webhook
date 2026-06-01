@@ -339,11 +339,16 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
         onTouchStart={handleTabTouchStart}
         onTouchMove={handleTabTouchMove}
         onTouchEnd={handleTabTouchEnd}
-        className="flex gap-3 md:gap-1 border-b border-white/10 overflow-x-auto md:overflow-x-visible no-scrollbar justify-start md:justify-between min-w-max md:min-w-0 md:w-full cursor-grab active:cursor-grabbing select-none"
+        // Mobile: the strip itself owns horizontal scroll. It must be width-
+        // constrained (w-full) so overflow-x-auto actually clips + scrolls, and
+        // touchAction:pan-x lets the OS translate horizontal swipes into native
+        // scroll here (the parent uses pan-y). On desktop all tabs fit at once.
+        style={{ touchAction: 'pan-x' }}
+        className="flex gap-3 md:gap-1 border-b border-white/10 w-full overflow-x-auto md:overflow-x-visible no-scrollbar justify-start md:justify-between md:w-full cursor-grab active:cursor-grabbing select-none"
       >
         <button
           onClick={() => setActiveTab('FAVORITES')}
-          className={`px-3 py-2 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
+          className={`shrink-0 px-3 py-2 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
             activeTab === 'FAVORITES'
               ? 'text-indigo-400 border-b-2 border-indigo-400'
               : 'text-slate-500 hover:text-slate-300'
@@ -354,7 +359,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
         </button>
         <button
           onClick={() => setActiveTab('ACTIVE_STRATEGIES')}
-          className={`px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
+          className={`shrink-0 px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
             activeTab === 'ACTIVE_STRATEGIES'
               ? 'text-emerald-400 border-b-2 border-emerald-400'
               : 'text-slate-500 hover:text-slate-300'
@@ -365,7 +370,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
         </button>
         <button
           onClick={() => setActiveTab('BROWSE')}
-          className={`px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
+          className={`shrink-0 px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
             activeTab === 'BROWSE'
               ? 'text-cyan-400 border-b-2 border-cyan-400'
               : 'text-slate-500 hover:text-slate-300'
@@ -376,7 +381,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
         </button>
         <button
           onClick={() => setActiveTab('PERPS')}
-          className={`px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
+          className={`shrink-0 px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
             activeTab === 'PERPS'
               ? 'text-blue-400 border-b-2 border-blue-400'
               : 'text-slate-500 hover:text-slate-300'
@@ -387,7 +392,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
         </button>
         <button
           onClick={() => setActiveTab('FUTURES')}
-          className={`px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
+          className={`shrink-0 px-3 py-1.5 font-bold uppercase text-[10px] tracking-widest transition-colors whitespace-nowrap ${
             activeTab === 'FUTURES'
               ? 'text-orange-400 border-b-2 border-orange-400'
               : 'text-slate-500 hover:text-slate-300'

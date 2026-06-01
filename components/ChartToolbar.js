@@ -5,7 +5,13 @@
 // All UI is stateless — the consumer (pages/index.js) owns state via props.
 
 import React, { useEffect, useRef, useState } from 'react';
-import { Minus, Slash, Type, Eraser, Sliders, X, ChevronDown } from 'lucide-react';
+import {
+  Minus, Slash, Type, Eraser, Sliders, X, ChevronDown,
+  Square, MoveUpRight, GitCommitVertical, Spline, Undo2,
+} from 'lucide-react';
+
+// Preset palette for drawings.
+const DRAW_COLORS = ['#6366f1', '#22d3ee', '#22c55e', '#f59e0b', '#ef4444', '#e2e8f0'];
 
 // Display metadata for the Coinglass indicators exposed by /api/coinglass-indicator.
 // `kind` MUST match what the API returns so the chart knows whether to render
@@ -24,25 +30,31 @@ export const COINGLASS_CATALOG = [
 ];
 
 export default function ChartToolbar({
-  drawingTool,            // null | 'hline' | 'tline' | 'note'
+  drawingTool,            // null | 'hline' | 'vline' | 'tline' | 'ray' | 'rect' | 'fib' | 'brush' | 'text' | 'eraser'
   setDrawingTool,
-  onClearDrawings,
+  drawColor,              // active draw color (hex)
+  setDrawColor,
+  onUndo,                 // remove last drawing
+  onClearDrawings,        // remove all drawings
   selectedIndicators,     // [{ id, kind, label }]
   toggleIndicator,
   isChartExpanded,        // when false on mobile, pane indicators are disabled
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [colorOpen, setColorOpen] = useState(false);
   const menuRef = useRef(null);
+  const colorRef = useRef(null);
 
-  // Click-outside dismiss for the picker.
+  // Click-outside dismiss for the indicator picker + color popover.
   useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen && !colorOpen) return;
     const onClickAway = (e) => {
-      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+      if (menuOpen && menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+      if (colorOpen && colorRef.current && !colorRef.current.contains(e.target)) setColorOpen(false);
     };
     document.addEventListener('mousedown', onClickAway);
     return () => document.removeEventListener('mousedown', onClickAway);
-  }, [menuOpen]);
+  }, [menuOpen, colorOpen]);
 
   const toolBtn = (tool, Icon, label) => (
     <button
@@ -63,15 +75,57 @@ export default function ChartToolbar({
     <div className="flex items-center gap-1.5 flex-wrap">
       {/* Drawing tools */}
       <div className="flex items-center gap-1 dark:bg-black/40 bg-slate-200 p-1 rounded-xl border dark:border-white/5 border-slate-300">
-        {toolBtn('hline', Minus, 'Horizontal Line — click chart to place')}
-        {toolBtn('tline', Slash, 'Trend Line — click two points')}
-        {toolBtn('note', Type, 'Text Note — click chart to place')}
+        {toolBtn('hline', Minus, 'Horizontal Line — click to place')}
+        {toolBtn('vline', GitCommitVertical, 'Vertical Line — click to place')}
+        {toolBtn('tline', Slash, 'Trend Line — drag from start to end')}
+        {toolBtn('ray', MoveUpRight, 'Ray — drag; extends to the right edge')}
+        {toolBtn('rect', Square, 'Rectangle / Zone — drag to size')}
+        {toolBtn('fib', Spline, 'Fibonacci Retracement — drag high to low')}
+        {toolBtn('brush', Spline, 'Freehand Brush — press & drag')}
+        {toolBtn('text', Type, 'Text Note — click to place')}
+        {toolBtn('eraser', Eraser, 'Eraser — click a drawing to remove it')}
+
+        {/* Color picker */}
+        <div className="relative" ref={colorRef}>
+          <button
+            onClick={() => setColorOpen(v => !v)}
+            title="Drawing color"
+            className="w-6 h-6 rounded-lg border dark:border-white/10 border-slate-300 flex items-center justify-center"
+            style={{ background: drawColor }}
+          >
+            <ChevronDown size={9} className="text-white/80 drop-shadow" />
+          </button>
+          {colorOpen && (
+            <div
+              className="absolute right-0 mt-2 p-2 rounded-xl bg-slate-950 border border-white/10 shadow-2xl z-[80] grid grid-cols-3 gap-1.5 pointer-events-auto"
+              onMouseMove={(e) => e.stopPropagation()}
+            >
+              {DRAW_COLORS.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => { setDrawColor(c); setColorOpen(false); }}
+                  className={`w-6 h-6 rounded-md border ${drawColor === c ? 'border-white' : 'border-white/10'}`}
+                  style={{ background: c }}
+                  title={c}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        <button
+          onClick={onUndo}
+          title="Undo last drawing"
+          className="px-2 py-1 rounded-lg text-[9px] font-black uppercase dark:bg-slate-800/50 bg-slate-200 dark:text-slate-400 text-slate-600 hover:text-amber-400 border dark:border-white/5 border-slate-300"
+        >
+          <Undo2 size={11} />
+        </button>
         <button
           onClick={onClearDrawings}
           title="Clear all drawings"
           className="px-2 py-1 rounded-lg text-[9px] font-black uppercase dark:bg-slate-800/50 bg-slate-200 dark:text-slate-400 text-slate-600 hover:text-red-400 border dark:border-white/5 border-slate-300"
         >
-          <Eraser size={11} />
+          <X size={11} />
         </button>
       </div>
 
@@ -92,7 +146,17 @@ export default function ChartToolbar({
           <ChevronDown size={10} className={`transition-transform ${menuOpen ? 'rotate-180' : ''}`} />
         </button>
         {menuOpen && (
-          <div className="absolute right-0 mt-2 w-72 max-h-[400px] overflow-y-auto bg-slate-950 border border-white/10 rounded-2xl shadow-2xl z-50 p-3 animate-in fade-in slide-in-from-top-2">
+          <div
+            className="absolute right-0 mt-2 w-72 max-h-[400px] overflow-y-auto border border-white/10 rounded-2xl shadow-2xl z-[90] p-3 pointer-events-auto animate-in fade-in slide-in-from-top-2"
+            // Fully opaque background + isolated stacking context so the candle
+            // chart can never bleed THROUGH the menu, and pointer events here
+            // don't fall through to the chart's crosshair handler underneath.
+            style={{ backgroundColor: '#020617', isolation: 'isolate' }}
+            onMouseMove={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between mb-3 pb-2 border-b border-white/5">
               <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Coinglass Indicators</span>
               <button onClick={() => setMenuOpen(false)} className="text-slate-500 hover:text-white"><X size={12} /></button>

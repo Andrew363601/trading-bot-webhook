@@ -19,6 +19,7 @@ import QuickStartGuide from '../components/QuickStartGuide';
 import ChartToolbar from '../components/ChartToolbar';
 import CoinglassPanes from '../components/CoinglassPanes';
 import CoinglassOverlayLines from '../components/CoinglassOverlayLines';
+import ChartDrawingLayer from '../components/ChartDrawingLayer';
 import ChatNotification from '../components/ChatNotification';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
 
@@ -107,11 +108,14 @@ function DashboardContent() {
   // "Pull-down" expand for the chart — gives the user a larger drawing/analysis
   // surface without going fullscreen. Persists across asset switches.
   const [isChartExpanded, setIsChartExpanded] = useState(false);
-  // Active drawing tool on the chart: null | 'hline' | 'tline' | 'note'.
-  // Drawings are stored in a ref so they survive re-renders for live ticks.
+  // Active drawing tool on the chart:
+  //   null | 'hline' | 'vline' | 'tline' | 'ray' | 'rect' | 'fib' | 'brush' | 'text' | 'eraser'
+  // All drawings are time/price anchored (see ChartDrawingLayer) so they stay
+  // glued to the grid when the user pans / zooms.
   const [drawingTool, setDrawingTool] = useState(null);
-  const drawingsRef = useRef({ hlines: [], notes: [] }); // tline rendered as custom paths in markers
-  const [drawingsVersion, setDrawingsVersion] = useState(0); // bump to trigger re-render after changes
+  const [drawColor, setDrawColor] = useState('#6366f1'); // indigo default
+  const [drawings, setDrawings] = useState([]); // [{ id, type, points:[{time,price}], color, text? }]
+  const [drawingsVersion, setDrawingsVersion] = useState(0); // bump to redraw on live ticks
   // Coinglass indicator overlays — { id, kind: 'overlay'|'pane', label } objects.
   // overlay = drawn on top of the candle series (e.g. liquidation heatmap).
   // pane    = stacked below the chart (e.g. funding rate, OI). Pane indicators
@@ -576,6 +580,29 @@ function DashboardContent() {
 
   const handleToggleStrategy = async (configId, currentState) => {
       try {
+          // Only ONE strategy may run per asset at a time. When the user tries to
+          // ACTIVATE a strategy (currentState === false) while another strategy on
+          // the SAME asset is already active, block it and explain why instead of
+          // silently failing.
+          if (!currentState) {
+              const target = activeStrategies.find(s => s.id === configId);
+              if (target) {
+                  const conflict = activeStrategies.find(s =>
+                      s.id !== configId &&
+                      s.is_active &&
+                      normalizeAssetSymbol(s.asset) === normalizeAssetSymbol(target.asset)
+                  );
+                  if (conflict) {
+                      const conflictName = (conflict.strategy || 'another strategy').replace('_V1', '');
+                      alert(
+                          `Only one strategy can run per asset.\n\n` +
+                          `"${conflictName}" is already active on ${normalizeAssetSymbol(target.asset)}. ` +
+                          `Pause it first, then activate this strategy.`
+                      );
+                      return;
+                  }
+              }
+          }
           await supabase.from('strategy_config').update({ is_active: !currentState }).eq('id', configId);
           fetchData(); 
       } catch (err) {
@@ -592,6 +619,12 @@ function DashboardContent() {
     const confirmClose = window.confirm(`Liquidate ${trade.side} position on ${trade.strategy_id || 'Exchange'}?`);
     if (!confirmClose) return;
     const closingSide = (trade.side === 'BUY' || trade.side === 'LONG') ? 'SELL' : 'BUY';
+    // Live exchange positions are NOT rows in trade_logs — they're synthesized
+    // from the broker's open positions and have no `id`. Flag them so the API
+    // closes them by symbol/side/qty (reduce-only) instead of looking up a
+    // trade_logs row that doesn't exist (which caused the "Missing required
+    // fields: trade_id" error).
+    const isLiveExchange = trade.execution_mode === 'LIVE (EXCHANGE)' || !trade.id;
     try {
       const closeRes = await fetch('/api/close-position', {
         method: 'POST',
@@ -600,11 +633,13 @@ function DashboardContent() {
           'Authorization': `Bearer ${session?.access_token}`
         },
         body: JSON.stringify({
-          trade_id: trade.id,
+          trade_id: trade.id || null,
           symbol: trade.symbol,
           side: closingSide,
           qty: trade.qty,
-          price: livePrice || 0
+          price: livePrice || 0,
+          execution_mode: trade.execution_mode || 'PAPER',
+          is_live_exchange: isLiveExchange
         })
       });
       if (closeRes.ok) {
@@ -781,29 +816,9 @@ function DashboardContent() {
 
     const markersPlugin = createSeriesMarkers(series, []);
 
-    const updateNotesPositions = () => {
-        if (!chartRef.current || !seriesRef.current) return;
-        if (!drawingsRef.current || !drawingsRef.current.notes) return;
-        drawingsRef.current.notes.forEach((n, idx) => {
-            const el = document.getElementById(`drawing-note-${idx}`);
-            if (el && n.time) {
-                try {
-                    const x = chartRef.current.timeScale().timeToCoordinate(n.time);
-                    const y = seriesRef.current.priceToCoordinate(n.price);
-                    if (x !== null && y !== null) {
-                        el.style.left = `${x}px`;
-                        el.style.top = `${y}px`;
-                        el.style.display = 'block';
-                    } else {
-                        el.style.display = 'none';
-                    }
-                } catch(e) {}
-            }
-        });
-    };
-
-    chart.timeScale().subscribeVisibleTimeRangeChange(updateNotesPositions);
-    chart.subscribeCrosshairMove(updateNotesPositions);
+    // Drawing anchoring is handled by <ChartDrawingLayer/>, which subscribes to
+    // the chart's own pan/zoom/crosshair events and re-projects every drawing
+    // from its time/price anchors. No imperative DOM repositioning here.
 
     chartRef.current = chart;
     seriesRef.current = series;
@@ -1486,9 +1501,9 @@ function DashboardContent() {
         </div>
       </div>
 
-      <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 md:gap-6 grow overflow-hidden px-4 sm:px-0">
+      <main className="max-w-[1800px] w-full mx-auto grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 md:gap-6 grow lg:overflow-hidden px-4 sm:px-0">
         
-        <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-[calc(100vh-280px)] sm:h-[calc(100vh-240px)] md:h-[calc(100vh-200px)] lg:h-[calc(100vh-180px)]">
+        <div className="lg:col-span-9 flex flex-col gap-3 sm:gap-4 md:gap-6 min-h-0 h-auto lg:h-[calc(100vh-180px)]">
           
           <div id="chart-panel" className={
               isChartMaximized
@@ -1563,120 +1578,66 @@ function DashboardContent() {
                 >
                   {showPriceLines ? '📊 TP/SL' : '📊 OFF'}
                 </button>
-                {/* Drawing tools + Coinglass indicator picker. Only revealed when
-                    the chart is expanded/maximized to prevent toolbar bloat in
-                    the compact view. */}
-                {(isChartExpanded || isChartMaximized) && (
-                  <ChartToolbar
-                    drawingTool={drawingTool}
-                    setDrawingTool={setDrawingTool}
-                    onClearDrawings={() => {
-                      // Wipe in-chart price lines tagged as user drawings.
-                      try {
-                        (drawingsRef.current.hlines || []).forEach(pl => {
-                          try { seriesRef.current?.removePriceLine(pl); } catch(_) {}
-                        });
-                      } catch(_) {}
-                      drawingsRef.current = { hlines: [], notes: [] };
-                      setDrawingsVersion(v => v + 1);
-                    }}
-                    selectedIndicators={selectedCoinglassIndicators}
-                    toggleIndicator={(item) => {
-                      setSelectedCoinglassIndicators(prev =>
-                        prev.some(p => p.id === item.id)
-                          ? prev.filter(p => p.id !== item.id)
-                          : [...prev, item]
-                      );
-                    }}
-                    isChartExpanded={isChartExpanded || isChartMaximized}
-                  />
-                )}
+                {/* Drawing tools + Coinglass indicator picker. Always available
+                    alongside the timeframe / markers / TP-SL controls so users
+                    can add indicators and tools without expanding the chart
+                    first. Pane indicators stay disabled in the compact view
+                    (handled inside ChartToolbar via isChartExpanded). */}
+                <ChartToolbar
+                  drawingTool={drawingTool}
+                  setDrawingTool={setDrawingTool}
+                  drawColor={drawColor}
+                  setDrawColor={setDrawColor}
+                  onUndo={() => setDrawings(prev => prev.slice(0, -1))}
+                  onClearDrawings={() => setDrawings([])}
+                  selectedIndicators={selectedCoinglassIndicators}
+                  toggleIndicator={(item) => {
+                    setSelectedCoinglassIndicators(prev =>
+                      prev.some(p => p.id === item.id)
+                        ? prev.filter(p => p.id !== item.id)
+                        : [...prev, item]
+                    );
+                  }}
+                  isChartExpanded={isChartExpanded || isChartMaximized}
+                />
               </div>
             </div>
 
             <div className="flex-grow w-full relative mt-0 mb-4 px-2 min-h-[300px]">
                 <div
                   ref={chartContainerRef}
-                  className={`absolute inset-0 ${drawingTool ? 'cursor-crosshair' : ''}`}
-                  onClick={(e) => {
-                    if (!drawingTool || !chartRef.current || !seriesRef.current) return;
-                    const rect = chartContainerRef.current?.getBoundingClientRect();
-                    if (!rect) return;
-                    const x = e.clientX - rect.left;
-                    const y = e.clientY - rect.top;
-                    // Convert pixel Y → price using the candle series price scale.
-                    let price = null;
-                    let time = null;
-                    try { 
-                      price = seriesRef.current.coordinateToPrice(y); 
-                      time = chartRef.current.timeScale().coordinateToTime(x);
-                    } catch (_) {}
-                    if (price == null || time == null) return;
-
-                    if (drawingTool === 'hline') {
-                      const line = seriesRef.current.createPriceLine({
-                        price,
-                        color: 'rgba(99, 102, 241, 0.9)',
-                        lineWidth: 1,
-                        lineStyle: 0, // solid
-                        axisLabelVisible: true,
-                        title: `Drawing @ ${price.toFixed(2)}`,
-                      });
-                      drawingsRef.current.hlines.push(line);
-                      setDrawingTool(null);
-                      setDrawingsVersion(v => v + 1);
-                    } else if (drawingTool === 'note') {
-                      const text = window.prompt('Note text:', '');
-                      if (text) {
-                        drawingsRef.current.notes.push({ x, y, time, price, text });
-                        setDrawingsVersion(v => v + 1);
-                      }
-                      setDrawingTool(null);
-                    } else if (drawingTool === 'tline') {
-                      // Trend lines need two points. For v1 we approximate by
-                      // dropping two anchor horizontal lines (start + end price)
-                      // tagged "Trend". A full segmented-line draw is a future
-                      // upgrade; this keeps the UX truthful (lines you can see).
-                      const line = seriesRef.current.createPriceLine({
-                        price,
-                        color: 'rgba(56, 189, 248, 0.9)',
-                        lineWidth: 1,
-                        lineStyle: 2,
-                        axisLabelVisible: true,
-                        title: `Trend anchor @ ${price.toFixed(2)}`,
-                      });
-                      drawingsRef.current.hlines.push(line);
-                      setDrawingsVersion(v => v + 1);
-                    }
-                  }}
+                  className="absolute inset-0"
                 />
                 {/* Mount the Coinglass overlay engine — paints price-line levels
                     onto the chart series. Component returns null; it side-effects
-                    on seriesRef. */}
+                    on seriesRef. Pass the NORMALIZED base ticker (e.g. BTC) so the
+                    Coinglass API never receives a perpetual/dated-future product. */}
                 <CoinglassOverlayLines
                   seriesRef={seriesRef}
-                  asset={activeAsset}
+                  asset={normalizeAssetSymbol(activeAsset)}
                   indicators={selectedCoinglassIndicators.filter(i => i.kind === 'overlay')}
                   token={session?.access_token}
                 />
-                {/* On-chart drawing notes (text annotations rendered as absolutely
-                    positioned overlays). Horizontal lines are price lines on the
-                    series and don't need a DOM node. */}
-                {drawingsRef.current.notes.map((n, idx) => {
-                  let px = n.x; let py = n.y;
-                  try {
-                    if (chartRef.current && seriesRef.current && n.time) {
-                      const computedX = chartRef.current.timeScale().timeToCoordinate(n.time);
-                      const computedY = seriesRef.current.priceToCoordinate(n.price);
-                      if (computedX !== null && computedY !== null) { px = computedX; py = computedY; }
-                    }
-                  } catch(e) {}
-                  return (
-                    <div id={`drawing-note-${idx}`} key={`note-${idx}`} className="absolute z-30 pointer-events-none px-2 py-0.5 rounded bg-indigo-500/80 text-white text-[10px] font-bold shadow-lg" style={{ left: px, top: py }}>
-                      {n.text}
-                    </div>
-                  );
-                })}
+                {/* Grid-anchored drawing engine: trend lines, rays, rectangles,
+                    fibs, freehand, vertical/horizontal lines + text. Every shape
+                    is stored as time/price anchors so it stays glued to candles
+                    on pan/zoom. */}
+                <ChartDrawingLayer
+                  chartRef={chartRef}
+                  seriesRef={seriesRef}
+                  containerRef={chartContainerRef}
+                  drawingTool={drawingTool}
+                  drawColor={drawColor}
+                  drawings={drawings}
+                  version={drawingsVersion}
+                  onCommitDrawing={(d) => {
+                    setDrawings(prev => [...prev, d]);
+                    // One-shot tools deselect after placing; continuous tools
+                    // (brush) stay active for repeated strokes.
+                    if (d.type !== 'brush') setDrawingTool(null);
+                  }}
+                  onDeleteDrawing={(id) => setDrawings(prev => prev.filter(x => x.id !== id))}
+                />
             </div>
 
             {/* Stacked Coinglass indicator panes. Hidden on mobile when the chart
@@ -1685,7 +1646,7 @@ function DashboardContent() {
             {selectedCoinglassIndicators.filter(i => i.kind === 'pane').length > 0 && (isChartExpanded || isChartMaximized) && (
               <div className="hidden md:block px-3 pb-3">
                 <CoinglassPanes
-                  asset={activeAsset}
+                  asset={normalizeAssetSymbol(activeAsset)}
                   indicators={selectedCoinglassIndicators.filter(i => i.kind === 'pane')}
                   token={session?.access_token}
                 />
@@ -1855,7 +1816,7 @@ function DashboardContent() {
           </div>
         </div>
 
-                <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-y-auto lg:overflow-hidden lg:resize-y pb-2">
+                <div className="lg:col-span-3 flex flex-col gap-3 sm:gap-4 md:gap-6 h-auto lg:h-[calc(100vh-180px)] overflow-visible lg:overflow-hidden lg:resize-y mt-4 lg:mt-0 pt-4 lg:pt-0 border-t lg:border-t-0 dark:border-white/10 border-slate-200 pb-10 lg:pb-2">
           <div id="strategy-matrix" className="dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] p-4 sm:p-6 shadow-2xl flex-grow-0 flex-shrink-0 min-h-[120px] sm:min-h-[140px]">
             {/* 🛠️ UNFIXED: removed `flex-shrink-0` so on mobile the active-matrix
                 card can properly resize + its content stays visible when the full
@@ -2137,8 +2098,8 @@ function DashboardContent() {
 
       {/* Strategy Edit Modal */}
       {editModalOpen && editingStrategy && (
-        <div className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-white/10 rounded-3xl p-8 max-w-md w-full shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+        <div className="fixed inset-0 z-[200] bg-black/50 backdrop-blur-sm flex items-start sm:items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-white/10 rounded-3xl p-5 sm:p-8 pb-8 sm:pb-8 max-w-md w-full shadow-2xl max-h-[88vh] my-auto overflow-y-auto custom-scrollbar">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-black uppercase text-white">Edit Strategy</h2>
               <button

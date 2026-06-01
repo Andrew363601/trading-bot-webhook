@@ -14,7 +14,7 @@ export default function AuthGuard({ children }) {
     }
   }, [session, router]);
 
-  // 🟢 THE REAPER: 15-Minute Inactivity Session Reaper
+  // 🟢 THE REAPER: 1-Hour Inactivity Session Reaper
   useEffect(() => {
     if (!session) return;
 
@@ -29,7 +29,7 @@ export default function AuthGuard({ children }) {
             );
             await supabase.auth.signOut();
             window.location.href = '/auth';
-        }, 15 * 60 * 1000); // 15 minutes
+        }, 60 * 60 * 1000); // 1 hour
     };
 
     const events = ['mousedown', 'keydown', 'scroll', 'touchstart'];

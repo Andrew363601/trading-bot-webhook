@@ -4,7 +4,6 @@ import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { Activity, ChevronRight, TrendingUp } from 'lucide-react';
-import { getCoinbaseAffiliateLink } from '../lib/constants';
 
 export default function LandingPage() {
   const [logs, setLogs] = useState([]);
@@ -158,8 +157,6 @@ export default function LandingPage() {
     };
   });
 
-  const coinbaseLink = getCoinbaseAffiliateLink('landing_page');
-
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50 font-sans selection:bg-cyan-500/30">
       <Head>
@@ -191,9 +188,9 @@ export default function LandingPage() {
               <Link href="/auth" className="md:hidden bg-indigo-600 text-white px-4 py-2 rounded-full text-xs font-bold">
                 Deploy Agent
               </Link>
-              <a href={coinbaseLink} target="_blank" rel="noopener noreferrer" className="hidden sm:block bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-6 py-2 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]">
-                Connect Coinbase
-              </a>
+              <Link href="/auth" className="hidden sm:block bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-6 py-2 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]">
+                Deploy Your Agent
+              </Link>
             </div>
           </div>
         </div>
@@ -220,11 +217,11 @@ export default function LandingPage() {
             <a href="#pricing" className="bg-white text-slate-950 px-8 py-4 rounded-full font-bold text-lg transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)]">
               Deploy Your Agent
             </a>
-            <a href={coinbaseLink} target="_blank" rel="noopener noreferrer" className="bg-slate-900/60 backdrop-blur-md border border-white/5 px-8 py-4 rounded-full font-bold text-lg hover:bg-slate-800 transition-colors">
-              Create Coinbase Account
-            </a>
+            <Link href="/auth" className="bg-slate-900/60 backdrop-blur-md border border-white/5 px-8 py-4 rounded-full font-bold text-lg hover:bg-slate-800 transition-colors">
+              Launch Dashboard
+            </Link>
           </div>
-          <p className="mt-6 text-sm text-slate-500">14-Day Free Trial. Connect to Coinbase in 60 seconds.</p>
+          <p className="mt-6 text-sm text-slate-500">7-Day Free Trial. Deploy your first autonomous agent in minutes.</p>
         </div>
       </div>
 
@@ -464,19 +461,36 @@ export default function LandingPage() {
         </div>
       </div>
 
-      {/* Coinbase Card Section */}
+      {/* Proprietary Differentiators — The Edge */}
       <div className="py-24 relative overflow-hidden">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <svg className="w-20 h-20 text-blue-500 mx-auto mb-6" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm0 18.286c-3.472 0-6.286-2.814-6.286-6.286S8.528 5.714 12 5.714s6.286 2.814 6.286 6.286-2.814 6.286-6.286 6.286z"/>
-          </svg>
-          <h2 className="text-4xl font-extrabold mb-6">Swipe Your Profit.</h2>
-          <p className="text-slate-400 max-w-2xl mx-auto text-lg mb-10 leading-relaxed">
-            Instantly settle your trading gains. Connect your <strong className="text-white">Coinbase Card</strong> to spend your profits in the real world. Pay for dinner, book a flight, or cover rent directly from your autonomous execution gains.
-          </p>
-          <a href={coinbaseLink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-8 py-4 rounded-full font-bold transition-all shadow-lg hover:shadow-blue-500/20">
-            Get Your Coinbase Card
-          </a>
+        <div className="absolute inset-0 -z-10 pointer-events-none">
+          <div className="absolute top-1/2 left-1/4 w-96 h-96 bg-cyan-500/10 rounded-full blur-[120px]"></div>
+          <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-purple-600/10 rounded-full blur-[120px]"></div>
+        </div>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center mb-16">
+            <span className="text-[11px] font-black uppercase tracking-[0.3em] text-cyan-400">The Unfair Advantage</span>
+            <h2 className="text-4xl font-extrabold mt-3 mb-4">Engineered to Out-Execute You.</h2>
+            <p className="text-slate-400 max-w-2xl mx-auto text-lg leading-relaxed">
+              Nexus isn&apos;t a script with a few indicators. It&apos;s a five-tier confluence engine that fuses institutional flow, microstructure, and order-book intent into a single autonomous decision.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {[
+              { title: 'Quantum Confluence Matrix™', body: 'Five tiers of telemetry fused into one signal — ETF flows, Volume Profile, OI &amp; funding, Cumulative Volume Delta, and L2/L3 order-book spoofing defense.' },
+              { title: 'Agentic Reflection™', body: 'The agent remembers its own theses. Every wake cycle inherits the previous reasoning, last ~20 trades, and a shadow portfolio of past vetoes for true object permanence.' },
+              { title: 'The Accountant Protocol', body: 'A hard-coded Risk-to-Reward floor of 1.5 that no AI override can bypass. Macro thesis can never break immutable risk parameters.' },
+              { title: 'Ghost Orders (Virtual Trap)', body: 'Phantom limit orders staged at structural levels with short expiries — visualized on radar, designed to harvest liquidity sweeps without exposure.' },
+              { title: 'Split-Brain Execution', body: 'A live CHOP vs TREND regime declaration triggers entirely different rule sets — aggressive trailing in trend, mean-reversion discipline in chop.' },
+              { title: 'Self-Healing Infrastructure', body: 'Missing entry prices autofix, orphaned brackets auto-cancel, and 30-second dedup keep the execution layer clean without you touching it.' },
+            ].map((card) => (
+              <div key={card.title} className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-7 rounded-2xl hover:border-cyan-500/30 transition-colors">
+                <h3 className="text-lg font-bold text-white mb-3">{card.title}</h3>
+                <p className="text-slate-400 text-sm leading-relaxed" dangerouslySetInnerHTML={{ __html: card.body }} />
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -485,52 +499,81 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
             <h2 className="text-3xl font-extrabold mb-4">Choose Your Arsenal</h2>
-            <p className="text-slate-400">Transparent pricing. Cancel anytime.</p>
+            <p className="text-slate-400">Flat-rate, fair-use pricing. No metered surprises. Cancel anytime.</p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto">
-            <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl flex flex-col">
-              <h3 className="text-2xl font-bold text-slate-300">Retail</h3>
-              <div className="mt-4 mb-8">
-                <span className="text-4xl font-extrabold">$49</span><span className="text-slate-500">/mo</span>
+            {[
+              {
+                name: 'Retail',
+                price: '$49',
+                popular: false,
+                features: [
+                  'Up to 3 active trading models simultaneously (e.g., BTC, ETH, and SOL)',
+                  'Standard polling execution pipeline',
+                  'Flat-rate fair use — no complex metered overages to track',
+                  'Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, and hermes_core_memory logging',
+                ],
+              },
+              {
+                name: 'Pro',
+                price: '$149',
+                popular: true,
+                features: [
+                  'Up to 10 active trading models simultaneously',
+                  'High-priority, sub-second streaming updates',
+                  'Flat-rate fair use optimized for high-frequency strategies',
+                  'Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Nexus Chat AI Integration, and hermes_core_memory logging',
+                ],
+              },
+              {
+                name: 'Institutional',
+                price: '$499',
+                popular: false,
+                features: [
+                  'Unlimited active trading models',
+                  'Direct raw WebSocket pipeline with zero throttling',
+                  'Uncapped custom execution pool',
+                  'Custom AI Model integration via OpenRouter, Full Agentic Reflection, Multi-TF X-Ray, and custom Risk-to-Reward Accountant Protocol hard-locks',
+                ],
+              },
+            ].map((tier) => (
+              <div
+                key={tier.name}
+                className={`p-8 rounded-2xl flex flex-col backdrop-blur-md ${
+                  tier.popular
+                    ? 'bg-slate-900/80 border border-cyan-500/50 relative transform md:-translate-y-4 shadow-[0_0_30px_rgba(34,211,238,0.1)]'
+                    : 'bg-slate-900/60 border border-white/5'
+                }`}
+              >
+                {tier.popular && (
+                  <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cyan-500 text-slate-900 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">Most Popular</div>
+                )}
+                <h3 className={`text-2xl font-bold ${tier.popular ? 'text-white' : 'text-slate-300'}`}>{tier.name}</h3>
+                <div className="mt-4 mb-8">
+                  <span className={`text-4xl font-extrabold ${tier.popular ? 'text-white' : ''}`}>{tier.price}</span>
+                  <span className="text-slate-500">/mo</span>
+                </div>
+                <ul className={`space-y-4 mb-8 flex-1 ${tier.popular ? 'text-slate-300' : 'text-slate-400'}`}>
+                  {tier.features.map((f) => (
+                    <li key={f} className="flex items-start">
+                      <svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+                      <span>{f}</span>
+                    </li>
+                  ))}
+                </ul>
+                <Link
+                  href="/auth"
+                  className={`w-full text-center font-bold py-3 rounded-xl transition-colors ${
+                    tier.popular
+                      ? 'bg-cyan-500 hover:bg-cyan-400 text-slate-900'
+                      : 'bg-slate-800 hover:bg-slate-700 text-white'
+                  }`}
+                >
+                  Start 7-Day Trial
+                </Link>
               </div>
-              <ul className="space-y-4 mb-8 flex-1 text-slate-400">
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Included Capital/Assets: Up to 3 Active Assets (e.g., BTC and ETH simultaneously)</span></li>
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Telemetry Data Speed: Standard polling</span></li>
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Metered Overages: Base plan includes 500 API/execution events per month. ($0.05 per 10 calls overage)</span></li>
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Features Included: Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Hermes Memory</span></li>
-              </ul>
-              <Link href="/auth" className="w-full text-center bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-xl transition-colors">Start 7-Day Trial</Link>
-            </div>
-            
-            <div className="bg-slate-900/80 backdrop-blur-md border border-cyan-500/50 p-8 rounded-2xl flex flex-col relative transform md:-translate-y-4 shadow-[0_0_30px_rgba(34,211,238,0.1)]">
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cyan-500 text-slate-900 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">Most Popular</div>
-              <h3 className="text-2xl font-bold text-white">Pro Agent</h3>
-              <div className="mt-4 mb-8">
-                <span className="text-4xl font-extrabold text-white">$149</span><span className="text-slate-400">/mo</span>
-              </div>
-              <ul className="space-y-4 mb-8 flex-1 text-slate-300">
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Included Capital/Assets: Up to 10 Active Assets</span></li>
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Telemetry Data Speed: High-Priority / Sub-second streaming updates</span></li>
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Metered Overages: Base plan includes 1,000 execution events. Premium metered rate on overage.</span></li>
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Features Included: Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Hermes Memory</span></li>
-              </ul>
-              <Link href="/auth" className="w-full text-center bg-cyan-500 hover:bg-cyan-400 text-slate-900 font-bold py-3 rounded-xl transition-colors">Start 7-Day Trial</Link>
-            </div>
-
-            <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl flex flex-col">
-              <h3 className="text-2xl font-bold text-slate-300">Institutional</h3>
-              <div className="mt-4 mb-8">
-                <span className="text-4xl font-extrabold text-white">$499</span><span className="text-slate-500">/mo</span>
-              </div>
-              <ul className="space-y-4 mb-8 flex-1 text-slate-400">
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Included Capital/Assets: Unlimited Active Assets</span></li>
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Telemetry Data Speed: Direct raw websocket pipeline / Zero throttling</span></li>
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Metered Overages: Massive inclusion pools (50,000 API calls included). Purely usage-based custom pricing.</span></li>
-                <li className="flex items-start"><svg className="w-5 h-5 text-cyan-400 mr-2 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg> <span>Features Included: Custom AI Model via OpenRouter, Full Agentic Reflection, Multi-TF X-Ray, Multi-Account API routing, and custom Risk-to-Reward Accountant Protocol hard-locks.</span></li>
-              </ul>
-              <Link href="/auth" className="w-full text-center bg-slate-800 hover:bg-slate-700 text-white font-bold py-3 rounded-xl transition-colors">Start 7-Day Trial</Link>
-            </div>
+            ))}
           </div>
         </div>
       </div>

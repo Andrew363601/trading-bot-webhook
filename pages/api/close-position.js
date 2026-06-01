@@ -77,32 +77,44 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: 'Token verification failed' });
     }
 
-    const { trade_id, symbol, side, qty, price } = req.body;
+    const { trade_id, symbol, side, qty, price, is_live_exchange, execution_mode } = req.body;
 
-    // Validate required fields
-    if (!trade_id || !symbol || !side || !qty) {
-      return res.status(400).json({ error: 'Missing required fields: trade_id, symbol, side, qty' });
+    // A "live exchange" position is one the broker reports as open but which has
+    // no corresponding trade_logs row (e.g. opened outside the agent, or a
+    // synthesized live position in the dashboard). Those have no trade_id, so we
+    // close them by symbol/side/qty (reduce-only) WITHOUT a trade_logs lookup.
+    const isLiveExchange = is_live_exchange === true || execution_mode === 'LIVE (EXCHANGE)';
+
+    // Validate required fields. trade_id is only required for tracked (paper /
+    // agent) trades — live exchange positions are identified by symbol/side/qty.
+    if (!symbol || !side || !qty || (!isLiveExchange && !trade_id)) {
+      const need = isLiveExchange ? 'symbol, side, qty' : 'trade_id, symbol, side, qty';
+      return res.status(400).json({ error: `Missing required fields: ${need}` });
     }
 
-    // Verify trade ownership - fetch trade and check tenant_id
-    const { data: trade, error: tradeError } = await supabase
-      .from('trade_logs')
-      .select('*')
-      .eq('id', trade_id)
-      .eq('tenant_id', tenantId)
-      .single();
+    let trade = null;
+    if (!isLiveExchange) {
+      // Verify trade ownership - fetch trade and check tenant_id
+      const { data: tradeRow, error: tradeError } = await supabase
+        .from('trade_logs')
+        .select('*')
+        .eq('id', trade_id)
+        .eq('tenant_id', tenantId)
+        .single();
 
-    if (tradeError || !trade) {
-      console.warn(`[CLOSE-POSITION] Unauthorized access attempt for trade ${trade_id} by tenant ${tenantId}`);
-      return res.status(403).json({ error: 'Trade not found or access denied' });
+      if (tradeError || !tradeRow) {
+        console.warn(`[CLOSE-POSITION] Unauthorized access attempt for trade ${trade_id} by tenant ${tenantId}`);
+        return res.status(403).json({ error: 'Trade not found or access denied' });
+      }
+
+      // Verify trade is still open
+      if (tradeRow.exit_price !== null) {
+        return res.status(400).json({ error: 'Trade is already closed' });
+      }
+      trade = tradeRow;
     }
 
-    // Verify trade is still open
-    if (trade.exit_price !== null) {
-      return res.status(400).json({ error: 'Trade is already closed' });
-    }
-
-    console.log(`[CLOSE-POSITION API] Closing trade ${trade_id} for ${symbol} (Tenant: ${tenantId})`);
+    console.log(`[CLOSE-POSITION API] Closing ${isLiveExchange ? 'LIVE EXCHANGE position' : `trade ${trade_id}`} for ${symbol} (Tenant: ${tenantId})`);
 
     // Fetch current market price if not provided by user
     let exitPrice = price;
@@ -110,26 +122,29 @@ export default async function handler(req, res) {
       const currentPrice = await getCurrentMarketPrice(symbol);
       if (currentPrice) {
         exitPrice = currentPrice;
-        console.log(`[CLOSE-POSITION API] Using market price: $${exitPrice} (trade ${trade_id})`);
+        console.log(`[CLOSE-POSITION API] Using market price: $${exitPrice} for ${symbol}`);
       } else {
         console.warn(`[CLOSE-POSITION API] Could not fetch current market price for ${symbol}. Falling back to user-provided price.`);
         exitPrice = price || 0;
       }
     }
 
-    // Call executeTradeMCP directly
+    // Call executeTradeMCP directly. For live exchange positions there's no
+    // trade row, so we fall back to sane defaults and force LIVE execution with
+    // reduce_only so we only ever flatten the existing position.
     const closePayload = {
       symbol,
-      strategy_id: trade.strategy_id || 'MANUAL',
-      version: trade.version || 'v1.0',
+      strategy_id: trade?.strategy_id || 'MANUAL',
+      version: trade?.version || 'v1.0',
       side,
-      execution_mode: trade.execution_mode || 'PAPER',
+      execution_mode: isLiveExchange ? 'LIVE' : (trade?.execution_mode || 'PAPER'),
       qty,
       price: exitPrice,
-      leverage: trade.leverage || 1,
-      market_type: trade.market_type || 'FUTURES',
+      leverage: trade?.leverage || 1,
+      market_type: trade?.market_type || 'FUTURES',
       order_type: 'MARKET',
-      trade_id,
+      reduce_only: true,
+      trade_id: trade_id || null,
       reason: 'MANUAL_UI_CLOSE',
       tenant_id: tenantId
     };
@@ -139,7 +154,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       message: 'Position closed successfully',
-      trade_id,
+      trade_id: trade_id || null,
       data: result
     });
 

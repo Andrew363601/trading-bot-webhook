@@ -33,6 +33,29 @@ const INDICATOR_REGISTRY = {
 
 export const INDICATOR_CATALOG = Object.entries(INDICATOR_REGISTRY).map(([id, v]) => ({ id, kind: v.kind }));
 
+// Coinbase dated-future / perp first-segment codes → canonical base ticker.
+const FUTURES_CODE_MAP = {
+    BIT: 'BTC', BIP: 'BTC',
+    ETP: 'ETH',
+    SLP: 'SOL',
+    DOP: 'DOGE',
+    LCP: 'LTC',
+    AVP: 'AVAX',
+    LNP: 'LINK',
+    XPP: 'XRP',
+};
+
+// Turn any product id (BTC, BTC-USD, BTC-PERP-INTX, BIP-20DEC30-CDE, …) into a
+// clean Coinglass base ticker (BTC, ETH, …).
+function normalizeBaseTicker(symbol) {
+    let base = String(symbol || '').toUpperCase().trim();
+    // Strip known perp/quote/expiry suffixes.
+    base = base.replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '');
+    // Take the leading segment (handles dated futures like BIP-20DEC30).
+    base = base.split('-')[0];
+    return FUTURES_CODE_MAP[base] || base;
+}
+
 async function handler(req, res) {
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
     const { id, symbol } = req.query;
@@ -47,9 +70,13 @@ async function handler(req, res) {
 
     try {
         const fn = await entry.loader();
-        // Most indicators expect the base symbol (e.g. "BTC") rather than the
-        // full perpetual product.
-        const cleanSymbol = String(symbol).toUpperCase().split('-')[0];
+        // Most indicators expect the BASE symbol (e.g. "BTC") rather than the
+        // full perpetual / dated-future product. Coinbase futures encode the
+        // base into the first segment using non-standard codes (e.g. BIT/BIP =
+        // BTC, ETP = ETH), so a naive `.split('-')[0]` on `BIP-20DEC30-CDE`
+        // would wrongly ask Coinglass for "BIP". Normalize the known codes and
+        // strip the standard perp/quote suffixes before calling the indicator.
+        const cleanSymbol = normalizeBaseTicker(symbol);
         const data = await fn(cleanSymbol);
         // Light edge cache so repeated chart redraws don't burn quota.
         res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=120');
