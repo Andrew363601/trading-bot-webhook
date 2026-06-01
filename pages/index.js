@@ -17,7 +17,7 @@ import AuthGuard from '../components/AuthGuard';
 import MarketScanner from '../components/MarketScanner';
 import QuickStartGuide from '../components/QuickStartGuide';
 import ChartToolbar from '../components/ChartToolbar';
-import CoinglassPanes from '../components/CoinglassPanes';f
+import CoinglassPanes from '../components/CoinglassPanes';
 import CoinglassOverlayLines from '../components/CoinglassOverlayLines';
 import ChatNotification from '../components/ChatNotification';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
