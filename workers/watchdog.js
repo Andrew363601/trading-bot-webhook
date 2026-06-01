@@ -328,13 +328,13 @@ export async function startWatchdog(tenantId) {
                         // Normalize tripwire: if user typed "0.50" meaning 0.50%, convert it to 0.005
                         // If they typed "0.005", it remains 0.005. Anything above 0.2 (20%) is likely intended as a percentage.
                         let tripwireRaw = parseFloat(params.tripwire_percent || 0);
-                        let tripwire = tripwireRaw > 0.2 ? tripwireRaw / 100 : tripwireRaw;
+                        let tripwire = (tripwireRaw > 1.0 && tripwireRaw <= 100) ? tripwireRaw / 100 : tripwireRaw;
                         
                         let trailStepRaw = parseFloat(params.trail_step_percent || 0);
-                        const trailStep = trailStepRaw > 0.1 ? trailStepRaw / 100 : trailStepRaw;
+                        const trailStep = (trailStepRaw > 1.0 && trailStepRaw <= 100) ? trailStepRaw / 100 : trailStepRaw;
                         
                         let trailActRaw = parseFloat(params.trail_activation_percent || params.tripwire_percent || 0);
-                        const trailActivation = trailActRaw > 0.2 ? trailActRaw / 100 : trailActRaw;
+                        const trailActivation = (trailActRaw > 1.0 && trailActRaw <= 100) ? trailActRaw / 100 : trailActRaw;
 
                         const now = Date.now();
                         if (!heartbeatTracker[openTrade.id] || now - heartbeatTracker[openTrade.id] >= 60000) {

@@ -135,6 +135,11 @@ function DashboardContent() {
   // Risk profile preview state (for profile modal)
   const [riskPreview, setRiskPreview] = useState(null);
 
+  // Legal compliance state
+  const [termsAccepted, setTermsAccepted] = useState(true);
+  const [showLegalModal, setShowLegalModal] = useState(false);
+  const [selectedJurisdiction, setSelectedJurisdiction] = useState('');
+
   // Risk assessment & quick start state
   // NOTE: The legacy 4-step onboarding modal was removed. The 12-step Quick Start
   // coach-mark guide (QuickStartGuide / quick-start-config.js) is the single source
@@ -397,13 +402,20 @@ function DashboardContent() {
           try {
             const { data: settings } = await supabase
               .from('tenant_settings')
-              .select('risk_assessment_complete, quick_start_dismissed')
+              .select('risk_assessment_complete, quick_start_dismissed, terms_accepted, jurisdiction')
               .eq('tenant_id', users.tenant_id)
               .single();
 
             if (settings) {
               setRiskAssessmentComplete(settings.risk_assessment_complete !== false);
               setQuickStartDismissed(settings.quick_start_dismissed === true);
+              setTermsAccepted(settings.terms_accepted === true);
+              if (settings.jurisdiction) {
+                setSelectedJurisdiction(settings.jurisdiction);
+              }
+              if (settings.terms_accepted !== true) {
+                setShowLegalModal(true);
+              }
             }
           } catch (err) {
             console.error('[ONBOARDING] Failed to fetch settings:', err);
@@ -1524,7 +1536,7 @@ function DashboardContent() {
                })}
             </div>
 
-            <div className="px-6 py-3 flex items-center justify-between border-b dark:border-white/5 border-slate-200 dark:bg-black/20 bg-slate-100 backdrop-blur-md rounded-t-[2rem] relative z-[50]">
+            <div className="px-6 py-3 flex items-center justify-between border-b dark:border-white/5 border-slate-200 dark:bg-black/20 bg-slate-100 backdrop-blur-md rounded-t-[2rem] relative z-50">
               <div className="flex items-center gap-4">
                 <div className="flex dark:bg-black/40 bg-slate-200 p-1 rounded-xl border dark:border-white/5 border-slate-300 gap-1">
                   {['1m', '5m', '15m', '1h', '6h', '1d'].map(tf => (
@@ -1582,7 +1594,7 @@ function DashboardContent() {
               </div>
             </div>
 
-            <div className="flex-grow w-full relative mt-0 mb-4 px-2 min-h-[300px]">
+            <div className="flex-grow w-full relative z-0 mt-0 mb-4 px-2 min-h-[300px]">
                 <div
                   ref={chartContainerRef}
                   className={`absolute inset-0 ${drawingTool ? 'cursor-crosshair' : ''}`}
@@ -2411,6 +2423,86 @@ function DashboardContent() {
                 {profileSaving ? 'Saving...' : 'Save Settings'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {/* Legal Modal */}
+      {showLegalModal && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+          <div className="bg-slate-900 border border-amber-500/30 rounded-2xl p-6 md:p-8 w-full max-w-2xl shadow-2xl shadow-amber-500/10 overflow-y-auto max-h-[90vh]">
+            <h2 className="text-xl md:text-2xl font-black uppercase tracking-wider text-white mb-4 flex items-center gap-2">
+              <span className="text-amber-500">⚠️</span> Terms of Service & Risk Disclosure
+            </h2>
+            
+            <div className="space-y-4 text-xs md:text-sm text-slate-300 leading-relaxed mb-6">
+              <p>
+                Welcome to Nexus Trading. By using this platform, you acknowledge and agree to the following:
+              </p>
+              <ul className="list-disc pl-5 space-y-2">
+                <li><strong>No Financial Advice:</strong> This software is provided for informational and educational purposes only. It is not financial advice.</li>
+                <li><strong>High Risk:</strong> Trading cryptocurrencies and derivatives involves significant risk of loss. You should not invest money that you cannot afford to lose.</li>
+                <li><strong>Beta Software:</strong> This is beta software. You may experience bugs, downtime, or unexpected behavior that could result in financial loss.</li>
+                <li><strong>No Guarantees:</strong> We make no guarantees regarding the performance of any trading strategies or algorithms available on this platform.</li>
+                <li><strong>Your Responsibility:</strong> You are solely responsible for your trading decisions and any resulting profits or losses.</li>
+              </ul>
+
+              <div className="mt-6 border-t border-white/10 pt-4">
+                <label className="block text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">
+                  Select Your Jurisdiction
+                </label>
+                <select
+                  value={selectedJurisdiction}
+                  onChange={(e) => setSelectedJurisdiction(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/10 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-amber-500/50 outline-none transition-all"
+                >
+                  <option value="" disabled>Select a jurisdiction...</option>
+                  <option value="US">United States</option>
+                  <option value="UK">United Kingdom</option>
+                  <option value="EU">European Union</option>
+                  <option value="OTHER">Other</option>
+                </select>
+                {selectedJurisdiction === 'US' && (
+                  <p className="text-red-400 mt-2 text-xs italic">
+                    Note: Certain derivative products may not be available to US residents.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <button
+              onClick={async () => {
+                if (!selectedJurisdiction) {
+                  alert('Please select your jurisdiction to continue.');
+                  return;
+                }
+                
+                try {
+                  const res = await fetch('/api/configure-tenant-settings', {
+                    method: 'POST',
+                    headers: { 
+                      'Content-Type': 'application/json',
+                      'Authorization': session?.access_token ? `Bearer ${session.access_token}` : ''
+                    },
+                    body: JSON.stringify({ 
+                      terms_accepted: true,
+                      jurisdiction: selectedJurisdiction
+                    })
+                  });
+                  
+                  if (!res.ok) throw new Error('Failed to save legal acceptance');
+                  
+                  setTermsAccepted(true);
+                  setShowLegalModal(false);
+                } catch (e) {
+                  console.error('Error saving terms:', e);
+                  alert('Failed to save. Please try again.');
+                }
+              }}
+              disabled={!selectedJurisdiction}
+              className="w-full bg-amber-600 hover:bg-amber-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black uppercase tracking-widest py-4 rounded-xl transition-all shadow-lg shadow-amber-500/20"
+            >
+              I Understand and Accept
+            </button>
           </div>
         </div>
       )}

@@ -440,7 +440,7 @@ export default async function handler(req, res) {
                   execution_mode: args.execution_mode ?? existing?.execution_mode ?? 'PAPER',
                   is_active: args.is_active ?? (existing?.is_active ?? false),
                   version: args.version || "v1.0",
-                  parameters: mergedParams,
+                  parameters: { ...(existing?.parameters || {}), ...(args.parameters || {}) },
                   last_updated: new Date().toISOString(),
                   reasoning: args.reasoning
                 };
