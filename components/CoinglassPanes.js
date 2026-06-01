@@ -131,39 +131,14 @@ function PaneChart({ chartRef, indicator, state }) {
       isSyncing.current = false;
     };
 
-    const syncCrosshairMainToPane = (param) => {
-      if (isSyncing.current || !chart || !state.data?.series?.length) return;
-      isSyncing.current = true;
-      if (param.point === undefined || !param.time || param.point.x < 0 || param.point.y < 0) {
-        chart.clearCrosshairPosition();
-      } else {
-        // Find corresponding point in pane series to extract the exact price
-        if (seriesRef.current) {
-           try {
-               const dataPoint = state.data.series.find(s => s.time === param.time);
-               if (dataPoint) {
-                   chart.setCrosshairPosition(dataPoint.value, param.time, seriesRef.current);
-               } else {
-                   chart.clearCrosshairPosition();
-               }
-           } catch (e) {
-               // Silent fail if crosshair bounds check fails
-           }
-        }
-      }
-      isSyncing.current = false;
-    };
-
     if (mainChart) {
       mainChart.timeScale().subscribeVisibleLogicalRangeChange(syncTimeScaleMainToPane);
       chart.timeScale().subscribeVisibleLogicalRangeChange(syncTimeScalePaneToMain);
-      mainChart.subscribeCrosshairMove(syncCrosshairMainToPane);
     }
 
     return () => {
       if (mainChart) {
         mainChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncTimeScaleMainToPane);
-        mainChart.unsubscribeCrosshairMove(syncCrosshairMainToPane);
       }
       chart.remove();
       window.removeEventListener('resize', handleResize);
