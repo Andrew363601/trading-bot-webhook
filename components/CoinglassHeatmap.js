@@ -25,36 +25,62 @@ function heatColor(intensity, alpha = 0.5) {
   return `rgba(${Math.round(r)}, ${Math.round(Math.max(0, g))}, ${Math.round(Math.max(0, b))}, ${alpha})`;
 }
 
-export default function CoinglassHeatmap({ chartRef, seriesRef, containerRef, asset, active, token, timeframe }) {
+export default function CoinglassHeatmap({ chartRef, seriesRef, containerRef, asset, activeLiquidation, activeWalls, token, timeframe }) {
   const canvasRef = useRef(null);
-  const dataRef = useRef({ mode: 'bands', bands: [], raster: null }); // bands: [{price,intensity}], raster: {times,prices,cells}
+  const dataRef = useRef({ mode: 'bands', bands: [], raster: null, walls: [] });
   const rafRef = useRef(null);
 
-  // Fetch the liquidation grid whenever the asset/timeframe toggles or activates.
+  // Fetch the data whenever the asset/timeframe toggles or activates.
   useEffect(() => {
-    if (!active || !asset || !token) { dataRef.current = { mode: 'bands', bands: [], raster: null }; scheduleDraw(); return; }
+    if ((!activeLiquidation && !activeWalls) || !asset || !token) { 
+      dataRef.current = { mode: 'bands', bands: [], raster: null, walls: [] }; 
+      scheduleDraw(); 
+      return; 
+    }
     let cancelled = false;
     (async () => {
       try {
         const tfParam = timeframe ? `&interval=${encodeURIComponent(timeframe)}` : '';
-        const res = await fetch(
-          `/api/coinglass-indicator?id=liquidation_map&heatmap=1&symbol=${encodeURIComponent(asset)}${tfParam}`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (!res.ok) return;
-        const { data } = await res.json();
-        if (cancelled) return;
-        if (data?.mode === 'raster' && Array.isArray(data.cells) && data.cells.length) {
-          dataRef.current = { mode: 'raster', raster: { times: data.times || [], prices: data.prices || [], cells: data.cells }, bands: [] };
+        const promises = [];
+
+        if (activeLiquidation) {
+          promises.push(fetch(`/api/coinglass-indicator?id=liquidation_map&heatmap=1&symbol=${encodeURIComponent(asset)}${tfParam}`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()));
         } else {
-          dataRef.current = { mode: 'bands', bands: Array.isArray(data?.heatmap) ? data.heatmap : [], raster: null };
+          promises.push(Promise.resolve(null));
         }
+
+        if (activeWalls) {
+          promises.push(fetch(`/api/coinglass-indicator?id=large_limit_orders&symbol=${encodeURIComponent(asset)}`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()));
+        } else {
+          promises.push(Promise.resolve(null));
+        }
+
+        const [liqJson, wallJson] = await Promise.all(promises);
+        if (cancelled) return;
+
+        let mode = 'bands', raster = null, bands = [], walls = [];
+
+        if (liqJson?.data) {
+          const ldata = liqJson.data;
+          if (ldata.mode === 'raster' && Array.isArray(ldata.cells) && ldata.cells.length) {
+            mode = 'raster';
+            raster = { times: ldata.times || [], prices: ldata.prices || [], cells: ldata.cells };
+          } else {
+            bands = Array.isArray(ldata.heatmap) ? ldata.heatmap : [];
+          }
+        }
+
+        if (wallJson?.data?.valid_walls) {
+          walls = wallJson.data.valid_walls;
+        }
+
+        dataRef.current = { mode, raster, bands, walls };
         scheduleDraw();
       } catch (_) { /* best-effort */ }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, asset, token, timeframe]);
+  }, [activeLiquidation, activeWalls, asset, token, timeframe]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -81,10 +107,8 @@ export default function CoinglassHeatmap({ chartRef, seriesRef, containerRef, as
     if (store.mode === 'raster' && store.raster?.cells?.length) {
       const { times, prices, cells } = store.raster;
       const ts = chartRef.current.timeScale();
-      // Precompute pixel x for each time index and pixel y for each price index.
       const xs = times.map(t => { try { return ts.timeToCoordinate(t); } catch { return null; } });
       const ys = prices.map(p => { try { return seriesRef.current.priceToCoordinate(p); } catch { return null; } });
-      // Cell width/height from median neighbour spacing.
       const cellW = medianSpacing(xs) || (W / Math.max(1, times.length));
       const cellH = medianSpacing(ys) || 4;
       cells.forEach((c) => {
@@ -94,29 +118,59 @@ export default function CoinglassHeatmap({ chartRef, seriesRef, containerRef, as
         ctx.fillStyle = heatColor(c.intensity, 0.15 + c.intensity * 0.6);
         ctx.fillRect(x - cellW / 2, y - cellH / 2, cellW + 1, cellH + 1);
       });
-      return;
+    } else {
+      // ---- BANDS MODE: price-band fallback (no time axis) ----
+      const pts = (store.bands || [])
+        .map(p => ({ ...p, y: (() => { try { return seriesRef.current.priceToCoordinate(p.price); } catch { return null; } })() }))
+        .filter(p => p.y != null)
+        .sort((a, b) => a.y - b.y);
+
+      if (pts.length) {
+        const gaps = [];
+        for (let i = 1; i < pts.length; i++) gaps.push(Math.abs(pts[i].y - pts[i - 1].y));
+        gaps.sort((a, b) => a - b);
+        const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 8;
+        const bandH = Math.max(2, Math.min(18, medianGap || 8));
+
+        pts.forEach((p) => {
+          const alpha = 0.18 + p.intensity * 0.55;
+          ctx.fillStyle = heatColor(p.intensity, alpha);
+          ctx.fillRect(0, p.y - bandH / 2, W, bandH);
+        });
+      }
     }
 
-    // ---- BANDS MODE: price-band fallback (no time axis) ----
-    const pts = (store.bands || [])
-      .map(p => ({ ...p, y: (() => { try { return seriesRef.current.priceToCoordinate(p.price); } catch { return null; } })() }))
-      .filter(p => p.y != null)
-      .sort((a, b) => a.y - b.y);
+    // ---- LARGE LIMIT ORDERS WALLS ----
+    if (store.walls && store.walls.length) {
+      const maxVal = Math.max(...store.walls.map(w => Number(w.valueUsd) || 0));
+      store.walls.forEach(w => {
+        const val = Number(w.valueUsd) || 0;
+        if (val === 0) return;
+        let y = null;
+        try { y = seriesRef.current.priceToCoordinate(Number(w.price ?? w.level)); } catch {}
+        if (y == null) return;
+        
+        const intensity = val / maxVal;
+        // Determine color: Asks (Sell) = Red, Bids (Buy) = Green
+        const isAsk = w.side && w.side.toLowerCase() === 'ask';
+        const color = isAsk ? `rgba(239, 68, 68, ${0.4 + intensity * 0.5})` : `rgba(16, 185, 129, ${0.4 + intensity * 0.5})`;
+        
+        const blockHeight = 6 + (intensity * 10);
+        // Extend backwards from the right edge based on size
+        const blockWidth = 40 + (intensity * 120); 
+        
+        ctx.fillStyle = color;
+        ctx.fillRect(W - blockWidth, y - blockHeight / 2, blockWidth, blockHeight);
+        
+        // Value label
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        ctx.font = '10px ui-monospace, monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(`$${(val / 1000000).toFixed(1)}M`, W - 5, y + 3);
+      });
+    }
 
-    if (!pts.length) return;
-
-    const gaps = [];
-    for (let i = 1; i < pts.length; i++) gaps.push(Math.abs(pts[i].y - pts[i - 1].y));
-    gaps.sort((a, b) => a - b);
-    const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 8;
-    const bandH = Math.max(2, Math.min(18, medianGap || 8));
-
-    pts.forEach((p) => {
-      const alpha = 0.18 + p.intensity * 0.55;
-      ctx.fillStyle = heatColor(p.intensity, alpha);
-      ctx.fillRect(0, p.y - bandH / 2, W, bandH);
-    });
-  }, [active, containerRef, seriesRef, chartRef]);
+  }, [activeLiquidation, activeWalls, containerRef, seriesRef, chartRef]);
 
   const scheduleDraw = useCallback(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);

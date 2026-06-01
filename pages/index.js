@@ -1617,28 +1617,26 @@ function DashboardContent() {
                   ref={chartContainerRef}
                   className="absolute inset-0"
                 />
-                {/* Liquidation HEATMAP — price-band heat gradient behind the
-                    candles (legend.coinglass.com style). Only paints when the
-                    liquidation_map overlay is toggled on. */}
+                {/* Liquidation HEATMAP + Large Limit Orders — price-band heat gradient behind the
+                    candles (legend.coinglass.com style). */}
                 <CoinglassHeatmap
                   chartRef={chartRef}
                   seriesRef={seriesRef}
                   containerRef={chartContainerRef}
                   asset={normalizeAssetSymbol(activeAsset)}
-                  active={selectedCoinglassIndicators.some(i => i.id === 'liquidation_map')}
+                  activeLiquidation={selectedCoinglassIndicators.some(i => i.id === 'liquidation_map')}
+                  activeWalls={selectedCoinglassIndicators.some(i => i.id === 'large_limit_orders')}
                   token={session?.access_token}
                   timeframe={chartTimeframe}
                 />
                 {/* Mount the Coinglass overlay engine — paints price-line levels
-                    onto the chart series. Component returns null; it side-effects
-                    on seriesRef. Pass the NORMALIZED base ticker (e.g. BTC) so the
+                    onto the chart series. Pass the NORMALIZED base ticker (e.g. BTC) so the
                     Coinglass API never receives a perpetual/dated-future product. */}
                 <CoinglassOverlayLines
                   seriesRef={seriesRef}
                   asset={normalizeAssetSymbol(activeAsset)}
-                  // liquidation_map is rendered as a heatmap above, so exclude it
-                  // here to avoid double-drawing dotted price lines for it.
-                  indicators={selectedCoinglassIndicators.filter(i => i.kind === 'overlay' && i.id !== 'liquidation_map')}
+                  // liquidation_map and large_limit_orders are rendered on the canvas above
+                  indicators={selectedCoinglassIndicators.filter(i => i.kind === 'overlay' && i.id !== 'liquidation_map' && i.id !== 'large_limit_orders')}
                   token={session?.access_token}
                 />
                 {/* Grid-anchored drawing engine: trend lines, rays, rectangles,
@@ -1669,6 +1667,7 @@ function DashboardContent() {
             {selectedCoinglassIndicators.filter(i => i.kind === 'pane').length > 0 && (isChartExpanded || isChartMaximized) && (
               <div className="hidden md:block px-3 pb-3">
                 <CoinglassPanes
+                  chartRef={chartRef}
                   asset={normalizeAssetSymbol(activeAsset)}
                   indicators={selectedCoinglassIndicators.filter(i => i.kind === 'pane')}
                   token={session?.access_token}

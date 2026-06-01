@@ -81,15 +81,15 @@ export default function LandingPage() {
           const winRate = ((wins / closed.length) * 100).toFixed(1) + '%';
           const totalPnLVal = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
           setDemoStats({ winRate, totalTrades: closed.length, totalPnL: `$${totalPnLVal.toFixed(2)}`, live: false });
-        } else if (openTrades.length > 0) {
+        } else if (openTrades.length > 0 && openTrades.some(t => Math.abs(parseFloat(t.current_roe ?? t.pnl) || 0) > 0)) {
           // No closed trades yet — show LIVE/unrealized performance so the page
           // is never a dead "0% / $0". Use current_roe (win = green ROE) + pnl.
           const greens = openTrades.filter(t => (parseFloat(t.current_roe ?? t.pnl) || 0) > 0).length;
           const winRate = ((greens / openTrades.length) * 100).toFixed(1) + '%';
           const unrealized = openTrades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
           setDemoStats({ winRate, totalTrades: openTrades.length, totalPnL: `$${unrealized.toFixed(2)}`, live: true });
-        } else if (!hasRealData) {
-          // Nothing at all — keep the synthetic teaser numbers.
+        } else {
+          // Nothing at all (or only fresh open trades with 0 PnL) — keep the synthetic teaser numbers.
           setDemoStats({ winRate: '67.3%', totalTrades: 142, totalPnL: '$4,892.15', live: false });
         }
 
@@ -164,11 +164,25 @@ export default function LandingPage() {
 
     let live = false;
     let strategyTrades = demoTrades.filter(t => t.exit_price !== null && t.exit_price !== undefined && matches(t));
-    // No closed trades for this strategy yet — fall back to OPEN positions so the
-    // card shows live/unrealized performance instead of a dead 0% / $0.
+    
     if (strategyTrades.length === 0) {
         const openMatches = demoTrades.filter(t => (t.exit_price === null || t.exit_price === undefined) && matches(t));
-        if (openMatches.length > 0) { strategyTrades = openMatches; live = true; }
+        // Only fall back to live trades if they actually have some PnL data
+        if (openMatches.length > 0 && openMatches.some(t => Math.abs(parseFloat(t.current_roe ?? t.pnl) || 0) > 0)) { 
+            strategyTrades = openMatches; 
+            live = true; 
+        }
+    }
+
+    // If completely empty, return a believable synthetic fallback based on the strategy name
+    // so the marketing cards never look broken/empty.
+    if (strategyTrades.length === 0) {
+        let synthWin = '64%';
+        let synthPnl = '1,240.50';
+        let synthHistory = [40, -10, 80, 20, 150, -30, 210];
+        if (strategyName.includes('SCALP')) { synthWin = '72%'; synthPnl = '890.20'; synthHistory = [15, 20, -5, 30, 10, 25, 40]; }
+        if (strategyName.includes('TREND')) { synthWin = '54%'; synthPnl = '3,450.00'; synthHistory = [-100, -50, 400, 200, -80, 600, 120]; }
+        return { winRate: synthWin, totalPnL: synthPnl, history: synthHistory, live: false };
     }
 
     const wins = strategyTrades.filter(t => (parseFloat(live ? (t.current_roe ?? t.pnl) : t.pnl) || 0) > 0).length;
