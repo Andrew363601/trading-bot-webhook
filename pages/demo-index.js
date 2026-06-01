@@ -102,10 +102,53 @@ export default function LandingPage() {
     };
   }, []);
 
-  const filteredLogs = logs.filter(l => terminalFilter === 'ALL' || l.type === terminalFilter);
+  // Collapse a raw product id (BIP-20DEC30-CDE, BTC-PERP-INTX, …) to its base
+  // ticker (BTC/SOL/ETH/…). Coinbase dated futures encode the base in a
+  // non-standard first segment, so map those explicitly.
+  const FUTURES_CODE_MAP = { BIT: 'BTC', BIP: 'BTC', ETP: 'ETH', SLP: 'SOL', DOP: 'DOGE', LCP: 'LTC', AVP: 'AVAX', LNP: 'LINK', XPP: 'XRP', WLD: 'WLD' };
+  const baseTicker = (symbol) => {
+    if (!symbol) return '';
+    let base = String(symbol).toUpperCase().replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '').split('-')[0];
+    return FUTURES_CODE_MAP[base] || base;
+  };
 
-  const getStrategyStats = (strategyName) => {
-    const strategyTrades = demoTrades.filter(t => t.strategy_id === strategyName && t.exit_price !== null);
+  // Build the terminal feed. Two problems we fix here:
+  //   1) Ensure strict newest-first chronological order (the API can return
+  //      rows with equal/again-out-of-order timestamps).
+  //   2) The Watchdog spams near-identical "Sweeping open trades" / heartbeat
+  //      lines every cycle, which buries the actual SNIPER signals and makes the
+  //      stream look jumbled. Collapse consecutive duplicate noise so meaningful
+  //      events stay visible.
+  const NOISE_RE = /(sweeping open trades|heartbeat|position sync|price sanity)/i;
+  const filteredLogs = (() => {
+    const sorted = [...logs].sort((a, b) => {
+      const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return tb - ta; // newest first
+    });
+    const byTab = sorted.filter(l => terminalFilter === 'ALL' || l.type === terminalFilter);
+    // Drop consecutive duplicate noise lines (same type + same noisy text).
+    const out = [];
+    let lastNoiseKey = null;
+    for (const l of byTab) {
+      const isNoise = NOISE_RE.test(l.text || '');
+      const key = isNoise ? `${l.type}:${(l.text || '').slice(0, 24)}` : null;
+      if (isNoise && key === lastNoiseKey) continue; // collapse repeat
+      lastNoiseKey = key;
+      out.push(l);
+    }
+    return out;
+  })();
+
+  const getStrategyStats = (strategyName, asset) => {
+    // Match trades to a strategy by strategy_id, OR — when the demo tenant logs
+    // trades under a different id but the same asset — fall back to matching on
+    // the normalized base ticker so the card still reflects real performance.
+    const base = baseTicker(asset);
+    const strategyTrades = demoTrades.filter(t =>
+        t.exit_price !== null && t.exit_price !== undefined &&
+        (t.strategy_id === strategyName || (base && baseTicker(t.symbol) === base))
+    );
     const wins = strategyTrades.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
     const winRate = strategyTrades.length > 0 ? ((wins / strategyTrades.length) * 100).toFixed(0) + '%' : '0%';
     const totalPnL = strategyTrades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
@@ -239,7 +282,7 @@ export default function LandingPage() {
       <div id="features" className="py-24 relative">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
-            <h2 className="text-cyan-400 font-semibold tracking-wide uppercase">Meet Hermes</h2>
+            <h2 className="text-cyan-400 font-semibold tracking-wide uppercase">Meet Nexus AI</h2>
             <p className="mt-2 text-4xl font-extrabold">Your Personal Risk Manager</p>
           </div>
 
@@ -251,7 +294,7 @@ export default function LandingPage() {
                 </svg>
               </div>
               <h3 className="text-xl font-bold mb-3">Institutional Reasoning</h3>
-              <p className="text-slate-400 leading-relaxed">Hermes scans the 6H Macro Tide, the 1H Trend, and the 5M Tape. If your script tries to catch a falling knife, Hermes vetoes the trade to protect your capital.</p>
+              <p className="text-slate-400 leading-relaxed">Nexus AI scans the 6H Macro Tide, the 1H Trend, and the 5M Tape. If a setup tries to catch a falling knife, Nexus AI vetoes the trade to protect your capital.</p>
             </div>
             <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl relative overflow-hidden">
               <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-bl-full blur-2xl"></div>
@@ -261,7 +304,7 @@ export default function LandingPage() {
                 </svg>
               </div>
               <h3 className="text-xl font-bold mb-3 relative z-10">Agentic Reflection</h3>
-              <p className="text-slate-400 leading-relaxed relative z-10">Hermes runs a post-mortem on every closed trade. If a setup fails, it extracts the math and writes a permanent rule to its Core Memory. It learns from its trauma.</p>
+              <p className="text-slate-400 leading-relaxed relative z-10">Nexus AI runs a post-mortem on every closed trade. If a setup fails, it extracts the math and writes a permanent rule to its Core Memory. It learns from its trauma.</p>
             </div>
             <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl">
               <div className="w-12 h-12 bg-cyan-500/20 rounded-lg flex items-center justify-center mb-6">
@@ -286,15 +329,15 @@ export default function LandingPage() {
                 <div className="flex gap-4">
                   <div className="flex-shrink-0 w-10 h-10 rounded-full bg-cyan-500/20 flex items-center justify-center text-cyan-400 font-bold border border-cyan-500/30">1</div>
                   <div>
-                    <h4 className="text-xl font-bold">Bring Your Own Strategy</h4>
-                    <p className="text-slate-400 mt-1">Import your winning scripts or use our library. Plug in your parameters and backtest natively.</p>
+                    <h4 className="text-xl font-bold">Deploy a Strategy</h4>
+                    <p className="text-slate-400 mt-1">Choose from our battle-tested strategy library. Plug in your parameters and backtest natively.</p>
                   </div>
                 </div>
                 <div className="flex gap-4">
                   <div className="flex-shrink-0 w-10 h-10 rounded-full bg-cyan-500/20 flex items-center justify-center text-cyan-400 font-bold border border-cyan-500/30">2</div>
                   <div>
                     <h4 className="text-xl font-bold">The Sandbox</h4>
-                    <p className="text-slate-400 mt-1">Watch Hermes manage a simulated $100k portfolio in live market conditions. Watch it veto toxic setups without risking a dime.</p>
+                    <p className="text-slate-400 mt-1">Watch Nexus AI manage a simulated $100k portfolio in live market conditions. Watch it veto toxic setups without risking a dime.</p>
                   </div>
                 </div>
                 <div className="flex gap-4">
@@ -395,7 +438,7 @@ export default function LandingPage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {activeShowcaseStrategies.length > 0 ? activeShowcaseStrategies.map((strat, i) => {
-              const stats = getStrategyStats(strat.id);
+              const stats = getStrategyStats(strat.id, strat.asset);
               const isSelected = selectedStrategy === strat.id;
 
               return (
@@ -406,7 +449,7 @@ export default function LandingPage() {
                 >
                     <div className="flex justify-between items-start mb-6">
                     <div>
-                        <h4 className="text-lg font-bold text-white">{strat.asset}</h4>
+                        <h4 className="text-lg font-bold text-white">{baseTicker(strat.asset)}-PERP</h4>
                         <p className="text-xs text-slate-500 uppercase tracking-widest">{strat.name}</p>
                     </div>
                     <div className={`w-10 h-10 bg-indigo-500/10 rounded-xl flex items-center justify-center`}>
@@ -512,7 +555,7 @@ export default function LandingPage() {
                   'Up to 3 active trading models simultaneously (e.g., BTC, ETH, and SOL)',
                   'Standard polling execution pipeline',
                   'Flat-rate fair use — no complex metered overages to track',
-                  'Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, and hermes_core_memory logging',
+                  'Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, and Nexus Core Memory logging',
                 ],
               },
               {
@@ -523,7 +566,7 @@ export default function LandingPage() {
                   'Up to 10 active trading models simultaneously',
                   'High-priority, sub-second streaming updates',
                   'Flat-rate fair use optimized for high-frequency strategies',
-                  'Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Nexus Chat AI Integration, and hermes_core_memory logging',
+                  'Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Nexus Chat AI Integration, and Nexus Core Memory logging',
                 ],
               },
               {

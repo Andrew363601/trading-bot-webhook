@@ -44,7 +44,10 @@ export default function PlansPage() {
             subscriptionActive = tenantData.subscription_active;
           }
 
-          // Source B: Fall back to subscriptions table — check for Stripe customer or subscription ID
+          // Source B: Fall back to subscriptions table — only treat as PAID when
+          // there's an actual active/trialing Stripe subscription. A mere
+          // stripe_customer_id is NOT enough (free-trial users who merely opened
+          // checkout have a customer record and were wrongly redirected away).
           if (!billingTier || billingTier === 'FREE_TRIAL') {
             const { data: subData } = await supabase
               .from('subscriptions')
@@ -52,9 +55,7 @@ export default function PlansPage() {
               .eq('tenant_id', tenantId)
               .single();
 
-            // Paid if they have a Stripe subscription (active/trialing) OR a valid customer record
-            if ((subData?.stripe_subscription_id && (subData.status === 'active' || subData.status === 'trialing')) ||
-                (subData?.stripe_customer_id && subData.stripe_customer_id !== 'undefined')) {
+            if (subData?.stripe_subscription_id && (subData.status === 'active' || subData.status === 'trialing')) {
               billingTier = subData.tier || 'RETAIL';
               subscriptionActive = true;
             }

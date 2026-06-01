@@ -19,6 +19,7 @@ import QuickStartGuide from '../components/QuickStartGuide';
 import ChartToolbar from '../components/ChartToolbar';
 import CoinglassPanes from '../components/CoinglassPanes';
 import CoinglassOverlayLines from '../components/CoinglassOverlayLines';
+import CoinglassHeatmap from '../components/CoinglassHeatmap';
 import ChartDrawingLayer from '../components/ChartDrawingLayer';
 import ChatNotification from '../components/ChatNotification';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
@@ -1608,6 +1609,17 @@ function DashboardContent() {
                   ref={chartContainerRef}
                   className="absolute inset-0"
                 />
+                {/* Liquidation HEATMAP — price-band heat gradient behind the
+                    candles (legend.coinglass.com style). Only paints when the
+                    liquidation_map overlay is toggled on. */}
+                <CoinglassHeatmap
+                  chartRef={chartRef}
+                  seriesRef={seriesRef}
+                  containerRef={chartContainerRef}
+                  asset={normalizeAssetSymbol(activeAsset)}
+                  active={selectedCoinglassIndicators.some(i => i.id === 'liquidation_map')}
+                  token={session?.access_token}
+                />
                 {/* Mount the Coinglass overlay engine — paints price-line levels
                     onto the chart series. Component returns null; it side-effects
                     on seriesRef. Pass the NORMALIZED base ticker (e.g. BTC) so the
@@ -1615,7 +1627,9 @@ function DashboardContent() {
                 <CoinglassOverlayLines
                   seriesRef={seriesRef}
                   asset={normalizeAssetSymbol(activeAsset)}
-                  indicators={selectedCoinglassIndicators.filter(i => i.kind === 'overlay')}
+                  // liquidation_map is rendered as a heatmap above, so exclude it
+                  // here to avoid double-drawing dotted price lines for it.
+                  indicators={selectedCoinglassIndicators.filter(i => i.kind === 'overlay' && i.id !== 'liquidation_map')}
                   token={session?.access_token}
                 />
                 {/* Grid-anchored drawing engine: trend lines, rays, rectangles,
