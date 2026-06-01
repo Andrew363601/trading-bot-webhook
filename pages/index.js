@@ -17,7 +17,7 @@ import AuthGuard from '../components/AuthGuard';
 import MarketScanner from '../components/MarketScanner';
 import QuickStartGuide from '../components/QuickStartGuide';
 import ChartToolbar from '../components/ChartToolbar';
-import CoinglassPanes from '../components/CoinglassPanes';
+import CoinglassPanes from '../components/CoinglassPanes';f
 import CoinglassOverlayLines from '../components/CoinglassOverlayLines';
 import ChatNotification from '../components/ChatNotification';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
@@ -1594,7 +1594,7 @@ function DashboardContent() {
               </div>
             </div>
 
-            <div className="flex-grow w-full relative z-0 mt-0 mb-4 px-2 min-h-[300px]">
+            <div className="flex-grow w-full relative mt-0 mb-4 px-2 min-h-[300px]">
                 <div
                   ref={chartContainerRef}
                   className={`absolute inset-0 ${drawingTool ? 'cursor-crosshair' : ''}`}
