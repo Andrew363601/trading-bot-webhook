@@ -25,31 +25,36 @@ function heatColor(intensity, alpha = 0.5) {
   return `rgba(${Math.round(r)}, ${Math.round(Math.max(0, g))}, ${Math.round(Math.max(0, b))}, ${alpha})`;
 }
 
-export default function CoinglassHeatmap({ chartRef, seriesRef, containerRef, asset, active, token }) {
+export default function CoinglassHeatmap({ chartRef, seriesRef, containerRef, asset, active, token, timeframe }) {
   const canvasRef = useRef(null);
-  const dataRef = useRef([]);    // [{ price, intensity, side }]
+  const dataRef = useRef({ mode: 'bands', bands: [], raster: null }); // bands: [{price,intensity}], raster: {times,prices,cells}
   const rafRef = useRef(null);
 
-  // Fetch the liquidation density grid whenever the asset toggles / activates.
+  // Fetch the liquidation grid whenever the asset/timeframe toggles or activates.
   useEffect(() => {
-    if (!active || !asset || !token) { dataRef.current = []; scheduleDraw(); return; }
+    if (!active || !asset || !token) { dataRef.current = { mode: 'bands', bands: [], raster: null }; scheduleDraw(); return; }
     let cancelled = false;
     (async () => {
       try {
+        const tfParam = timeframe ? `&interval=${encodeURIComponent(timeframe)}` : '';
         const res = await fetch(
-          `/api/coinglass-indicator?id=liquidation_map&symbol=${encodeURIComponent(asset)}`,
+          `/api/coinglass-indicator?id=liquidation_map&heatmap=1&symbol=${encodeURIComponent(asset)}${tfParam}`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         if (!res.ok) return;
         const { data } = await res.json();
         if (cancelled) return;
-        dataRef.current = Array.isArray(data?.heatmap) ? data.heatmap : [];
+        if (data?.mode === 'raster' && Array.isArray(data.cells) && data.cells.length) {
+          dataRef.current = { mode: 'raster', raster: { times: data.times || [], prices: data.prices || [], cells: data.cells }, bands: [] };
+        } else {
+          dataRef.current = { mode: 'bands', bands: Array.isArray(data?.heatmap) ? data.heatmap : [], raster: null };
+        }
         scheduleDraw();
       } catch (_) { /* best-effort */ }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, asset, token]);
+  }, [active, asset, token, timeframe]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -67,18 +72,39 @@ export default function CoinglassHeatmap({ chartRef, seriesRef, containerRef, as
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, rect.width, rect.height);
 
-    if (!active || !dataRef.current.length || !seriesRef.current) return;
+    const store = dataRef.current;
+    if (!active || !seriesRef.current || !chartRef.current) return;
 
     const W = rect.width;
-    // Sort by price so we can size each band to the gap to its neighbour.
-    const pts = dataRef.current
+
+    // ---- RASTER MODE: true time x price liquidation heatmap ----
+    if (store.mode === 'raster' && store.raster?.cells?.length) {
+      const { times, prices, cells } = store.raster;
+      const ts = chartRef.current.timeScale();
+      // Precompute pixel x for each time index and pixel y for each price index.
+      const xs = times.map(t => { try { return ts.timeToCoordinate(t); } catch { return null; } });
+      const ys = prices.map(p => { try { return seriesRef.current.priceToCoordinate(p); } catch { return null; } });
+      // Cell width/height from median neighbour spacing.
+      const cellW = medianSpacing(xs) || (W / Math.max(1, times.length));
+      const cellH = medianSpacing(ys) || 4;
+      cells.forEach((c) => {
+        const x = xs[c.x];
+        const y = ys[c.y];
+        if (x == null || y == null) return;
+        ctx.fillStyle = heatColor(c.intensity, 0.15 + c.intensity * 0.6);
+        ctx.fillRect(x - cellW / 2, y - cellH / 2, cellW + 1, cellH + 1);
+      });
+      return;
+    }
+
+    // ---- BANDS MODE: price-band fallback (no time axis) ----
+    const pts = (store.bands || [])
       .map(p => ({ ...p, y: (() => { try { return seriesRef.current.priceToCoordinate(p.price); } catch { return null; } })() }))
       .filter(p => p.y != null)
       .sort((a, b) => a.y - b.y);
 
     if (!pts.length) return;
 
-    // Estimate a band thickness from the median spacing between adjacent levels.
     const gaps = [];
     for (let i = 1; i < pts.length; i++) gaps.push(Math.abs(pts[i].y - pts[i - 1].y));
     gaps.sort((a, b) => a - b);
@@ -86,13 +112,11 @@ export default function CoinglassHeatmap({ chartRef, seriesRef, containerRef, as
     const bandH = Math.max(2, Math.min(18, medianGap || 8));
 
     pts.forEach((p) => {
-      // Tint by side: longs (support, below) lean green, shorts (resistance) lean red,
-      // but intensity still drives brightness so the densest pools pop.
       const alpha = 0.18 + p.intensity * 0.55;
       ctx.fillStyle = heatColor(p.intensity, alpha);
       ctx.fillRect(0, p.y - bandH / 2, W, bandH);
     });
-  }, [active, containerRef, seriesRef]);
+  }, [active, containerRef, seriesRef, chartRef]);
 
   const scheduleDraw = useCallback(() => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -128,4 +152,19 @@ export default function CoinglassHeatmap({ chartRef, seriesRef, containerRef, as
       style={{ pointerEvents: 'none' }}
     />
   );
+}
+
+// Median absolute spacing between consecutive non-null coordinates — used to
+// size raster cells so they tile without gaps regardless of zoom.
+function medianSpacing(coords) {
+  const valid = coords.filter(c => c != null);
+  if (valid.length < 2) return null;
+  const gaps = [];
+  for (let i = 1; i < valid.length; i++) {
+    const g = Math.abs(valid[i] - valid[i - 1]);
+    if (g > 0) gaps.push(g);
+  }
+  if (!gaps.length) return null;
+  gaps.sort((a, b) => a - b);
+  return gaps[Math.floor(gaps.length / 2)];
 }

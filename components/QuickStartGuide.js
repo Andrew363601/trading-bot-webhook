@@ -130,12 +130,22 @@ const QuickStartGuide = forwardRef(({ tenantId, onDismiss, onComplete, onBeforeS
       style.left = style.left + delta;
     }
     
-    if (style.top && typeof style.top === 'number') {
-      // Constrain top position
-      let minTop = viewportPadding;
-      let maxTop = window.innerHeight - tooltipHeight - viewportPadding;
-      if (style.top < minTop) style.top = minTop;
-      if (style.top > maxTop) style.top = maxTop;
+    if (typeof style.top === 'number') {
+      // Compute the card's ACTUAL top edge given the vertical transform, then
+      // shift `top` so the whole card stays on-screen. Previously this only
+      // checked style.top directly, so 'top'-anchored steps (translateY(-100%),
+      // e.g. the Settings / API-key steps) computed a positive style.top whose
+      // real top edge was hundreds of px above the viewport — rendering the
+      // message off-screen on mobile.
+      let edgeTop;
+      if (transform.includes('translateY(-100%)')) edgeTop = style.top - tooltipHeight;
+      else if (transform.includes('translateY(-50%)')) edgeTop = style.top - tooltipHeight / 2;
+      else edgeTop = style.top;
+
+      const minEdge = viewportPadding;
+      const maxEdge = window.innerHeight - tooltipHeight - viewportPadding;
+      const clampedEdge = Math.max(minEdge, Math.min(edgeTop, Math.max(minEdge, maxEdge)));
+      style.top = style.top + (clampedEdge - edgeTop);
     }
 
     setTooltipStyle(style);

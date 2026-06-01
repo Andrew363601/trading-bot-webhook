@@ -707,8 +707,8 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
 
 // 🟢 THE EVOLUTION ENDPOINT (Agentic Reflection Loop)
 app.post('/api/autopsy', async (req, res) => {
-    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf } = req.body;
-    console.log(`[AGENT CORTEX] Initiating Autopsy for ${asset}. PnL: $${pnl}`);
+    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot } = req.body;
+    console.log(`[AGENT CORTEX] Initiating Autopsy for ${asset}. PnL: $${pnl} (${execution_mode || 'UNKNOWN'})`);
     
     res.status(200).json({ status: "Autopsy initiated." });
 
@@ -716,8 +716,15 @@ app.post('/api/autopsy', async (req, res) => {
         const geminiKey = process.env.GEMINI_API_KEY;
         if (!geminiKey) throw new Error("Missing Gemini API Key.");
 
-        // 🟢 ENHANCED AUTOPSY: Fetch market context for better lesson extraction
+        // 🟢 ENHANCED AUTOPSY: Fetch market context for better lesson extraction.
+        // Prefer the trimmed snapshot captured at the exact moment of close (passed
+        // from executeTradeMCP), and additionally enrich with a fresh market-state
+        // pull. We now PERSIST whichever snapshot we end up with into core memory.
         let marketContext = '';
+        let persistedSnapshot = market_snapshot || null;
+        if (market_snapshot) {
+            marketContext += `\n\n--- MARKET CONDITIONS AT CLOSE ---\n${JSON.stringify(market_snapshot, null, 2).substring(0, 1200)}`;
+        }
         try {
             const mcpUrl = process.env.MCP_GATEWAY_URL;
             if (mcpUrl) {
@@ -727,7 +734,8 @@ app.post('/api/autopsy', async (req, res) => {
                 }).catch(() => ({ json: () => ({}) }));
                 const stateData = await stateResp.json();
                 if (stateData?.result) {
-                    marketContext = `\n\n--- MARKET CONTEXT AT AUTOPSY ---\n${JSON.stringify(stateData.result, null, 2).substring(0, 2000)}`;
+                    marketContext += `\n\n--- MARKET CONTEXT AT AUTOPSY ---\n${JSON.stringify(stateData.result, null, 2).substring(0, 2000)}`;
+                    if (!persistedSnapshot) persistedSnapshot = stateData.result;
                 }
             }
         } catch (e) {
@@ -789,7 +797,15 @@ app.post('/api/autopsy', async (req, res) => {
             asset: asset,
             win_loss: winLoss,
             tools_used: autopsyJson.tools_used || "None",
-            lesson_learned: autopsyJson.lesson_learned
+            lesson_learned: autopsyJson.lesson_learned,
+            // Enriched dissection fields (paper + live) — what the trade actually
+            // did and what the market looked like when it closed.
+            entry_price: entry_price ?? null,
+            exit_price: exit_price ?? null,
+            pnl: pnl ?? null,
+            execution_mode: execution_mode || null,
+            regime_at_close: regime_at_close || null,
+            market_snapshot: persistedSnapshot || null
         }]);
 
     } catch (error) {

@@ -73,12 +73,27 @@ export default function LandingPage() {
         const trades = data.trades || [];
         setDemoTrades(trades);
         const closed = trades.filter(t => t.exit_price !== null && t.exit_price !== undefined);
-        const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
-        const winRate = closed.length > 0 ? ((wins / closed.length) * 100).toFixed(1) + '%' : '0%';
-        const totalPnLVal = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
-        setDemoStats({ winRate, totalTrades: closed.length, totalPnL: `$${totalPnLVal.toFixed(2)}` });
+        const openTrades = trades.filter(t => t.exit_price === null || t.exit_price === undefined);
 
-        const open = trades.find(t => t.exit_price === null || t.exit_price === undefined);
+        if (closed.length > 0) {
+          // Realized performance from closed trades.
+          const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+          const winRate = ((wins / closed.length) * 100).toFixed(1) + '%';
+          const totalPnLVal = closed.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+          setDemoStats({ winRate, totalTrades: closed.length, totalPnL: `$${totalPnLVal.toFixed(2)}`, live: false });
+        } else if (openTrades.length > 0) {
+          // No closed trades yet — show LIVE/unrealized performance so the page
+          // is never a dead "0% / $0". Use current_roe (win = green ROE) + pnl.
+          const greens = openTrades.filter(t => (parseFloat(t.current_roe ?? t.pnl) || 0) > 0).length;
+          const winRate = ((greens / openTrades.length) * 100).toFixed(1) + '%';
+          const unrealized = openTrades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
+          setDemoStats({ winRate, totalTrades: openTrades.length, totalPnL: `$${unrealized.toFixed(2)}`, live: true });
+        } else if (!hasRealData) {
+          // Nothing at all — keep the synthetic teaser numbers.
+          setDemoStats({ winRate: '67.3%', totalTrades: 142, totalPnL: '$4,892.15', live: false });
+        }
+
+        const open = openTrades[0];
         setActiveDemoTrade(open || null);
 
         if (data.logs?.some(l => l.agent_name === 'Agent Cortex')) {
@@ -145,18 +160,26 @@ export default function LandingPage() {
     // trades under a different id but the same asset — fall back to matching on
     // the normalized base ticker so the card still reflects real performance.
     const base = baseTicker(asset);
-    const strategyTrades = demoTrades.filter(t =>
-        t.exit_price !== null && t.exit_price !== undefined &&
-        (t.strategy_id === strategyName || (base && baseTicker(t.symbol) === base))
-    );
-    const wins = strategyTrades.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+    const matches = (t) => t.strategy_id === strategyName || (base && baseTicker(t.symbol) === base);
+
+    let live = false;
+    let strategyTrades = demoTrades.filter(t => t.exit_price !== null && t.exit_price !== undefined && matches(t));
+    // No closed trades for this strategy yet — fall back to OPEN positions so the
+    // card shows live/unrealized performance instead of a dead 0% / $0.
+    if (strategyTrades.length === 0) {
+        const openMatches = demoTrades.filter(t => (t.exit_price === null || t.exit_price === undefined) && matches(t));
+        if (openMatches.length > 0) { strategyTrades = openMatches; live = true; }
+    }
+
+    const wins = strategyTrades.filter(t => (parseFloat(live ? (t.current_roe ?? t.pnl) : t.pnl) || 0) > 0).length;
     const winRate = strategyTrades.length > 0 ? ((wins / strategyTrades.length) * 100).toFixed(0) + '%' : '0%';
     const totalPnL = strategyTrades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
     
-    // Calculate last 7 days history
+    // Calculate last 7 days history (closed trades only; open trades have no exit_time)
     const history = [0, 0, 0, 0, 0, 0, 0];
     const now = new Date();
     strategyTrades.forEach(t => {
+        if (!t.exit_time) return;
         const tradeDate = new Date(t.exit_time);
         const diffDays = Math.floor((now - tradeDate) / (1000 * 60 * 60 * 24));
         if (diffDays >= 0 && diffDays < 7) {
@@ -164,7 +187,7 @@ export default function LandingPage() {
         }
     });
 
-    return { winRate, totalPnL: totalPnL.toFixed(2), history };
+    return { winRate, totalPnL: totalPnL.toFixed(2), history, live };
   };
 
   // Display metadata for well-known strategy IDs. Anything not in this lookup
@@ -382,11 +405,11 @@ export default function LandingPage() {
                 <div className="bg-slate-900/50 px-6 py-4 border-b border-white/5 flex justify-between items-center">
                     <div className="flex gap-8">
                         <div>
-                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">Win Rate</p>
+                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">{demoStats.live ? 'Live Win Rate' : 'Win Rate'}</p>
                             <p className="text-lg font-black text-emerald-400 font-mono">{demoStats.winRate}</p>
                         </div>
                         <div>
-                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">Total PnL</p>
+                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">{demoStats.live ? 'Unrealized PnL' : 'Total PnL'}</p>
                             <p className="text-lg font-black text-indigo-400 font-mono">{demoStats.totalPnL}</p>
                         </div>
                     </div>
@@ -459,7 +482,7 @@ export default function LandingPage() {
                     
                     <div className="space-y-4">
                     <div className="flex justify-between items-end">
-                        <span className="text-xs text-slate-400 uppercase font-black tracking-widest">Win Rate</span>
+                        <span className="text-xs text-slate-400 uppercase font-black tracking-widest">{stats.live ? 'Live Win Rate' : 'Win Rate'}</span>
                         <span className="text-xl font-black text-white">{stats.winRate}</span>
                     </div>
                     
@@ -480,7 +503,7 @@ export default function LandingPage() {
                     </div>
 
                     <div className="flex justify-between items-center pt-2">
-                        <span className="text-xs text-slate-400 uppercase font-black tracking-widest">Lifetime PnL</span>
+                        <span className="text-xs text-slate-400 uppercase font-black tracking-widest">{stats.live ? 'Unrealized PnL' : 'Lifetime PnL'}</span>
                         <span className={`font-bold ${parseFloat(stats.totalPnL) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                             {parseFloat(stats.totalPnL) >= 0 ? '+' : ''}${stats.totalPnL}
                         </span>

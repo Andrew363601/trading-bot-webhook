@@ -8,7 +8,7 @@
 
 import React, { useEffect, useState } from 'react';
 
-export default function CoinglassPanes({ asset, indicators, token }) {
+export default function CoinglassPanes({ asset, indicators, token, timeframe }) {
   const [data, setData] = useState({}); // { [id]: { loading, data, error } }
 
   useEffect(() => {
@@ -18,7 +18,10 @@ export default function CoinglassPanes({ asset, indicators, token }) {
     const fetchOne = async (ind) => {
       setData(prev => ({ ...prev, [ind.id]: { ...(prev[ind.id] || {}), loading: true } }));
       try {
-        const res = await fetch(`/api/coinglass-indicator?id=${encodeURIComponent(ind.id)}&symbol=${encodeURIComponent(asset)}`,
+        // Pass the chart's selected timeframe so the returned series aligns to
+        // what the user is looking at.
+        const tfParam = timeframe ? `&interval=${encodeURIComponent(timeframe)}` : '';
+        const res = await fetch(`/api/coinglass-indicator?id=${encodeURIComponent(ind.id)}&symbol=${encodeURIComponent(asset)}${tfParam}`,
           { headers: { Authorization: `Bearer ${token}` } });
         const json = await res.json();
         if (!cancelled) {
@@ -34,7 +37,7 @@ export default function CoinglassPanes({ asset, indicators, token }) {
     indicators.forEach(fetchOne);
     const interval = setInterval(() => indicators.forEach(fetchOne), 30000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [asset, token, indicators]);
+  }, [asset, token, indicators, timeframe]);
 
   if (!indicators?.length) return null;
 
@@ -52,6 +55,7 @@ export default function CoinglassPanes({ asset, indicators, token }) {
               <div className="text-[10px] text-red-400 font-mono">⚠️ {state.error}</div>
             )}
             {!state.error && state.data && <CoinglassValue data={state.data} />}
+            {!state.error && state.data?.series?.length > 1 && <HeatStrip series={state.data.series} />}
             {!state.error && !state.data && !state.loading && (
               <div className="text-[10px] text-slate-600 font-mono">No data</div>
             )}
@@ -87,11 +91,40 @@ function CoinglassValue({ data }) {
       </div>
     );
   }
-  // Fallback: show a compact summary.
-  const keys = Object.keys(data).slice(0, 3);
+  // Fallback: show a compact summary (skip the raw series array — it's rendered
+  // as a heat strip below).
+  const keys = Object.keys(data).filter(k => k !== 'series').slice(0, 3);
   return (
     <div className="text-[10px] font-mono text-slate-300">
       {keys.map(k => <div key={k}><span className="text-slate-500">{k}:</span> {typeof data[k] === 'object' ? '…' : String(data[k]).slice(0, 32)}</div>)}
+    </div>
+  );
+}
+
+// Compact time-aligned heat strip for a series of { time, value }. Each bar is
+// colored by its value's z-score (cold blue -> hot red), giving a legend.coinglass
+// "intensity over time" read at a glance.
+function HeatStrip({ series }) {
+  const vals = series.map(s => Number(s.value)).filter(Number.isFinite);
+  if (vals.length < 2) return null;
+  const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+  const std = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length) || 1;
+  // Show the most recent ~60 bars.
+  const recent = series.slice(-60);
+  return (
+    <div className="mt-1.5 flex items-end gap-px h-6">
+      {recent.map((s, i) => {
+        const z = (Number(s.value) - mean) / std;
+        const clamped = Math.max(-2.5, Math.min(2.5, z));
+        // Height by magnitude, color by signed intensity.
+        const h = 20 + Math.min(80, Math.abs(clamped) * 32);
+        const hot = clamped >= 0;
+        const a = 0.35 + Math.min(0.6, Math.abs(clamped) / 2.5 * 0.6);
+        const color = hot
+          ? `rgba(${Math.round(120 + clamped * 54)}, ${Math.round(70 - clamped * 10)}, 60, ${a})`
+          : `rgba(40, ${Math.round(120 + Math.abs(clamped) * 40)}, ${Math.round(160 + Math.abs(clamped) * 30)}, ${a})`;
+        return <div key={i} className="flex-1 rounded-sm" style={{ height: `${h}%`, background: color }} title={`${new Date(s.time * 1000).toLocaleString()} · ${Number(s.value).toFixed(4)}`} />;
+      })}
     </div>
   );
 }

@@ -1512,22 +1512,10 @@ function DashboardContent() {
                 : `dark:bg-slate-900/50 bg-white/90 border dark:border-white/10 border-slate-200 rounded-2xl sm:rounded-[2.5rem] overflow-hidden ${isChartExpanded ? 'min-h-[70vh]' : 'min-h-[300px]'} flex-grow relative shadow-2xl flex flex-col transition-all`
             }>
 
-            <div className="absolute top-2 right-2 sm:top-4 sm:right-4 z-50 flex items-center gap-1.5">
-                {/* Pull-down expand toggle (NOT fullscreen). Mirrors the chat panel's
-                    "expand vertical surface" pattern so the user has more drawing room. */}
-                <button
-                  onClick={() => setIsChartExpanded(v => !v)}
-                  title={isChartExpanded ? 'Collapse chart' : 'Expand chart down'}
-                  className="dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-1 sm:p-2 rounded-lg transition-colors backdrop-blur-md"
-                >
-                  {isChartExpanded ? <ChevronUp size={12} className="sm:size-[14px]"/> : <ChevronDown size={12} className="sm:size-[14px]"/>}
-                </button>
-                <button onClick={() => setIsChartMaximized(!isChartMaximized)} className="dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-1 sm:p-2 rounded-lg transition-colors backdrop-blur-md">
-                    {isChartMaximized ? <Minimize2 size={12} className="sm:size-[14px]"/> : <Maximize2 size={12} className="sm:size-[14px]"/>}
-                </button>
-            </div>
-
-            <div className="hidden sm:block absolute top-6 right-16 z-20 flex flex-col gap-2 max-w-[280px] pointer-events-none">
+            {/* Position preview cards. Pushed below the toolbar header (top-20)
+                and pointer-events-none so they never cover chart markers near the
+                top of the candle area. */}
+            <div className="hidden sm:flex absolute top-20 right-4 z-10 flex-col gap-2 max-w-[280px] pointer-events-none">
                {openPositions.slice(0, 3).map((log, i) => {
                  const displayPnl = log.execution_mode.includes('LIVE') ? log.pnl : 
                  ((log.side === 'BUY' || log.side === 'LONG') ? (livePrice - log.entry_price) * (log.qty || 1) : (log.entry_price - livePrice) * (log.qty || 1));
@@ -1602,6 +1590,26 @@ function DashboardContent() {
                   isChartExpanded={isChartExpanded || isChartMaximized}
                 />
               </div>
+
+              {/* Expand / Maximize controls live INSIDE the toolbar header (right
+                  side) so they're always visible and never overlap the chart's
+                  marker layer or the indicator menu. */}
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button
+                  onClick={() => setIsChartExpanded(v => !v)}
+                  title={isChartExpanded ? 'Collapse chart' : 'Expand chart down'}
+                  className="dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-1.5 sm:p-2 rounded-lg transition-colors"
+                >
+                  {isChartExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
+                </button>
+                <button
+                  onClick={() => setIsChartMaximized(!isChartMaximized)}
+                  title={isChartMaximized ? 'Exit fullscreen' : 'Maximize chart'}
+                  className="dark:bg-black/40 bg-white/80 hover:bg-indigo-500/20 dark:text-slate-400 text-slate-600 hover:text-indigo-300 dark:border-white/10 border-slate-200 hover:border-indigo-500/50 p-1.5 sm:p-2 rounded-lg transition-colors"
+                >
+                  {isChartMaximized ? <Minimize2 size={14}/> : <Maximize2 size={14}/>}
+                </button>
+              </div>
             </div>
 
             <div className="flex-grow w-full relative mt-0 mb-4 px-2 min-h-[300px]">
@@ -1619,6 +1627,7 @@ function DashboardContent() {
                   asset={normalizeAssetSymbol(activeAsset)}
                   active={selectedCoinglassIndicators.some(i => i.id === 'liquidation_map')}
                   token={session?.access_token}
+                  timeframe={chartTimeframe}
                 />
                 {/* Mount the Coinglass overlay engine — paints price-line levels
                     onto the chart series. Component returns null; it side-effects
@@ -1663,6 +1672,7 @@ function DashboardContent() {
                   asset={normalizeAssetSymbol(activeAsset)}
                   indicators={selectedCoinglassIndicators.filter(i => i.kind === 'pane')}
                   token={session?.access_token}
+                  timeframe={chartTimeframe}
                 />
               </div>
             )}
