@@ -99,7 +99,7 @@ export default function CoinglassHeatmap({ chartRef, seriesRef, containerRef, as
     ctx.clearRect(0, 0, rect.width, rect.height);
 
     const store = dataRef.current;
-    if (!active || !seriesRef.current || !chartRef.current) return;
+    if ((!activeLiquidation && !activeWalls) || !seriesRef.current || !chartRef.current) return;
 
     const W = rect.width;
 

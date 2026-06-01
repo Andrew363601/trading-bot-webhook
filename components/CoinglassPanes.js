@@ -1,6 +1,6 @@
 // components/CoinglassPanes.js
 import React, { useEffect, useState, useRef } from 'react';
-import { createChart, CrosshairMode } from 'lightweight-charts';
+import { createChart, CrosshairMode, AreaSeries, HistogramSeries } from 'lightweight-charts';
 
 export default function CoinglassPanes({ chartRef, asset, indicators, token, timeframe }) {
   const [data, setData] = useState({}); // { [id]: { loading, data, error } }
@@ -87,12 +87,12 @@ function PaneChart({ chartRef, indicator, state }) {
     const isHistogram = indicator.id.includes('cvd') || indicator.id.includes('momentum') || indicator.id.includes('velocity');
     
     if (isHistogram) {
-      seriesRef.current = chart.addHistogramSeries({
+      seriesRef.current = chart.addSeries(HistogramSeries, {
         color: '#6366f1',
         priceFormat: { type: 'volume' },
       });
     } else {
-      seriesRef.current = chart.addAreaSeries({
+      seriesRef.current = chart.addSeries(AreaSeries, {
         lineColor: '#38bdf8',
         topColor: 'rgba(56, 189, 248, 0.4)',
         bottomColor: 'rgba(56, 189, 248, 0.0)',
