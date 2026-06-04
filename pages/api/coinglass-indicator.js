@@ -25,20 +25,30 @@ const INDICATOR_REGISTRY = {
     liquidation_map:           { kind: 'overlay', heatmap: true, loader: () => import('../../lib/coinglass_aggregated_liquidation_map_v4.js').then(m => m.coinglass_aggregated_liquidation_map_v4), heatmapLoader: () => import('../../lib/coinglass_liquidation_heatmap_v4.js').then(m => m.coinglass_liquidation_heatmap_v4) },
     large_limit_orders:        { kind: 'overlay', loader: () => import('../../lib/coinglass_large_limit_order_tracker_v4.js').then(m => m.coinglass_large_limit_order_tracker_v4) },
     orderbook_depth:           { kind: 'overlay', loader: () => import('../../lib/coinglass_aggregated_orderbook_depth_v4.js').then(m => m.coinglass_aggregated_orderbook_depth_v4) },
-    funding_rate:              { kind: 'pane', series: true, loader: () => import('../../lib/coinglass_funding_rate_reversion_v4.js').then(m => m.coinglass_funding_rate_reversion_v4) },
-    oi_momentum:               { kind: 'pane', series: true, loader: () => import('../../lib/coinglass_oi_momentum_v4.js').then(m => m.coinglass_oi_momentum_v4) },
-    spot_cvd_divergence:       { kind: 'pane', series: true, loader: () => import('../../lib/coinglass_spot_cvd_divergence_v4.js').then(m => m.coinglass_spot_cvd_divergence_v4) },
-    long_short_sentiment:      { kind: 'pane', series: true, loader: () => import('../../lib/coinglass_global_long_short_sentiment_v4.js').then(m => m.coinglass_global_long_short_sentiment_v4) },
-    taker_buy_sell_ratio:      { kind: 'pane', series: true, loader: () => import('../../lib/coinglass_taker_buy_sell_ratio_v4.js').then(m => m.coinglass_taker_buy_sell_ratio_v4) },
-    liquidation_velocity:      { kind: 'pane', series: true, loader: () => import('../../lib/coinglass_pair_liquidation_velocity_v4.js').then(m => m.coinglass_pair_liquidation_velocity_v4) },
+    funding_rate:              { kind: 'pane', series: true, seriesArgs: 3, loader: () => import('../../lib/coinglass_funding_rate_reversion_v4.js').then(m => m.coinglass_funding_rate_reversion_v4) },
+    oi_momentum:               { kind: 'pane', series: true, seriesArgs: 3, loader: () => import('../../lib/coinglass_oi_momentum_v4.js').then(m => m.coinglass_oi_momentum_v4) },
+    spot_cvd_divergence:       { kind: 'pane', series: true, seriesArgs: 2, loader: () => import('../../lib/coinglass_spot_cvd_divergence_v4.js').then(m => m.coinglass_spot_cvd_divergence_v4) },
+    long_short_sentiment:      { kind: 'pane', series: true, seriesArgs: 3, loader: () => import('../../lib/coinglass_global_long_short_sentiment_v4.js').then(m => m.coinglass_global_long_short_sentiment_v4) },
+    taker_buy_sell_ratio:      { kind: 'pane', series: true, seriesArgs: 2, loader: () => import('../../lib/coinglass_taker_buy_sell_ratio_v4.js').then(m => m.coinglass_taker_buy_sell_ratio_v4) },
+    liquidation_velocity:      { kind: 'pane', series: true, seriesArgs: 3, loader: () => import('../../lib/coinglass_pair_liquidation_velocity_v4.js').then(m => m.coinglass_pair_liquidation_velocity_v4) },
     orderbook_imbalance:       { kind: 'pane',    loader: () => import('../../lib/coinglass_orderbook_depth_imbalance_v4.js').then(m => m.coinglass_orderbook_depth_imbalance_v4) },
 };
 
 // Coinglass accepts these interval tokens; map any chart timeframe to a valid one.
-const VALID_INTERVALS = new Set(['1m', '3m', '5m', '15m', '30m', '1h', '4h', '6h', '12h', '1d']);
-function safeInterval(tf) {
+// Coinglass STARTUP plan supports intervals >= 30m. Anything below (1m/5m/15m)
+// causes a 403 "interval not available". Floor the chart timeframe to 30m so
+// we never hit that. 1h/6h/1d pass through as-is.
+const MIN_INTERVAL_MINUTES = 30;
+function toCoinglassInterval(tf) {
     if (!tf) return undefined;
-    return VALID_INTERVALS.has(String(tf)) ? String(tf) : undefined;
+    const raw = String(tf);
+    // If it's a number of minutes (1m,5m,15m,30m), compare to floor.
+    if (raw.endsWith('m')) {
+        const mins = parseInt(raw, 10);
+        if (!isNaN(mins)) return `${Math.max(mins, MIN_INTERVAL_MINUTES)}m`;
+    }
+    if (raw.endsWith('h') || raw.endsWith('d')) return raw;
+    return undefined;
 }
 
 export const INDICATOR_CATALOG = Object.entries(INDICATOR_REGISTRY).map(([id, v]) => ({ id, kind: v.kind }));
@@ -78,8 +88,8 @@ async function handler(req, res) {
         return res.status(503).json({ error: 'Coinglass API not configured on the server.' });
     }
 
-    // The chart passes its selected timeframe; map it to a valid Coinglass interval.
-    const interval = safeInterval(rawInterval);
+    // The chart passes its selected timeframe; floor it to STARTUP plan min (30m).
+    const interval = toCoinglassInterval(rawInterval);
 
     try {
         // Most indicators expect the BASE symbol (e.g. "BTC") rather than the
@@ -93,16 +103,17 @@ async function handler(req, res) {
         // 1) Time x price liquidation RASTER (when requested + supported).
         if (heatmap === '1' && entry.heatmap && entry.heatmapLoader) {
             const hfn = await entry.heatmapLoader();
-            const data = await hfn(cleanSymbol, interval || '5m');
+            const data = await hfn(cleanSymbol, interval || '30m');
             res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=120');
             return res.status(200).json({ id, symbol: cleanSymbol, kind: 'heatmap', data });
         }
 
-        // 2) Standard indicator. Pass interval to series-capable loaders so the
-        //    returned series[] aligns to the chart timeframe.
+        // 2) Standard indicator. seriesArgs tells us how to pass the interval:
+        //    2-arg loaders: (symbol, interval) — e.g. taker_buy_sell, spot_cvd
+        //    3-arg loaders: (symbol, _legacy, interval) — e.g. funding_rate, oi_momentum
         const fn = await entry.loader();
         const data = entry.series
-            ? await fn(cleanSymbol, undefined, interval)
+            ? (entry.seriesArgs >= 3 ? await fn(cleanSymbol, undefined, interval) : await fn(cleanSymbol, interval))
             : await fn(cleanSymbol);
 
         // When the caller only wants the raw series (heat strips), trim the payload.
