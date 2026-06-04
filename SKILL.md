@@ -78,3 +78,7 @@ If any single tier flags an invalid structural state or hits a hard VETO limit, 
 
 ### REQUIRED JSON OUTPUT
 You must output a raw JSON object containing: { "action": "APPROVE", "REVERSE", "CLOSE", "HOLD", "VETO", "VIRTUAL_TRAP", "ADJUST_TP_SL", or "UPDATE_TRIPWIRE", "side": "BUY" or "SELL", "conviction_score": 0 to 100, "working_thesis": "[Brief breakdown of Daily PnL status, Volume Profile shape, CVD alignment, and why this trade helps achieve the $1k daily target.]", "price": 0.00, "tp_price": 0.00, "sl_price": 0.00, "order_type": "MARKET" or "LIMIT", "trap_price": 0.00, "trap_tp_price": 0.00, "trap_sl_price": 0.00, "new_tp_price": 0.00, "new_sl_price": 0.00, "tripwire_percent": 0.00, "trail_step_percent": 0.00 }
+
+> **FORMAT RULE:** `tripwire_percent` and `trail_step_percent` are **DECIMAL FRACTIONS**.  
+> 0.005 = 0.5%  •  0.01 = 1%  •  0.0025 = 0.25%  •  0.001 = 0.1%  
+> Use values between 0.001 (0.1%) and 0.05 (5%). Do NOT use percentage integers like `5` or `50`.

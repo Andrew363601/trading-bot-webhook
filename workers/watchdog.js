@@ -325,16 +325,11 @@ export async function startWatchdog(tenantId) {
                         
                         const pnlPercent = rawPriceMove * leverage;
                             
-                        // Normalize tripwire: if user typed "0.50" meaning 0.50%, convert it to 0.005
-                        // If they typed "0.005", it remains 0.005. Anything above 0.2 (20%) is likely intended as a percentage.
-                        let tripwireRaw = parseFloat(params.tripwire_percent || 0);
-                        let tripwire = (tripwireRaw > 1.0 && tripwireRaw <= 100) ? tripwireRaw / 100 : tripwireRaw;
-                        
-                        let trailStepRaw = parseFloat(params.trail_step_percent || 0);
-                        const trailStep = (trailStepRaw > 1.0 && trailStepRaw <= 100) ? trailStepRaw / 100 : trailStepRaw;
-                        
-                        let trailActRaw = parseFloat(params.trail_activation_percent || params.tripwire_percent || 0);
-                        const trailActivation = (trailActRaw > 1.0 && trailActRaw <= 100) ? trailActRaw / 100 : trailActRaw;
+                        // Tripwire/trailing values are always decimal fractions (e.g. 0.005 = 0.5%).
+                        // No conversion/normalization — the stored value is used as-is.
+                        const tripwire = parseFloat(params.tripwire_percent || 0);
+                        const trailStep = parseFloat(params.trail_step_percent || 0);
+                        const trailActivation = parseFloat(params.trail_activation_percent || params.tripwire_percent || 0);
 
                         const now = Date.now();
                         if (!heartbeatTracker[openTrade.id] || now - heartbeatTracker[openTrade.id] >= 60000) {
@@ -645,24 +640,21 @@ export async function startWatchdog(tenantId) {
                                     const likelySl = !isSlTrigger && !isTpTrigger ? (distToSl < distToTp) : isSlTrigger;
                                     const likelyTp = !isSlTrigger && !isTpTrigger ? (distToTp <= distToSl) : isTpTrigger;
                                     
-                                    // Percentage-based threshold: 3% of bracket price, minimum tickSize * 100
+                                    // Percentage-based threshold: 1% of bracket price, minimum tickSize * 100
                                     const sanityThreshold = Math.max(
-                                        likelySl ? openTrade.sl_price * 0.03 : openTrade.tp_price * 0.03,
+                                        likelySl ? openTrade.sl_price * 0.01 : openTrade.tp_price * 0.01,
                                         tickSize * 100
                                     );
                                     
-                                    // If price seems wrong (too far from expected bracket), snap to the bracket
+                                    // If price seems wrong (too far from expected bracket), snap to the bracket.
+                                    // Removed the "matches current ticker" override — real fills CAN equal the
+                                    // current ticker price, especially in fast markets. Trust the fill.
                                     if (likelySl && distToSl > sanityThreshold && openTrade.sl_price) {
                                         console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from SL $${openTrade.sl_price} (dist: ${distToSl}, threshold: ${sanityThreshold.toFixed(2)}). Using SL price as fallback.`);
                                         exactExitPrice = parseFloat(openTrade.sl_price);
                                     } else if (likelyTp && distToTp > sanityThreshold && openTrade.tp_price) {
                                         console.log(`[WATCHDOG PRICE SANITY] Exit price $${exactExitPrice} far from TP $${openTrade.tp_price} (dist: ${distToTp}, threshold: ${sanityThreshold.toFixed(2)}). Using TP price as fallback.`);
                                         exactExitPrice = parseFloat(openTrade.tp_price);
-                                    } else if (exactExitPrice === parseFloat(currentPrice) && openTrade.sl_price && openTrade.tp_price) {
-                                        // Last resort: exit price equals current ticker and we have brackets — pick the closer one
-                                        const fallbackExit = distToSl < distToTp ? openTrade.sl_price : openTrade.tp_price;
-                                        console.log(`[WATCHDOG PRICE SANITY] Exit price matches current ticker $${exactExitPrice}. Using closer bracket $${fallbackExit}.`);
-                                        exactExitPrice = parseFloat(fallbackExit);
                                     }
                                 } else if (gotRealFillPrice) {
                                     console.log(`[WATCHDOG PRICE SANITY] Trusting real fill price $${exactExitPrice} from order_id refetch (source of truth). Skipping sanity override.`);
@@ -677,8 +669,9 @@ export async function startWatchdog(tenantId) {
                             } else {
                                 console.log(`[WATCHDOG BRUTE FORCE] Position missing for ${asset}. Tags wiped. Assuming manual UI close.`);
                                 wasFilled = true;
-                                // 🟢 THE FIX V2: Use bracket prices as fallback before falling to currentPrice
-                                exactExitPrice = openTrade.sl_price || openTrade.tp_price || currentPrice;
+                                // 🟢 THE FIX V2: Prefer currentPrice since user manually closed at market.
+                                // Bracket prices (sl_price/tp_price) are only fallbacks.
+                                exactExitPrice = currentPrice || openTrade.tp_price || openTrade.sl_price;
                                 assumedReason = 'MANUAL_UI_INTERVENTION (TAGS_WIPED)';
                             }
                         }
@@ -703,9 +696,10 @@ export async function startWatchdog(tenantId) {
 
                         if (wasCanceled || (openTrade.order_type === 'LIMIT' && !wasFilled)) {
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: LIMIT_CANCELED_BY_EXCHANGE_OR_AGENT` : 'LIMIT_CANCELED_BY_AGENT';
-                            // 🟢 THE FIX V2: For cancellations, use SL price as exit for accuracy.
-                            // Using entry_price creates misleading $0 PnL records. SL is more representative.
-                            const safeExitPrice = parseFloat(openTrade.sl_price || openTrade.entry_price) || 0;
+                            // 🟢 THE FIX V3: Use currentPrice as the exit reference for canceled limits.
+                            // The trade never actually filled at SL or entry — using those prices is misleading.
+                            // PnL stays 0 since no position was established.
+                            const safeExitPrice = parseFloat(currentPrice || openTrade.entry_price) || 0;
                             
                             // 🛡️ GUARD: Prevent zombie trades (exit_time without valid exit_price)
                             if (safeExitPrice <= 0) {
@@ -961,14 +955,11 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                         const { data: paperConfigData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
                         const paperParams = paperConfigData?.parameters || {};
                         
-                        let ptripRaw = parseFloat(paperParams.tripwire_percent || 0);
-                        const paperTripwire = ptripRaw > 0.2 ? ptripRaw / 100 : ptripRaw;
-                        
-                        let pstepRaw = parseFloat(paperParams.trail_step_percent || 0);
-                        const paperTrailStep = pstepRaw > 0.1 ? pstepRaw / 100 : pstepRaw;
-                        
-                        let pactRaw = parseFloat(paperParams.trail_activation_percent || paperParams.tripwire_percent || 0);
-                        const paperTrailActivation = pactRaw > 0.2 ? pactRaw / 100 : pactRaw;
+                        // Tripwire/trailing values are always decimal fractions (e.g. 0.005 = 0.5%).
+                        // No conversion/normalization — the stored value is used as-is.
+                        const paperTripwire = parseFloat(paperParams.tripwire_percent || 0);
+                        const paperTrailStep = parseFloat(paperParams.trail_step_percent || 0);
+                        const paperTrailActivation = parseFloat(paperParams.trail_activation_percent || paperParams.tripwire_percent || 0);
 
                         // 🟢 PAPER TRIPWIRE: Move SL to break-even when profit target reached
                         if (paperTripwire > 0 && pnlPercent >= paperTripwire && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
@@ -1087,11 +1078,85 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                     color: rawPnl >= 0 ? 5763719 : 15548997,
                                     imageUrl: paperCloseChartUrl
                                 });
+
+                                // 🟢 AUTOPSY: Paper trades must receive Hermes analysis just like live trades.
+                                try {
+                                    const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
+                                    const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
+                                    await fetch(autopsyUrl, {
+                                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            tenant_id: tenantId, asset: asset,
+                                            entry_price: safeEntryPrice, exit_price: safeExitPrice,
+                                            pnl: rawPnl.toFixed(4),
+                                            rolling_ledger: updatedReason, trigger: triggerType,
+                                            execution_mode: 'PAPER'
+                                        })
+                                    });
+                                } catch (autopsyErr) {
+                                    console.error("[WATCHDOG PAPER AUTOPSY TRIGGER FAULT]:", autopsyErr.message);
+                                }
                             }
                         }
                     } else {
-                        // No TP/SL configured for paper trade - just monitor
-                        await logAgentActivity(tenantId, "Watchdog", asset, `Paper trade ${openTrade.id} has no TP/SL configured. Current price: $${currentPrice}.`, "INFO");
+                        // 🟢 NO TP/SL CONFIGURED: Close orphaned paper trades after 24h and autopsy them.
+                        const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
+                        const ORPHAN_TIMEOUT_MINUTES = 1440; // 24 hours
+                        if (minutesOpen > ORPHAN_TIMEOUT_MINUTES) {
+                            const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
+                            const safeExitPrice = parseFloat(currentPrice) || 0;
+                            const safeQty = parseFloat(openTrade.qty) || 1;
+                            const rawPnl = openTrade.side === 'BUY'
+                                ? (safeExitPrice - safeEntryPrice) * safeQty
+                                : (safeEntryPrice - safeExitPrice) * safeQty;
+                            const triggerType = 'ORPHANED_PAPER_TIMEOUT';
+                            const updatedReason = `${openTrade.reason || ''}\n\n[EXIT TRIGGER]: ${triggerType} — Paper trade auto-closed after ${Math.round(minutesOpen / 60)}h with no TP/SL.`;
+
+                            const { error: updateErr } = await supabase.from('trade_logs').update({
+                                exit_price: safeExitPrice,
+                                pnl: parseFloat(rawPnl.toFixed(4)),
+                                exit_time: new Date().toISOString(),
+                                reason: updatedReason
+                            }).eq('id', openTrade.id);
+
+                            if (updateErr) {
+                                console.error("[PAPER ORPHAN CLOSE FAILED]:", updateErr.message);
+                            } else {
+                                await supabase.from('scan_results').insert([{
+                                    strategy: openTrade.strategy_id || 'MANUAL',
+                                    asset: asset,
+                                    status: 'CLOSED',
+                                    telemetry: { macro_regime_oracle: 'POSITION CLOSED (ORPHAN)', oracle_reasoning: updatedReason, open_pnl: rawPnl.toFixed(4), open_position: 'NONE' }
+                                }]);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Orphaned paper trade ${openTrade.id} auto-closed after ${Math.round(minutesOpen / 60)}h. PnL: $${rawPnl.toFixed(4)}.`, "POSITION_CLOSED");
+
+                                // 🟢 AUTOPSY: Every paper trade gets analyzed, even orphans.
+                                try {
+                                    const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
+                                    const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
+                                    await fetch(autopsyUrl, {
+                                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            tenant_id: tenantId, asset: asset,
+                                            entry_price: safeEntryPrice, exit_price: safeExitPrice,
+                                            pnl: rawPnl.toFixed(4),
+                                            rolling_ledger: updatedReason, trigger: triggerType,
+                                            execution_mode: 'PAPER'
+                                        })
+                                    });
+                                } catch (autopsyErr) {
+                                    console.error("[WATCHDOG ORPHAN AUTOPSY TRIGGER FAULT]:", autopsyErr.message);
+                                }
+
+                                await sendDiscordAlert(tenantId, {
+                                    title: `🕐 Orphaned Paper Trade Closed: ${asset}`,
+                                    description: `**Trigger:** ${triggerType}\n**Open Duration:** ${Math.round(minutesOpen / 60)}h\n**Realized PnL:** $${rawPnl.toFixed(4)}\n**Exit Price:** $${safeExitPrice}`,
+                                    color: rawPnl >= 0 ? 5763719 : 15548997
+                                });
+                            }
+                        } else {
+                            await logAgentActivity(tenantId, "Watchdog", asset, `Paper trade ${openTrade.id} has no TP/SL configured. Current price: $${currentPrice}. Open for ${Math.round(minutesOpen)}m.`, "INFO");
+                        }
                     }
                 }
             } // end for

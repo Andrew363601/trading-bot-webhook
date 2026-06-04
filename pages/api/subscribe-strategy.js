@@ -205,8 +205,8 @@ export default async function handler(req, res) {
         macro_tf: "ONE_HOUR",
         trigger_tf: "FIVE_MINUTE",
         market_type: "FUTURES",
-        tripwire_percent: 0.25,
-        trail_step_percent: 0.10,
+        tripwire_percent: 0.0025,
+        trail_step_percent: 0.001,
         veto_cooldown_minutes: 10
       };
       // Merge: incoming parameters override defaults

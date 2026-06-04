@@ -625,8 +625,33 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             }
             // 🟢 UPDATE_TRIPWIRE: Direct DB write to strategy_config.parameters JSONB
             else if (decisionJson.action === "UPDATE_TRIPWIRE" && activeOpenTrade) {
-                const newTripwirePct = decisionJson.tripwire_percent;
-                const newTrailStepPct = decisionJson.trail_step_percent;
+                let newTripwirePct = decisionJson.tripwire_percent;
+                let newTrailStepPct = decisionJson.trail_step_percent;
+                
+                // 🛡️ DEFENSIVE GUARD: tripwire/trail values must be decimal fractions (0.005 = 0.5%).
+                // If AI accidentally outputs percentage integers (e.g., 5 meaning 5%), divide by 100.
+                // Clamp to a safe range: 0.0001 (0.01%) to 0.20 (20%).
+                const normalizePercent = (val, label) => {
+                    if (val === undefined || val === null) return val;
+                    let num = parseFloat(val);
+                    if (isNaN(num)) return undefined;
+                    if (num > 1.0 && num <= 100) {
+                        console.warn(`[AGENT CORTEX] ⚠️ ${label} value ${num} appears to be a percentage integer. Dividing by 100 → ${(num/100).toFixed(6)}`);
+                        num = num / 100;
+                    }
+                    if (num > 0.20) {
+                        console.warn(`[AGENT CORTEX] ⚠️ ${label} value ${num} exceeds max (20%). Clamping to 0.20.`);
+                        num = 0.20;
+                    }
+                    if (num < 0.0001 && num !== 0) {
+                        console.warn(`[AGENT CORTEX] ⚠️ ${label} value ${num} below min (0.01%). Clamping to 0.0001.`);
+                        num = 0.0001;
+                    }
+                    return num;
+                };
+                
+                newTripwirePct = normalizePercent(newTripwirePct, 'Tripwire');
+                newTrailStepPct = normalizePercent(newTrailStepPct, 'Trail step');
                 
                 if (newTripwirePct !== undefined || newTrailStepPct !== undefined) {
                     const { data: strategyConfigs } = await supabase
