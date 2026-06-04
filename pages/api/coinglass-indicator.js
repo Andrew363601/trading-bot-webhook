@@ -99,6 +99,10 @@ async function handler(req, res) {
         // would wrongly ask Coinglass for "BIP". Normalize the known codes and
         // strip the standard perp/quote suffixes before calling the indicator.
         const cleanSymbol = normalizeBaseTicker(symbol);
+        // v4 history endpoints (funding-rate, OI, liquidation, taker, CVD)
+        // silently return zero records for bare tickers like "BTC" — they
+        // require "BTCUSDT". Snapshot endpoints work with bare tickers.
+        const v4Symbol = cleanSymbol.includes('USDT') ? cleanSymbol : `${cleanSymbol}USDT`;
 
         // 1) Time x price liquidation RASTER (when requested + supported).
         if (heatmap === '1' && entry.heatmap && entry.heatmapLoader) {
@@ -112,9 +116,10 @@ async function handler(req, res) {
         //    2-arg loaders: (symbol, interval) — e.g. taker_buy_sell, spot_cvd
         //    3-arg loaders: (symbol, _legacy, interval) — e.g. funding_rate, oi_momentum
         const fn = await entry.loader();
+        const sym = entry.series ? v4Symbol : cleanSymbol;
         const data = entry.series
-            ? (entry.seriesArgs >= 3 ? await fn(cleanSymbol, undefined, interval) : await fn(cleanSymbol, interval))
-            : await fn(cleanSymbol);
+            ? (entry.seriesArgs >= 3 ? await fn(sym, undefined, interval) : await fn(sym, interval))
+            : await fn(sym);
 
         // When the caller only wants the raw series (heat strips), trim the payload.
         const payload = (series === '1' && entry.series) ? { series: data?.series || [] } : data;
