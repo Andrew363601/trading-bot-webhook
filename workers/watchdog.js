@@ -588,7 +588,28 @@ export async function startWatchdog(tenantId) {
                                 targetFill = sortedFills.find(o => o.side.toUpperCase() === closingSide);
                                 if (targetFill) assumedReason = 'HERMES_MARKET_SWEEP_OR_UI_CLOSE';
                             }
-                            
+
+                            // 🛡️ GENERIC FILL GUARD: Step 3 above matches *any* fill for this
+                            // product on the closing side — including fills from hours ago,
+                            // partial fills, or fills from unrelated strategies. If the fill
+                            // doesn't match a known bracket (ocoClientId, nx_wd_oco_*) OR the
+                            // entry order (entryClientId), it is NOT grounds to close this
+                            // trade_log. The actual position may STILL BE LIVE on Coinbase
+                            // protected by brackets. Proceeding here is what caused the false
+                            // NATIVE_SYNC close: the DB row got marked closed while the
+                            // exchange position + brackets remained intact.
+                            const isKnownOrder = targetFill && (
+                                targetFill.client_order_id === ocoClientId ||
+                                targetFill.client_order_id === entryClientId ||
+                                targetFill.client_order_id?.startsWith('nx_wd_oco_')
+                            );
+
+                            if (targetFill && !isKnownOrder) {
+                                console.warn(`[WATCHDOG] Ignoring generic fill order ${targetFill.order_id} for ${asset} — does not match entry (${entryClientId}) or any known bracket. Trade ${openTrade.id} is NOT being closed.`);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Generic fill ${targetFill.order_id} detected — not a known order for trade ${openTrade.id}. Skipping auto-close; position may still be live.`, "GENERIC_FILL_SKIPPED");
+                                targetFill = null;
+                            }
+
                             if (targetFill) {
                                 wasFilled = true;
                                 // 🟢 THE FIX V2: Extract fill price with trigger-type awareness.
@@ -666,6 +687,14 @@ export async function startWatchdog(tenantId) {
                             const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
                             if (openTrade.order_type === 'LIMIT' && minutesOpen < 5) {
                                 wasCanceled = true;
+                            } else if (openOrders.length > 0) {
+                                // Brackets still exist on Coinbase — the position may have
+                                // briefly disappeared from cfm/positions (transient glitch)
+                                // but the protective TP/SL orders prove it's still live.
+                                // Do NOT brute-force close. Retry next sweep.
+                                console.warn(`[WATCHDOG] Position missing for ${asset} but ${openOrders.length} open bracket(s) still exist. Trade ${openTrade.id} is still protected — skipping brute-force close.`);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Position not visible in cfm/positions but ${openOrders.length} bracket(s) remain. Trade ${openTrade.id} is protected — skipping close.`, "BRUTE_FORCE_SKIPPED_BRACKETS");
+                                continue;
                             } else {
                                 console.log(`[WATCHDOG BRUTE FORCE] Position missing for ${asset}. Tags wiped. Assuming manual UI close.`);
                                 wasFilled = true;
