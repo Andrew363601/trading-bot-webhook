@@ -884,7 +884,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                     }
 
                     if (activePosition) {
-                        const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc || o.client_order_id?.startsWith('nx_wd_oco_'));
+                        const hasBracket = openOrders.some(o => o.client_order_id === ocoClientId || o.order_configuration?.trigger_bracket_gtc || o.client_order_id?.startsWith('nx_wd_oco_') || o.client_order_id?.startsWith('nx_wd_tr_') || o.client_order_id?.startsWith('nx_wd_tw_'));
 
                         // Clear the tracker if brackets are found
                         if (hasBracket && missingBracketTracker[openTrade.id]) {
