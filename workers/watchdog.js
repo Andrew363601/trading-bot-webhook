@@ -583,6 +583,18 @@ export async function startWatchdog(tenantId) {
                                 if (targetFill) assumedReason = 'WATCHDOG_SAFETY_NET_TRIGGERED';
                             }
                             
+                            // 2.5: Tripwire inline bracket (nx_wd_tw_ prefix — deployed when tripwire fires)
+                            if (!targetFill) {
+                                targetFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tw_') && o.side.toUpperCase() === closingSide);
+                                if (targetFill) assumedReason = 'STOP_LOSS (TRIPWIRE_BRACKET)';
+                            }
+                            
+                            // 2.6: Trailing SL inline bracket (nx_wd_tr_ prefix — deployed when trailing SL moves)
+                            if (!targetFill) {
+                                targetFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tr_') && o.side.toUpperCase() === closingSide);
+                                if (targetFill) assumedReason = 'STOP_LOSS (TRAILING_BRACKET)';
+                            }
+                            
                             // 3. Search for a Hermes Market Sweep or Manual UI Close
                             if (!targetFill) {
                                 targetFill = sortedFills.find(o => o.side.toUpperCase() === closingSide);
