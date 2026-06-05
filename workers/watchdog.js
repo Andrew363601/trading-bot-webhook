@@ -613,7 +613,9 @@ export async function startWatchdog(tenantId) {
                             const isKnownOrder = targetFill && (
                                 targetFill.client_order_id === ocoClientId ||
                                 targetFill.client_order_id === entryClientId ||
-                                targetFill.client_order_id?.startsWith('nx_wd_oco_')
+                                targetFill.client_order_id?.startsWith('nx_wd_oco_') ||
+                                targetFill.client_order_id?.startsWith('nx_wd_tw_') ||
+                                targetFill.client_order_id?.startsWith('nx_wd_tr_')
                             );
 
                             if (targetFill && !isKnownOrder) {
