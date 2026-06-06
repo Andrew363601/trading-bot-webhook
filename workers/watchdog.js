@@ -631,6 +631,20 @@ export async function startWatchdog(tenantId) {
                                 // order_configuration.trigger_bracket_gtc may be absent (fill is a
                                 // MARKET order, not the bracket itself). Refetch by order_id to get real price.
                                 let rawPrice = targetFill.average_filled_price;
+
+                                // 🔬 EXIT FORENSICS: Log which order was matched and its raw price
+                                console.warn(`[EXIT FORENSICS] targetFill matched. client_order_id=${targetFill.client_order_id} order_id=${targetFill.order_id} side=${targetFill.side} product_id=${targetFill.product_id} avg_filled_price=${targetFill.average_filled_price} assumedReason=${assumedReason} fillCreated=${targetFill.created_time}`);
+
+                                if (rawPrice && openTrade?.tp_price && openTrade?.sl_price) {
+                                    const dTp = Math.abs(rawPrice - openTrade.tp_price);
+                                    const dSl = Math.abs(rawPrice - openTrade.sl_price);
+                                    const minD = Math.min(dTp, dSl);
+                                    const ref = Math.max(openTrade.tp_price, openTrade.sl_price);
+                                    if (minD > ref * 0.03) {
+                                        console.warn(`[EXIT ANOMALY] Fill $${rawPrice} is ${minD.toFixed(0)} pts from nearest bracket. TP=$${openTrade.tp_price} SL=$${openTrade.sl_price} client_order_id=${targetFill.client_order_id} order_id=${targetFill.order_id}`);
+                                    }
+                                }
+
                                 if (!rawPrice) {
                                     // Try to refetch the individual fill order by its order_id
                                     try {
@@ -642,9 +656,13 @@ export async function startWatchdog(tenantId) {
                                             });
                                             if (singleResp.ok) {
                                                 const singleData = await singleResp.json();
-                                                if (singleData.order?.average_filled_price) {
+                                                const refetchOrder = singleData?.order;
+                                                console.warn(`[EXIT REFETCH] order_id=${fillOrderId} | avg_filled_price=${refetchOrder?.average_filled_price} | filled_size=${refetchOrder?.filled_size} | status=${refetchOrder?.status} | product_id=${refetchOrder?.product_id} | side=${refetchOrder?.side} | order_type=${refetchOrder?.order_type}`);
+                                                if (refetchOrder?.average_filled_price) {
                                                     rawPrice = singleData.order.average_filled_price;
                                                     console.log(`[WATCHDOG PRICE REFETCH] Got real fill price $${rawPrice} for order ${fillOrderId}`);
+                                                } else {
+                                                    console.warn(`[EXIT REFETCH EMPTY] order_id=${fillOrderId} returned no avg_filled_price. Snippet: ${JSON.stringify(singleData).substring(0, 400)}`);
                                                 }
                                             }
                                         }
@@ -656,6 +674,8 @@ export async function startWatchdog(tenantId) {
                                 // If we did, trust it unconditionally — it's the source of truth from Coinbase.
                                 const gotRealFillPrice = rawPrice && rawPrice !== currentPrice && rawPrice !== targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price && rawPrice !== targetFill.order_configuration?.trigger_bracket_gtc?.limit_price;
                                 
+                                console.warn(`[EXIT GOTREAL] rawPrice=$${rawPrice} currentPrice=$${currentPrice} bracketStop=${targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price} bracketLimit=${targetFill.order_configuration?.trigger_bracket_gtc?.limit_price} → gotRealFillPrice=${gotRealFillPrice}`);
+
                                 if (!rawPrice) {
                                     rawPrice = targetFill.order_configuration?.trigger_bracket_gtc?.stop_trigger_price || targetFill.order_configuration?.trigger_bracket_gtc?.limit_price || currentPrice;
                                 }
@@ -711,6 +731,7 @@ export async function startWatchdog(tenantId) {
                                 continue;
                             } else {
                                 console.log(`[WATCHDOG BRUTE FORCE] Position missing for ${asset}. Tags wiped. Assuming manual UI close.`);
+                                console.warn(`[EXIT BRUTE FORCE] exactExitPrice before fallback: currentPrice=$${currentPrice}, sl_price=$${openTrade?.sl_price}, tp_price=$${openTrade?.tp_price}`);
                                 wasFilled = true;
                                 // 🟢 THE FIX V2: Prefer currentPrice since user manually closed at market.
                                 // Bracket prices (sl_price/tp_price) are only fallbacks.
