@@ -122,6 +122,7 @@ async function pingHermes(payload) {
 
 const heartbeatTracker = {};
 const missingBracketTracker = {};
+const bracketRejectionTracker = {}; // tradeId -> count of consecutive bracket rejections
 const keyFetchCooldown = {}; // tenantId -> timestamp of last key-fetch warning
 const deployedSafetyNets = new Set(); // Track which assets already have Safety Net brackets deployed this sweep
 const closingNow = new Set(); // Track which assets are being closed this sweep to prevent duplicate closes
@@ -378,6 +379,8 @@ export async function startWatchdog(tenantId) {
                             const tripwireTpStr = openTrade.tp_price ? (Math.round(parseFloat(openTrade.tp_price) / tickSize) * tickSize).toFixed(4) : null;
                             const tripwireSlStr = safeBreakEvenSL.toFixed(4);
 
+                            let tripwireBracketDeployed = false;
+
                             if (tripwireQty > 0 && tripwireTpStr) {
                                 const tripwirePath = '/api/v3/brokerage/orders';
                                 const tripwirePayload = {
@@ -392,22 +395,33 @@ export async function startWatchdog(tenantId) {
                                     if (!twResp.ok || twResult.success === false) {
                                         const twErr = twResult.error_response?.preview_failure_reason || twResult.error_response?.error || JSON.stringify(twResult);
                                         console.error(`[TRIPWIRE BRACKET REJECT]:`, twErr);
-                                        await sendDiscordAlert(tenantId, { title: `🚨 Tripwire Bracket Failed: ${asset}`, description: `SL cancelled but new BE bracket REJECTED: ${twErr}. **${tripwireQty} contracts unprotected.** Safety Net will retry next sweep.`, color: 15158332 });
+                                        await sendDiscordAlert(tenantId, { title: `🚨 Tripwire Bracket Failed: ${asset}`, description: `SL cancelled but new BE bracket REJECTED: ${twErr}. **${tripwireQty} contracts unprotected.** Preserving old SL ($${openTrade.sl_price}). Safety Net will retry.`, color: 15158332 });
                                     } else {
                                         console.log(`[TRIPWIRE BRACKET] BE bracket deployed inline: TP ${tripwireTpStr} / SL ${tripwireSlStr} on ${tripwireQty} contracts.`);
+                                        tripwireBracketDeployed = true;
                                     }
                                 } catch (twEx) {
                                     console.error('[TRIPWIRE BRACKET FATAL]:', twEx.message);
-                                    await sendDiscordAlert(tenantId, { title: `🚨 Tripwire Bracket Exception: ${asset}`, description: `${twEx.message}. **${tripwireQty} contracts unprotected.** Safety Net will retry next sweep.`, color: 15158332 });
+                                    await sendDiscordAlert(tenantId, { title: `🚨 Tripwire Bracket Exception: ${asset}`, description: `${twEx.message}. **${tripwireQty} contracts unprotected.** Preserving old SL ($${openTrade.sl_price}). Safety Net will retry.`, color: 15158332 });
                                 }
                             } else if (!tripwireTpStr) {
                                 console.warn(`[TRIPWIRE] No stored TP for trade ${openTrade.id} — cannot deploy BE bracket inline. Safety Net will redeploy with SL only on next sweep.`);
                             }
 
-                            const updatedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_ACTIVATED]: Profit reached ${(pnlPercent*100).toFixed(2)}%. SL moved to Break-Even.`;
-                            await supabase.from('trade_logs').update({ sl_price: safeBreakEvenSL, reason: updatedReason }).eq('id', openTrade.id);
-                            openTrade.sl_price = safeBreakEvenSL;
-                            openTrade.reason = updatedReason;
+                            // 🛡️ Only update the DB SL when the bracket was actually deployed.
+                            // If Coinbase rejected the bracket (STOP_TRIGGER_PRICE_OUT_OF_BOUNDS etc),
+                            // keep the old SL so the Safety Net can deploy a valid bracket.
+                            if (tripwireBracketDeployed) {
+                                const updatedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_ACTIVATED]: Profit reached ${(pnlPercent*100).toFixed(2)}%. SL moved to Break-Even.`;
+                                await supabase.from('trade_logs').update({ sl_price: safeBreakEvenSL, reason: updatedReason }).eq('id', openTrade.id);
+                                openTrade.sl_price = safeBreakEvenSL;
+                                openTrade.reason = updatedReason;
+                            } else {
+                                // Log the tripwire activation without changing the SL
+                                const updatedReason = `${openTrade.reason || ''}\n\n[TRIPWIRE_ACTIVATED]: Profit reached ${(pnlPercent*100).toFixed(2)}%. Bracket deployment failed — old SL ($${openTrade.sl_price}) preserved.`;
+                                await supabase.from('trade_logs').update({ reason: updatedReason }).eq('id', openTrade.id);
+                                openTrade.reason = updatedReason;
+                            }
 
                             // 📊 CHART: Tripwire activated — send chart with new break-even SL
                             const tripwireChartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveApiSecret, openTrade, null, safeBreakEvenSL);
@@ -419,6 +433,7 @@ export async function startWatchdog(tenantId) {
                             });
 
                             await pingHermes({
+                                tenant_id: tenantId,
                                 asset: asset, 
                                 mode: "TRIPWIRE_HIT",
                                 message: `TRIPWIRE HIT! Trade is currently at ${(pnlPercent*100).toFixed(2)}% profit. Stop Loss has been automatically moved to break-even to secure capital. Review the live tape and Macro levels. Output action "HOLD" if the trend is still explosive, or "CLOSE" to secure profit now.`,
@@ -534,6 +549,7 @@ export async function startWatchdog(tenantId) {
                             await logAgentActivity(tenantId, "Watchdog", asset, `Stale limit order for ${asset} detected (${Math.round(minutesOpen)}m unfilled). Waking Hermes Agent for review.`, "STALE_ORDER_DETECTED");
                             console.log(`[WATCHDOG] Stale limit detected on ${asset}. Waking Hermes Agent...`);
                             await pingHermes({
+                                tenant_id: tenantId,
                                 asset: asset, mode: "PENDING_REVIEW",
                                 message: `Your limit order for ${asset} at $${openTrade.entry_price} has sat unfilled for ${Math.round(minutesOpen)}m. Current price is $${currentPrice}. Use get_market_state to evaluate if you should hold, adjust, or cancel.`
                             });
@@ -982,9 +998,45 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                 if (!ocoResp.ok || ocoResult.success === false) {
                                     const ocoErrMsg = ocoResult.error_response?.preview_failure_reason || ocoResult.error_response?.error || ocoResult.failure_reason?.error_message || JSON.stringify(ocoResult);
                                     console.error(`[WATCHDOG BRACKET REJECT] OCO Failed:`, ocoErrMsg);
-                                    await sendDiscordAlert(tenantId, { title: `⚠️ Watchdog Bracket Failed: ${asset}`, description: `**Action:** Attempted to deploy missing TP/SL protection!\n**Details:** ${ocoErrMsg}`, color: 15548997 });
-                                    await logAgentActivity(tenantId, "Watchdog", asset, `OCO bracket deployment rejected for ${asset}: ${ocoErrMsg}`, "ERROR");
+                                    
+                                    // 🛡️ CIRCUIT BREAKER: Track consecutive bracket rejections per trade.
+                                    // After 3 failures, fall back to TP-only bracket and escalate.
+                                    bracketRejectionTracker[openTrade.id] = (bracketRejectionTracker[openTrade.id] || 0) + 1;
+                                    const rejectCount = bracketRejectionTracker[openTrade.id];
+                                    
+                                    if (rejectCount >= 3) {
+                                        // Circuit tripped — deploy TP only, no SL. Better than naked.
+                                        console.error(`[SAFETY NET CIRCUIT BREAKER] ${asset} has ${rejectCount} consecutive bracket rejections. SL ($${safeSlPrice}) is likely out of bounds. Deploying TP-only bracket as last resort.`);
+                                        try {
+                                            const tpOnlyPayload = {
+                                                client_order_id: `nx_wd_tp_${openTrade.id}_${Date.now()}`,
+                                                product_id: coinbaseProduct,
+                                                side: closingSide,
+                                                order_configuration: { limit_limit_gtc: { limit_price: safeTpPrice, base_size: orderQty.toString() } }
+                                            };
+                                            const tpResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpOnlyPayload) });
+                                            const tpResult = await tpResp.json();
+                                            if (tpResp.ok && tpResult.success !== false) {
+                                                console.log(`[SAFETY NET CIRCUIT BREAKER] TP-only bracket deployed for ${asset} at $${safeTpPrice}.`);
+                                                await sendDiscordAlert(tenantId, { title: `⚠️ Circuit Breaker: TP-Only Bracket: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Status:** SL bracket removed after ${rejectCount} failures. Position protected by TP only.`, color: 16776960 });
+                                                delete bracketRejectionTracker[openTrade.id];
+                                                deployedSafetyNets.add(asset);
+                                                delete missingBracketTracker[openTrade.id];
+                                            } else {
+                                                console.error(`[SAFETY NET CIRCUIT BREAKER] TP-only bracket also failed: ${tpResult.error_response?.preview_failure_reason || 'unknown'}`);
+                                                await sendDiscordAlert(tenantId, { title: `🚨 CRITICAL: All Brackets Failed: ${asset}`, description: `**${orderQty} contracts are NAKED.** Both OCO (${rejectCount} attempts) and TP-only bracket deployment failed. Exchange rejection: ${ocoErrMsg}. Manual intervention required.`, color: 15158332 });
+                                            }
+                                        } catch (tpEx) {
+                                            console.error('[SAFETY NET CIRCUIT BREAKER] TP-only fatal:', tpEx.message);
+                                        }
+                                    } else {
+                                        await sendDiscordAlert(tenantId, { title: `⚠️ Watchdog Bracket Failed: ${asset}`, description: `**Action:** Attempted to deploy missing TP/SL protection!\n**Details:** ${ocoErrMsg}\n**Attempt:** ${rejectCount}/3`, color: 15548997 });
+                                    }
+                                    await logAgentActivity(tenantId, "Watchdog", asset, `OCO bracket deployment rejected for ${asset} (attempt ${rejectCount}/3): ${ocoErrMsg}`, "ERROR");
                                 } else {
+                                    // 🛡️ Reset rejection counter on success
+                                    if (bracketRejectionTracker[openTrade.id]) delete bracketRejectionTracker[openTrade.id];
+                                    
                                     // 📊 CHART: Safety Net deployed — send chart with deployed TP/SL
                                     const safetyNetChartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveApiSecret, openTrade, safeTpPrice, safeSlPrice);
                                     await sendDiscordAlert(tenantId, { title: `🛡️ Watchdog Safety Net Deployed: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Stop Loss:** $${safeSlPrice}\n**Status:** OCO Brackets successfully attached to naked position.`, color: 10181046, imageUrl: safetyNetChartUrl });
