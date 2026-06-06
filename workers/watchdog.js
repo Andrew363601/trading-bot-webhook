@@ -577,34 +577,38 @@ export async function startWatchdog(tenantId) {
                             // 1. Search for the original OCO Bracket
                             let targetFill = sortedFills.find(o => o.client_order_id === ocoClientId);
                             
-                            // 2. Search for the Watchdog's Safety Net Bracket
-                            if (!targetFill) {
-                                targetFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_oco_') && o.side.toUpperCase() === closingSide);
-                                if (targetFill) assumedReason = 'WATCHDOG_SAFETY_NET_TRIGGERED';
-                            }
-                            
-                            // 2.5: Tripwire inline bracket (nx_wd_tw_ prefix — deployed when tripwire fires)
-                            if (!targetFill) {
-                                targetFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tw_') && o.side.toUpperCase() === closingSide);
-                                if (targetFill) assumedReason = 'STOP_LOSS (TRIPWIRE_BRACKET)';
-                            }
-                            
-                            // 2.6: Trailing SL inline bracket (nx_wd_tr_ prefix — deployed when trailing SL moves)
+                            // 2. Trailing SL inline bracket (nx_wd_tr_ — has trade ID, unambiguous)
                             if (!targetFill) {
                                 targetFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tr_') && o.side.toUpperCase() === closingSide);
                                 if (targetFill) assumedReason = 'STOP_LOSS (TRAILING_BRACKET)';
                             }
                             
-                            // 3. Search for a Hermes Market Sweep or Manual UI Close
+                            // 3. Tripwire inline bracket (nx_wd_tw_ — has trade ID, unambiguous)
+                            if (!targetFill) {
+                                targetFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tw_') && o.side.toUpperCase() === closingSide);
+                                if (targetFill) assumedReason = 'STOP_LOSS (TRIPWIRE_BRACKET)';
+                            }
+                            
+                            // 4. Safety Net Bracket (nx_wd_oco_ — generic, no trade ID. Time-constrained
+                            //    to only match fills created AFTER the trade was opened, preventing 4-day-old
+                            //    fills at stale prices from matching current trades.)
+                            if (!targetFill) {
+                                const tradeOpenedAt = openTrade.created_at ? new Date(openTrade.created_at).getTime() : 0;
+                                targetFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_oco_') && o.side.toUpperCase() === closingSide && new Date(o.created_time || 0).getTime() >= tradeOpenedAt);
+                                if (targetFill) assumedReason = 'WATCHDOG_SAFETY_NET_TRIGGERED';
+                            }
+                            
+                            // 5. Search for a Hermes Market Sweep or Manual UI Close (last resort)
                             if (!targetFill) {
                                 targetFill = sortedFills.find(o => o.side.toUpperCase() === closingSide);
                                 if (targetFill) assumedReason = 'HERMES_MARKET_SWEEP_OR_UI_CLOSE';
                             }
 
-                            // 🛡️ GENERIC FILL GUARD: Step 3 above matches *any* fill for this
+                            // 🛡️ GENERIC FILL GUARD: Step 5 above matches *any* fill for this
                             // product on the closing side — including fills from hours ago,
                             // partial fills, or fills from unrelated strategies. If the fill
-                            // doesn't match a known bracket (ocoClientId, nx_wd_oco_*) OR the
+                            // doesn't match a known bracket (ocoClientId, nx_wd_oco_, nx_wd_tr_, nx_wd_tw_) OR the
+                            // entry order (entryClientId), it is NOT grounds to close this
                             // entry order (entryClientId), it is NOT grounds to close this
                             // trade_log. The actual position may STILL BE LIVE on Coinbase
                             // protected by brackets. Proceeding here is what caused the false
