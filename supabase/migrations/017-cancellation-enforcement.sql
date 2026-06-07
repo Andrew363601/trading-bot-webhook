@@ -16,7 +16,7 @@
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.enforce_billing_strategy_lockdown()
 RETURNS TABLE (affected_tenant uuid, strategies_disabled integer)
-LANGUAGE plpgsql
+LANGUAGE plpgsql 
 SECURITY DEFINER
 SET search_path = public
 AS $$

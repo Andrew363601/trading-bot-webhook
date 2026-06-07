@@ -69,8 +69,21 @@ $$;
 
 -- ============================================================
 -- 6. ADD UNIQUE CONSTRAINT ON tenant_users.auth_user_id (prevents duplicate signups)
+-- FIXED: PostgreSQL does NOT support "IF NOT EXISTS" on ADD CONSTRAINT,
+-- so we use a DO $$ block with a conditional check instead.
 -- ============================================================
-ALTER TABLE tenant_users ADD CONSTRAINT IF NOT EXISTS tenant_users_auth_user_id_key UNIQUE (auth_user_id);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'tenant_users'
+          AND constraint_type = 'UNIQUE'
+          AND constraint_name = 'tenant_users_auth_user_id_key'
+    ) THEN
+        ALTER TABLE tenant_users ADD CONSTRAINT tenant_users_auth_user_id_key UNIQUE (auth_user_id);
+    END IF;
+END
+$$;
 
 -- ============================================================
 -- 7. CREATE/REPLACE THE TRIGGER FUNCTION WITH DEDUP GUARD

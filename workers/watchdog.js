@@ -533,7 +533,9 @@ export async function startWatchdog(tenantId) {
                                         });
                                     }
                                 }
+                                }
                     }
+                        }
 
                     // 🟢 FALLBACK: Log that LIVE trade exists in DB even if no exchange position found
                     if (!activePosition) {
