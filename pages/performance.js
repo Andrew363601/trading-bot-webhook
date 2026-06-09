@@ -37,6 +37,7 @@ function PerformanceLogContent() {
   const [loading, setLoading] = useState(true);
   const supabase = useSupabaseClient();
   const session = useSession();
+  const [tenantId, setTenantId] = useState(null);
   
   const [allValidTrades, setAllValidTrades] = useState([]);
   
@@ -62,6 +63,30 @@ function PerformanceLogContent() {
   useEffect(() => {
       setIsMounted(true);
   }, []);
+
+  // Load tenant_id for row-level security filtering (mirrors index.js pattern)
+  useEffect(() => {
+    const loadTenantId = async () => {
+      if (!session?.user?.id) return;
+      try {
+        const { data: users, error } = await supabase
+          .from('tenant_users')
+          .select('tenant_id')
+          .eq('auth_user_id', session.user.id)
+          .single();
+        if (error) {
+          console.error('[PERFORMANCE] Failed to fetch tenant_id:', error);
+          return;
+        }
+        if (users?.tenant_id) {
+          setTenantId(users.tenant_id);
+        }
+      } catch (err) {
+        console.error('[PERFORMANCE] Failed to load tenant_id:', err);
+      }
+    };
+    loadTenantId();
+  }, [session?.user?.id, supabase]);
 
   // Helper: format a Date as a local YYYY-MM-DD (avoids UTC off-by-one issues).
   const toLocalDateStr = (d) => {
@@ -96,17 +121,42 @@ function PerformanceLogContent() {
   const [openPositions, setOpenPositions] = useState([]);
 
   const fetchPerformance = useCallback(async () => {
+    if (!tenantId) return; // Wait for tenant_id before querying
     setLoading(true);
     try {
+      // Build queries with tenant_id filtering and explicit limit.
+      // Closed trades: sort DESC so the LIMIT window captures the NEWEST
+      // trades — avoids the old bug where ASC + 1000-row cap returned only
+      // the oldest trades, cutting off recent days.
+      let closedQuery = supabase
+        .from('trade_logs')
+        .select('*')
+        .not('exit_price', 'is', null)
+        .eq('tenant_id', tenantId)
+        .order('exit_time', { ascending: false })
+        .limit(5000);
+
+      let liveQuery = supabase
+        .from('trade_logs')
+        .select('*')
+        .is('exit_price', null)
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: false })
+        .limit(5000);
+
       const [{ data: closedTrades }, { data: liveTrades }] = await Promise.all([
-        supabase.from('trade_logs').select('*').not('exit_price', 'is', null).order('exit_time', { ascending: true }),
-        supabase.from('trade_logs').select('*').is('exit_price', null).order('created_at', { ascending: false }),
+        closedQuery,
+        liveQuery,
       ]);
 
+      // Relaxed filter: only drop trades with missing/invalid exit_time.
+      // Zero-PnL trades (pnl===0 && entry_price===exit_price) are kept —
+      // the exit-price fallback logic (execute-trade-mcp.js, watchdog.js)
+      // can legitimately produce this pattern. See:
+      // /memories/repo/exit-price-pnl-tracking-issues.md
       const valid = (closedTrades || []).filter(t => {
           if (!t || !t.exit_time) return false;
           if (isNaN(new Date(t.exit_time).getTime())) return false;
-          if (parseFloat(t.pnl || 0) === 0 && t.entry_price === t.exit_price) return false;
           return true;
       });
 
@@ -118,7 +168,7 @@ function PerformanceLogContent() {
     } finally {
       setLoading(false);
     }
-  }, [supabase]);
+  }, [supabase, tenantId]);
 
   useEffect(() => { 
       if (isMounted) fetchPerformance(); 
@@ -202,6 +252,8 @@ function PerformanceLogContent() {
       let cumulativePnl = 0;
       let lastTime = 0;
 
+      // Sort ascending for cumulative equity curve (data is already in-memory
+      // from a DESC query, so re-sort here for the chart series).
       const sortedTrades = [...globalFilteredTrades].sort((a, b) => new Date(a.exit_time).getTime() - new Date(b.exit_time).getTime());
 
       sortedTrades.forEach(t => {

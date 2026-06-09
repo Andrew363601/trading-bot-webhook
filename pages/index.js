@@ -481,8 +481,9 @@ function DashboardContent() {
     }
 
     try {
-      // Build queries with tenant_id filtering
-      let logsQuery = supabase.from('trade_logs').select('*').order('created_at', { ascending: false });
+      // Build queries with tenant_id filtering and explicit limits
+      // (prevents default 1000-row Supabase cap from silently truncating data)
+      let logsQuery = supabase.from('trade_logs').select('*').order('created_at', { ascending: false }).limit(2000);
       let configsQuery = supabase.from('strategy_config').select('*');
       let scansQuery = supabase.from('scan_results').select('*').order('created_at', { ascending: false }).limit(25);
       let sessionLogsQuery = supabase.from('agent_session_logs').select('*').order('timestamp', { ascending: false }).limit(200);
