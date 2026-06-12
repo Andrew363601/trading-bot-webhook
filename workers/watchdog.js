@@ -129,6 +129,31 @@ const deployedSafetyNets = new Set(); // Track which assets already have Safety 
 const closingNow = new Set(); // Track which assets are being closed this sweep to prevent duplicate closes
 let tripwireJustFired = false; // Flag to prevent trailing SL firing on same sweep as tripwire
 
+/**
+ * 🛡️ SCOPED CANCEL: Filters openOrders to only include orders that belong to the
+ * specified trade. Prevents batch_cancel from nuking brackets that protect OTHER
+ * trades for the same product — the root cause of "brackets cancelled milliseconds
+ * after creation" when a second trade's tripwire/trail/close sweep fires.
+ */
+function getTradeScopedOrderIds(openOrders, tradeId) {
+    const tradePrefixes = [
+        `nx_oco_${tradeId}`,
+        `nx_oco_retry_${tradeId}`,
+        `nx_entry_${tradeId}`,
+        `nx_close_${tradeId}`,
+        `nx_wd_oco_`,           // Safety net (no trade ID in prefix, but time-filtered elsewhere)
+        `nx_wd_tw_${tradeId}_`,
+        `nx_wd_tr_${tradeId}_`,
+        `nx_wd_tp_${tradeId}_`,
+        `nx_wd_restore_${tradeId}_`,
+        `nx_restore_${tradeId}_`,
+        `nx_adj_${tradeId}_`
+    ];
+    return (openOrders || [])
+        .filter(o => tradePrefixes.some(prefix => o.client_order_id?.startsWith(prefix)))
+        .map(o => o.order_id);
+}
+
 export async function startWatchdog(tenantId) {
     await logAgentActivity(tenantId, "Watchdog", "N/A", "Watchdog worker started.", "WORKER_START");
     console.log(`[WATCHDOG-${tenantId}] Physical Exchange Janitor online. Sweeping orders...`);
@@ -355,8 +380,12 @@ export async function startWatchdog(tenantId) {
                             const safeBreakEvenSL = parseFloat((Math.round(breakEvenSL / tickSize) * tickSize).toFixed(4));
                             
                             if (openOrders.length > 0) {
-                                const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                                const scopedOrderIds = getTradeScopedOrderIds(openOrders, openTrade.id);
+                                if (scopedOrderIds.length > 0) {
+                                    const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                    console.log(`[TRIPWIRE SCOPED CANCEL] Cancelling ${scopedOrderIds.length} trade-specific orders for trade ${openTrade.id} (filtered from ${openOrders.length} total open)`);
+                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: scopedOrderIds }) });
+                                }
                                 openOrders = []; 
                             }
 
@@ -400,6 +429,16 @@ export async function startWatchdog(tenantId) {
                                     } else {
                                         console.log(`[TRIPWIRE BRACKET] BE bracket deployed inline: TP ${tripwireTpStr} / SL ${tripwireSlStr} on ${tripwireQty} contracts.`);
                                         tripwireBracketDeployed = true;
+                                        // Store oco_order_id for EXIT FORENSICS direct lookup
+                                        const twOcoOrderId = twResult.success_response?.order_id || twResult.order_id || null;
+                                        if (twOcoOrderId && openTrade.id) {
+                                            try {
+                                                await supabase.from('trade_logs').update({ oco_order_id: twOcoOrderId }).eq('id', openTrade.id);
+                                                console.log(`[TRIPWIRE BRACKET] Stored oco_order_id=${twOcoOrderId} on trade_log id=${openTrade.id}`);
+                                            } catch (trackErr) {
+                                                console.error('[TRIPWIRE BRACKET] Failed to store oco_order_id:', trackErr.message);
+                                            }
+                                        }
                                     }
                                 } catch (twEx) {
                                     console.error('[TRIPWIRE BRACKET FATAL]:', twEx.message);
@@ -471,8 +510,12 @@ export async function startWatchdog(tenantId) {
                                 console.log(`[WATCHDOG] Trailing SL triggered for ${asset}. Moving SL up to $${safeDynamicSL}`);
 
                                 if (openOrders.length > 0) {
-                                    const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                                    const scopedOrderIds = getTradeScopedOrderIds(openOrders, openTrade.id);
+                                    if (scopedOrderIds.length > 0) {
+                                        const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                        console.log(`[TRAIL SCOPED CANCEL] Cancelling ${scopedOrderIds.length} trade-specific orders for trade ${openTrade.id} (filtered from ${openOrders.length} total open)`);
+                                        await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: scopedOrderIds }) });
+                                    }
                                     openOrders = []; 
                                 }
 
@@ -512,6 +555,16 @@ export async function startWatchdog(tenantId) {
                                         } else {
                                             console.log(`[TRAIL BRACKET] Trailing bracket deployed inline: TP ${trailTpStr} / SL ${trailSlStr} on ${trailQty} contracts.`);
                                             trailBracketDeployed = true;
+                                            // Store oco_order_id for EXIT FORENSICS direct lookup
+                                            const trailOcoOrderId = trResult.success_response?.order_id || trResult.order_id || null;
+                                            if (trailOcoOrderId && openTrade.id) {
+                                                try {
+                                                    await supabase.from('trade_logs').update({ oco_order_id: trailOcoOrderId }).eq('id', openTrade.id);
+                                                    console.log(`[TRAIL BRACKET] Stored oco_order_id=${trailOcoOrderId} on trade_log id=${openTrade.id}`);
+                                                } catch (trackErr) {
+                                                    console.error('[TRAIL BRACKET] Failed to store oco_order_id:', trackErr.message);
+                                                }
+                                            }
                                         }
                                     } catch (trEx) {
                                         console.error('[TRAIL BRACKET FATAL]:', trEx.message);
@@ -597,19 +650,65 @@ export async function startWatchdog(tenantId) {
                             // 🟢 THE FIX: Force strict chronological sorting so we grab the newest trade, not the oldest!
                             const sortedFills = (fillData.orders || []).sort((a, b) => new Date(b.created_time || 0).getTime() - new Date(a.created_time || 0).getTime());
                             
-                            // 1. Search for the original OCO Bracket
-                            let targetFill = sortedFills.find(o => o.client_order_id === ocoClientId);
-                            
-                            // 2. Trailing SL inline bracket (nx_wd_tr_ — has trade ID, unambiguous)
+                            let targetFill = null;
+
+                            // 0. Direct oco_order_id lookup — if trade_log has the stored Coinbase
+                            //    order_id for its active bracket, check that FIRST. This is the
+                            //    most reliable method and avoids all pattern-matching ambiguity.
+                            if (openTrade.oco_order_id) {
+                                const ocoDirectFill = sortedFills.find(o => o.order_id === openTrade.oco_order_id);
+                                if (ocoDirectFill) {
+                                    targetFill = ocoDirectFill;
+                                    assumedReason = 'STOP_LOSS (OCO_DIRECT_MATCH)';
+                                    console.log(`[EXIT FORENSICS] Direct oco_order_id match: ${openTrade.oco_order_id} belongs to trade ${openTrade.id}`);
+                                }
+                            }
+
+                            // 1. Search for the original OCO Bracket (by client_order_id)
                             if (!targetFill) {
-                                targetFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tr_') && o.side.toUpperCase() === closingSide);
-                                if (targetFill) assumedReason = 'STOP_LOSS (TRAILING_BRACKET)';
+                                targetFill = sortedFills.find(o => o.client_order_id === ocoClientId);
+                            }
+
+                            // 🛡️ TRADE-ID VALIDATION HELPER: Extracts numeric trade ID from
+                            // client_order_id patterns like nx_wd_tr_1912_1234567890.
+                            // Returns null if pattern doesn't match or trade ID doesn't equal expected.
+                            const fillBelongsToTrade = (clientOrderId, expectedTradeId) => {
+                                if (!clientOrderId || !expectedTradeId) return false;
+                                // Match patterns like nx_wd_tr_1912_timestamp or nx_wd_tw_1912_timestamp
+                                const match = clientOrderId.match(/^nx_wd_(?:tr|tw|tp)_(\d+)_/);
+                                if (!match) return false;
+                                return match[1] === String(expectedTradeId);
+                            };
+                            
+                            // 2. Trailing SL inline bracket (nx_wd_tr_ — MUST match this trade's ID)
+                            if (!targetFill) {
+                                const trailFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tr_') && o.side.toUpperCase() === closingSide && fillBelongsToTrade(o.client_order_id, openTrade.id));
+                                if (trailFill) {
+                                    targetFill = trailFill;
+                                    assumedReason = 'STOP_LOSS (TRAILING_BRACKET)';
+                                    console.log(`[EXIT FORENSICS] Trailing bracket fill matched for trade ${openTrade.id}: client_order_id=${trailFill.client_order_id}`);
+                                } else {
+                                    // Check if there's a nx_wd_tr_ fill but for a DIFFERENT trade
+                                    const wrongTradeFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tr_') && o.side.toUpperCase() === closingSide);
+                                    if (wrongTradeFill) {
+                                        console.warn(`[EXIT FORENSICS] Trailing fill ${wrongTradeFill.client_order_id} found but belongs to a DIFFERENT trade. Not matching to trade ${openTrade.id}.`);
+                                    }
+                                }
                             }
                             
-                            // 3. Tripwire inline bracket (nx_wd_tw_ — has trade ID, unambiguous)
+                            // 3. Tripwire inline bracket (nx_wd_tw_ — MUST match this trade's ID)
                             if (!targetFill) {
-                                targetFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tw_') && o.side.toUpperCase() === closingSide);
-                                if (targetFill) assumedReason = 'STOP_LOSS (TRIPWIRE_BRACKET)';
+                                const tripFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tw_') && o.side.toUpperCase() === closingSide && fillBelongsToTrade(o.client_order_id, openTrade.id));
+                                if (tripFill) {
+                                    targetFill = tripFill;
+                                    assumedReason = 'STOP_LOSS (TRIPWIRE_BRACKET)';
+                                    console.log(`[EXIT FORENSICS] Tripwire bracket fill matched for trade ${openTrade.id}: client_order_id=${tripFill.client_order_id}`);
+                                } else {
+                                    const wrongTripFill = sortedFills.find(o => o.client_order_id?.startsWith('nx_wd_tw_') && o.side.toUpperCase() === closingSide);
+                                    if (wrongTripFill) {
+                                        console.warn(`[EXIT FORENSICS] Tripwire fill ${wrongTripFill.client_order_id} found but belongs to a DIFFERENT trade. Not matching to trade ${openTrade.id}.`);
+                                    }
+                                }
                             }
                             
                             // 4. Safety Net Bracket (nx_wd_oco_ — generic, no trade ID. Time-constrained
@@ -632,18 +731,23 @@ export async function startWatchdog(tenantId) {
                             // partial fills, or fills from unrelated strategies. If the fill
                             // doesn't match a known bracket (ocoClientId, nx_wd_oco_, nx_wd_tr_, nx_wd_tw_) OR the
                             // entry order (entryClientId), it is NOT grounds to close this
-                            // entry order (entryClientId), it is NOT grounds to close this
                             // trade_log. The actual position may STILL BE LIVE on Coinbase
                             // protected by brackets. Proceeding here is what caused the false
                             // NATIVE_SYNC close: the DB row got marked closed while the
                             // exchange position + brackets remained intact.
+                            //
+                            // 🛡️ TRADE-ID VALIDATION (v2): nx_wd_tr_ and nx_wd_tw_ prefixes embed the
+                            // trade ID (e.g., nx_wd_tr_1912_1234567890). Without checking the embedded ID,
+                            // a fill from trade 1911 would incorrectly match trade 1912.
                             const isKnownOrder = targetFill && (
                                 targetFill.client_order_id === ocoClientId ||
                                 targetFill.client_order_id === entryClientId ||
                                 targetFill.client_order_id?.startsWith('nx_wd_oco_') ||
-                                targetFill.client_order_id?.startsWith('nx_wd_tw_') ||
-                                targetFill.client_order_id?.startsWith('nx_wd_tr_') ||
-                                targetFill.client_order_id?.startsWith('nx_wd_tp_')
+                                (targetFill.client_order_id?.startsWith('nx_wd_tw_') && fillBelongsToTrade(targetFill.client_order_id, openTrade.id)) ||
+                                (targetFill.client_order_id?.startsWith('nx_wd_tr_') && fillBelongsToTrade(targetFill.client_order_id, openTrade.id)) ||
+                                (targetFill.client_order_id?.startsWith('nx_wd_tp_') && fillBelongsToTrade(targetFill.client_order_id, openTrade.id)) ||
+                                // Direct oco_order_id match (stored on trade_logs)
+                                (openTrade.oco_order_id && targetFill.order_id === openTrade.oco_order_id)
                             );
 
                             if (targetFill && !isKnownOrder) {
@@ -882,8 +986,12 @@ export async function startWatchdog(tenantId) {
                             }
 
                             if (openOrders.length > 0) {
-                                const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: openOrders.map(o => o.order_id) }) });
+                                const scopedOrderIds = getTradeScopedOrderIds(openOrders, openTrade.id);
+                                if (scopedOrderIds.length > 0) {
+                                    const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
+                                    console.log(`[EXIT SCOPED CANCEL] Cancelling ${scopedOrderIds.length} trade-specific orders for trade ${openTrade.id} (filtered from ${openOrders.length} total open)`);
+                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: scopedOrderIds }) });
+                                }
                             }
 
                             if (wasFilled && openTrade.tp_price && openTrade.sl_price && !assumedReason.includes('MANUAL_UI_INTERVENTION') && !assumedReason.includes('HERMES_MARKET_SWEEP')) {
@@ -1062,6 +1170,18 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                 } else {
                                     // 🛡️ Reset rejection counter on success
                                     if (bracketRejectionTracker[openTrade.id]) delete bracketRejectionTracker[openTrade.id];
+
+                                    // 🛡️ Store oco_order_id in trade_logs so EXIT FORENSICS can use direct
+                                    // order_id lookup instead of ambiguous pattern matching.
+                                    const safetyNetOcoOrderId = ocoResult.success_response?.order_id || ocoResult.order_id || null;
+                                    if (safetyNetOcoOrderId && openTrade.id) {
+                                        try {
+                                            await supabase.from('trade_logs').update({ oco_order_id: safetyNetOcoOrderId }).eq('id', openTrade.id);
+                                            console.log(`[WATCHDOG SAFETY NET] Stored oco_order_id=${safetyNetOcoOrderId} on trade_log id=${openTrade.id}`);
+                                        } catch (trackErr) {
+                                            console.error('[WATCHDOG SAFETY NET] Failed to store oco_order_id:', trackErr.message);
+                                        }
+                                    }
                                     
                                     // 📊 CHART: Safety Net deployed — send chart with deployed TP/SL
                                     const safetyNetChartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveApiSecret, openTrade, safeTpPrice, safeSlPrice);
