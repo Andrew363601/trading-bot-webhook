@@ -236,7 +236,7 @@ export default function WebhookCreator({ onComplete }) {
               ✅ Magic link sent
             </p>
             <p className="text-slate-400 text-xs mt-1">
-              Click the link in your email to activate your webhook. You'll be redirected to your dashboard with your URL ready to copy.
+              Click the link in your email to activate your webhook. You&apos;ll be redirected to your dashboard with your URL ready to copy.
             </p>
           </div>
         </div>
