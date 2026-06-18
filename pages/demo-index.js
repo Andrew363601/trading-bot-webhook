@@ -4,6 +4,8 @@ import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { Activity, ChevronRight, TrendingUp } from 'lucide-react';
+import WebhookCreator from '../components/WebhookCreator';
+import { fetchWixContent, FALLBACK_CONTENT } from '../lib/wix-content';
 
 export default function LandingPage() {
   const [logs, setLogs] = useState([]);
@@ -14,8 +16,10 @@ export default function LandingPage() {
   const [demoTrades, setDemoTrades] = useState([]);
   const [demoConfigs, setDemoConfigs] = useState([]);
   const [selectedStrategy, setSelectedStrategy] = useState(null);
+  const [content, setContent] = useState(FALLBACK_CONTENT);
 
   useEffect(() => {
+    fetchWixContent().then(setContent);
     const setSynthetic = () => {
       // Synthetic fallback so the marketing page is never blank.
       setLogs([
@@ -285,23 +289,30 @@ export default function LandingPage() {
 
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
           <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight mb-6">
-            Stop Trading.<br />
+            {content.hero?.title || FALLBACK_CONTENT.hero.title}<br />
             <span className="bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 to-purple-500">
-              Start Executing.
+              {content.hero?.titleGradient || FALLBACK_CONTENT.hero.titleGradient}
             </span>
           </h1>
-          <p className="mt-4 max-w-2xl text-lg md:text-xl text-slate-400 mx-auto mb-10">
-            The world&apos;s first autonomous, self-learning quantitative trading agent built for the retail trader. Don&apos;t just automate your strategy. Arm it with institutional-grade AI.
+          <p className="mt-4 max-w-2xl text-lg md:text-xl text-slate-400 mx-auto mb-8">
+            {content.hero?.subtitle || FALLBACK_CONTENT.hero.subtitle}
           </p>
+
+          {/* INLINE CHAT WIDGET */}
+          <div className="mb-10">
+            <WebhookCreator />
+          </div>
+          
+          {/* CTA BUTTONS */}
           <div className="flex flex-col sm:flex-row justify-center gap-4">
             <a href="#pricing" className="bg-white text-slate-950 px-8 py-4 rounded-full font-bold text-lg transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)]">
-              Deploy Your Agent
+              {content.hero?.ctaConnect || FALLBACK_CONTENT.hero.ctaConnect}
             </a>
             <Link href="/auth" className="bg-slate-900/60 backdrop-blur-md border border-white/5 px-8 py-4 rounded-full font-bold text-lg hover:bg-slate-800 transition-colors">
-              Launch Dashboard
+              {content.hero?.ctaDashboard || FALLBACK_CONTENT.hero.ctaDashboard}
             </Link>
           </div>
-          <p className="mt-6 text-sm text-slate-500">7-Day Free Trial. Deploy your first autonomous agent in minutes.</p>
+          <p className="mt-6 text-sm text-slate-500">{content.hero?.trialText || FALLBACK_CONTENT.hero.trialText}</p>
         </div>
       </div>
 
@@ -324,34 +335,18 @@ export default function LandingPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl">
-              <div className="w-12 h-12 bg-cyan-500/20 rounded-lg flex items-center justify-center mb-6">
-                <svg className="w-6 h-6 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                </svg>
+            {(content.features || FALLBACK_CONTENT.features).map((feat, i) => (
+              <div key={i} className={`bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl${i === 1 ? ' relative overflow-hidden' : ''}`}>
+                {i === 1 && <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-bl-full blur-2xl"></div>}
+                <div className={`w-12 h-12 ${i === 1 ? 'bg-purple-500/20' : 'bg-cyan-500/20'} rounded-lg flex items-center justify-center mb-6${i === 1 ? ' relative z-10' : ''}`}>
+                  {i === 0 && <svg className="w-6 h-6 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>}
+                  {i === 1 && <svg className="w-6 h-6 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>}
+                  {i === 2 && <svg className="w-6 h-6 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>}
+                </div>
+                <h3 className={`text-xl font-bold mb-3${i === 1 ? ' relative z-10' : ''}`}>{feat.title}</h3>
+                <p className={`text-slate-400 leading-relaxed${i === 1 ? ' relative z-10' : ''}`}>{feat.body}</p>
               </div>
-              <h3 className="text-xl font-bold mb-3">Institutional Reasoning</h3>
-              <p className="text-slate-400 leading-relaxed">Nexus AI scans the 6H Macro Tide, the 1H Trend, and the 5M Tape. If a setup tries to catch a falling knife, Nexus AI vetoes the trade to protect your capital.</p>
-            </div>
-            <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl relative overflow-hidden">
-              <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-bl-full blur-2xl"></div>
-              <div className="w-12 h-12 bg-purple-500/20 rounded-lg flex items-center justify-center mb-6 relative z-10">
-                <svg className="w-6 h-6 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-              </div>
-              <h3 className="text-xl font-bold mb-3 relative z-10">Agentic Reflection</h3>
-              <p className="text-slate-400 leading-relaxed relative z-10">Nexus AI runs a post-mortem on every closed trade. If a setup fails, it extracts the math and writes a permanent rule to its Core Memory. It learns from its trauma.</p>
-            </div>
-            <div className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-8 rounded-2xl">
-              <div className="w-12 h-12 bg-cyan-500/20 rounded-lg flex items-center justify-center mb-6">
-                <svg className="w-6 h-6 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                </svg>
-              </div>
-              <h3 className="text-xl font-bold mb-3">Multi-TF X-Ray</h3>
-              <p className="text-slate-400 leading-relaxed">Real-time Level 2 spoof detection, volume node mapping, and structural fractal stop-losses. It calculates the exact Reward-to-Risk ratio before entering.</p>
-            </div>
+            ))}
           </div>
         </div>
       </div>
@@ -557,14 +552,7 @@ export default function LandingPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {[
-              { title: 'Quantum Confluence Matrix™', body: 'Five tiers of telemetry fused into one signal — ETF flows, Volume Profile, OI &amp; funding, Cumulative Volume Delta, and L2/L3 order-book spoofing defense.' },
-              { title: 'Agentic Reflection™', body: 'The agent remembers its own theses. Every wake cycle inherits the previous reasoning, last ~20 trades, and a shadow portfolio of past vetoes for true object permanence.' },
-              { title: 'The Accountant Protocol', body: 'A hard-coded Risk-to-Reward floor of 1.5 that no AI override can bypass. Macro thesis can never break immutable risk parameters.' },
-              { title: 'Ghost Orders (Virtual Trap)', body: 'Phantom limit orders staged at structural levels with short expiries — visualized on radar, designed to harvest liquidity sweeps without exposure.' },
-              { title: 'Split-Brain Execution', body: 'A live CHOP vs TREND regime declaration triggers entirely different rule sets — aggressive trailing in trend, mean-reversion discipline in chop.' },
-              { title: 'Self-Healing Infrastructure', body: 'Missing entry prices autofix, orphaned brackets auto-cancel, and 30-second dedup keep the execution layer clean without you touching it.' },
-            ].map((card) => (
+            {(content.differentiators || FALLBACK_CONTENT.differentiators).map((card) => (
               <div key={card.title} className="bg-slate-900/60 backdrop-blur-md border border-white/5 p-7 rounded-2xl hover:border-cyan-500/30 transition-colors">
                 <h3 className="text-lg font-bold text-white mb-3">{card.title}</h3>
                 <p className="text-slate-400 text-sm leading-relaxed" dangerouslySetInnerHTML={{ __html: card.body }} />
@@ -583,41 +571,7 @@ export default function LandingPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto">
-            {[
-              {
-                name: 'Retail',
-                price: '$49',
-                popular: false,
-                features: [
-                  'Up to 3 active trading models simultaneously (e.g., BTC, ETH, and SOL)',
-                  'Standard polling execution pipeline',
-                  'Flat-rate fair use — no complex metered overages to track',
-                  'Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, and Nexus Core Memory logging',
-                ],
-              },
-              {
-                name: 'Pro',
-                price: '$149',
-                popular: true,
-                features: [
-                  'Up to 10 active trading models simultaneously',
-                  'High-priority, sub-second streaming updates',
-                  'Flat-rate fair use optimized for high-frequency strategies',
-                  'Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, Nexus Chat AI Integration, and Nexus Core Memory logging',
-                ],
-              },
-              {
-                name: 'Institutional',
-                price: '$499',
-                popular: false,
-                features: [
-                  'Unlimited active trading models',
-                  'Direct raw WebSocket pipeline with zero throttling',
-                  'Uncapped custom execution pool',
-                  'Custom AI Model integration via OpenRouter, Full Agentic Reflection, Multi-TF X-Ray, and custom Risk-to-Reward Accountant Protocol hard-locks',
-                ],
-              },
-            ].map((tier) => (
+            {(content.pricing || FALLBACK_CONTENT.pricing).map((tier) => (
               <div
                 key={tier.name}
                 className={`p-8 rounded-2xl flex flex-col backdrop-blur-md ${

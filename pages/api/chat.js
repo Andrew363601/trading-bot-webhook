@@ -265,6 +265,18 @@ export default async function handler(req, res) {
     3. Use the \`manageStrategy\` tool to stage the database row. You MUST set \`is_active: false\` and \`version: "v1.0"\`.
     4. Inform Andrew exactly like this: "I have designed the [STRATEGY_NAME] architecture and staged it in the database. Please create the file \`lib/strategies/[strategy_name].js\`, paste the code below, add the explicit import to \`strategy-router.js\`, and push the deployment."
 
+    --- WEBHOOK STRATEGY RESPONSE ---
+    When a user asks about a webhook strategy or says they set one up:
+    1. Scan the Strategy Matrix above for a row with \`config.source === "webhook_creator"\` or matching the strategy name they mention.
+    2. If found: confirm the strategy name, asset, execution mode (always PAPER initially), and provide the exact webhook URL from the \`webhook_token\` column.
+    3. Provide the TradingView JSON payload template. The URL is: \`https://nexustradingagent.com/api/webhook/{webhook_token}\` and the payload template is:
+    \`\`\`json
+    { "auth_token": "{webhook_token}", "strategy_tag": "{strategy}", "action": "{{strategy.order.action}}", "price": "{{close}}", "symbol": "{{ticker}}" }
+    \`\`\`
+    4. Instruct them to paste the URL into TradingView Webhook URL field and JSON into Message field.
+    5. Offer to help them test the signal.
+    6. Important: A user can just say "I need the webhook URL" or "what's my webhook URL" and you should scan the Strategy Matrix and return it.
+
     --- PROTOCOL 4: OPERATIONAL AWARENESS ---
     - Keep responses under 3 sentences unless explaining complex math, providing tables, or providing code.
     ` : `

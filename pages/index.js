@@ -22,6 +22,7 @@ import CoinglassOverlayLines from '../components/CoinglassOverlayLines';
 import CoinglassHeatmap from '../components/CoinglassHeatmap';
 import ChartDrawingLayer from '../components/ChartDrawingLayer';
 import ChatNotification from '../components/ChatNotification';
+import WebhookResultCard from '../components/WebhookResultCard';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
 
 export default function Dashboard() {
@@ -267,6 +268,7 @@ function DashboardContent() {
   const [messages, setMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [sdkError, setSdkError] = useState(null);
+  const [onboardingWebhookResult, setOnboardingWebhookResult] = useState(null);
 
   const append = useCallback(async (message) => {
     if (isLoading) return;
@@ -432,6 +434,57 @@ function DashboardContent() {
     };
     loadTenantId();
   }, [session?.user?.id, supabase]);
+
+  // DETECT WEBHOOK ONBOARDING PARAMS (from magic link redirect)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const webhookAsset = params.get('webhook_asset');
+    const webhookStrategy = params.get('webhook_strategy');
+
+    if (webhookAsset && webhookStrategy && session?.access_token && tenantId) {
+      // Clean URL
+      const cleanUrl = window.location.pathname;
+      window.history.replaceState({}, document.title, cleanUrl);
+
+      const createWebhook = async () => {
+        try {
+          const res = await fetch('/api/create-webhook-strategy', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${session.access_token}`
+            },
+            body: JSON.stringify({
+              asset: webhookAsset,
+              strategy_name: webhookStrategy,
+              execution_mode: 'PAPER'
+            })
+          });
+
+          const data = await res.json();
+
+          if (data.success) {
+            setOnboardingWebhookResult({
+              url: data.webhook_url,
+              payload: data.tradingview_payload_template,
+              strategy: data.strategy
+            });
+
+            setTimeout(() => {
+              append({
+                role: 'user',
+                content: `I just set up a webhook strategy called "${webhookStrategy}" for ${webhookAsset} via the landing page. Give me the URL and TradingView JSON payload so I can copy them.`
+              });
+            }, 1500);
+          }
+        } catch (e) {
+          console.error('[WEBHOOK ONBOARDING] Auto-create failed:', e);
+        }
+      };
+
+      createWebhook();
+    }
+  }, [session?.access_token, tenantId]);
 
   // Auto-prompt onboarding message in chat if risk assessment not complete
   useEffect(() => {
@@ -1324,6 +1377,16 @@ function DashboardContent() {
             </Link>
           </div>
         </div>
+      )}
+
+      {/* WEBHOOK ONBOARDING BANNER */}
+      {onboardingWebhookResult && (
+        <WebhookResultCard
+          webhookUrl={onboardingWebhookResult.url}
+          tradingViewPayload={onboardingWebhookResult.payload}
+          strategy={onboardingWebhookResult.strategy}
+          onDismiss={() => setOnboardingWebhookResult(null)}
+        />
       )}
 
       <header id="dashboard-header" className="max-w-[1800px] w-full mx-auto flex justify-between items-center border-b dark:border-white/5 border-slate-300/5 pb-4 px-4 sm:px-0">
