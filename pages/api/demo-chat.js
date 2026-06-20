@@ -104,20 +104,17 @@ Recent Logs: ${JSON.stringify(demoLogs.slice(0, 5).map(l => `${l.agent_name}: ${
 Trade Statistics: ${demoTrades.length} demo trades recorded.`;
 
     // ── TEXT-ONLY STREAM (NO TOOLS REGISTERED) ──
+    // Use await result.text (Promise) — same pattern as chat.js.
+    // The textStream async iterable can fail silently on Vercel serverless.
     const result = streamText({
       model: google('gemini-3-flash-preview'),
       system: systemPrompt,
       messages: safeMessages,
     });
 
-    // Stream response back to client
+    const fullText = await result.text;
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Transfer-Encoding', 'chunked');
-    res.setHeader('Cache-Control', 'no-cache');
-
-    for await (const chunk of result.textStream) {
-      res.write(chunk);
-    }
+    res.write(fullText);
     res.end();
 
   } catch (e) {

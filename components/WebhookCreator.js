@@ -19,7 +19,7 @@ const CDE_ASSETS = [
 ];
 
 const INITIAL_MESSAGE = {
-  role: 'nexus',
+  role: 'assistant',
   content: `Hey there. \u{1F44B}
 
 I'm Nexus \u2014 your AI execution desk.
