@@ -41,7 +41,7 @@ export default async function handler(req, res) {
   }
 
   // Only crypto CDE futures supported (ready for LIVE trading on Coinbase)
-  const CRYPTO_CDE_LABELS = { BIT: 'BTC', ETP: 'ETH', SLP: 'SOL', DOP: 'DOGE', LCP: 'LTC', AVP: 'AVAX', LNP: 'LINK', XPP: 'XRP', WLD: 'WLD' };
+  const CRYPTO_CDE_LABELS = { BIP: 'BTC', ETP: 'ETH', SLP: 'SOL', DOP: 'DOGE', LCP: 'LTC', AVP: 'AVAX', LNP: 'LINK', XPP: 'XRP', WLD: 'WLD' };
   
   let cdeCode = asset.toUpperCase();
   const readable = Object.entries(CRYPTO_CDE_LABELS).find(([code, label]) => cdeCode === label || cdeCode === code);

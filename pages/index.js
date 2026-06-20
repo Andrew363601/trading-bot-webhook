@@ -437,14 +437,14 @@ function DashboardContent() {
 
   // DETECT WEBHOOK ONBOARDING PARAMS (from magic link redirect)
   useEffect(() => {
+    if (!session?.access_token || !tenantId) return;
+
     const params = new URLSearchParams(window.location.search);
     const webhookAsset = params.get('webhook_asset');
     const webhookStrategy = params.get('webhook_strategy');
 
-    if (webhookAsset && webhookStrategy && session?.access_token && tenantId) {
-      // Clean URL
-      const cleanUrl = window.location.pathname;
-      window.history.replaceState({}, document.title, cleanUrl);
+    if (webhookAsset && webhookStrategy) {
+      window.history.replaceState({}, document.title, window.location.pathname);
 
       const createWebhook = async () => {
         try {

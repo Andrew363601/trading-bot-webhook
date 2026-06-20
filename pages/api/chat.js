@@ -78,6 +78,17 @@ export default async function handler(req, res) {
       console.log(`[CHAT API] Discord-sourced request for tenant: ${tenantId} (source: ${data.source})`);
     }
 
+    // 🟢 Demo landing page — read-only using DEMO_TENANT_ID
+    if (!tenantId && data.source === 'demo') {
+      const DEMO_TENANT_ID = process.env.DEMO_TENANT_ID || process.env.NEXT_PUBLIC_DEMO_TENANT_ID;
+      if (DEMO_TENANT_ID) {
+        tenantId = DEMO_TENANT_ID;
+        console.log(`[CHAT API] Demo-sourced request, tenant: ${tenantId}`);
+      } else {
+        return res.status(200).json({ error: 'Demo not configured.' });
+      }
+    }
+
     // HARD ENFORCEMENT: Reject unauthenticated requests to prevent cross-tenant data leakage
     if (!tenantId) {
       console.error("[CHAT API SECURITY] Rejected request with no valid tenant_id.");

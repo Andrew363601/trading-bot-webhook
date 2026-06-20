@@ -30,7 +30,7 @@ export default async function handler(req, res) {
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://nexustradingagent.com'}/?${redirectParams.toString()}`,
+        emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL || 'https://nexustradingagent.com'}/auth?mode=magic_link&${redirectParams.toString()}`,
         shouldCreateUser: true
       }
     });

@@ -129,6 +129,13 @@ export default function AuthPage() {
             return;
           }
 
+          // Webhook onboarding: forward params to dashboard regardless of billing
+          const { webhook_asset, webhook_strategy } = router.query;
+          if (webhook_asset && webhook_strategy) {
+            router.replace(`/?webhook_asset=${encodeURIComponent(webhook_asset)}&webhook_strategy=${encodeURIComponent(webhook_strategy)}`);
+            return;
+          }
+
           // Normal redirect: TRIAL users go to plans, paid users go to dashboard
           const isPaid = billingTier && billingTier !== 'FREE_TRIAL' && subscriptionActive;
           if (isPaid) {
@@ -150,9 +157,14 @@ export default function AuthPage() {
   const handleMagicLink = async (e) => {
     e.preventDefault();
     setLoading(true);
+    const { webhook_asset, webhook_strategy } = router.query;
+    const params = new URLSearchParams();
+    if (webhook_asset) params.set('webhook_asset', webhook_asset);
+    if (webhook_strategy) params.set('webhook_strategy', webhook_strategy);
+    const qs = params.toString();
     const { error } = await supabase.auth.signInWithOtp({ 
         email,
-        options: { emailRedirectTo: `${window.location.origin}/auth` } 
+        options: { emailRedirectTo: `${window.location.origin}/auth?mode=magic_link${qs ? '&' + qs : ''}` } 
     });
     if (error) setMessage(error.message);
     else setMessage('Check your email for the magic login link!');

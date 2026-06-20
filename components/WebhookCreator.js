@@ -6,16 +6,16 @@
 import { useState, useRef, useEffect } from 'react';
 import { Loader2, ArrowRight, Send } from 'lucide-react';
 
-const CRYPTO_ASSETS = [
-  { label: 'Bitcoin (BTC CDE Futures)', value: 'BIT' },
-  { label: 'Ethereum (ETH CDE Futures)', value: 'ETP' },
-  { label: 'Solana (SOL CDE Futures)', value: 'SLP' },
-  { label: 'Dogecoin (DOGE CDE Futures)', value: 'DOP' },
-  { label: 'Litecoin (LTC CDE Futures)', value: 'LCP' },
-  { label: 'Avalanche (AVAX CDE Futures)', value: 'AVP' },
-  { label: 'Chainlink (LINK CDE Futures)', value: 'LNP' },
-  { label: 'XRP (XRP CDE Futures)', value: 'XPP' },
-  { label: 'Worldcoin (WLD CDE Futures)', value: 'WLD' },
+const CDE_ASSETS = [
+  { label: 'Bitcoin (BTC CDE Futures)',  code: 'BIP', ticker: 'BTC' },
+  { label: 'Ethereum (ETH CDE Futures)', code: 'ETP', ticker: 'ETH' },
+  { label: 'Solana (SOL CDE Futures)',   code: 'SLP', ticker: 'SOL' },
+  { label: 'Dogecoin (DOGE CDE Futures)',code: 'DOP', ticker: 'DOGE' },
+  { label: 'Litecoin (LTC CDE Futures)', code: 'LCP', ticker: 'LTC' },
+  { label: 'Avalanche (AVAX CDE Futures)',code: 'AVP', ticker: 'AVAX' },
+  { label: 'Chainlink (LINK CDE Futures)',code: 'LNP', ticker: 'LINK' },
+  { label: 'XRP (XRP CDE Futures)',       code: 'XPP', ticker: 'XRP' },
+  { label: 'Worldcoin (WLD CDE Futures)', code: 'WLD', ticker: 'WLD' },
 ];
 
 const INITIAL_MESSAGE = {
@@ -50,54 +50,61 @@ export default function WebhookCreator({ onComplete }) {
     setMessages(prev => [...prev, { role, content }]);
   };
 
+  const sendToNexusAI = async (userMessage) => {
+    const updatedMessages = [...messages, { role: 'user', content: userMessage }];
+    setMessages(updatedMessages);
+    setLoading(true);
+
+    try {
+      const res = await fetch('/api/demo-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: updatedMessages })
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      if (res.headers.get('content-type')?.includes('text/plain')) {
+        // Streaming response
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let aiContent = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          aiContent += decoder.decode(value, { stream: true });
+        }
+
+        const newMessages = [...updatedMessages, { role: 'assistant', content: aiContent || '...' }];
+        setMessages(newMessages);
+
+        // Detect email ask — transition to magic link step
+        if (aiContent.toLowerCase().includes('email') &&
+            (aiContent.toLowerCase().includes('magic') || aiContent.toLowerCase().includes('send'))) {
+          setTimeout(() => setStep('email'), 1000);
+        }
+      } else {
+        // JSON error
+        const data = await res.json();
+        throw new Error(data.error || 'AI error');
+      }
+    } catch (e) {
+      console.error('[DEMO CHAT] Error:', e.message);
+      setMessages([...updatedMessages, {
+        role: 'assistant',
+        content: 'Nexus AI is warming up. Enter your email below to get started directly.'
+      }]);
+      setStep('email');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSend = async () => {
     const text = input.trim();
     if (!text || loading) return;
     setInput('');
-
-    addMessage('user', text);
-
-    if (step === 'initial') {
-      const upper = text.toUpperCase();
-      const foundAsset = CRYPTO_ASSETS.find(a =>
-        upper.includes(a.value) || upper.includes(a.label.toUpperCase().slice(0, 8))
-      );
-
-      if (!foundAsset) {
-        addMessage('nexus', `I need to know which CDE asset. Pick one: ${CRYPTO_ASSETS.map(a => a.value).join(', ')}`);
-        setStep('picking_asset');
-        return;
-      }
-
-      setAsset(foundAsset.value);
-      setStep('naming_strategy');
-
-      const nameMatch = text.match(/(\w+)\s*(strategy|scalp|trend|bot|grid)/i);
-      if (nameMatch) {
-        const suggestedName = nameMatch[1].toUpperCase() + '_WEBHOOK';
-        setStrategyName(suggestedName);
-        addMessage('nexus', `**${foundAsset.value} \u2014 got it.**\n\nI'll call this strategy **${suggestedName}**. Sound good?\n\nJust type "yes" or give me a different name.`);
-      } else {
-        addMessage('nexus', `**${foundAsset.value} \u2014 good pick.**\n\nWhat should I call this strategy? Examples: \`BTC_RSI_SCALPER\`, \`ETH_TREND_FOLLOWER\``);
-      }
-    }
-    else if (step === 'naming_strategy') {
-      const parsedName = text.toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 32) || 'WEBHOOK_STRATEGY';
-      setStrategyName(parsedName);
-      setStep('email');
-      addMessage('nexus', `**${parsedName}** \u2014 great name.\n\nOne more step. Enter your email and I'll send you a magic link to activate your webhook.\n\n*(No password needed. Free 7-day trial.)*`);
-    }
-    else if (step === 'picking_asset') {
-      const upper = text.toUpperCase();
-      const foundAsset = CRYPTO_ASSETS.find(a => upper.includes(a.value));
-      if (!foundAsset) {
-        addMessage('nexus', `Please pick one of: ${CRYPTO_ASSETS.map(a => a.value).join(', ')}`);
-        return;
-      }
-      setAsset(foundAsset.value);
-      setStep('naming_strategy');
-      addMessage('nexus', `**${foundAsset.value} \u2014 let's name it.**\n\nWhat should I call this strategy?`);
-    }
+    await sendToNexusAI(text);
   };
 
   const handleEmailSubmit = async () => {
