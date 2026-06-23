@@ -115,10 +115,32 @@ function PaneChart({ chartRef, indicator, state }) {
     // Also defers sync until the pane actually has data (seriesRef.current is set).
     if (mainChart) {
       const syncMainToPane = () => {
-        if (!seriesRef.current) return; // No data loaded yet — skip
+        if (!seriesRef.current) return;
         try {
-          const logicalRange = mainChart.timeScale().getVisibleLogicalRange();
-          if (logicalRange) chart.timeScale().setVisibleLogicalRange(logicalRange);
+          const mainRange = mainChart.timeScale().getVisibleRange();
+          if (!mainRange) return;
+
+          // Get pane chart's actual data boundaries
+          const paneData = seriesRef.current.data();
+          if (!paneData || paneData.length === 0) return;
+
+          const paneStart = paneData[0].time;
+          const paneEnd = paneData[paneData.length - 1].time;
+
+          // Clamp: only sync the time range that the pane's data actually covers
+          const clampedFrom = Math.max(mainRange.from, paneStart);
+          const clampedTo = Math.min(mainRange.to, paneEnd);
+
+          if (clampedFrom < clampedTo) {
+            // Pane data covers this time range — sync precisely
+            chart.timeScale().setVisibleRange({
+              from: clampedFrom,
+              to: clampedTo,
+            });
+          } else {
+            // Main chart is scrolled outside pane's data range — fit all pane data
+            chart.timeScale().fitContent();
+          }
         } catch (e) {}
       };
       mainChart.timeScale().subscribeVisibleLogicalRangeChange(syncMainToPane);
