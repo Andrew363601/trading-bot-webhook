@@ -51,7 +51,6 @@ function PaneChart({ chartRef, indicator, state }) {
   const containerRef = useRef(null);
   const paneChartRef = useRef(null);
   const seriesRef = useRef(null);
-  const isSyncing = useRef(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -111,34 +110,23 @@ function PaneChart({ chartRef, indicator, state }) {
     // --- Synchronization Logic ---
     const mainChart = chartRef?.current;
     
-    const syncTimeScaleMainToPane = () => {
-      if (isSyncing.current || !mainChart || !chart) return;
-      isSyncing.current = true;
-      try {
-        const logicalRange = mainChart.timeScale().getVisibleLogicalRange();
-        if (logicalRange) chart.timeScale().setVisibleLogicalRange(logicalRange);
-      } catch (e) {}
-      isSyncing.current = false;
-    };
-
-    const syncTimeScalePaneToMain = () => {
-      if (isSyncing.current || !mainChart || !chart) return;
-      isSyncing.current = true;
-      try {
-        const logicalRange = chart.timeScale().getVisibleLogicalRange();
-        if (logicalRange) mainChart.timeScale().setVisibleLogicalRange(logicalRange);
-      } catch (e) {}
-      isSyncing.current = false;
-    };
-
+    // 🟢 ONE-WAY SYNC: Main chart → pane only.
+    // Pane never syncs back to main chart. This prevents the zoom-out/reset loop.
+    // Also defers sync until the pane actually has data (seriesRef.current is set).
     if (mainChart) {
-      mainChart.timeScale().subscribeVisibleLogicalRangeChange(syncTimeScaleMainToPane);
-      chart.timeScale().subscribeVisibleLogicalRangeChange(syncTimeScalePaneToMain);
+      const syncMainToPane = () => {
+        if (!seriesRef.current) return; // No data loaded yet — skip
+        try {
+          const logicalRange = mainChart.timeScale().getVisibleLogicalRange();
+          if (logicalRange) chart.timeScale().setVisibleLogicalRange(logicalRange);
+        } catch (e) {}
+      };
+      mainChart.timeScale().subscribeVisibleLogicalRangeChange(syncMainToPane);
     }
 
     return () => {
       if (mainChart) {
-        mainChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncTimeScaleMainToPane);
+        mainChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncMainToPane);
       }
       chart.remove();
       window.removeEventListener('resize', handleResize);
@@ -152,15 +140,29 @@ function PaneChart({ chartRef, indicator, state }) {
         return {
           time: s.time,
           value: val,
-          color: val >= 0 ? '#10b981' : '#ef4444' // red/green for histograms
+          color: val >= 0 ? '#10b981' : '#ef4444'
         };
       }).sort((a, b) => a.time - b.time);
       
-      // Filter out duplicate timestamps
       const uniqueData = formattedData.filter((v, i, a) => a.findIndex(t => (t.time === v.time)) === i);
       
       try {
+        // 🟢 Set data WITHOUT triggering chart auto-fit.
+        // lightweight-charts can auto-adjust the time scale when new data
+        // extends beyond the current range. We suppress this by using
+        // setData only and never calling fitContent() or similar.
         seriesRef.current.setData(uniqueData);
+        
+        // After first data load, explicitly sync pane to main chart range
+        const mainChart = chartRef?.current;
+        if (mainChart && paneChartRef.current) {
+          try {
+            const logicalRange = mainChart.timeScale().getVisibleLogicalRange();
+            if (logicalRange) {
+              paneChartRef.current.timeScale().setVisibleLogicalRange(logicalRange);
+            }
+          } catch (e) {}
+        }
       } catch (e) {
         console.warn(`[CoinglassPanes] Could not set data for ${indicator.id}:`, e.message);
       }
