@@ -569,7 +569,7 @@ export default function LandingPage() {
       </div>
 
       {/* TESTIMONIALS SECTION */}
-      {content.testimonials && content.testimonials.length > 0 && (
+      {(content.testimonials && content.testimonials.length > 0) ? (
         <div className="py-24 relative overflow-hidden">
           <div className="absolute inset-0 -z-10 pointer-events-none">
             <div className="absolute top-0 left-1/4 w-96 h-96 bg-indigo-500/10 rounded-full blur-[120px]"></div>
@@ -630,7 +630,7 @@ export default function LandingPage() {
             </div>
           </div>
         </div>
-      )}
+      ) : null}
 
       {/* Pricing */}
       <div id="pricing" className="py-24 bg-slate-900 border-t border-slate-800">
