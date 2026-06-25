@@ -1,11 +1,17 @@
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
+import crypto from 'crypto';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const supabase = createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL,
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+// Mailchimp constants
+const MC_DC = 'us1';
+const MC_LIST = process.env.MAILCHIMP_AUDIENCE_ID || 'd8196c5e75';
+const MC_KEY = process.env.MAILCHIMP_API_KEY;
 
 // Helper to get raw body without 'micro'
 async function getRawBody(readable) {
@@ -14,6 +20,83 @@ async function getRawBody(readable) {
         chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
     }
     return Buffer.concat(chunks);
+}
+
+// Mailchimp: sync contact tags based on subscription lifecycle
+async function syncToMailchimp(email, tier, action) {
+  if (!MC_KEY || !email) return;
+  const hash = crypto.createHash('md5').update(email.toLowerCase()).digest('hex');
+  const auth = Buffer.from('anystring:' + MC_KEY).toString('base64');
+  const base = `https://${MC_DC}.api.mailchimp.com/3.0/lists/${MC_LIST}/members/${hash}`;
+
+  if (action === 'subscribe') {
+    // Create contact + add trial-{tier} tag
+    await fetch(base, {
+      method: 'PUT',
+      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email_address: email,
+        status_if_new: 'subscribed',
+        status: 'subscribed',
+        merge_fields: { FNAME: '', ADDRESS: { addr1: '', city: '', state: '', zip: '', country: 'US' } }
+      })
+    });
+    await fetch(`${base}/tags`, {
+      method: 'POST',
+      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags: [{ name: `trial-${tier}`, status: 'active' }] })
+    });
+  } else if (action === 'convert') {
+    // Trial → Paid: remove trial tag, add paid tag
+    await fetch(`${base}/tags`, {
+      method: 'POST',
+      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tags: [
+          { name: `trial-${tier}`, status: 'inactive' },
+          { name: `paid-${tier}`, status: 'active' }
+        ]
+      })
+    });
+  } else if (action === 'cancel') {
+    // Canceled: remove trial tag
+    await fetch(`${base}/tags`, {
+      method: 'POST',
+      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags: [{ name: `trial-${tier}`, status: 'inactive' }] })
+    });
+  }
+}
+
+// Look up tenant email from tenant_users table
+async function getTenantEmail(tenantId) {
+  if (!tenantId) return '';
+  try {
+    const { data } = await supabase
+      .from('tenant_users')
+      .select('email')
+      .eq('tenant_id', tenantId)
+      .limit(1)
+      .single();
+    return data?.email || '';
+  } catch {
+    return '';
+  }
+}
+
+// Look up tenant tier from subscriptions table
+async function getTenantTier(tenantId) {
+  if (!tenantId) return 'RETAIL';
+  try {
+    const { data } = await supabase
+      .from('subscriptions')
+      .select('tier')
+      .eq('tenant_id', tenantId)
+      .single();
+    return data?.tier || 'RETAIL';
+  } catch {
+    return 'RETAIL';
+  }
 }
 
 export const config = {
@@ -103,6 +186,23 @@ export default async function handler(req, res) {
                     }
                 }
             }
+
+            // Mailchimp: create contact + trial-{tier} tag (checkout only)
+            if (event.type === 'checkout.session.completed') {
+              const checkoutEmail = session.customer_details?.email || session.customer_email;
+              if (checkoutEmail) {
+                await syncToMailchimp(checkoutEmail, tier, 'subscribe');
+              }
+            }
+
+            // Mailchimp: trial → paid conversion (subscription activation)
+            if (event.type === 'customer.subscription.updated' && sub.status === 'active') {
+              const tenantEmail = await getTenantEmail(tenantId);
+              const tenantTier = await getTenantTier(tenantId);
+              if (tenantEmail) {
+                await syncToMailchimp(tenantEmail, tenantTier, 'convert');
+              }
+            }
             break;
 
         case 'customer.subscription.deleted':
@@ -127,6 +227,13 @@ export default async function handler(req, res) {
                     .eq('tenant_id', deletedTenantId)
                     .eq('is_active', true);
                 console.warn(`[STRIPE_WEBHOOK] Subscription deleted — deactivated strategies for ${deletedTenantId}.`);
+
+                // Mailchimp: remove trial tag
+                const deletedEmail = await getTenantEmail(deletedTenantId);
+                const deletedTier = await getTenantTier(deletedTenantId);
+                if (deletedEmail) {
+                  await syncToMailchimp(deletedEmail, deletedTier, 'cancel');
+                }
             }
             break;
     }
