@@ -34,15 +34,19 @@ export default async function handler(req, res) {
       return res.status(401).json({ error: 'Invalid token' });
     }
 
-    // Confirm the user is linked to a tenant (must be a real user)
+    // Confirm the user is linked to a tenant AND is an admin
     const { data: tenantLink, error: tenantError } = await supabaseAdmin
       .from('tenant_users')
-      .select('tenant_id')
+      .select('tenant_id, role')
       .eq('auth_user_id', user.id)
       .single();
 
     if (tenantError || !tenantLink) {
       return res.status(401).json({ error: 'User not linked to a tenant' });
+    }
+
+    if (tenantLink.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Admin role required' });
     }
   } catch (authErr) {
     return res.status(401).json({ error: 'Token verification failed' });

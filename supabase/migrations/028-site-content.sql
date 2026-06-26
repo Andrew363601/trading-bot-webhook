@@ -25,11 +25,21 @@ CREATE POLICY "Allow read for all"
     ON public.site_content FOR SELECT
     USING (true);
 
--- Only authenticated users can write (admin page)
-CREATE POLICY "Allow write for authenticated"
+-- Only ADMIN-role tenant users can write
+CREATE POLICY "Allow write for admins only"
     ON public.site_content FOR ALL
-    USING (auth.role() = 'authenticated')
-    WITH CHECK (auth.role() = 'authenticated');
+    USING (EXISTS (
+        SELECT 1 FROM public.tenant_users
+        WHERE auth_user_id = auth.uid()
+          AND is_active = true
+          AND role = 'ADMIN'
+    ))
+    WITH CHECK (EXISTS (
+        SELECT 1 FROM public.tenant_users
+        WHERE auth_user_id = auth.uid()
+          AND is_active = true
+          AND role = 'ADMIN'
+    ));
 
 -- ---------------------------------------------------------------------------
 -- 3. SEED DATA (from lib/wix-content.js FALLBACK_CONTENT)
