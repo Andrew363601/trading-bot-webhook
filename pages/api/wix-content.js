@@ -15,7 +15,8 @@ export default async function handler(req, res) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': wixApiKey
+        'Authorization': wixApiKey,
+        'wix-site-id': process.env.WIX_SITE_ID || '5d032a32-e056-41e0-bfb3-b9ab79f99c26'
       },
       body: JSON.stringify({
         dataCollectionId: 'NewCollection1',
