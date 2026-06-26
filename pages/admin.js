@@ -1,6 +1,7 @@
 // pages/admin.js
 // Protected admin page for editing landing-page content.
 // Replaces Wix CMS — all sections editable via JSON textareas.
+// Only ADMIN-role users can access.
 
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
@@ -19,11 +20,30 @@ export default function AdminPage() {
   const [editJson, setEditJson] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [roleChecked, setRoleChecked] = useState(false);
   const [toast, setToast] = useState(null); // { type: 'success'|'error', message }
 
-  // Fetch current content from Supabase on mount
+  // Check admin role on mount / session change
   useEffect(() => {
-    if (!supabase) return;
+    if (!supabase || !session) {
+      setRoleChecked(true);
+      return;
+    }
+    (async () => {
+      const { data, error } = await supabase
+        .from('tenant_users')
+        .select('role')
+        .eq('auth_user_id', session.user.id)
+        .single();
+      setIsAdmin(!error && data?.role === 'ADMIN');
+      setRoleChecked(true);
+    })();
+  }, [supabase, session]);
+
+  // Fetch current content from Supabase on mount (only if admin)
+  useEffect(() => {
+    if (!supabase || !isAdmin) return;
     (async () => {
       try {
         const { data, error } = await supabase
@@ -42,7 +62,7 @@ export default function AdminPage() {
         setLoading(false);
       }
     })();
-  }, [supabase]);
+  }, [supabase, isAdmin]);
 
   // Sync textarea when tab changes
   useEffect(() => {
@@ -118,7 +138,36 @@ export default function AdminPage() {
     );
   }
 
-  // --- Loading ---
+  // --- Still checking role ---
+  if (!roleChecked) {
+    return (
+      <div className="min-h-screen bg-[#020617] flex items-center justify-center">
+        <Head><title>Admin — Nexus</title></Head>
+        <p className="text-slate-400">Verifying access...</p>
+      </div>
+    );
+  }
+
+  // --- Not an admin ---
+  if (!isAdmin) {
+    return (
+      <div className="min-h-screen bg-[#020617] flex items-center justify-center">
+        <Head><title>Admin — Nexus</title></Head>
+        <div className="text-center space-y-4">
+          <h1 className="text-2xl font-bold text-white">Access Denied</h1>
+          <p className="text-slate-400">You do not have admin privileges.</p>
+          <Link
+            href="/"
+            className="inline-block px-6 py-3 bg-slate-700 text-white rounded-lg hover:bg-slate-600 transition"
+          >
+            Go to Dashboard
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Loading content ---
   if (loading) {
     return (
       <div className="min-h-screen bg-[#020617] flex items-center justify-center">
