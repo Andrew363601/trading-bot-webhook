@@ -24,7 +24,9 @@ export default async function handler(req, res) {
     });
 
     if (!response.ok) {
-      throw new Error(`Wix API ${response.status}`);
+      const errBody = await response.text().catch(() => '');
+      console.error('[WIX CONTENT] Wix API error:', response.status, errBody);
+      throw new Error(`Wix API ${response.status}: ${errBody.slice(0, 200)}`);
     }
 
     const data = await response.json();
