@@ -18,7 +18,7 @@ export default async function handler(req, res) {
         'Authorization': wixApiKey
       },
       body: JSON.stringify({
-        dataCollectionId: 'LandingPageContent',
+        dataCollectionId: 'NewCollection1',
         query: {}
       })
     });
