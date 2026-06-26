@@ -4,8 +4,14 @@ import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { Activity, ChevronRight, TrendingUp } from 'lucide-react';
+import { createClient } from '@supabase/supabase-js';
 import WebhookCreator from '../components/WebhookCreator';
-import { fetchWixContent, FALLBACK_CONTENT } from '../lib/wix-content';
+import { fetchSiteContent, FALLBACK_CONTENT } from '../lib/site-content';
+
+const supabaseReadOnly = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+);
 
 export default function LandingPage() {
   const [logs, setLogs] = useState([]);
@@ -19,7 +25,7 @@ export default function LandingPage() {
   const [content, setContent] = useState(FALLBACK_CONTENT);
 
   useEffect(() => {
-    fetchWixContent().then(setContent);
+    fetchSiteContent(supabaseReadOnly).then(setContent);
     const setSynthetic = () => {
       // Synthetic fallback so the marketing page is never blank.
       setLogs([
