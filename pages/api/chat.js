@@ -403,6 +403,34 @@ export default async function handler(req, res) {
           }
         }),
 
+        readCoreMemory: tool({
+          description: 'Reads past AI reflection lessons (Agentic Memory) for the current tenant. Returns lessons the AI wrote after previous trades — win/loss breakdowns, market conditions, and the lesson learned. Useful for the AI to reference its own past reasoning during strategy discussions.',
+          parameters: z.object({
+            asset: z.string().optional().describe('Filter by asset symbol, e.g., BTC-PERP. Leave undefined for all assets.'),
+            win_loss: z.enum(['WIN', 'LOSS']).optional().describe('Filter by outcome: WIN or LOSS. Leave undefined for both.'),
+            limit: z.number().min(1).max(50).optional().default(10).describe('Number of lessons to return (max 50).')
+          }),
+          execute: async ({ asset, win_loss, limit }) => {
+            let query = supabase
+              .from('hermes_core_memory')
+              .select('id, asset, win_loss, tools_used, lesson_learned, entry_price, exit_price, pnl, execution_mode, regime_at_close, created_at')
+              .eq('tenant_id', tenantId)
+              .order('created_at', { ascending: false })
+              .limit(limit || 10);
+            if (asset) query = query.eq('asset', asset);
+            if (win_loss) query = query.eq('win_loss', win_loss);
+            const { data, error } = await Promise.race([
+              query,
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Query timeout')), 10000))
+            ]);
+            if (error) return { error: `Failed to read core memory: ${error.message}` };
+            if (!data || data.length === 0) {
+              return { message: 'No core memory lessons found for the given filters.', lessons: [] };
+            }
+            return { lessons: data, total: data.length };
+          }
+        }),
+
         manageStrategy: tool({
           description: 'Creates or updates a strategy config row for the CURRENT tenant. Always upserts by (tenant_id, asset, strategy). Strategy name MUST be non-blank.',
           parameters: z.object({
