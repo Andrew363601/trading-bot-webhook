@@ -234,7 +234,25 @@ app.post('/api/wake', async (req, res) => {
             console.warn("[AGENT CORTEX] Could not fetch risk profile:", e.message);
         }
         
-        let instructionText = `ALERT: ${message}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\n`;
+        // 🟢 SELF-ADJUSTMENT CONTEXT: Inject current strategy parameters so
+        // the AI knows the current values before deciding to UPDATE_PARAMS.
+        let currentParamsText = '';
+        try {
+            const { data: stratConfig } = await supabase
+                .from('strategy_config')
+                .select('parameters')
+                .eq('tenant_id', tenant_id)
+                .eq('asset', asset)
+                .eq('strategy', strategy_id)
+                .single();
+            if (stratConfig?.parameters) {
+                currentParamsText = `\n\n--- CURRENT STRATEGY PARAMETERS ---\n${JSON.stringify(stratConfig.parameters, null, 2)}\n\nThese are the current values. If you use UPDATE_PARAMS, you only need to include the keys you want to change. Everything else stays as-is.\n`;
+            }
+        } catch (e) {
+            console.warn("[AGENT CORTEX] Could not fetch strategy params:", e.message);
+        }
+        
+        let instructionText = `ALERT: ${message}${currentParamsText}\n\nYOUR PREVIOUS THESIS: ${previous_thesis || "None."}\n\nACTIVE OPEN TRADE: ${openTrade ? JSON.stringify(openTrade) : "None"}\n\n`;
         
         // 🟢 RE-EVALUATION MODE: Inject enriched open trade management context
         if (isReEvaluation && activeOpenTrade) {
@@ -276,6 +294,7 @@ Action Details:
 3. "REVERSE" — Close current AND open opposite position.*
 4. "ADJUST_TP_SL" — Provide new_tp_price and/or new_sl_price via the execute_order tool. The system will cancel old brackets and place new ones.
 5. "UPDATE_TRIPWIRE" — Update the strategy's tripwire_percent and/or trail_step_percent directly in the strategy config DB. Sniper picks up changes on next sweep cycle.
+6. "UPDATE_PARAMS" — Permanently update strategy parameters (SL distance, cooldown, TP targets) when 3+ same-pattern losses are confirmed by core memory. Use only for persistent structural issues.
 
 *For REVERSE: system will wait 2s for bracket clearing between close and open.
 *For UPDATE_TRIPWIRE: writes to strategy_config.parameters JSONB — takes effect immediately on next sweep.*
@@ -694,6 +713,48 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
                     description: `**Tripwire %:** ${newTripwirePct !== undefined ? (parseFloat(newTripwirePct) * 100).toFixed(2) + '%' : 'Unchanged'}\n**Trail Step %:** ${newTrailStepPct !== undefined ? (parseFloat(newTrailStepPct) * 100).toFixed(2) + '%' : 'Unchanged'}\n**Thesis:** ${decisionJson.working_thesis}`,
                     color: 10181046
                 });
+            }
+            // 🟢 SELF-ADJUSTMENT: UPDATE_PARAMS — Permanently update strategy
+            // parameters when the AI detects a persistent loss pattern. This
+            // closes the self-improvement loop: detect → adjust → improve.
+            else if (decisionJson.action === "UPDATE_PARAMS") {
+                const targetStrategy = decisionJson.strategy || strategy_id || 'MANUAL';
+                const targetAsset = decisionJson.asset || asset;
+                const newParams = decisionJson.params || {};
+
+                if (Object.keys(newParams).length === 0) {
+                    console.warn(`[SELF-ADJUST] UPDATE_PARAMS aborted — no params provided for ${targetAsset}/${targetStrategy}`);
+                    return res.status(200).json({ status: "UPDATE_PARAMS_FAILED", reason: "No params provided" });
+                }
+
+                const { data: config } = await supabase
+                    .from('strategy_config')
+                    .select('id, parameters')
+                    .eq('tenant_id', tenant_id)
+                    .eq('asset', targetAsset)
+                    .eq('strategy', targetStrategy)
+                    .single();
+
+                if (!config) {
+                    console.warn(`[SELF-ADJUST] Strategy config not found for ${targetAsset}/${targetStrategy}`);
+                    return res.status(200).json({ status: "UPDATE_PARAMS_FAILED", reason: "Strategy config not found" });
+                }
+
+                const mergedParams = { ...(config.parameters || {}), ...newParams };
+                await supabase.from('strategy_config').update({
+                    parameters: mergedParams,
+                    updated_at: new Date().toISOString()
+                }).eq('id', config.id).eq('tenant_id', tenant_id);
+
+                console.log(`[SELF-ADJUST] Updated params for ${targetAsset}/${targetStrategy}: ${JSON.stringify(newParams)}`);
+
+                await sendDiscordAlert(tenant_id, {
+                    title: `🔄 Self-Adjustment: ${targetAsset}`,
+                    description: `**Strategy:** ${targetStrategy}\\n**Reason:** ${decisionJson.reasoning || 'Self-adjustment triggered'}\\n**Params:** ${JSON.stringify(newParams, null, 2)}\\n**Conviction:** ${decisionJson.conviction_score || 'N/A'}/100`,
+                    color: 15844367
+                });
+
+                return res.status(200).json({ status: "UPDATE_PARAMS_SUCCESS", params: mergedParams });
             }
             // 🟢 CLOSE or APPROVE (existing behavior)
             else {
