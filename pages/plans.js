@@ -1,16 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { Zap, Check, ArrowRight } from 'lucide-react';
+import { trackEvent } from '../lib/analytics';
 
 export default function PlansPage() {
   const session = useSession();
   const supabase = useSupabaseClient();
   const [loading, setLoading] = useState(null);
   const router = useRouter();
+  const plansViewTrackedRef = useRef(false);
 
   useEffect(() => {
+    if (!session?.user?.id) return;
+
+    if (!plansViewTrackedRef.current) {
+      plansViewTrackedRef.current = true;
+      trackEvent('plans_page_viewed', { method: 'email' });
+    }
+
     if (session) {
       const checkSub = async () => {
         // Step 1: Fetch tenant_users record directly
@@ -74,6 +83,7 @@ export default function PlansPage() {
   const handleSelectTier = async (tier) => {
     if (!session) return;
     setLoading(tier);
+    trackEvent('plan_selected', { tier, method: 'email' });
     try {
       const res = await fetch('/api/create-checkout-session', {
         method: 'POST',
@@ -86,6 +96,8 @@ export default function PlansPage() {
       });
       const { url, error } = await res.json();
       if (error) throw new Error(error);
+      sessionStorage.setItem('nexus_trial_activation_pending', 'true');
+      trackEvent('checkout_started', { tier, method: 'stripe' });
       window.location.href = url;
     } catch (err) {
       alert(`Checkout failed: ${err.message}`);

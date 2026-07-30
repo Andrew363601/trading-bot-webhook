@@ -170,6 +170,7 @@ export default function AuthPage() {
     if (error) {
       setMessage(error.message);
     } else {
+      sessionStorage.setItem('nexus_trial_activation_pending', 'true');
       trackEvent('trial_signup', { method: 'email' });
       setMessage('Check your email for the magic login link!');
     }

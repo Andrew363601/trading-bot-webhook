@@ -407,8 +407,12 @@ function DashboardContent() {
           }
 
           if (!trialActivatedTrackedRef.current) {
-            trialActivatedTrackedRef.current = true;
-            trackEvent('trial_activated', { method: 'email' });
+            const activationPending = sessionStorage.getItem('nexus_trial_activation_pending');
+            if (activationPending) {
+              sessionStorage.removeItem('nexus_trial_activation_pending');
+              trialActivatedTrackedRef.current = true;
+              trackEvent('trial_activated', { method: 'email', source: 'checkout' });
+            }
           }
 
           console.log('[DEBUG] Loaded tenant_id for data filtering');
