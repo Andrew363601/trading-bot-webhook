@@ -4,6 +4,7 @@ import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { Zap, Mail, Github, Chrome } from 'lucide-react';
+import { trackEvent } from '../lib/analytics';
 
 export default function AuthPage() {
   const [email, setEmail] = useState('');
@@ -166,8 +167,12 @@ export default function AuthPage() {
         email,
         options: { emailRedirectTo: `${window.location.origin}/auth?mode=magic_link${qs ? '&' + qs : ''}` } 
     });
-    if (error) setMessage(error.message);
-    else setMessage('Check your email for the magic login link!');
+    if (error) {
+      setMessage(error.message);
+    } else {
+      trackEvent('trial_signup', { method: 'email' });
+      setMessage('Check your email for the magic login link!');
+    }
     setLoading(false);
   };
 

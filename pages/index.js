@@ -24,6 +24,7 @@ import ChartDrawingLayer from '../components/ChartDrawingLayer';
 import ChatNotification from '../components/ChatNotification';
 import WebhookResultCard from '../components/WebhookResultCard';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
+import { trackEvent } from '../lib/analytics';
 
 export default function Dashboard() {
   return (
@@ -369,6 +370,7 @@ function DashboardContent() {
   }, [setMessages, messages.length]);
 
   const chatEndRef = useRef(null);
+  const trialActivatedTrackedRef = useRef(false);
 
   useEffect(() => {
       const checkDefconTime = () => {
@@ -403,6 +405,12 @@ function DashboardContent() {
           if (users.tenants?.billing_tier) {
             setBillingTier(users.tenants.billing_tier);
           }
+
+          if (!trialActivatedTrackedRef.current) {
+            trialActivatedTrackedRef.current = true;
+            trackEvent('trial_activated', { method: 'email' });
+          }
+
           console.log('[DEBUG] Loaded tenant_id for data filtering');
 
           // Fetch onboarding state
