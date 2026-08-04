@@ -373,6 +373,25 @@ function DashboardContent() {
   const trialActivatedTrackedRef = useRef(false);
 
   useEffect(() => {
+    if (trialActivatedTrackedRef.current) return;
+
+    const activationPending = sessionStorage.getItem('nexus_trial_activation_pending');
+    if (activationPending === 'true') {
+      sessionStorage.removeItem('nexus_trial_activation_pending');
+      trialActivatedTrackedRef.current = true;
+      trackEvent('trial_activated', { method: 'magic_link' });
+      return;
+    }
+
+    const webhookPending = sessionStorage.getItem('webhook_pending');
+    if (webhookPending) {
+      sessionStorage.removeItem('webhook_pending');
+      trialActivatedTrackedRef.current = true;
+      trackEvent('trial_activated', { method: 'magic_link', source: 'chat_widget' });
+    }
+  }, []);
+
+  useEffect(() => {
       const checkDefconTime = () => {
           const now = new Date();
           const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago', hour: 'numeric', hour12: false });
@@ -408,10 +427,10 @@ function DashboardContent() {
 
           if (!trialActivatedTrackedRef.current) {
             const activationPending = sessionStorage.getItem('nexus_trial_activation_pending');
-            if (activationPending) {
+            if (activationPending === 'true') {
               sessionStorage.removeItem('nexus_trial_activation_pending');
               trialActivatedTrackedRef.current = true;
-              trackEvent('trial_activated', { method: 'email', source: 'checkout' });
+              trackEvent('trial_activated', { method: 'magic_link' });
             }
           }
 

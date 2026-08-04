@@ -1,5 +1,5 @@
 // pages/auth.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
@@ -17,6 +17,7 @@ export default function AuthPage() {
   const supabase = useSupabaseClient();
   const session = useSession();
   const { paid } = router.query;
+  const loginTrackedRef = useRef(false);
 
   useEffect(() => {
     // Session check for callback processing - redirect after OAuth
@@ -25,6 +26,18 @@ export default function AuthPage() {
         const { data: { session: activeSession } } = await supabase.auth.getSession();
         
         if (activeSession) {
+          const oauthPending = sessionStorage.getItem('oauth_pending');
+          const justLoggedIn = sessionStorage.getItem('just_logged_in');
+          const isMagicLink = router.query.mode === 'magic_link';
+
+          if (!loginTrackedRef.current && (oauthPending || justLoggedIn === 'true' || isMagicLink)) {
+            loginTrackedRef.current = true;
+            const method = oauthPending || 'magic_link';
+            trackEvent('login', { method });
+            sessionStorage.removeItem('oauth_pending');
+            sessionStorage.removeItem('just_logged_in');
+          }
+
           // Step 1: Fetch tenant_users record (always works — no nested relationship needed)
           const { data: userData } = await supabase
             .from('tenant_users')
@@ -171,6 +184,7 @@ export default function AuthPage() {
       setMessage(error.message);
     } else {
       sessionStorage.setItem('nexus_trial_activation_pending', 'true');
+      sessionStorage.setItem('just_logged_in', 'true');
       trackEvent('trial_signup', { method: 'email' });
       setMessage('Check your email for the magic login link!');
     }
@@ -183,7 +197,10 @@ export default function AuthPage() {
     const redirectTo = isProduction 
       ? 'https://trading-bot-webhook.vercel.app/auth'
       : `${window.location.origin}/auth`;
-    
+
+    sessionStorage.setItem('oauth_pending', provider);
+    sessionStorage.setItem('just_logged_in', 'true');
+
     await supabase.auth.signInWithOAuth({ 
       provider, 
       options: { redirectTo } 

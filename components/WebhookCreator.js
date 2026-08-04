@@ -5,6 +5,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { Loader2, ArrowRight, Send } from 'lucide-react';
+import { trackEvent } from '../lib/analytics';
 
 const CDE_ASSETS = [
   { label: 'Bitcoin (BTC CDE Futures)',  code: 'BIP', ticker: 'BTC' },
@@ -134,7 +135,7 @@ export default function WebhookCreator({ onComplete }) {
       addMessage('nexus', `\u2705 **Magic link sent to ${email}!**\n\nCheck your inbox. Click the link and you'll land in your dashboard with your webhook URL ready to copy.\n\n*(Link expires in 10 minutes.)*`);
 
       sessionStorage.setItem('webhook_pending', JSON.stringify({ asset, strategy_name: strategyName, email }));
-
+      trackEvent('trial_signup', { method: 'email', source: 'chat_widget' });
     } catch (e) {
       addMessage('nexus', 'Network error. Please try again.');
     } finally {

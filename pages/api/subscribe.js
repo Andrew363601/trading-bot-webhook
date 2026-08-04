@@ -1,3 +1,5 @@
+const GA4_MEASUREMENT_ID = 'G-7REMMP1S7R';
+
 /**
  * /api/subscribe — Brevo subscriber proxy for Wix popup
  *
@@ -76,6 +78,21 @@ export default async function handler(req, res) {
         }
       }
       return res.status(200).json({ success: true, message: 'Contact updated' });
+    }
+
+    if (process.env.GA4_MEASUREMENT_PROTOCOL_SECRET) {
+      try {
+        await fetch(`https://www.google-analytics.com/mp/collect?measurement_id=${GA4_MEASUREMENT_ID}&api_secret=${encodeURIComponent(process.env.GA4_MEASUREMENT_PROTOCOL_SECRET)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: email,
+            events: [{ name: 'newsletter_signup', params: { method: 'email' } }]
+          })
+        });
+      } catch (gaError) {
+        console.error('GA4 newsletter signup error:', gaError);
+      }
     }
 
     return res.status(201).json({ success: true, id: data.id });

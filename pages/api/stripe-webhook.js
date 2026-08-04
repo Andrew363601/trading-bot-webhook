@@ -8,6 +8,28 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+async function sendGA4ServerEvent(eventName, params = {}) {
+  const measurementId = 'G-7REMMP1S7R';
+  const apiSecret = process.env.GA4_MEASUREMENT_PROTOCOL_SECRET || process.env.GA4_API_SECRET;
+
+  if (!apiSecret) return;
+
+  const { client_id, ...eventParams } = params;
+
+  try {
+    await fetch(`https://www.google-analytics.com/mp/collect?measurement_id=${measurementId}&api_secret=${encodeURIComponent(apiSecret)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: client_id || 'stripe-webhook',
+        events: [{ name: eventName, params: eventParams }]
+      })
+    });
+  } catch (error) {
+    console.error(`[GA4] ${eventName} failed:`, error);
+  }
+}
+
 // Mailchimp constants
 const MC_DC = 'us1';
 const MC_LIST = process.env.MAILCHIMP_AUDIENCE_ID || 'd8196c5e75';
@@ -193,6 +215,14 @@ export default async function handler(req, res) {
               if (checkoutEmail) {
                 await syncToMailchimp(checkoutEmail, tier, 'subscribe');
               }
+
+              await sendGA4ServerEvent('paid_conversion', {
+                client_id: session.customer_details?.email || session.customer_email || session.id || 'stripe-webhook',
+                tier: (tier || 'RETAIL').toUpperCase(),
+                value: typeof session.amount_total === 'number' ? session.amount_total / 100 : 0,
+                currency: (session.currency || 'usd').toUpperCase(),
+                method: 'stripe_checkout'
+              });
             }
 
             // Mailchimp: trial → paid conversion (subscription activation)
@@ -202,6 +232,14 @@ export default async function handler(req, res) {
               if (tenantEmail) {
                 await syncToMailchimp(tenantEmail, tenantTier, 'convert');
               }
+
+              await sendGA4ServerEvent('paid_conversion', {
+                client_id: tenantEmail || sub.customer || session.id || 'stripe-webhook',
+                tier: (tenantTier || tier || 'RETAIL').toUpperCase(),
+                value: typeof sub.items?.data?.[0]?.plan?.amount === 'number' ? sub.items.data[0].plan.amount / 100 : 0,
+                currency: (sub.currency || session.currency || 'usd').toUpperCase(),
+                method: 'stripe_subscription'
+              });
             }
             break;
 
