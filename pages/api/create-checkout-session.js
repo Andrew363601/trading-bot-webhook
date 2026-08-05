@@ -29,17 +29,59 @@ export default async function handler(req, res) {
 
     try {
         // 1. Get the actual tenant_id from the auth_user_id (tenantId in body)
-        const { data: userLink, error: userError } = await supabase
+        const { data: userLink } = await supabase
             .from('tenant_users')
             .select('tenant_id')
             .eq('auth_user_id', tenantId)
-            .single();
+            .maybeSingle();
 
-        if (userError || !userLink) {
-            throw new Error(`Account registry not found (Tenant: ${tenantId}). Your account might not have finished onboarding. Please try logging out and back in, or contact support if the issue persists.`);
+        let realTenantId = userLink?.tenant_id;
+
+        // 🧩 ONBOARDING FALLBACK: If the Supabase auth trigger hasn't
+        // completed yet, create the tenant + tenant_users rows synchronously
+        // so the Stripe checkout can proceed without crashing.
+        if (!realTenantId) {
+            const { data: newTenant } = await supabase
+                .from('tenants')
+                .insert({
+                    name: `${email} Portfolio`,
+                    slug: `nexus-${(tenantId || '').substring(0, 8)}`,
+                    billing_tier: 'FREE_TRIAL',
+                    subscription_active: true
+                })
+                .select('id')
+                .single();
+
+            if (!newTenant) {
+                throw new Error('Failed to create tenant account. Please try again.');
+            }
+
+            const { error: linkError } = await supabase
+                .from('tenant_users')
+                .insert({
+                    tenant_id: newTenant.id,
+                    auth_user_id: tenantId,
+                    email: email,
+                    role: 'TRIAL'
+                });
+
+            if (linkError) {
+                // Race: the trigger may have fired between our two queries.
+                // Retry the lookup instead of failing.
+                const { data: retryLink } = await supabase
+                    .from('tenant_users')
+                    .select('tenant_id')
+                    .eq('auth_user_id', tenantId)
+                    .maybeSingle();
+                if (retryLink) {
+                    realTenantId = retryLink.tenant_id;
+                } else {
+                    throw new Error('Account setup delayed. Please try again in 30 seconds.');
+                }
+            } else {
+                realTenantId = newTenant.id;
+            }
         }
-
-        const realTenantId = userLink.tenant_id;
 
         // 2. Check if user already has a Stripe customer ID
         const { data: subData } = await supabase

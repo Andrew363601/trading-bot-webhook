@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { email, listIds, LMTITLE, LMURL } = req.body;
+  const { email, listIds, LMTITLE, LMURL, type, asset, strategy_name } = req.body;
   if (!email) {
     return res.status(400).json({ error: 'Email is required' });
   }
@@ -39,7 +39,15 @@ export default async function handler(req, res) {
     attributes: {},
   };
 
-  if (listIds && Array.isArray(listIds) && listIds.length > 0) {
+  // 🧪 Trial signup from chat widget — inject trial list ID + attributes server-side
+  if (type === 'trial') {
+    const trialListId = parseInt(process.env.BREVO_TRIAL_LIST_ID);
+    if (trialListId) {
+      contactBody.listIds = [trialListId];
+    }
+    contactBody.attributes.TRIAL_TIER = strategy_name || 'UNKNOWN';
+    contactBody.attributes.SIGNUP_SOURCE = 'chat_widget';
+  } else if (listIds && Array.isArray(listIds) && listIds.length > 0) {
     contactBody.listIds = listIds;
   }
 

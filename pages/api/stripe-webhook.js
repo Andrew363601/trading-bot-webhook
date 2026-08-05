@@ -1,6 +1,5 @@
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
-import crypto from 'crypto';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 const supabase = createClient(
@@ -30,10 +29,9 @@ async function sendGA4ServerEvent(eventName, params = {}) {
   }
 }
 
-// Mailchimp constants
-const MC_DC = 'us1';
-const MC_LIST = process.env.MAILCHIMP_AUDIENCE_ID || 'd8196c5e75';
-const MC_KEY = process.env.MAILCHIMP_API_KEY;
+// Brevo constants
+const BREVO_KEY = process.env.BREVO_API_KEY;
+const BREVO_TRIAL_LIST_ID = process.env.BREVO_TRIAL_LIST_ID;
 
 // Helper to get raw body without 'micro'
 async function getRawBody(readable) {
@@ -44,49 +42,55 @@ async function getRawBody(readable) {
     return Buffer.concat(chunks);
 }
 
-// Mailchimp: sync contact tags based on subscription lifecycle
-async function syncToMailchimp(email, tier, action) {
-  if (!MC_KEY || !email) return;
-  const hash = crypto.createHash('md5').update(email.toLowerCase()).digest('hex');
-  const auth = Buffer.from('anystring:' + MC_KEY).toString('base64');
-  const base = `https://${MC_DC}.api.mailchimp.com/3.0/lists/${MC_LIST}/members/${hash}`;
+// Brevo: sync contact + trial list based on subscription lifecycle
+async function syncToBrevo(email, tier, action) {
+  if (!BREVO_KEY || !email) return;
 
-  if (action === 'subscribe') {
-    // Create contact + add trial-{tier} tag
-    await fetch(base, {
-      method: 'PUT',
-      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        email_address: email,
-        status_if_new: 'subscribed',
-        status: 'subscribed',
-        merge_fields: { FNAME: '', ADDRESS: { addr1: '', city: '', state: '', zip: '', country: 'US' } }
-      })
-    });
-    await fetch(`${base}/tags`, {
-      method: 'POST',
-      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tags: [{ name: `trial-${tier}`, status: 'active' }] })
-    });
-  } else if (action === 'convert') {
-    // Trial → Paid: remove trial tag, add paid tag
-    await fetch(`${base}/tags`, {
-      method: 'POST',
-      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tags: [
-          { name: `trial-${tier}`, status: 'inactive' },
-          { name: `paid-${tier}`, status: 'active' }
-        ]
-      })
-    });
-  } else if (action === 'cancel') {
-    // Canceled: remove trial tag
-    await fetch(`${base}/tags`, {
-      method: 'POST',
-      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tags: [{ name: `trial-${tier}`, status: 'inactive' }] })
-    });
+  try {
+    if (action === 'subscribe') {
+      // Create contact + add trial-{tier} attribute, add to trial list
+      await fetch('https://api.brevo.com/v3/contacts', {
+        method: 'POST',
+        headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          updateEnabled: true,
+          listIds: BREVO_TRIAL_LIST_ID ? [parseInt(BREVO_TRIAL_LIST_ID)] : [],
+          attributes: {
+            TRIAL_TIER: tier,
+            SIGNUP_SOURCE: 'stripe_checkout'
+          }
+        })
+      });
+    } else if (action === 'convert') {
+      // Trial → Paid: update Brevo attributes
+      await fetch('https://api.brevo.com/v3/contacts', {
+        method: 'POST',
+        headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          updateEnabled: true,
+          attributes: {
+            PAID_TIER: tier,
+            TRIAL_TIER: null,  // clear trial tier once converted to paid
+            CONVERTED_AT: new Date().toISOString()
+          }
+        })
+      });
+    } else if (action === 'cancel') {
+      // Canceled: clear trial tier attribute
+      await fetch('https://api.brevo.com/v3/contacts', {
+        method: 'POST',
+        headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          updateEnabled: true,
+          attributes: { TRIAL_TIER: null, CANCELED_AT: new Date().toISOString() }
+        })
+      });
+    }
+  } catch (e) {
+    console.warn('[BREVO_SYNC] Failed:', e.message);
   }
 }
 
@@ -213,7 +217,7 @@ export default async function handler(req, res) {
             if (event.type === 'checkout.session.completed') {
               const checkoutEmail = session.customer_details?.email || session.customer_email;
               if (checkoutEmail) {
-                await syncToMailchimp(checkoutEmail, tier, 'subscribe');
+                await syncToBrevo(checkoutEmail, tier, 'subscribe');
               }
 
               await sendGA4ServerEvent('paid_conversion', {
@@ -230,7 +234,7 @@ export default async function handler(req, res) {
               const tenantEmail = await getTenantEmail(tenantId);
               const tenantTier = await getTenantTier(tenantId);
               if (tenantEmail) {
-                await syncToMailchimp(tenantEmail, tenantTier, 'convert');
+                await syncToBrevo(tenantEmail, tenantTier, 'convert');
               }
 
               await sendGA4ServerEvent('paid_conversion', {
@@ -270,7 +274,7 @@ export default async function handler(req, res) {
                 const deletedEmail = await getTenantEmail(deletedTenantId);
                 const deletedTier = await getTenantTier(deletedTenantId);
                 if (deletedEmail) {
-                  await syncToMailchimp(deletedEmail, deletedTier, 'cancel');
+                  await syncToBrevo(deletedEmail, deletedTier, 'cancel');
                 }
             }
             break;
