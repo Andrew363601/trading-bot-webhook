@@ -72,7 +72,11 @@ export default async function handler(req, res) {
       body: JSON.stringify(contactBody),
     });
 
-    const data = await response.json();
+    const responseText = await response.text();
+    let data = {};
+    if (responseText) {
+      try { data = JSON.parse(responseText); } catch (e) { data = {}; }
+    }
 
     if (!response.ok) {
       console.error('Brevo API error:', data);
