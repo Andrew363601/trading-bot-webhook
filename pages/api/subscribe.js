@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { email, listIds, LMTITLE, LMURL, type, asset, strategy_name } = req.body;
+  const { email, listIds, LMTITLE, LMURL, type, asset, strategy_name, source } = req.body;
   if (!email) {
     return res.status(400).json({ error: 'Email is required' });
   }
@@ -47,6 +47,14 @@ export default async function handler(req, res) {
     }
     contactBody.attributes.TRIAL_TIER = strategy_name || 'UNKNOWN';
     contactBody.attributes.SIGNUP_SOURCE = 'chat_widget';
+  } else if (type === 'blog_trial') {
+    // 📝 Blog popup trial signup — add to trial list with source tracking
+    const trialListId = parseInt(process.env.BREVO_TRIAL_LIST_ID);
+    if (trialListId) {
+      contactBody.listIds = [trialListId];
+    }
+    contactBody.attributes.SIGNUP_SOURCE = 'blog_popup';
+    contactBody.attributes.TRIAL_TIER = 'BLOG';
   } else if (listIds && Array.isArray(listIds) && listIds.length > 0) {
     contactBody.listIds = listIds;
   }
@@ -90,16 +98,20 @@ export default async function handler(req, res) {
 
     if (process.env.GA4_MEASUREMENT_PROTOCOL_SECRET) {
       try {
+        const isTrial = type === 'trial' || type === 'blog_trial';
+        const gaEvent = isTrial
+          ? { name: 'trial_signup', params: { method: type === 'blog_trial' ? 'blog_popup' : 'chat_widget' } }
+          : { name: 'newsletter_signup', params: { method: 'email' } };
         await fetch(`https://www.google-analytics.com/mp/collect?measurement_id=${GA4_MEASUREMENT_ID}&api_secret=${encodeURIComponent(process.env.GA4_MEASUREMENT_PROTOCOL_SECRET)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             client_id: email,
-            events: [{ name: 'newsletter_signup', params: { method: 'email' } }]
+            events: [gaEvent]
           })
         });
       } catch (gaError) {
-        console.error('GA4 newsletter signup error:', gaError);
+        console.error('GA4 signup event error:', gaError);
       }
     }
 
