@@ -93,7 +93,7 @@ export default function QuickSignupPopup({ plan, onClose }) {
                 style={{
                   width: '100%', padding: '12px', border: '1px solid #ddd',
                   borderRadius: '6px', margin: '0 0 15px', fontSize: '15px',
-                  boxSizing: 'border-box',
+                  boxSizing: 'border-box', color: '#1a1a2e',
                 }}
               />
               <button
