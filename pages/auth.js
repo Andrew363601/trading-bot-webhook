@@ -150,6 +150,33 @@ export default function AuthPage() {
             return;
           }
 
+          // Quick checkout: if user came from pricing card with a pre-selected plan
+          const { plan } = router.query;
+          if (plan) {
+            trackEvent('quick_checkout_initiated', { tier: plan });
+            try {
+              const res = await fetch('/api/create-checkout-session', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  tier: plan,
+                  email: session.user.email,
+                  tenantId: tenantId || session.user.id,
+                }),
+              });
+              const { url } = await res.json();
+              if (url) {
+                window.location.href = url;
+                return;
+              }
+            } catch (err) {
+              console.error('Quick checkout failed:', err);
+            }
+            // Fallback: go to plans page
+            router.replace('/plans');
+            return;
+          }
+
           // Normal redirect: TRIAL users go to plans, paid users go to dashboard
           const isPaid = billingTier && billingTier !== 'FREE_TRIAL' && subscriptionActive;
           if (isPaid) {

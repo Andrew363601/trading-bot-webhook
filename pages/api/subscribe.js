@@ -46,7 +46,7 @@ export default async function handler(req, res) {
       contactBody.listIds = [trialListId];
     }
     contactBody.attributes.TRIAL_TIER = strategy_name || 'UNKNOWN';
-    contactBody.attributes.SIGNUP_SOURCE = 'chat_widget';
+    contactBody.attributes.SIGNUP_SOURCE = source || 'chat_widget';
   } else if (type === 'blog_trial') {
     // 📝 Blog popup trial signup — add to trial list with source tracking
     const trialListId = parseInt(process.env.BREVO_TRIAL_LIST_ID);

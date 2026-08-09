@@ -16,7 +16,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const { email, asset, strategy_name } = req.body;
+  const { email, asset, strategy_name, plan } = req.body;
 
   if (!email) {
     return res.status(400).json({ error: 'Email is required' });
@@ -26,6 +26,7 @@ export default async function handler(req, res) {
     const redirectParams = new URLSearchParams();
     if (asset) redirectParams.set('webhook_asset', asset);
     if (strategy_name) redirectParams.set('webhook_strategy', strategy_name);
+    if (plan) redirectParams.set('plan', plan);
 
     const { error } = await supabase.auth.signInWithOtp({
       email,

@@ -2,11 +2,12 @@
 
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
-import Link from 'next/link';
 import { Activity, ChevronRight, TrendingUp } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import WebhookCreator from '../components/WebhookCreator';
 import { fetchSiteContent, FALLBACK_CONTENT } from '../lib/site-content';
+import { trackEvent } from '../lib/analytics';
+import QuickSignupPopup from '../components/QuickSignupPopup';
 
 const supabaseReadOnly = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -23,6 +24,8 @@ export default function LandingPage() {
   const [demoConfigs, setDemoConfigs] = useState([]);
   const [selectedStrategy, setSelectedStrategy] = useState(null);
   const [content, setContent] = useState(FALLBACK_CONTENT);
+  const [selectedPlan, setSelectedPlan] = useState(null);
+  const [showSignupPopup, setShowSignupPopup] = useState(false);
 
   useEffect(() => {
     fetchSiteContent(supabaseReadOnly).then(setContent);
@@ -242,6 +245,12 @@ export default function LandingPage() {
     };
   });
 
+  const handlePlanSelect = (tier) => {
+    trackEvent('plan_selected', { tier, method: 'pricing_card' });
+    setSelectedPlan(tier);
+    setShowSignupPopup(true);
+  };
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-50 font-sans selection:bg-cyan-500/30">
       <Head>
@@ -267,15 +276,15 @@ export default function LandingPage() {
               </div>
             </div>
             <div className="flex items-center gap-4">
-              <Link href="/auth" className="hover:text-cyan-400 transition-colors">
+              <a href="#pricing" className="hover:text-cyan-400 transition-colors">
                 Dashboard
-              </Link>
-              <Link href="/auth" className="md:hidden bg-indigo-600 text-white px-4 py-2 rounded-full text-xs font-bold">
+              </a>
+              <a href="#pricing" className="md:hidden bg-indigo-600 text-white px-4 py-2 rounded-full text-xs font-bold">
                 Deploy Agent
-              </Link>
-              <Link href="/auth" className="hidden sm:block bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-6 py-2 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]">
+              </a>
+              <a href="#pricing" className="hidden sm:block bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-6 py-2 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]">
                 Deploy Your Agent
-              </Link>
+              </a>
             </div>
           </div>
         </div>
@@ -309,9 +318,9 @@ export default function LandingPage() {
             <a href="#pricing" className="bg-white text-slate-950 px-8 py-4 rounded-full font-bold text-lg transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)]">
               {content.hero?.ctaConnect || FALLBACK_CONTENT.hero.ctaConnect}
             </a>
-            <Link href="/auth" className="bg-slate-900/60 backdrop-blur-md border border-white/5 px-8 py-4 rounded-full font-bold text-lg hover:bg-slate-800 transition-colors">
+            <a href="#pricing" className="bg-slate-900/60 backdrop-blur-md border border-white/5 px-8 py-4 rounded-full font-bold text-lg hover:bg-slate-800 transition-colors">
               {content.hero?.ctaDashboard || FALLBACK_CONTENT.hero.ctaDashboard}
-            </Link>
+            </a>
           </div>
           <p className="mt-6 text-sm text-slate-500">{content.hero?.trialText || FALLBACK_CONTENT.hero.trialText}</p>
         </div>
@@ -533,9 +542,9 @@ export default function LandingPage() {
 
                     <div className="mt-6 pt-6 border-t border-white/5 flex justify-between items-center">
                         <span className="text-[10px] text-slate-500 font-mono">Real-time Data</span>
-                        <Link href="/auth" className="text-[10px] font-black uppercase tracking-widest text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
+                        <a href="#pricing" className="text-[10px] font-black uppercase tracking-widest text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
                             Deploy <ChevronRight className="w-3 h-3" />
-                        </Link>
+                        </a>
                     </div>
                 </div>
               );
@@ -644,16 +653,16 @@ export default function LandingPage() {
                     </li>
                   ))}
                 </ul>
-                <Link
-                  href="/auth"
-                  className={`w-full text-center font-bold py-3 rounded-xl transition-colors ${
+                <button
+                  onClick={() => handlePlanSelect(tier.name.toUpperCase())}
+                  className={`w-full text-center font-bold py-3 rounded-xl transition-colors cursor-pointer ${
                     tier.popular
                       ? 'bg-cyan-500 hover:bg-cyan-400 text-slate-900'
                       : 'bg-slate-800 hover:bg-slate-700 text-white'
                   }`}
                 >
                   Start 7-Day Trial
-                </Link>
+                </button>
               </div>
             ))}
           </div>
@@ -685,6 +694,13 @@ export default function LandingPage() {
           </p>
         </div>
       </div>
+
+      {showSignupPopup && (
+        <QuickSignupPopup
+          plan={selectedPlan}
+          onClose={() => setShowSignupPopup(false)}
+        />
+      )}
     </div>
   );
 }

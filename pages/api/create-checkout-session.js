@@ -117,6 +117,7 @@ export default async function handler(req, res) {
                 trial_period_days: 7,
                 metadata: { tenantId: realTenantId }
             },
+            payment_method_collection: 'if_required',
             success_url: `${siteUrl}/auth?paid=true`,
             cancel_url: `${siteUrl}/plans`,
             metadata: { tenantId: realTenantId, tier }
