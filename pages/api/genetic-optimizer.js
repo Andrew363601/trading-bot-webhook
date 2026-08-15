@@ -4,6 +4,8 @@ export const maxDuration = 300;
 // pages/api/genetic-optimizer.js
 import { createClient } from '@supabase/supabase-js';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenAI } from '@ai-sdk/openai';
+import { getActiveModel } from '../../lib/model-router';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
@@ -14,10 +16,6 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-const google = createGoogleGenerativeAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
 
 // 🔒 PROTECTED FIELDS: the optimizer may ONLY tune indicator/strategy parameters.
 // It must NEVER change position sizing, risk limits, execution mode, or the asset.
@@ -208,38 +206,68 @@ Analyze the 500 candles and classify the current market phase for this asset int
       If MUTATE, increment the version by 0.1 (e.g., v1.0 to v1.1). Otherwise, keep the current version.
       `;
 
-  // 5. STRUCTURED GENERATION (Bypassing Vercel AI SDK for Native Gemini REST API)
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${process.env.GEMINI_API_KEY}`;
-      
-  const payload = {
-    systemInstruction: {
-      parts: [{ text: "You are a quantitative portfolio manager. You must output ONLY raw, valid JSON." }]
-    },
-    contents: [{
-      role: "user",
-      parts: [{ text: prompt + `\n\nREQUIRED JSON OUTPUT FORMAT:\n{\n  "action": "MUTATE" | "PAUSE" | "REACTIVATE" | "MAINTAIN",\n  "parameters": { /* Insert evolved parameters here if mutating */ },\n  "new_version": "vX.X",\n  "reasoning": "Detailed market and math reasoning here."\n}` }]
-    }],
-    generationConfig: {
-      responseMimeType: "application/json"
-    }
-  };
+  // 5. STRUCTURED GENERATION (Dynamic Model Router: OpenRouter or Gemini)
+  const activeModel = await getActiveModel(supabase);
+  let llmUrl, llmHeaders, llmBody;
 
-  const aiResp = await fetch(geminiUrl, {
+  const userPromptText = prompt + `\n\nREQUIRED JSON OUTPUT FORMAT:\n{\n  "action": "MUTATE" | "PAUSE" | "REACTIVATE" | "MAINTAIN",\n  "parameters": { /* Insert evolved parameters here if mutating */ },\n  "new_version": "vX.X",\n  "reasoning": "Detailed market and math reasoning here."\n}`;
+
+  if (activeModel.provider === 'openrouter') {
+    const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+    llmUrl = `${baseUrl}/chat/completions`;
+    llmHeaders = {
+      'Authorization': `Bearer ${activeModel.apiKey}`,
+      'Content-Type': 'application/json'
+    };
+    llmBody = {
+      model: activeModel.model,
+      messages: [
+        { role: 'system', content: "You are a quantitative portfolio manager. You must output ONLY raw, valid JSON." },
+        { role: 'user', content: userPromptText }
+      ],
+      response_format: { type: "json_object" }
+    };
+  } else {
+    llmUrl = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel.model}:generateContent?key=${activeModel.apiKey}`;
+    llmHeaders = { 'Content-Type': 'application/json' };
+    llmBody = {
+      systemInstruction: {
+        parts: [{ text: "You are a quantitative portfolio manager. You must output ONLY raw, valid JSON." }]
+      },
+      contents: [{
+        role: "user",
+        parts: [{ text: userPromptText }]
+      }],
+      generationConfig: {
+        responseMimeType: "application/json"
+      }
+    };
+  }
+
+  const aiResp = await fetch(llmUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
+    headers: llmHeaders,
+    body: JSON.stringify(llmBody)
   });
 
-  // If Google rejects the request, this rips out the EXACT reason and logs it
+  // If Provider rejects the request, this rips out the EXACT reason and logs it
   if (!aiResp.ok) {
     const errorText = await aiResp.text();
-    throw new Error(`Gemini API Rejected Request: ${aiResp.status} - ${errorText}`);
+    throw new Error(`AI API Rejected Request (${activeModel.provider}): ${aiResp.status} - ${errorText}`);
   }
 
   const aiData = await aiResp.json();
   
-  // Extract the native JSON text
-  const cleanJsonString = aiData.candidates[0].content.parts[0].text;
+  // Extract the native JSON text (handling OpenRouter vs Gemini format)
+  let cleanJsonString = activeModel.provider === 'openrouter'
+    ? aiData.choices[0]?.message?.content
+    : aiData.candidates[0]?.content?.parts[0]?.text;
+
+  if (!cleanJsonString) {
+    throw new Error(`Empty response content returned from ${activeModel.provider}`);
+  }
+
+  cleanJsonString = cleanJsonString.replace(/```json/g, '').replace(/```/g, '').trim();
   const object = JSON.parse(cleanJsonString);
 
 // 6. DATABASE DEPLOYMENT

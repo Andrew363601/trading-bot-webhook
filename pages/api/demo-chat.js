@@ -6,8 +6,10 @@
 export const maxDuration = 60;
 
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenAI } from '@ai-sdk/openai';
 import { streamText } from 'ai';
 import { createClient } from '@supabase/supabase-js';
+import { getActiveModel } from '../../lib/model-router';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -64,7 +66,21 @@ export default async function handler(req, res) {
     const demoTrades = tradesRes.data || [];
     const demoConfigs = configsRes.data || [];
 
-    const google = createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
+    const activeModel = await getActiveModel(supabase);
+
+    let modelInstance;
+    if (activeModel.provider === 'openrouter') {
+      const openai = createOpenAI({
+        apiKey: activeModel.apiKey || process.env.OPENROUTER_API_KEY || 'dummy',
+        baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+      });
+      modelInstance = openai(activeModel.model);
+    } else {
+      const google = createGoogleGenerativeAI({
+        apiKey: activeModel.apiKey || process.env.GEMINI_API_KEY,
+      });
+      modelInstance = google(activeModel.model);
+    }
 
     // ── DEMO-ONLY SYSTEM PROMPT (no tools, strict funnel focus) ──
     const systemPrompt = `You are Nexus AI — an elite autonomous crypto trading agent. You are speaking to a prospective user on the marketing landing page of Nexus Terminal.
@@ -107,7 +123,7 @@ Trade Statistics: ${demoTrades.length} demo trades recorded.`;
     // Use await result.text (Promise) — same pattern as chat.js.
     // The textStream async iterable can fail silently on Vercel serverless.
     const result = streamText({
-      model: google('gemini-3-flash-preview'),
+      model: modelInstance,
       system: systemPrompt,
       messages: safeMessages,
     });

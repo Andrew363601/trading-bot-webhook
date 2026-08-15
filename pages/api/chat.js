@@ -3,6 +3,7 @@ export const maxDuration = 300;
 
 // pages/api/chat.js
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenAI } from '@ai-sdk/openai';
 import { streamText, tool, stepCountIs } from 'ai';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
@@ -10,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 import { recordUsage } from '../../lib/usage-meter';
+import { getActiveModel } from '../../lib/model-router';
 import jwt from 'jsonwebtoken';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -53,9 +55,21 @@ export default async function handler(req, res) {
     
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    const google = createGoogleGenerativeAI({
-      apiKey: process.env.GEMINI_API_KEY,
-    });
+    const activeModel = await getActiveModel(supabase);
+
+    let modelInstance;
+    if (activeModel.provider === 'openrouter') {
+      const openai = createOpenAI({
+        apiKey: activeModel.apiKey || process.env.OPENROUTER_API_KEY || 'dummy',
+        baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
+      });
+      modelInstance = openai(activeModel.model);
+    } else {
+      const google = createGoogleGenerativeAI({
+        apiKey: activeModel.apiKey || process.env.GEMINI_API_KEY,
+      });
+      modelInstance = google(activeModel.model);
+    }
 
     const authHeader = req.headers.authorization;
     let tenantId = null;
@@ -417,7 +431,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
     `;
 
     const result = await streamText({
-      model: google('gemini-3-flash-preview'),
+      model: modelInstance,
       system: systemPrompt,
       messages: safeMessages, 
       maxSteps: 5,

@@ -4,6 +4,7 @@ import fs from 'fs';
 import { buildRadarChartUrl } from './lib/discord-chart.js';
 import { createClient } from '@supabase/supabase-js'; 
 import { recordUsage } from './lib/usage-meter.js';
+import { getActiveModel } from './lib/model-router.js';
 
 const app = express();
 app.use(express.json());
@@ -203,8 +204,8 @@ app.post('/api/wake', async (req, res) => {
             }
         }
 
-        console.log(`[AGENT CORTEX] Data acquired. Boot Gemini inference engine...`);
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`;
+        console.log(`[AGENT CORTEX] Data acquired. Boot LLM inference engine...`);
+        const activeModel = await getActiveModel(supabase);
 
         // Fetch tenant risk profile for AI context
         let riskContext = '';
@@ -333,25 +334,51 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Output ONLY raw, valid JSON.`;
         }
 
-        const payload = {
-            systemInstruction: { parts: [{ text: skillMemory }] },
-            contents: [{
-                role: "user",
-                parts: [{ text: instructionText }]
-            }],
-            generationConfig: { responseMimeType: "application/json" }
-        };
+        let llmUrl, llmHeaders, llmBody;
+        if (activeModel.provider === 'openrouter') {
+            const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+            llmUrl = `${baseUrl}/chat/completions`;
+            llmHeaders = {
+                'Authorization': `Bearer ${activeModel.apiKey}`,
+                'Content-Type': 'application/json'
+            };
+            llmBody = {
+                model: activeModel.model,
+                messages: [
+                    { role: 'system', content: skillMemory },
+                    { role: 'user', content: instructionText }
+                ],
+                response_format: { type: 'json_object' }
+            };
+        } else {
+            llmUrl = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel.model}:generateContent?key=${activeModel.apiKey || geminiKey}`;
+            llmHeaders = { 'Content-Type': 'application/json' };
+            llmBody = {
+                systemInstruction: { parts: [{ text: skillMemory }] },
+                contents: [{
+                    role: "user",
+                    parts: [{ text: instructionText }]
+                }],
+                generationConfig: { responseMimeType: "application/json" }
+            };
+        }
 
-        const llmResp = await fetch(geminiUrl, {
+        const llmResp = await fetch(llmUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            headers: llmHeaders,
+            body: JSON.stringify(llmBody)
         });
 
-        if (!llmResp.ok) throw new Error(`Gemini API Error: ${await llmResp.text()}`);
+        if (!llmResp.ok) throw new Error(`AI API Error (${activeModel.provider}): ${await llmResp.text()}`);
 
         const llmData = await llmResp.json();
-        let rawText = llmData.candidates[0].content.parts[0].text;
+        let rawText = activeModel.provider === 'openrouter'
+            ? llmData.choices[0]?.message?.content
+            : llmData.candidates[0]?.content?.parts[0]?.text;
+
+        if (!rawText) {
+            throw new Error(`Empty response content returned from ${activeModel.provider}`);
+        }
         
         // 🟢 THE FIX: Aggressive JSON Extractor to prevent trailing bracket crashes
         const firstBrace = rawText.indexOf('{');
@@ -851,18 +878,45 @@ app.post('/api/autopsy', async (req, res) => {
         }
         `;
 
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${geminiKey}`;
-        const payload = {
-            systemInstruction: { parts: [{ text: "You are an AI post-mortem trading analyzer. Output ONLY raw, valid JSON." }] },
-            contents: [{ role: "user", parts: [{ text: autopsyPrompt }] }],
-            generationConfig: { responseMimeType: "application/json" }
-        };
+        const activeModel = await getActiveModel(supabase);
+        let llmUrl, llmHeaders, llmBody;
 
-        const llmResp = await fetch(geminiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        if (!llmResp.ok) throw new Error(`Gemini API Error: ${await llmResp.text()}`);
+        if (activeModel.provider === 'openrouter') {
+            const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+            llmUrl = `${baseUrl}/chat/completions`;
+            llmHeaders = {
+                'Authorization': `Bearer ${activeModel.apiKey}`,
+                'Content-Type': 'application/json'
+            };
+            llmBody = {
+                model: activeModel.model,
+                messages: [
+                    { role: 'system', content: "You are an AI post-mortem trading analyzer. Output ONLY raw, valid JSON." },
+                    { role: 'user', content: autopsyPrompt }
+                ],
+                response_format: { type: 'json_object' }
+            };
+        } else {
+            llmUrl = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel.model}:generateContent?key=${activeModel.apiKey || geminiKey}`;
+            llmHeaders = { 'Content-Type': 'application/json' };
+            llmBody = {
+                systemInstruction: { parts: [{ text: "You are an AI post-mortem trading analyzer. Output ONLY raw, valid JSON." }] },
+                contents: [{ role: "user", parts: [{ text: autopsyPrompt }] }],
+                generationConfig: { responseMimeType: "application/json" }
+            };
+        }
+
+        const llmResp = await fetch(llmUrl, { method: 'POST', headers: llmHeaders, body: JSON.stringify(llmBody) });
+        if (!llmResp.ok) throw new Error(`AI API Error (${activeModel.provider}): ${await llmResp.text()}`);
 
         const llmData = await llmResp.json();
-        let rawText = llmData.candidates[0].content.parts[0].text;
+        let rawText = activeModel.provider === 'openrouter'
+            ? llmData.choices[0]?.message?.content
+            : llmData.candidates[0]?.content?.parts[0]?.text;
+
+        if (!rawText) {
+            throw new Error(`Empty autopsy response returned from ${activeModel.provider}`);
+        }
         
         // 🟢 THE FIX: Aggressive JSON Extractor for Autopsy
         const firstBrace = rawText.indexOf('{');

@@ -5,6 +5,7 @@ import { Shield, Key, CheckCircle2, AlertCircle, ArrowLeft, Save, BrainCircuit }
 import Link from 'next/link';
 import AuthGuard from '../components/AuthGuard';
 import { useSupabaseClient } from '@supabase/auth-helpers-react';
+import AiModelSelector from '../components/AiModelSelector';
 
 export default function Settings() {
     return (
@@ -35,6 +36,7 @@ function SettingsContent() {
     });
     const [riskSaving, setRiskSaving] = useState(false);
     const [tenantId, setTenantId] = useState(null);
+    const [isAdmin, setIsAdmin] = useState(false);
 
     // Agent settings state
     const [agentSettings, setAgentSettings] = useState({
@@ -58,12 +60,26 @@ function SettingsContent() {
                 // Fetch API Keys — resolve tenant_id via tenant_users first
                 const { data: userLink } = await supabase
                     .from('tenant_users')
-                    .select('tenant_id')
+                    .select('tenant_id, role')
                     .eq('auth_user_id', session.user.id)
                     .single();
 
                 const actualTenantId = userLink?.tenant_id || session.user.id;
                 setTenantId(actualTenantId);
+
+                // Check Admin access (via role or billing_tier)
+                let userIsAdmin = userLink?.role?.toUpperCase() === 'ADMIN';
+                if (!userIsAdmin && actualTenantId) {
+                    const { data: tenantData } = await supabase
+                        .from('tenants')
+                        .select('billing_tier')
+                        .eq('id', actualTenantId)
+                        .single();
+                    if (tenantData?.billing_tier?.toUpperCase() === 'ADMIN') {
+                        userIsAdmin = true;
+                    }
+                }
+                setIsAdmin(userIsAdmin);
 
                 const { data: apiKeys, error: keysError } = await supabase
                     .from('api_keys_vault')
@@ -589,6 +605,9 @@ function SettingsContent() {
                         Save Agent Settings
                     </button>
                 </div>
+
+                {/* AI Model Configuration (Admin Only) */}
+                {isAdmin && <AiModelSelector />}
 
                 {/* Quick Start Guide Section */}
                 <div className="bg-slate-900/50 border border-white/5 p-8 rounded-3xl space-y-6 backdrop-blur-xl">
