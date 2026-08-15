@@ -4,7 +4,6 @@ export const maxDuration = 300;
 // pages/api/genetic-optimizer.js
 import { createClient } from '@supabase/supabase-js';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { createOpenAI } from '@ai-sdk/openai';
 import { getActiveModel } from '../../lib/model-router';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';

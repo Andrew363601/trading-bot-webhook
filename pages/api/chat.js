@@ -3,7 +3,6 @@ export const maxDuration = 300;
 
 // pages/api/chat.js
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { createOpenAI } from '@ai-sdk/openai';
 import { streamText, tool, stepCountIs } from 'ai';
 import { createClient } from '@supabase/supabase-js';
 import { z } from 'zod';
@@ -56,20 +55,6 @@ export default async function handler(req, res) {
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     const activeModel = await getActiveModel(supabase);
-
-    let modelInstance;
-    if (activeModel.provider === 'openrouter') {
-      const openai = createOpenAI({
-        apiKey: activeModel.apiKey || process.env.OPENROUTER_API_KEY || 'dummy',
-        baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-      });
-      modelInstance = openai(activeModel.model);
-    } else {
-      const google = createGoogleGenerativeAI({
-        apiKey: activeModel.apiKey || process.env.GEMINI_API_KEY,
-      });
-      modelInstance = google(activeModel.model);
-    }
 
     const authHeader = req.headers.authorization;
     let tenantId = null;
@@ -430,15 +415,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
     After Q8, call \`saveRiskAssessment\` with ALL collected data. Then say: "✅ Your risk profile is complete! You can always update it in Settings. Now follow the Quick Start guide on screen to explore the dashboard."
     `;
 
-    const result = await streamText({
-      model: modelInstance,
-      system: systemPrompt,
-      messages: safeMessages, 
-      maxSteps: 5,
-      stopWhen: stepCountIs(5),
-      timeout: { totalMs: 290000 },
-
-      tools: {
+    const tools = {
         queryTradeLedger: tool({
           description: 'Queries the complete historical trade ledger to calculate PnL, Win Rate, and filter by asset, strategy, or timeframe.',
           parameters: z.object({
@@ -942,13 +919,33 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
             return { url: getCoinbaseAffiliateLink('onboarding_chat') };
           }
         }),
-      },
-    });
+    };
 
-    // 🟢 THE FIX: Use result.text (Promise<string>) which waits for ALL steps to complete
-    // textStream only emits text from the first step — when AI calls a tool in step 1,
-    // no text is emitted and textStream closes before the AI generates its response in step 2.
-    const fullText = await result.text;
+    let fullText;
+    if (activeModel.provider === 'openrouter') {
+      fullText = await callOpenRouterWithTools(
+        activeModel,
+        systemPrompt,
+        safeMessages,
+        tools
+      );
+    } else {
+      const google = createGoogleGenerativeAI({
+        apiKey: activeModel.apiKey || process.env.GEMINI_API_KEY,
+      });
+      const modelInstance = google(activeModel.model);
+      const result = await streamText({
+        model: modelInstance,
+        system: systemPrompt,
+        messages: safeMessages,
+        maxSteps: 5,
+        stopWhen: stepCountIs(5),
+        timeout: { totalMs: 290000 },
+        tools: tools,
+      });
+      fullText = await result.text;
+    }
+
     res.setHeader('Content-Type', 'text/plain');
     res.write(fullText);
     res.end();
@@ -962,4 +959,125 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
       details: err.cause ? String(err.cause) : "No underlying cause provided by SDK" 
     });
   }
+}
+
+// ── OpenRouter Tool Loop ──
+async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tools) {
+  const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+
+  // Convert Vercel AI SDK messages to OpenAI format
+  function toOpenAiMessages(msgs) {
+    const result = [];
+    if (systemPrompt) result.push({ role: 'system', content: systemPrompt });
+    for (const m of msgs) {
+      if (m.role === 'tool') {
+        result.push({ role: 'tool', tool_call_id: m.toolCallId, content: String(m.content) });
+      } else {
+        result.push({ role: m.role, content: m.content || '' });
+      }
+    }
+    return result;
+  }
+
+  // Convert tool definitions to OpenAI format
+  function toOpenAiTools(toolDefs) {
+    return Object.entries(toolDefs).map(([name, def]) => {
+      let parameters = def.parameters;
+      // If parameters is a zod schema (or has json schema), handle it cleanly
+      if (parameters && typeof parameters._def !== 'undefined') {
+        // Fallback parameter schema wrapper if needed
+        parameters = { type: 'object', properties: {} };
+      }
+      return {
+        type: 'function',
+        function: {
+          name,
+          description: def.description,
+          parameters: def.parameters,
+        },
+      };
+    });
+  }
+
+  const openAiMessages = toOpenAiMessages(messages);
+  const openAiTools = Object.keys(tools).length > 0 ? toOpenAiTools(tools) : undefined;
+
+  let currentMessages = [...openAiMessages];
+
+  for (let step = 0; step < 5; step++) {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${activeModel.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: activeModel.model,
+        messages: currentMessages,
+        ...(openAiTools ? { tools: openAiTools, tool_choice: 'auto' } : {}),
+      }),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`OpenRouter API error ${resp.status}: ${errText}`);
+    }
+
+    const data = await resp.json();
+    const choice = data.choices?.[0];
+    if (!choice) throw new Error('OpenRouter returned no choices');
+
+    const msg = choice.message;
+
+    if (msg.tool_calls && msg.tool_calls.length > 0) {
+      // Append assistant message with tool calls
+      currentMessages.push({
+        role: 'assistant',
+        content: msg.content || null,
+        tool_calls: msg.tool_calls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.function.name, arguments: tc.function.arguments },
+        })),
+      });
+
+      // Execute each tool
+      for (const tc of msg.tool_calls) {
+        const toolDef = tools[tc.function.name];
+        if (!toolDef) {
+          currentMessages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: `Error: Unknown tool ${tc.function.name}`,
+          });
+          continue;
+        }
+        let args;
+        try {
+          args = JSON.parse(tc.function.arguments);
+        } catch {
+          args = {};
+        }
+        try {
+          const result = await toolDef.execute(args);
+          currentMessages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: typeof result === 'string' ? result : JSON.stringify(result),
+          });
+        } catch (err) {
+          currentMessages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: `Error: ${err.message}`,
+          });
+        }
+      }
+    } else {
+      // Final text response
+      return msg.content || '';
+    }
+  }
+
+  return '[Max tool steps reached]';
 }

@@ -6,7 +6,6 @@
 export const maxDuration = 60;
 
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { createOpenAI } from '@ai-sdk/openai';
 import { streamText } from 'ai';
 import { createClient } from '@supabase/supabase-js';
 import { getActiveModel } from '../../lib/model-router';
@@ -68,20 +67,6 @@ export default async function handler(req, res) {
 
     const activeModel = await getActiveModel(supabase);
 
-    let modelInstance;
-    if (activeModel.provider === 'openrouter') {
-      const openai = createOpenAI({
-        apiKey: activeModel.apiKey || process.env.OPENROUTER_API_KEY || 'dummy',
-        baseURL: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-      });
-      modelInstance = openai(activeModel.model);
-    } else {
-      const google = createGoogleGenerativeAI({
-        apiKey: activeModel.apiKey || process.env.GEMINI_API_KEY,
-      });
-      modelInstance = google(activeModel.model);
-    }
-
     // ── DEMO-ONLY SYSTEM PROMPT (no tools, strict funnel focus) ──
     const systemPrompt = `You are Nexus AI — an elite autonomous crypto trading agent. You are speaking to a prospective user on the marketing landing page of Nexus Terminal.
 
@@ -119,16 +104,22 @@ Active Strategies: ${JSON.stringify(demoConfigs.map(c => ({ strategy: c.strategy
 Recent Logs: ${JSON.stringify(demoLogs.slice(0, 5).map(l => `${l.agent_name}: ${l.log_message}`))}
 Trade Statistics: ${demoTrades.length} demo trades recorded.`;
 
-    // ── TEXT-ONLY STREAM (NO TOOLS REGISTERED) ──
-    // Use await result.text (Promise) — same pattern as chat.js.
-    // The textStream async iterable can fail silently on Vercel serverless.
-    const result = streamText({
-      model: modelInstance,
-      system: systemPrompt,
-      messages: safeMessages,
-    });
+    let fullText;
+    if (activeModel.provider === 'openrouter') {
+      fullText = await callOpenRouter(activeModel, systemPrompt, safeMessages);
+    } else {
+      const google = createGoogleGenerativeAI({
+        apiKey: activeModel.apiKey || process.env.GEMINI_API_KEY,
+      });
+      const modelInstance = google(activeModel.model);
+      const result = streamText({
+        model: modelInstance,
+        system: systemPrompt,
+        messages: safeMessages,
+      });
+      fullText = await result.text;
+    }
 
-    const fullText = await result.text;
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.write(fullText);
     res.end();
@@ -138,4 +129,33 @@ Trade Statistics: ${demoTrades.length} demo trades recorded.`;
     if (!res.headersSent) return res.status(200).json({ error: 'AI temporarily unavailable.' });
     res.end();
   }
+}
+
+// ── OpenRouter Simple Text Completion ──
+async function callOpenRouter(activeModel, systemPrompt, messages) {
+  const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+  const openAiMessages = [
+    ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+    ...messages.map(m => ({ role: m.role, content: m.content || '' })),
+  ];
+
+  const resp = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${activeModel.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: activeModel.model,
+      messages: openAiMessages,
+    }),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`OpenRouter API error ${resp.status}: ${errText}`);
+  }
+
+  const data = await resp.json();
+  return data.choices?.[0]?.message?.content || '';
 }
