@@ -272,6 +272,74 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
     } catch (e) { return { indicators: {}, crossAsset: {}, orderBook: {}, derivativesData: {} }; }
 }
 
+// ── CORE MEMORY SCORING HELPERS ──
+function wordOverlap(textA, textB) {
+    if (!textA || !textB) return 0;
+    const wordsA = new Set(textA.toLowerCase().split(/\W+/).filter(Boolean));
+    const wordsB = new Set(textB.toLowerCase().split(/\W+/).filter(Boolean));
+    const intersection = new Set([...wordsA].filter(w => wordsB.has(w)));
+    const union = new Set([...wordsA, ...wordsB]);
+    return union.size > 0 ? intersection.size / union.size : 0;
+}
+
+async function getScoredMemories(tenantId, asset, currentRegime) {
+    try {
+        const { data: allMemories } = await supabase
+            .from('hermes_core_memory')
+            .select('id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at')
+            .eq('asset', asset)
+            .eq('tenant_id', tenantId)
+            .order('created_at', { ascending: false });
+
+        if (!allMemories || allMemories.length === 0) {
+            return [];
+        }
+
+        const now = Date.now();
+        const MAX_TRACKED_PNL = 500;
+        const MAX_RECURRENCE = 5;
+
+        // Score each memory
+        const scored = allMemories.map(m => {
+            // 3a) Recency score (0-100 points, decays 1 point per day)
+            const ageHours = (now - new Date(m.created_at).getTime()) / (1000 * 60 * 60);
+            const recency = Math.max(0, 100 - (ageHours / 24));
+
+            // 3b) PnL impact score (0-100 points, capped at $500)
+            const absPnl = Math.abs(parseFloat(m.pnl) || 0);
+            const pnlImpact = Math.min(absPnl, MAX_TRACKED_PNL) / MAX_TRACKED_PNL * 100;
+
+            // 3c) Regime match score (0 or 50 points)
+            const regimeMatch = (currentRegime && m.regime_at_close === currentRegime) ? 50 : 0;
+
+            // 3d) LIVE weight (0 or 50 points)
+            const liveWt = (m.execution_mode === 'LIVE') ? 50 : 0;
+
+            // 3e) Loss bonus (0 or 25 points)
+            const lossWt = (m.win_loss === 'LOSS') ? 25 : 0;
+
+            const total = recency + pnlImpact + regimeMatch + liveWt + lossWt;
+
+            return { ...m, score: Math.round(total) };
+        });
+
+        // 3f) Recurrence bonus (second pass — count similar lessons)
+        for (const m of scored) {
+            const similarCount = scored.filter(other =>
+                wordOverlap(m.lesson_learned, other.lesson_learned) > 0.5
+            ).length;
+            m.score += Math.min(similarCount - 1, MAX_RECURRENCE) * 10;
+        }
+
+        // Sort by score descending, take top 3
+        scored.sort((a, b) => b.score - a.score);
+        return scored.slice(0, 3);
+    } catch (e) {
+        console.error(`[MEMORY SCORING] Error for ${asset}:`, e.message);
+        return [];
+    }
+}
+
 const tenantRAM = new Map(); // tenantId => { configs, lastMathRun, isProcessingMath, activeProductIds, trapLocks }
 
 function getTenantState(tenantId) {
@@ -522,20 +590,18 @@ export async function startSniper(tenantId) {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
                         console.log(`[SNIPER-${tenantId}] Math signal detected for ${config.asset}. Fetching Core Memory & Waking Hermes...`);
                         
+                        const currentRegime = config.parameters?.regime 
+                            || microstructure?.macro_regime 
+                            || null;
+
+                        const scoredMemories = await getScoredMemories(tenantId, config.asset, currentRegime);
+
                         let memoryString = "No core memory available for this asset.";
-                        try {
-                            const { data: memories } = await supabase
-                                .from('hermes_core_memory')
-                                .select('win_loss, tools_used, lesson_learned')
-                                .eq('asset', config.asset)
-                                .eq('tenant_id', tenantId)
-                                .order('created_at', { ascending: false })
-                                .limit(3);
-                            
-                            if (memories && memories.length > 0) {
-                                memoryString = memories.map(m => `[Past ${m.win_loss} | Tools: ${m.tools_used}]: ${m.lesson_learned}`).join('\n');
-                            }
-                        } catch(e) { console.error(`[SNIPER-${tenantId}] MEMORY FETCH ERROR`, e.message); }
+                        if (scoredMemories.length > 0) {
+                            memoryString = scoredMemories.map(m =>
+                                `[Past ${m.win_loss} | Score: ${m.score} | Tools: ${m.tools_used}]: ${m.lesson_learned}`
+                            ).join('\n');
+                        }
 
                         let activeTrapMessage = "";
                         if (!openTrade && config.trap_side && config.trap_price) {
