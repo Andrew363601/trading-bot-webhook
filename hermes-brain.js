@@ -310,6 +310,10 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             instructionText += `⚠️ CRITICAL: There is already an ACTIVE ${activeOpenTrade.side} trade open for ${asset} at $${activeOpenTrade.entry_price} (ID: ${activeOpenTrade.id}). You MUST NOT approve any new entry signals for ${asset}. Only manage the existing position — output HOLD, CLOSE, or adjust TP/SL if needed.\n\n`;
         }
         
+        if (message.includes('CORE MEMORY (Past Lessons') && message.includes('Score:')) {
+            instructionText += `\n\n--- SCORING CONTEXT ---\nThe 3 memories above are scored by: recency, PnL magnitude, regime match, LIVE weight, and loss bonus. The highest-score memory is the most relevant lesson for this exact moment. Use it as your primary reference when forming your thesis. Read each memory's thesis context to understand what was attempted before — then decide if this signal is the same pattern or a new one.\n\n`;
+        }
+        
         // Also inject contract cost analysis for ANY entry evaluation (new trades too)
         if (!isReEvaluation && qty && !activeOpenTrade) {
             const feeRate = parseFloat(tenantAgentSettings.agent_taker_fee_rate) || 0.0008;
