@@ -286,7 +286,7 @@ async function getScoredMemories(tenantId, asset, currentRegime) {
     try {
         const { data: allMemories } = await supabase
             .from('hermes_core_memory')
-            .select('id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at')
+            .select('id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at, working_thesis')
             .eq('asset', asset)
             .eq('tenant_id', tenantId)
             .order('created_at', { ascending: false });
@@ -599,7 +599,7 @@ export async function startSniper(tenantId) {
                         let memoryString = "No core memory available for this asset.";
                         if (scoredMemories.length > 0) {
                             memoryString = scoredMemories.map(m =>
-                                `[Past ${m.win_loss} | Score: ${m.score} | Tools: ${m.tools_used}]: ${m.lesson_learned}`
+                                `[Past ${m.win_loss} | Score: ${m.score} | Thesis: ${m.working_thesis || 'No thesis'}]: ${m.lesson_learned}`
                             ).join('\n');
                         }
 

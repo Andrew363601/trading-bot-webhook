@@ -824,7 +824,7 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
 
 // 🟢 THE EVOLUTION ENDPOINT (Agentic Reflection Loop)
 app.post('/api/autopsy', async (req, res) => {
-    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot } = req.body;
+    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis } = req.body;
     console.log(`[AGENT CORTEX] Initiating Autopsy for ${asset}. PnL: $${pnl} (${execution_mode || 'UNKNOWN'})`);
     
     res.status(200).json({ status: "Autopsy initiated." });
@@ -866,19 +866,29 @@ app.post('/api/autopsy', async (req, res) => {
         A trade just closed for ${asset}.
         Entry: $${entry_price} | Exit: $${exit_price} | PnL: $${pnl} (${winLoss})
         Exit Trigger: ${trigger}
-        
+
+        WORKING THESIS AT ENTRY:
+        ${working_thesis || "No thesis recorded."}
+
         ROLLING LEDGER (Your thoughts during the trade):
         ${rolling_ledger || "No ledger recorded."}
-        
+
         ${marketContext}
-        
-        Analyze this trade. What validator tools were mentioned in the ledger? Why did it win or lose?
-        Extract ONE concise, quantitative behavioral rule to improve future performance for this specific asset. Do not give generic advice. Give hard mathematical/structural rules based on the ledger context.
-        
+
+        Analyze this trade. What validator tools were mentioned in the ledger?
+        Why did it win or lose?
+        Evaluate the original working thesis — was the thesis correct even if
+        the trade lost, or flawed even if it won?
+        Extract ONE concise, quantitative behavioral rule to improve future
+        performance for this specific asset. Do not give generic advice. Give
+        hard mathematical/structural rules based on the ledger context.
+
         Output raw JSON format exactly:
         {
           "tools_used": "Comma separated list of tools mentioned (e.g., Fibonacci, Fractals, Volume Nodes, Open Interest)",
-          "lesson_learned": "The specific quantitative rule extracted."
+          "lesson_learned": "The specific quantitative rule extracted.",
+          "thesis_accurate": true or false,
+          "thesis_summary": "One-line summary of what the thesis was trying to capture"
         }
         `;
 
@@ -942,6 +952,7 @@ app.post('/api/autopsy', async (req, res) => {
             win_loss: winLoss,
             tools_used: autopsyJson.tools_used || "None",
             lesson_learned: autopsyJson.lesson_learned,
+            working_thesis: working_thesis || null,
             // Enriched dissection fields (paper + live) — what the trade actually
             // did and what the market looked like when it closed.
             entry_price: entry_price ?? null,
