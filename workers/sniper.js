@@ -282,11 +282,11 @@ function wordOverlap(textA, textB) {
     return union.size > 0 ? intersection.size / union.size : 0;
 }
 
-async function getScoredMemories(tenantId, asset, currentRegime) {
+async function getScoredMemories(tenantId, asset, currentRegime, signalDirection) {
     try {
         const { data: allMemories } = await supabase
             .from('hermes_core_memory')
-            .select('id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at, working_thesis')
+            .select('id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at, working_thesis, thesis_accurate')
             .eq('asset', asset)
             .eq('tenant_id', tenantId)
             .order('created_at', { ascending: false });
@@ -318,7 +318,24 @@ async function getScoredMemories(tenantId, asset, currentRegime) {
             // 3e) Loss bonus (0 or 25 points)
             const lossWt = (m.win_loss === 'LOSS') ? 25 : 0;
 
-            const total = recency + pnlImpact + regimeMatch + liveWt + lossWt;
+            // 3g) Working thesis similarity (0-50 points)
+            // Matches past thesis direction against current signal direction
+            let thesisSim = 0;
+            if (m.working_thesis && signalDirection) {
+                const directionWords = signalDirection === 'BUY'
+                    ? 'long buy approve bull'
+                    : 'short sell veto bear';
+                thesisSim = wordOverlap(m.working_thesis.toLowerCase(), directionWords) * 50;
+            }
+
+            // 3h) Thesis accuracy weight (0 or 15 points)
+            // thesis_accurate: false → wrong thesis, extra weight to learn harder
+            // thesis_accurate: true  → good thesis, confirm the pattern
+            const thesisAccWt = m.thesis_accurate === false ? 15 :
+                                m.thesis_accurate === true ? 10 : 0;
+
+            const total = recency + pnlImpact + regimeMatch + liveWt + lossWt
+                        + thesisSim + thesisAccWt;
 
             return { ...m, score: Math.round(total) };
         });
@@ -594,12 +611,12 @@ export async function startSniper(tenantId) {
                             || microstructure?.macro_regime 
                             || null;
 
-                        const scoredMemories = await getScoredMemories(tenantId, config.asset, currentRegime);
+                        const scoredMemories = await getScoredMemories(tenantId, config.asset, currentRegime, normalizedSignal);
 
                         let memoryString = "No core memory available for this asset.";
                         if (scoredMemories.length > 0) {
                             memoryString = scoredMemories.map(m =>
-                                `[Past ${m.win_loss} | Score: ${m.score} | Thesis: ${m.working_thesis || 'No thesis'}]: ${m.lesson_learned}`
+                                `[Past ${m.win_loss} | Score: ${m.score} | Thesis: ${m.working_thesis || 'No thesis'} | Accurate: ${m.thesis_accurate ?? 'N/A'}]: ${m.lesson_learned}`
                             ).join('\n');
                         }
 

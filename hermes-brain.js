@@ -953,6 +953,8 @@ app.post('/api/autopsy', async (req, res) => {
             tools_used: autopsyJson.tools_used || "None",
             lesson_learned: autopsyJson.lesson_learned,
             working_thesis: working_thesis || null,
+            thesis_accurate: autopsyJson.thesis_accurate ?? null,
+            thesis_summary: autopsyJson.thesis_summary || null,
             // Enriched dissection fields (paper + live) — what the trade actually
             // did and what the market looked like when it closed.
             entry_price: entry_price ?? null,
