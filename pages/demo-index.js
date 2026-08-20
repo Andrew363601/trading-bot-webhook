@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
-import { Activity, ChevronRight, TrendingUp } from 'lucide-react';
+import { Activity, ChevronRight, TrendingUp, ExternalLink } from 'lucide-react';
 import { createClient } from '@supabase/supabase-js';
 import WebhookCreator from '../components/WebhookCreator';
 import { fetchSiteContent, FALLBACK_CONTENT } from '../lib/site-content';
@@ -26,6 +26,8 @@ export default function LandingPage() {
   const [content, setContent] = useState(FALLBACK_CONTENT);
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [showSignupPopup, setShowSignupPopup] = useState(false);
+  const [executionMode, setExecutionMode] = useState('ALL');
+  const [expandedTrade, setExpandedTrade] = useState(null);
 
   useEffect(() => {
     fetchSiteContent(supabaseReadOnly).then(setContent);
@@ -139,6 +141,31 @@ export default function LandingPage() {
     let base = String(symbol).toUpperCase().replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '').split('-')[0];
     return FUTURES_CODE_MAP[base] || base;
   };
+
+  const strategyModeMap = {};
+  demoConfigs.forEach(c => { strategyModeMap[c.strategy] = c.execution_mode || 'PAPER'; });
+
+  const filteredTrades = executionMode === 'ALL'
+    ? demoTrades
+    : demoTrades.filter(t => {
+        const mode = strategyModeMap[t.strategy_id];
+        return mode === executionMode;
+      });
+
+  const modeStats = (() => {
+    const all = filteredTrades;
+    const closed = all.filter(t => t.exit_price !== null && t.exit_price !== undefined);
+    const open = all.filter(t => t.exit_price === null || t.exit_price === undefined);
+    if (closed.length > 0) {
+      const wins = closed.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+      return { winRate: ((wins / closed.length) * 100).toFixed(1) + '%', totalTrades: closed.length, totalPnL: `$${closed.reduce((s, t) => s + (parseFloat(t.pnl) || 0), 0).toFixed(2)}`, mode: executionMode };
+    }
+    if (open.length > 0) {
+      const greens = open.filter(t => (parseFloat(t.current_roe ?? t.pnl) || 0) > 0).length;
+      return { winRate: ((greens / open.length) * 100).toFixed(1) + '%', totalTrades: open.length, totalPnL: `$${open.reduce((s, t) => s + (parseFloat(t.pnl) || 0), 0).toFixed(2)}`, mode: executionMode };
+    }
+    return null;
+  })();
 
   // Build the terminal feed. Two problems we fix here:
   //   1) Ensure strict newest-first chronological order (the API can return
@@ -273,6 +300,7 @@ export default function LandingPage() {
                 <a href="#features" className="hover:text-cyan-400 transition-colors">Features</a>
                 <a href="#architecture" className="hover:text-cyan-400 transition-colors">Architecture</a>
                 <a href="#pricing" className="hover:text-cyan-400 transition-colors">Pricing</a>
+                <a href="#trades" className="hover:text-cyan-400 transition-colors">Trade Log</a>
               </div>
             </div>
             <div className="flex items-center gap-4">
@@ -421,17 +449,77 @@ export default function LandingPage() {
                 </div>
 
                 {/* Dummy Account Stats Header */}
-                <div className="bg-slate-900/50 px-6 py-4 border-b border-white/5 flex justify-between items-center">
-                    <div className="flex gap-8">
-                        <div>
-                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">{demoStats.live ? 'Live Win Rate' : 'Win Rate'}</p>
-                            <p className="text-lg font-black text-emerald-400 font-mono">{demoStats.winRate}</p>
-                        </div>
-                        <div>
-                            <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">{demoStats.live ? 'Unrealized PnL' : 'Total PnL'}</p>
-                            <p className="text-lg font-black text-indigo-400 font-mono">{demoStats.totalPnL}</p>
-                        </div>
+                <div className="bg-slate-900/50 px-6 py-4 border-b border-white/5 flex flex-wrap justify-between items-center gap-4">
+                    {/* Execution Mode Toggle */}
+                    <div className="flex items-center bg-slate-950/70 p-1 rounded-lg border border-white/5">
+                        <button
+                            type="button"
+                            onClick={() => setExecutionMode('ALL')}
+                            className={`px-2.5 py-1 rounded text-[9px] font-black uppercase tracking-widest transition-all ${
+                                executionMode === 'ALL'
+                                    ? 'bg-indigo-600 text-white shadow-lg'
+                                    : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                        >
+                            ALL
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setExecutionMode('LIVE')}
+                            className={`relative px-2.5 py-1 rounded text-[9px] font-black uppercase tracking-widest transition-all ${
+                                executionMode === 'LIVE'
+                                    ? 'bg-emerald-500/20 text-emerald-400 shadow-[inset_0_0_10px_rgba(52,211,153,0.15)]'
+                                    : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                        >
+                            <span className="flex items-center gap-1.5">
+                                LIVE
+                                <span className={`inline-block w-1.5 h-1.5 rounded-full ${executionMode === 'LIVE' ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-600/50'}`} />
+                            </span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setExecutionMode('PAPER')}
+                            className={`px-2.5 py-1 rounded text-[9px] font-black uppercase tracking-widest transition-all ${
+                                executionMode === 'PAPER'
+                                    ? 'bg-amber-500/20 text-amber-400 shadow-[inset_0_0_10px_rgba(251,191,36,0.15)]'
+                                    : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                        >
+                            PAPER
+                        </button>
                     </div>
+
+                    <div className="flex gap-6 items-center">
+                        {modeStats ? (
+                            <>
+                                <div>
+                                    <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">Win Rate</p>
+                                    <p className="text-lg font-black text-emerald-400 font-mono">{modeStats.winRate}</p>
+                                </div>
+                                <div>
+                                    <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">PnL</p>
+                                    <p className="text-lg font-black text-indigo-400 font-mono">{modeStats.totalPnL}</p>
+                                </div>
+                                <div>
+                                    <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">Closed Trades</p>
+                                    <p className="text-lg font-black text-white font-mono">{modeStats.totalTrades}</p>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <div>
+                                    <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">{demoStats.live ? 'Live Win Rate' : 'Win Rate'}</p>
+                                    <p className="text-lg font-black text-emerald-400 font-mono">{demoStats.winRate}</p>
+                                </div>
+                                <div>
+                                    <p className="text-[8px] text-slate-500 uppercase font-black tracking-widest mb-1">{demoStats.live ? 'Unrealized PnL' : 'Total PnL'}</p>
+                                    <p className="text-lg font-black text-indigo-400 font-mono">{demoStats.totalPnL}</p>
+                                </div>
+                            </>
+                        )}
+                    </div>
+
                     {activeDemoTrade && (
                         <div className="flex items-center gap-3 bg-indigo-500/10 border border-indigo-500/20 px-4 py-2 rounded-xl">
                             <Activity size={14} className="text-indigo-400 animate-pulse" />
@@ -553,6 +641,193 @@ export default function LandingPage() {
                     <p className="text-slate-500 font-mono text-sm uppercase tracking-widest">No active strategy intelligence detected for demo.</p>
                 </div>
             )}
+          </div>
+        </div>
+      </div>
+
+      {/* 🆕 Trade Log — Public Track Record */}
+      <div id="trades" className="py-24 bg-slate-900 border-y border-slate-800">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center mb-12">
+            <h2 className="text-cyan-400 font-semibold tracking-wide uppercase">Live Track Record</h2>
+            <p className="mt-2 text-4xl font-extrabold text-white">Trade Execution Log</p>
+            <p className="mt-4 text-slate-400 max-w-2xl mx-auto">
+              Every trade our autonomous agents execute — open, closed, approved, or vetoed. Click any row to see the AI&apos;s reasoning.
+            </p>
+          </div>
+
+          {/* Mode filter toggle */}
+          <div className="flex justify-center mb-10">
+            <div className="flex items-center bg-slate-950/70 p-1 rounded-xl border border-white/5">
+              <button
+                type="button"
+                onClick={() => setExecutionMode('ALL')}
+                className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${
+                  executionMode === 'ALL'
+                    ? 'bg-indigo-600 text-white shadow-lg'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                ALL
+              </button>
+              <button
+                type="button"
+                onClick={() => setExecutionMode('LIVE')}
+                className={`relative px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${
+                  executionMode === 'LIVE'
+                    ? 'bg-emerald-500/20 text-emerald-400 shadow-[inset_0_0_10px_rgba(52,211,153,0.15)]'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                <span className="flex items-center gap-1.5">
+                  LIVE
+                  <span className={`inline-block w-1.5 h-1.5 rounded-full ${executionMode === 'LIVE' ? 'bg-emerald-400 animate-pulse' : 'bg-emerald-600/50'}`} />
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setExecutionMode('PAPER')}
+                className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${
+                  executionMode === 'PAPER'
+                    ? 'bg-amber-500/20 text-amber-400 shadow-[inset_0_0_10px_rgba(251,191,36,0.15)]'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                PAPER
+              </button>
+            </div>
+          </div>
+
+          {/* Summary bar showing filtered stats */}
+          {modeStats && (
+            <div className="max-w-3xl mx-auto mb-10 bg-slate-950/50 border border-white/5 rounded-2xl p-6 flex justify-around items-center">
+              <div className="text-center">
+                <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest mb-1">Win Rate</p>
+                <p className="text-2xl font-black text-emerald-400 font-mono">{modeStats.winRate}</p>
+              </div>
+              <div className="h-8 w-px bg-white/5" />
+              <div className="text-center">
+                <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest mb-1">Total PnL</p>
+                <p className="text-2xl font-black text-indigo-400 font-mono">{modeStats.totalPnL}</p>
+              </div>
+              <div className="h-8 w-px bg-white/5" />
+              <div className="text-center">
+                <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest mb-1">Total Trades</p>
+                <p className="text-2xl font-black text-white font-mono">{modeStats.totalTrades}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Trade list */}
+          {filteredTrades.length > 0 ? (
+            <div className="space-y-3">
+              {filteredTrades.slice(0, 50).map((trade, i) => {
+                const isOpen = trade.exit_price === null || trade.exit_price === undefined;
+                const pnlVal = parseFloat(trade.pnl) || 0;
+                const isWin = !isOpen && pnlVal > 0;
+                const isLoss = !isOpen && pnlVal <= 0;
+                const mode = strategyModeMap[trade.strategy_id] || 'PAPER';
+                const isExpanded = expandedTrade === i;
+                const reasonText = trade.reason || trade.working_thesis;
+
+                let rowBorderBg = 'border-slate-800 bg-slate-950/40';
+                if (isOpen) rowBorderBg = 'border-indigo-500/30 bg-indigo-500/5';
+                else if (isWin) rowBorderBg = 'border-emerald-500/20 bg-slate-950/40';
+                else if (isLoss) rowBorderBg = 'border-red-500/20 bg-slate-950/40';
+
+                return (
+                  <div
+                    key={i}
+                    onClick={() => setExpandedTrade(isExpanded ? null : i)}
+                    className={`border rounded-2xl p-4 sm:p-5 transition-all duration-200 cursor-pointer hover:border-slate-700 ${rowBorderBg}`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      {/* Left: mode badge + asset + side + strategy */}
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded tracking-wider ${
+                          mode === 'LIVE'
+                            ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                            : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                        }`}>
+                          {mode}
+                        </span>
+
+                        <span className="font-bold text-white text-base font-mono">
+                          {baseTicker(trade.symbol)}-PERP
+                        </span>
+
+                        <span className={`text-xs font-black uppercase px-2 py-0.5 rounded tracking-wide ${
+                          String(trade.side).toUpperCase() === 'BUY' || String(trade.side).toUpperCase() === 'LONG'
+                            ? 'bg-emerald-500/10 text-emerald-400'
+                            : 'bg-red-500/10 text-red-400'
+                        }`}>
+                          {trade.side}
+                        </span>
+
+                        <span className="text-xs text-slate-500 font-mono hidden md:inline">
+                          {humaniseStrategy(trade.strategy_id)}
+                        </span>
+                      </div>
+
+                      {/* Right: prices, PnL, open/closed, chevron */}
+                      <div className="flex items-center gap-6 justify-between sm:justify-end">
+                        <div className="text-right font-mono text-xs text-slate-400">
+                          <span>${trade.entry_price || '—'}</span>
+                          <span className="mx-1 text-slate-600">→</span>
+                          <span>{trade.exit_price ? `$${trade.exit_price}` : 'OPEN'}</span>
+                        </div>
+
+                        <div className="text-right min-w-[80px]">
+                          <span className={`text-sm font-bold font-mono ${
+                            pnlVal > 0 ? 'text-emerald-400' : (pnlVal < 0 ? 'text-red-400' : 'text-slate-300')
+                          }`}>
+                            {pnlVal > 0 ? '+' : ''}${pnlVal.toFixed(2)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
+                            isOpen
+                              ? 'bg-indigo-500/20 text-indigo-300'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {isOpen ? 'OPEN' : 'CLOSED'}
+                          </span>
+                          <ChevronRight className={`w-4 h-4 text-slate-500 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Expandable Reasoning Panel */}
+                    {isExpanded && (
+                      <div className="mt-4 pt-4 border-t border-slate-800/80 bg-indigo-950/20 -mx-4 -mb-4 sm:-mx-5 sm:-mb-5 p-4 rounded-b-2xl">
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
+                          <span className="text-[10px] font-mono uppercase tracking-widest text-indigo-300">Agent Reasoning &amp; Working Thesis</span>
+                        </div>
+                        <p className="text-xs text-slate-300 font-mono leading-relaxed whitespace-pre-wrap">
+                          {reasonText || 'No rationalization notes recorded for this trade.'}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="py-16 text-center bg-slate-950/30 rounded-3xl border border-white/5">
+              <p className="text-slate-500 font-mono text-sm uppercase tracking-widest">
+                {executionMode === 'ALL'
+                  ? 'No trades recorded yet.'
+                  : `No ${executionMode} trades recorded yet.`}
+              </p>
+            </div>
+          )}
+
+          {/* Public URL hint */}
+          <div className="mt-8 text-center flex items-center justify-center gap-2 text-xs text-slate-500">
+            <ExternalLink className="w-3.5 h-3.5 text-cyan-400" />
+            <span>This page is public — share this URL directly for full trade transparency.</span>
           </div>
         </div>
       </div>
