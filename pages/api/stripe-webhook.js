@@ -154,18 +154,76 @@ export default async function handler(req, res) {
     const session = event.data.object;
 
     switch (event.type) {
-        case 'checkout.session.completed':
+        case 'checkout.session.completed': {
+            // 🛠️ FIX: Session object has different fields than Subscription object.
+            // session.status = "complete" (not "active"/"trialing").
+            // session.id = "cs_xxx" (not "sub_xxx").
+            // Fetch the actual subscription from Stripe to get the real status.
+            const session = event.data.object;
+            const csTenantId = session.metadata?.tenantId;
+            const csTier = session.metadata?.tier || 'RETAIL';
+
+            if (csTenantId && session.subscription) {
+                let realSub;
+                try {
+                    realSub = await stripe.subscriptions.retrieve(session.subscription);
+                } catch (e) {
+                    console.error(`[WEBHOOK] Failed to retrieve subscription ${session.subscription}: ${e.message}`);
+                }
+
+                if (realSub) {
+                    const isBillingActive = realSub.status === 'active' || realSub.status === 'trialing';
+
+                    await supabase.from('subscriptions').upsert({
+                        tenant_id: csTenantId,
+                        stripe_customer_id: session.customer,
+                        stripe_subscription_id: realSub.id,
+                        status: realSub.status,
+                        tier: csTier,
+                        current_period_end: realSub.current_period_end ? new Date(realSub.current_period_end * 1000).toISOString() : null,
+                        cancel_at_period_end: realSub.cancel_at_period_end,
+                        updated_at: new Date().toISOString()
+                    }, { onConflict: 'tenant_id' });
+
+                    const TIER_LIMITS = { FREE_TRIAL: 1, RETAIL: 3, PRO: 10, INSTITUTIONAL: 20, ADMIN: 9999 };
+                    const tierLimit = TIER_LIMITS[(csTier || '').toUpperCase()] ?? TIER_LIMITS.FREE_TRIAL;
+
+                    await supabase.from('tenants').update({
+                        billing_tier: csTier,
+                        subscription_active: isBillingActive,
+                        max_concurrent_strategies: tierLimit,
+                        updated_at: new Date().toISOString()
+                    }).eq('id', csTenantId);
+                }
+            }
+
+            // Sync to Brevo & GA4 conversion tracking
+            const checkoutEmail = session.customer_details?.email || session.customer_email;
+            if (checkoutEmail) {
+                await syncToBrevo(checkoutEmail, csTier, 'subscribe');
+            }
+
+            await sendGA4ServerEvent('paid_conversion', {
+                client_id: session.customer_details?.email || session.customer_email || session.id || 'stripe-webhook',
+                tier: (csTier || 'RETAIL').toUpperCase(),
+                value: typeof session.amount_total === 'number' ? session.amount_total / 100 : 0,
+                currency: (session.currency || 'usd').toUpperCase(),
+                method: 'stripe_checkout'
+            });
+            break;
+        }
+
         case 'customer.subscription.created':
-        case 'customer.subscription.updated':
+        case 'customer.subscription.updated': {
             const sub = event.data.object;
-            const tenantId = sub.metadata.tenantId || session.metadata?.tenantId;
-            const tier = sub.metadata.tier || session.metadata?.tier || 'RETAIL';
+            const tenantId = sub.metadata?.tenantId;
+            const tier = sub.metadata?.tier || 'RETAIL';
 
             if (tenantId) {
                 await supabase.from('subscriptions').upsert({
                     tenant_id: tenantId,
                     stripe_customer_id: sub.customer,
-                    stripe_subscription_id: sub.id || sub.subscription,
+                    stripe_subscription_id: sub.id,
                     status: sub.status,
                     tier: tier,
                     current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
@@ -213,39 +271,24 @@ export default async function handler(req, res) {
                 }
             }
 
-            // Mailchimp: create contact + trial-{tier} tag (checkout only)
-            if (event.type === 'checkout.session.completed') {
-              const checkoutEmail = session.customer_details?.email || session.customer_email;
-              if (checkoutEmail) {
-                await syncToBrevo(checkoutEmail, tier, 'subscribe');
-              }
-
-              await sendGA4ServerEvent('paid_conversion', {
-                client_id: session.customer_details?.email || session.customer_email || session.id || 'stripe-webhook',
-                tier: (tier || 'RETAIL').toUpperCase(),
-                value: typeof session.amount_total === 'number' ? session.amount_total / 100 : 0,
-                currency: (session.currency || 'usd').toUpperCase(),
-                method: 'stripe_checkout'
-              });
-            }
-
-            // Mailchimp: trial → paid conversion (subscription activation)
+            // Sync to Brevo & GA4: trial → paid conversion (subscription activation)
             if (event.type === 'customer.subscription.updated' && sub.status === 'active') {
-              const tenantEmail = await getTenantEmail(tenantId);
-              const tenantTier = await getTenantTier(tenantId);
-              if (tenantEmail) {
-                await syncToBrevo(tenantEmail, tenantTier, 'convert');
-              }
+                const tenantEmail = await getTenantEmail(tenantId);
+                const tenantTier = await getTenantTier(tenantId);
+                if (tenantEmail) {
+                    await syncToBrevo(tenantEmail, tenantTier, 'convert');
+                }
 
-              await sendGA4ServerEvent('paid_conversion', {
-                client_id: tenantEmail || sub.customer || session.id || 'stripe-webhook',
-                tier: (tenantTier || tier || 'RETAIL').toUpperCase(),
-                value: typeof sub.items?.data?.[0]?.plan?.amount === 'number' ? sub.items.data[0].plan.amount / 100 : 0,
-                currency: (sub.currency || session.currency || 'usd').toUpperCase(),
-                method: 'stripe_subscription'
-              });
+                await sendGA4ServerEvent('paid_conversion', {
+                    client_id: tenantEmail || sub.customer || sub.id || 'stripe-webhook',
+                    tier: (tenantTier || tier || 'RETAIL').toUpperCase(),
+                    value: typeof sub.items?.data?.[0]?.plan?.amount === 'number' ? sub.items.data[0].plan.amount / 100 : 0,
+                    currency: (sub.currency || 'usd').toUpperCase(),
+                    method: 'stripe_subscription'
+                });
             }
             break;
+        }
 
         case 'customer.subscription.deleted':
             const deletedSub = event.data.object;
