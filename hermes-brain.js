@@ -439,14 +439,41 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             // 🟢 CORE MEMORY PARAMETER LEARNING: APPROVE/VETO/HOLD can adjust
             // tripwire_percent / trail_step_percent from past lessons even when
             // no trade is open. Lessons from closed trades apply to future entries.
+            // IMPORTANT: Must merge with existing params — never replace the entire
+            // parameters JSONB object or ALL other params (qty, leverage, ema, etc.)
+            // get deleted.
             if (decisionJson.action === "APPROVE" || decisionJson.action === "VETO" || decisionJson.action === "HOLD") {
-                const params = {};
-                if (decisionJson.tripwire_percent !== undefined) params.tripwire_percent = normalizePercent(decisionJson.tripwire_percent, 'Tripwire');
-                if (decisionJson.trail_step_percent !== undefined) params.trail_step_percent = normalizePercent(decisionJson.trail_step_percent, 'Trail step');
+                let newTripwirePct = decisionJson.tripwire_percent;
+                let newTrailStepPct = decisionJson.trail_step_percent;
+                newTripwirePct = normalizePercent(newTripwirePct, 'Tripwire');
+                newTrailStepPct = normalizePercent(newTrailStepPct, 'Trail step');
 
-                if (Object.keys(params).length > 0) {
-                    updatePayload.parameters = params;
-                    console.log(`[AGENT CORTEX] 🔄 Parameters updated via ${decisionJson.action}: tripwire=${params.tripwire_percent}, trail_step=${params.trail_step_percent}`);
+                if (newTripwirePct !== undefined || newTrailStepPct !== undefined) {
+                    const { data: existingConfig } = await supabase
+                        .from('strategy_config')
+                        .select('id, parameters')
+                        .eq('tenant_id', tenant_id)
+                        .eq('strategy', strategy_id || 'MANUAL')
+                        .eq('asset', asset)
+                        .limit(1)
+                        .maybeSingle();
+
+                    if (existingConfig) {
+                        const mergedParams = { ...(existingConfig.parameters || {}) };
+                        if (newTripwirePct !== undefined) mergedParams.tripwire_percent = parseFloat(newTripwirePct);
+                        if (newTrailStepPct !== undefined) mergedParams.trail_step_percent = parseFloat(newTrailStepPct);
+                        updatePayload.parameters = mergedParams;
+                        console.log(`[AGENT CORTEX] 🔄 Parameters merged via ${decisionJson.action}: ${Object.keys(mergedParams).length} total keys, tripwire=${mergedParams.tripwire_percent}, trail_step=${mergedParams.trail_step_percent}`);
+                    } else {
+                        // No existing config found — create fresh params (edge case)
+                        if (newTripwirePct !== undefined || newTrailStepPct !== undefined) {
+                            const freshParams = {};
+                            if (newTripwirePct !== undefined) freshParams.tripwire_percent = parseFloat(newTripwirePct);
+                            if (newTrailStepPct !== undefined) freshParams.trail_step_percent = parseFloat(newTrailStepPct);
+                            updatePayload.parameters = freshParams;
+                            console.log(`[AGENT CORTEX] ⚠️ No existing config found for ${asset}/${strategy_id}. Created fresh params.`);
+                        }
+                    }
                 }
             }
 
