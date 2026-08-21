@@ -41,7 +41,7 @@ export default async function handler(req, res) {
         .limit(30),
       supabase
         .from('trade_logs')
-        .select('symbol, side, strategy_id, entry_price, exit_price, pnl, exit_time, reason, created_at')
+        .select('symbol, side, strategy_id, entry_price, exit_price, pnl, exit_time, reason, execution_mode, created_at')
         .eq('tenant_id', DEMO_TENANT_ID)
         .order('created_at', { ascending: false })
         .limit(500),

@@ -27,6 +27,7 @@ export default function LandingPage() {
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [showSignupPopup, setShowSignupPopup] = useState(false);
   const [executionMode, setExecutionMode] = useState('ALL');
+  const [dateFilter, setDateFilter] = useState('all');
   const [expandedTrade, setExpandedTrade] = useState(null);
 
   useEffect(() => {
@@ -142,18 +143,29 @@ export default function LandingPage() {
     return FUTURES_CODE_MAP[base] || base;
   };
 
-  const strategyModeMap = {};
-  demoConfigs.forEach(c => { strategyModeMap[c.strategy] = c.execution_mode || 'PAPER'; });
-
-  const filteredTrades = executionMode === 'ALL'
-    ? demoTrades
+  // No more strategyModeMap — use trade.execution_mode directly (recorded at trade time).
+  const now = new Date();
+  const dateFiltered = dateFilter === 'all' ? demoTrades
     : demoTrades.filter(t => {
-        const mode = strategyModeMap[t.strategy_id];
-        return mode === executionMode;
+        const d = new Date(t.created_at);
+        const diff = (now - d) / (1000 * 60 * 60 * 24);
+        if (dateFilter === 'today') return diff <= 1;
+        if (dateFilter === '7d') return diff <= 7;
+        if (dateFilter === '30d') return diff <= 30;
+        return true;
       });
 
+  const filteredTrades = executionMode === 'ALL'
+    ? dateFiltered
+    : dateFiltered.filter(t => (t.execution_mode || 'PAPER') === executionMode);
+
+  // Client-side sort: newest first by created_at, regardless of filter.
+  const sortedFilteredTrades = [...filteredTrades].sort((a, b) => {
+    return new Date(b.created_at) - new Date(a.created_at);
+  });
+
   const modeStats = (() => {
-    const all = filteredTrades;
+    const all = sortedFilteredTrades;
     const closed = all.filter(t => t.exit_price !== null && t.exit_price !== undefined);
     const open = all.filter(t => t.exit_price === null || t.exit_price === undefined);
     if (closed.length > 0) {
@@ -696,6 +708,29 @@ export default function LandingPage() {
                 PAPER
               </button>
             </div>
+
+            {/* 🆕 Date filter */}
+            <div className="ml-4 inline-flex bg-slate-950/70 p-1 rounded-xl border border-white/5">
+              {[
+                { key: 'all', label: 'All' },
+                { key: 'today', label: 'Today' },
+                { key: '7d', label: '7 Days' },
+                { key: '30d', label: '30 Days' },
+              ].map(d => (
+                <button
+                  key={d.key}
+                  type="button"
+                  onClick={() => setDateFilter(d.key)}
+                  className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${
+                    dateFilter === d.key
+                      ? 'bg-indigo-600 text-white shadow-lg'
+                      : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  {d.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Summary bar showing filtered stats */}
@@ -719,14 +754,14 @@ export default function LandingPage() {
           )}
 
           {/* Trade list */}
-          {filteredTrades.length > 0 ? (
-            <div className="space-y-3">
-              {filteredTrades.slice(0, 50).map((trade, i) => {
+          {sortedFilteredTrades.length > 0 ? (
+            <div className="max-h-[600px] overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+              {sortedFilteredTrades.slice(0, 50).map((trade, i) => {
                 const isOpen = trade.exit_price === null || trade.exit_price === undefined;
                 const pnlVal = parseFloat(trade.pnl) || 0;
                 const isWin = !isOpen && pnlVal > 0;
                 const isLoss = !isOpen && pnlVal <= 0;
-                const mode = strategyModeMap[trade.strategy_id] || 'PAPER';
+                const mode = trade.execution_mode || 'PAPER';
                 const isExpanded = expandedTrade === i;
                 const reasonText = trade.reason || trade.working_thesis;
 
