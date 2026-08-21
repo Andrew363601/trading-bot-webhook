@@ -35,6 +35,28 @@ async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_t
 
 const skillMemory = fs.readFileSync('./SKILL.md', 'utf-8');
 
+// 🛡️ DEFENSIVE GUARD: tripwire/trail values must be decimal fractions (0.005 = 0.5%).
+// If the AI accidentally outputs percentage integers (e.g., 5 meaning 5%), divide by 100.
+// Clamp to a safe range: 0.0001 (0.01%) to 0.20 (20%).
+function normalizePercent(val, label) {
+    if (val === undefined || val === null) return val;
+    let num = parseFloat(val);
+    if (isNaN(num)) return undefined;
+    if (num > 1.0 && num <= 100) {
+        console.warn(`[AGENT CORTEX] ⚠️ ${label} value ${num} appears to be a percentage integer. Dividing by 100 → ${(num/100).toFixed(6)}`);
+        num = num / 100;
+    }
+    if (num > 0.20) {
+        console.warn(`[AGENT CORTEX] ⚠️ ${label} value ${num} exceeds max (20%). Clamping to 0.20.`);
+        num = 0.20;
+    }
+    if (num < 0.0001 && num !== 0) {
+        console.warn(`[AGENT CORTEX] ⚠️ ${label} value ${num} below min (0.01%). Clamping to 0.0001.`);
+        num = 0.0001;
+    }
+    return num;
+}
+
 async function sendDiscordAlert(tenant_id, { title, description, color, fields = [], imageUrl = null, useNexusWebhook = false }) {
     const { data: settings, error: settingsError } = await supabase
         .from('tenant_settings')
@@ -335,7 +357,7 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
         if (mode === "TRIPWIRE_HIT") {
             instructionText += `THE HARVEST PROTOCOL IS ACTIVE. You are currently in profit and your Stop Loss is secured at Break-Even. Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. If the momentum is explosive and the runway is clear, output action "HOLD". If OI is dropping, absorption is failing, or funding is extremely skewed against you, output action "CLOSE" to harvest the profit immediately. Output ONLY raw, valid JSON.`;
         } else {
-            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Output ONLY raw, valid JSON.`;
+            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. If past lessons for this asset suggest wider tripwire_percent or trail_step_percent values, include them in your JSON output. The system will update the strategy config automatically. Output ONLY raw, valid JSON.`;
         }
 
         let llmUrl, llmHeaders, llmBody;
@@ -412,6 +434,20 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
                 updatePayload.trap_sl_price = decisionJson.trap_sl_price || decisionJson.sl_price;
                 updatePayload.trap_expires_at = new Date(Date.now() + 3600000).toISOString(); 
                 console.log(`[AGENT CORTEX] 👻 GHOST ORDER SET: ${decisionJson.side} at $${decisionJson.trap_price} | TP: $${updatePayload.trap_tp_price} | SL: $${updatePayload.trap_sl_price}`);
+            }
+
+            // 🟢 CORE MEMORY PARAMETER LEARNING: APPROVE/VETO/HOLD can adjust
+            // tripwire_percent / trail_step_percent from past lessons even when
+            // no trade is open. Lessons from closed trades apply to future entries.
+            if (decisionJson.action === "APPROVE" || decisionJson.action === "VETO" || decisionJson.action === "HOLD") {
+                const params = {};
+                if (decisionJson.tripwire_percent !== undefined) params.tripwire_percent = normalizePercent(decisionJson.tripwire_percent, 'Tripwire');
+                if (decisionJson.trail_step_percent !== undefined) params.trail_step_percent = normalizePercent(decisionJson.trail_step_percent, 'Trail step');
+
+                if (Object.keys(params).length > 0) {
+                    updatePayload.parameters = params;
+                    console.log(`[AGENT CORTEX] 🔄 Parameters updated via ${decisionJson.action}: tripwire=${params.tripwire_percent}, trail_step=${params.trail_step_percent}`);
+                }
             }
 
             try {
@@ -677,28 +713,6 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             else if (decisionJson.action === "UPDATE_TRIPWIRE" && activeOpenTrade) {
                 let newTripwirePct = decisionJson.tripwire_percent;
                 let newTrailStepPct = decisionJson.trail_step_percent;
-                
-                // 🛡️ DEFENSIVE GUARD: tripwire/trail values must be decimal fractions (0.005 = 0.5%).
-                // If AI accidentally outputs percentage integers (e.g., 5 meaning 5%), divide by 100.
-                // Clamp to a safe range: 0.0001 (0.01%) to 0.20 (20%).
-                const normalizePercent = (val, label) => {
-                    if (val === undefined || val === null) return val;
-                    let num = parseFloat(val);
-                    if (isNaN(num)) return undefined;
-                    if (num > 1.0 && num <= 100) {
-                        console.warn(`[AGENT CORTEX] ⚠️ ${label} value ${num} appears to be a percentage integer. Dividing by 100 → ${(num/100).toFixed(6)}`);
-                        num = num / 100;
-                    }
-                    if (num > 0.20) {
-                        console.warn(`[AGENT CORTEX] ⚠️ ${label} value ${num} exceeds max (20%). Clamping to 0.20.`);
-                        num = 0.20;
-                    }
-                    if (num < 0.0001 && num !== 0) {
-                        console.warn(`[AGENT CORTEX] ⚠️ ${label} value ${num} below min (0.01%). Clamping to 0.0001.`);
-                        num = 0.0001;
-                    }
-                    return num;
-                };
                 
                 newTripwirePct = normalizePercent(newTripwirePct, 'Tripwire');
                 newTrailStepPct = normalizePercent(newTrailStepPct, 'Trail step');
