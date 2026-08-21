@@ -180,6 +180,15 @@ export async function startWatchdog(tenantId) {
 
             for (const openTrade of openTrades) {
                 const asset = openTrade.symbol;
+
+                // Fetch latest scan telemetry for this asset — provides the real
+                // market regime (TREND/CHOP/ACCUMULATION/DISTRIBUTION) for close
+                // snapshots and autopsies.
+                let telemetry = {};
+                try {
+                    const { data: scanData } = await supabase.from('scan_results').select('telemetry').eq('asset', asset).order('created_at', { ascending: false }).limit(1);
+                    if (scanData && scanData.length > 0) telemetry = scanData[0].telemetry || {};
+                } catch (e) { /* non-fatal */ }
                 
                 const tradeAgeMs = Date.now() - new Date(openTrade.created_at || Date.now()).getTime();
                 if (tradeAgeMs < 15000) {
@@ -904,9 +913,9 @@ export async function startWatchdog(tenantId) {
                                 continue;
                             }
                             
-                            await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: 0, exit_time: new Date().toISOString(), reason: updatedReason, regime_at_close: null, market_snapshot_at_close: null }).eq('id', openTrade.id);
                             
-                            await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CANCELED', telemetry: { macro_regime_oracle: `ORDER CANCELED`, oracle_reasoning: updatedReason, open_position: "NONE" } }]);
+                            await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CANCELED', telemetry: { status_overlay: `ORDER CANCELED`, oracle_reasoning: updatedReason, open_position: "NONE" } }]);
 
                             const cancelChartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveApiSecret, openTrade);
                             await sendDiscordAlert(tenantId, { title: `⏳ Limit Order Canceled: ${asset}`, description: `Removed from Exchange manually.`, color: 16776960, imageUrl: cancelChartUrl });
@@ -917,7 +926,7 @@ export async function startWatchdog(tenantId) {
                                 const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
                                 await fetch(autopsyUrl, {
                                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeExitPrice, exit_price: safeExitPrice, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'LIMIT_CANCELED' })
+                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeExitPrice, exit_price: safeExitPrice, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'LIMIT_CANCELED', execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: null })
                                 });
                             } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
 
@@ -1016,13 +1025,14 @@ export async function startWatchdog(tenantId) {
                             const rawPnl = openTrade.side === 'BUY' ? (safeExitPrice - safeEntryPrice) * safeQty * multiplier : (safeEntryPrice - safeExitPrice) * safeQty * multiplier;
                             const updatedReason = openTrade.reason ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${assumedReason}` : assumedReason;
                             
-                            const { error: updateErr } = await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason }).eq('id', openTrade.id);
+                            const closeSnapshot = { at: new Date().toISOString(), price: safeExitPrice, regime: telemetry.macro_regime_oracle || null };
+                            const { error: updateErr } = await supabase.from('trade_logs').update({ exit_price: safeExitPrice, pnl: parseFloat(rawPnl.toFixed(4)), exit_time: new Date().toISOString(), reason: updatedReason, regime_at_close: telemetry.macro_regime_oracle || null, market_snapshot_at_close: closeSnapshot }).eq('id', openTrade.id);
                             
                             if (updateErr) {
                                 console.error("[TRADE LOG UPDATE FAILED]:", updateErr.message);
                                 await logAgentActivity(tenantId, "Watchdog", asset, `Failed to update trade log for ${openTrade.id}: ${updateErr.message}`, "ERROR");
                             } else {
-                                await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CLOSED', telemetry: { macro_regime_oracle: `POSITION CLOSED`, oracle_reasoning: updatedReason, open_pnl: rawPnl.toFixed(4), open_position: "NONE" } }]);
+                                await supabase.from('scan_results').insert([{ strategy: openTrade.strategy_id || 'MANUAL', asset: asset, status: 'CLOSED', telemetry: { status_overlay: `POSITION CLOSED`, oracle_reasoning: updatedReason, open_pnl: rawPnl.toFixed(4), open_position: "NONE" } }]);
                                 await logAgentActivity(tenantId, "Watchdog", asset, `Position for ${asset} closed. PnL: ${rawPnl.toFixed(4)}. Trigger: ${assumedReason}.`, "POSITION_CLOSED");
                             }
 
@@ -1044,7 +1054,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                 const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
                                 await fetch(autopsyUrl, {
                                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeEntryPrice, exit_price: safeExitPrice, pnl: rawPnl.toFixed(4), rolling_ledger: updatedReason, trigger: assumedReason })
+                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeEntryPrice, exit_price: safeExitPrice, pnl: rawPnl.toFixed(4), rolling_ledger: updatedReason, trigger: assumedReason, execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: telemetry.macro_regime_oracle || null, market_snapshot: closeSnapshot })
                                 });
                             } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
 
@@ -1306,11 +1316,14 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                 ? `${openTrade.reason}\n\n[EXIT TRIGGER]: ${triggerType} (PAPER_TRADE_AUTOMATIC)` 
                                 : `${triggerType} (PAPER_TRADE_AUTOMATIC)`;
                             
+                            const paperCloseSnapshot = { at: new Date().toISOString(), price: safeExitPrice, regime: telemetry.macro_regime_oracle || null };
                             const { error: updateErr } = await supabase.from('trade_logs').update({ 
                                 exit_price: safeExitPrice, 
                                 pnl: parseFloat(rawPnl.toFixed(4)), 
                                 exit_time: new Date().toISOString(), 
-                                reason: updatedReason 
+                                reason: updatedReason,
+                                regime_at_close: telemetry.macro_regime_oracle || null,
+                                market_snapshot_at_close: paperCloseSnapshot
                             }).eq('id', openTrade.id);
                             
                             if (updateErr) {
@@ -1322,7 +1335,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                     asset: asset, 
                                     status: 'CLOSED', 
                                     telemetry: { 
-                                        macro_regime_oracle: `POSITION CLOSED`, 
+                                        status_overlay: `POSITION CLOSED`, 
                                         oracle_reasoning: updatedReason, 
                                         open_pnl: rawPnl.toFixed(4), 
                                         open_position: "NONE" 
@@ -1356,7 +1369,9 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                             entry_price: safeEntryPrice, exit_price: safeExitPrice,
                                             pnl: rawPnl.toFixed(4),
                                             rolling_ledger: updatedReason, trigger: triggerType,
-                                            execution_mode: 'PAPER'
+                                            execution_mode: 'PAPER',
+                                            regime_at_close: telemetry.macro_regime_oracle || null,
+                                            market_snapshot: paperCloseSnapshot
                                         })
                                     });
                                 } catch (autopsyErr) {
@@ -1378,11 +1393,14 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                             const triggerType = 'ORPHANED_PAPER_TIMEOUT';
                             const updatedReason = `${openTrade.reason || ''}\n\n[EXIT TRIGGER]: ${triggerType} — Paper trade auto-closed after ${Math.round(minutesOpen / 60)}h with no TP/SL.`;
 
+                            const orphanCloseSnapshot = { at: new Date().toISOString(), price: safeExitPrice, regime: telemetry.macro_regime_oracle || null };
                             const { error: updateErr } = await supabase.from('trade_logs').update({
                                 exit_price: safeExitPrice,
                                 pnl: parseFloat(rawPnl.toFixed(4)),
                                 exit_time: new Date().toISOString(),
-                                reason: updatedReason
+                                reason: updatedReason,
+                                regime_at_close: telemetry.macro_regime_oracle || null,
+                                market_snapshot_at_close: orphanCloseSnapshot
                             }).eq('id', openTrade.id);
 
                             if (updateErr) {
@@ -1392,7 +1410,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                     strategy: openTrade.strategy_id || 'MANUAL',
                                     asset: asset,
                                     status: 'CLOSED',
-                                    telemetry: { macro_regime_oracle: 'POSITION CLOSED (ORPHAN)', oracle_reasoning: updatedReason, open_pnl: rawPnl.toFixed(4), open_position: 'NONE' }
+                                    telemetry: { status_overlay: 'POSITION CLOSED (ORPHAN)', oracle_reasoning: updatedReason, open_pnl: rawPnl.toFixed(4), open_position: 'NONE' }
                                 }]);
                                 await logAgentActivity(tenantId, "Watchdog", asset, `Orphaned paper trade ${openTrade.id} auto-closed after ${Math.round(minutesOpen / 60)}h. PnL: $${rawPnl.toFixed(4)}.`, "POSITION_CLOSED");
 
@@ -1407,7 +1425,9 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                             entry_price: safeEntryPrice, exit_price: safeExitPrice,
                                             pnl: rawPnl.toFixed(4),
                                             rolling_ledger: updatedReason, trigger: triggerType,
-                                            execution_mode: 'PAPER'
+                                            execution_mode: 'PAPER',
+                                            regime_at_close: telemetry.macro_regime_oracle || null,
+                                            market_snapshot: orphanCloseSnapshot
                                         })
                                     });
                                 } catch (autopsyErr) {

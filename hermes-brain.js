@@ -565,7 +565,7 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
                     asset: asset,
                     status: finalStatus,
                     telemetry: {
-                        macro_regime_oracle: `AGENT ${decisionJson.action}`,
+                        status_overlay: `AGENT ${decisionJson.action}`,
                         oracle_reasoning: decisionJson.working_thesis,
                         cvd: marketState?.multi_timeframe_cvd?.["5M_Micro_Ripple"] || 0,
                         open_position: displayPosition

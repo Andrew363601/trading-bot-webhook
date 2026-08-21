@@ -221,6 +221,9 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
         const spotProduct = `${baseAsset}-USD`;
 
         let orderBookData = { status: "Unavailable" }; let basisPremium = 0; let spotPrice = currentPrice;
+        // Hoisted to function scope so the regime classifier below can read them
+        // even when the Coinbase order book fetch is skipped (no apiKey/secret).
+        let totalBidSize = 0; let totalAskSize = 0;
 
         if (apiKey && secret) {
             try {
@@ -234,8 +237,8 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                     const parsedBids = bids.map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size || 0) })).sort((a, b) => b.size - a.size);
                     const parsedAsks = asks.map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size || 0) })).sort((a, b) => b.size - a.size);
                     
-                    let totalBidSize = bids.reduce((sum, b) => sum + parseFloat(b.size || 0), 0);
-                    let totalAskSize = asks.reduce((sum, a) => sum + parseFloat(a.size || 0), 0);
+                    totalBidSize = bids.reduce((sum, b) => sum + parseFloat(b.size || 0), 0);
+                    totalAskSize = asks.reduce((sum, a) => sum + parseFloat(a.size || 0), 0);
 
                     orderBookData = { 
                         bids_50_levels: totalBidSize.toFixed(2), 
@@ -260,7 +263,30 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
 
         const [sp500, dxy] = await Promise.all([fetchMacroAsset('%5EGSPC'), fetchMacroAsset('DX-Y.NYB')]);
 
-        return { 
+        // --- 4-State Regime Classifier ---
+        // Source of truth for market regime. Uses price distance from macro POC
+        // (in ATR terms), directional CVD, and order book bid/ask imbalance.
+        const priceDist = Math.abs(currentPrice - macro_poc);
+        const atrRatio = priceDist / Math.max(atr, 0.01);
+        const cvdValue = parseFloat(macro_cvd) || 0;
+        const bidAskRatio = totalBidSize / Math.max(totalAskSize, 0.01);
+        let detectedRegime;
+
+        if (atrRatio > 1.5 && Math.abs(cvdValue) > 5) {
+            // Price broke away from POC (>1.5 ATR) and CVD is strongly directional
+            detectedRegime = "TREND";
+        } else if (atrRatio < 1.0 && cvdValue > 2 && bidAskRatio > 1.2) {
+            // Price near POC, bullish CVD, order book showing bid stacking
+            detectedRegime = "ACCUMULATION";
+        } else if (atrRatio < 1.0 && cvdValue < -2 && bidAskRatio < 0.8) {
+            // Price near POC, bearish CVD, order book showing ask stacking
+            detectedRegime = "DISTRIBUTION";
+        } else {
+            detectedRegime = "CHOP";
+        }
+
+        return {
+            macro_regime: detectedRegime,
             indicators: { 
                 current_vwap: vwap.toFixed(2), current_atr: atr.toFixed(2), current_cvd: cvd.toFixed(2),
                 macro_cvd: macro_cvd.toFixed(2), macro_poc: macro_poc.toFixed(2),
@@ -309,8 +335,8 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
             const absPnl = Math.abs(parseFloat(m.pnl) || 0);
             const pnlImpact = Math.min(absPnl, MAX_TRACKED_PNL) / MAX_TRACKED_PNL * 100;
 
-            // 3c) Regime match score (0 or 50 points)
-            const regimeMatch = (currentRegime && m.regime_at_close === currentRegime) ? 50 : 0;
+            // 3c) Regime match score (0 or 100 points)
+            const regimeMatch = (currentRegime && m.regime_at_close === currentRegime) ? 100 : 0;
 
             // 3d) LIVE weight (0 or 50 points)
             const liveWt = (m.execution_mode === 'LIVE') ? 50 : 0;
@@ -595,7 +621,7 @@ export async function startSniper(tenantId) {
                     open_tp: openTrade?.tp_price || "NONE",
                     open_sl: openTrade?.sl_price || "NONE",
                     open_pnl: openTrade ? (openTrade.pnl || 0) : 0,
-                    macro_regime_oracle: "EVALUATING", oracle_reasoning: "Awaiting signal..."
+                    macro_regime_oracle: microstructure?.macro_regime || "EVALUATING", oracle_reasoning: "Awaiting signal..."
                 };
 
                 if (decision.signal) {
@@ -616,7 +642,7 @@ export async function startSniper(tenantId) {
                         let memoryString = "No core memory available for this asset.";
                         if (scoredMemories.length > 0) {
                             memoryString = scoredMemories.map(m =>
-                                `[Past ${m.win_loss} | Score: ${m.score} | Thesis: ${m.working_thesis || 'No thesis'} | Accurate: ${m.thesis_accurate ?? 'N/A'}]: ${m.lesson_learned}`
+                                `[Past ${m.win_loss} | Score: ${m.score} | Regime: ${m.regime_at_close || 'ANY'} | Thesis: ${m.working_thesis || 'No thesis'} | Accurate: ${m.thesis_accurate ?? 'N/A'}]: ${m.lesson_learned}`
                             ).join('\n');
                         }
 
@@ -652,7 +678,7 @@ export async function startSniper(tenantId) {
 
                         decision.statusOverride = 'HERMES_NOTIFIED';
                         decision.telemetry.oracle_reasoning = "Ping sent to Agent Cortex. Awaiting autonomous execution or veto.";
-                        decision.telemetry.macro_regime_oracle = "HANDED TO AGENT";
+                        decision.telemetry.status_overlay = "HANDED TO AGENT";
                     }
                 }
 
