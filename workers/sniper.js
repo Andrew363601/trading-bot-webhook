@@ -310,15 +310,43 @@ function wordOverlap(textA, textB) {
 
 async function getScoredMemories(tenantId, asset, currentRegime, signalDirection) {
     try {
-        const { data: allMemories } = await supabase
+        // Check if this tenant has opted into the cross-tenant memory pool
+        let shareMemory = true;
+        try {
+            const { data: settings } = await supabase
+                .from('tenant_settings')
+                .select('share_memory')
+                .eq('tenant_id', tenantId)
+                .single();
+            if (settings) shareMemory = settings.share_memory !== false;
+        } catch (e) { /* non-fatal — default to shared */ }
+
+        let query = supabase
             .from('hermes_core_memory')
-            .select('id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at, working_thesis, thesis_accurate')
+            .select('id, tenant_id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at, working_thesis, thesis_accurate')
             .eq('asset', asset)
-            .eq('tenant_id', tenantId)
-            .order('created_at', { ascending: false });
+            .order('created_at', { ascending: false })
+            .limit(50);
+
+        if (!shareMemory) {
+            query = query.eq('tenant_id', tenantId);
+        }
+
+        const { data: rawMemories } = await query;
+        const allMemories = rawMemories || [];
 
         if (!allMemories || allMemories.length === 0) {
             return [];
+        }
+
+        // Anonymize cross-tenant memories — strip tenant_id so the receiving
+        // tenant never sees who the lesson belongs to. Own-tenant memories
+        // keep tenant_id for the scoring bonus below.
+        const ownTenantId = tenantId;
+        for (const m of allMemories) {
+            if (m.tenant_id !== ownTenantId) {
+                delete m.tenant_id;
+            }
         }
 
         const now = Date.now();
@@ -360,8 +388,13 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
             const thesisAccWt = m.thesis_accurate === false ? 15 :
                                 m.thesis_accurate === true ? 10 : 0;
 
+            // 3i) Own-tenant bonus (0 or 50 points) — gives a "tie goes to you"
+            // edge so cross-tenant lessons must be significantly more relevant
+            // (right regime, recent, high impact) to outrank own-tenant ones.
+            const ownBonus = (m.tenant_id === ownTenantId) ? 50 : 0;
+
             const total = recency + pnlImpact + regimeMatch + liveWt + lossWt
-                        + thesisSim + thesisAccWt;
+                        + thesisSim + thesisAccWt + ownBonus;
 
             return { ...m, score: Math.round(total) };
         });
