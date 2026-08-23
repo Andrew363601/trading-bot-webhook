@@ -74,6 +74,8 @@ function AuditLogContent() {
   const [expandedMemories, setExpandedMemories] = useState({});
   // 🟢 Cache of core memories keyed by memory ID and trade_log_id
   const [linkedMemories, setLinkedMemories] = useState({});
+  // 🟢 Shadow Portfolio records for VETO outcome evaluation
+  const [shadowRecords, setShadowRecords] = useState([]);
   const supabase = useSupabaseClient();
   const session = useSession();
 
@@ -162,6 +164,19 @@ function AuditLogContent() {
 
       groupedPipelines.sort((a, b) => b.timestamp - a.timestamp);
       setPipelines(groupedPipelines);
+
+      // 🟢 Shadow Portfolio: fetch VETO labels
+      try {
+        const { data: shadows } = await supabase
+          .from('shadow_portfolio')
+          .select('*')
+          .eq('tenant_id', tenantId)
+          .order('created_at', { ascending: false })
+          .limit(100);
+        if (shadows) setShadowRecords(shadows);
+      } catch (e) {
+        console.error('[AUDIT] Shadow portfolio fetch failed:', e.message);
+      }
 
       // 🟢 Fetch linked core memories for all trades in this batch
       const map = {};
@@ -372,11 +387,27 @@ function AuditLogContent() {
               
               <div className="flex flex-col sm:flex-row justify-between items-start gap-3 sm:gap-2 mb-4 border-b border-white/5 pb-4">
                  <div className="flex flex-col gap-2 min-w-0">
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center flex-wrap gap-3">
                         <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest flex items-center gap-2 ${isOpenTrade ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : isFullTrade ? 'bg-indigo-500/20 text-indigo-300' : (isVeto ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-slate-800 text-slate-400')}`}>
                         {isOpenTrade && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />}
                         {isOpenTrade ? 'Active Position' : isFullTrade ? 'Pipeline Executed' : (isVeto ? 'Oracle Veto' : 'Scan Log')}
                         </span>
+                        {/* 🟢 Shadow verdict badge */}
+                        {(() => {
+                          const shadow = shadowRecords.find(s => s.scan_id === pipeline.scan?.id);
+                          if (!shadow) return null;
+                          return (
+                            <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded ${
+                              shadow.verdict === 'SAVED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+                              shadow.verdict === 'MISSED' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
+                              'bg-slate-500/20 text-slate-400 border border-slate-500/30'
+                            }`}>
+                              {shadow.verdict === 'SAVED' ? '✅ SAVED' : shadow.verdict === 'MISSED' ? '❌ MISSED' : '➖ NEUTRAL'}
+                              {shadow.saved_amount > 0 && ` $${parseFloat(shadow.saved_amount).toFixed(2)}`}
+                              {shadow.missed_amount > 0 && ` -$${parseFloat(shadow.missed_amount).toFixed(2)}`}
+                            </span>
+                          );
+                        })()}
                         <span className="text-sm font-bold text-white">{pipeline.asset}</span>
                         <span className="text-xs text-slate-500 font-mono">{pipeline.strategy}</span>
                     </div>
