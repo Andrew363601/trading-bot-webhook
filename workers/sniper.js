@@ -336,7 +336,7 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
         const allMemories = rawMemories || [];
 
         if (!allMemories || allMemories.length === 0) {
-            return [];
+            return { memories: [], ids: [], text: "No core memory available for this asset." };
         }
 
         // Anonymize cross-tenant memories — strip tenant_id so the receiving
@@ -409,10 +409,17 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
 
         // Sort by score descending, take top 3
         scored.sort((a, b) => b.score - a.score);
-        return scored.slice(0, 3);
+        const top3 = scored.slice(0, 3);
+        return {
+            memories: top3,
+            ids: top3.map(m => m.id),
+            text: top3.map(m =>
+                `[Past ${m.win_loss} | Score: ${m.score} | Regime: ${m.regime_at_close || 'ANY'} | Thesis: ${m.working_thesis || 'No thesis'} | Accurate: ${m.thesis_accurate ?? 'N/A'}]: ${m.lesson_learned}`
+            ).join('\n')
+        };
     } catch (e) {
         console.error(`[MEMORY SCORING] Error for ${asset}:`, e.message);
-        return [];
+        return { memories: [], ids: [], text: "No core memory available for this asset." };
     }
 }
 
@@ -670,14 +677,10 @@ export async function startSniper(tenantId) {
                             || microstructure?.macro_regime 
                             || null;
 
-                        const scoredMemories = await getScoredMemories(tenantId, config.asset, currentRegime, normalizedSignal);
-
-                        let memoryString = "No core memory available for this asset.";
-                        if (scoredMemories.length > 0) {
-                            memoryString = scoredMemories.map(m =>
-                                `[Past ${m.win_loss} | Score: ${m.score} | Regime: ${m.regime_at_close || 'ANY'} | Thesis: ${m.working_thesis || 'No thesis'} | Accurate: ${m.thesis_accurate ?? 'N/A'}]: ${m.lesson_learned}`
-                            ).join('\n');
-                        }
+                        const scoredResult = await getScoredMemories(tenantId, config.asset, currentRegime, normalizedSignal);
+                        const scoredMemories = scoredResult.memories || [];
+                        const memoryString = scoredResult.text || "No core memory available for this asset.";
+                        const memoryIds = scoredResult.ids || [];
 
                         let activeTrapMessage = "";
                         if (!openTrade && config.trap_side && config.trap_price) {
@@ -703,7 +706,8 @@ export async function startSniper(tenantId) {
                             execution_mode: config.execution_mode,
                             strategy_id: config.strategy,
                             version: config.version,
-                            qty: params.qty || 1 
+                            qty: params.qty || 1,
+                            memoryIds: memoryIds
                         });
                         await logAgentActivity(tenantId, "Sniper", config.asset, `Hermes notified about ${normalizedSignal} signal for ${config.asset}. Awaiting decision.`, "HERMES_NOTIFIED");
 

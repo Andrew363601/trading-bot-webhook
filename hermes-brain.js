@@ -119,7 +119,7 @@ function buildContractCostBlock(asset, qty, price, feeRate) {
 
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
-    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty } = req.body;
+    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds } = req.body;
     
     // Track Hermes API usage
     await recordUsage(tenant_id, 'HERMES_API_CALL', 1);
@@ -357,7 +357,7 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
         if (mode === "TRIPWIRE_HIT") {
             instructionText += `THE HARVEST PROTOCOL IS ACTIVE. You are currently in profit and your Stop Loss is secured at Break-Even. Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. If the momentum is explosive and the runway is clear, output action "HOLD". If OI is dropping, absorption is failing, or funding is extremely skewed against you, output action "CLOSE" to harvest the profit immediately. Output ONLY raw, valid JSON.`;
         } else {
-            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. If past lessons for this asset suggest wider tripwire_percent or trail_step_percent values, include them in your JSON output. The system will update the strategy config automatically. Output ONLY raw, valid JSON.`;
+            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. Output ONLY raw, valid JSON.`;
         }
 
         let llmUrl, llmHeaders, llmBody;
@@ -437,7 +437,7 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             }
 
             // 🟢 CORE MEMORY PARAMETER LEARNING: APPROVE/VETO/HOLD can adjust
-            // tripwire_percent / trail_step_percent from past lessons even when
+            // tripwire_percent / trail_step_percent / sl_percent / tp_percent from past lessons even when
             // no trade is open. Lessons from closed trades apply to future entries.
             // IMPORTANT: Must merge with existing params — never replace the entire
             // parameters JSONB object or ALL other params (qty, leverage, ema, etc.)
@@ -447,8 +447,10 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
                 let newTrailStepPct = decisionJson.trail_step_percent;
                 newTripwirePct = normalizePercent(newTripwirePct, 'Tripwire');
                 newTrailStepPct = normalizePercent(newTrailStepPct, 'Trail step');
+                let newSlPercent = normalizePercent(decisionJson.sl_percent, 'SL percent');
+                let newTpPercent = normalizePercent(decisionJson.tp_percent, 'TP percent');
 
-                if (newTripwirePct !== undefined || newTrailStepPct !== undefined) {
+                if (newTripwirePct !== undefined || newTrailStepPct !== undefined || newSlPercent !== undefined || newTpPercent !== undefined) {
                     const { data: existingConfig } = await supabase
                         .from('strategy_config')
                         .select('id, parameters')
@@ -462,17 +464,26 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
                         const mergedParams = { ...(existingConfig.parameters || {}) };
                         if (newTripwirePct !== undefined) mergedParams.tripwire_percent = parseFloat(newTripwirePct);
                         if (newTrailStepPct !== undefined) mergedParams.trail_step_percent = parseFloat(newTrailStepPct);
+                        if (newSlPercent !== undefined) mergedParams.sl_percent = parseFloat(newSlPercent);
+                        if (newTpPercent !== undefined) mergedParams.tp_percent = parseFloat(newTpPercent);
                         updatePayload.parameters = mergedParams;
-                        console.log(`[AGENT CORTEX] 🔄 Parameters merged via ${decisionJson.action}: ${Object.keys(mergedParams).length} total keys, tripwire=${mergedParams.tripwire_percent}, trail_step=${mergedParams.trail_step_percent}`);
+                        console.log(`[AGENT CORTEX] 🔄 Parameters merged via ${decisionJson.action}: ${Object.keys(mergedParams).length} total keys, sl=${mergedParams.sl_percent}, tp=${mergedParams.tp_percent}, tripwire=${mergedParams.tripwire_percent}, trail_step=${mergedParams.trail_step_percent}`);
+                        
+                        // 🟢 Discord notification when params change during APPROVE
+                        await sendDiscordAlert(tenant_id, {
+                            title: `🔄 Parameters Adjusted via ${decisionJson.action}: ${asset}`,
+                            description: `**Strategy:** ${strategy_id || 'MANUAL'}\n**SL:** ${newSlPercent !== undefined ? (parseFloat(newSlPercent) * 100).toFixed(2) + '%' : 'Unchanged'}\n**TP:** ${newTpPercent !== undefined ? (parseFloat(newTpPercent) * 100).toFixed(2) + '%' : 'Unchanged'}\n**Tripwire:** ${newTripwirePct !== undefined ? (parseFloat(newTripwirePct) * 100).toFixed(2) + '%' : 'Unchanged'}\n**Trail Step:** ${newTrailStepPct !== undefined ? (parseFloat(newTrailStepPct) * 100).toFixed(2) + '%' : 'Unchanged'}\n**Thesis:** ${decisionJson.working_thesis}`,
+                            color: 15844367
+                        });
                     } else {
                         // No existing config found — create fresh params (edge case)
-                        if (newTripwirePct !== undefined || newTrailStepPct !== undefined) {
-                            const freshParams = {};
-                            if (newTripwirePct !== undefined) freshParams.tripwire_percent = parseFloat(newTripwirePct);
-                            if (newTrailStepPct !== undefined) freshParams.trail_step_percent = parseFloat(newTrailStepPct);
-                            updatePayload.parameters = freshParams;
-                            console.log(`[AGENT CORTEX] ⚠️ No existing config found for ${asset}/${strategy_id}. Created fresh params.`);
-                        }
+                        const freshParams = {};
+                        if (newTripwirePct !== undefined) freshParams.tripwire_percent = parseFloat(newTripwirePct);
+                        if (newTrailStepPct !== undefined) freshParams.trail_step_percent = parseFloat(newTrailStepPct);
+                        if (newSlPercent !== undefined) freshParams.sl_percent = parseFloat(newSlPercent);
+                        if (newTpPercent !== undefined) freshParams.tp_percent = parseFloat(newTpPercent);
+                        updatePayload.parameters = freshParams;
+                        console.log(`[AGENT CORTEX] ⚠️ No existing config found for ${asset}/${strategy_id}. Created fresh params.`);
                     }
                 }
             }
@@ -837,6 +848,16 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
                 decisionJson.version = version || 'v1.0';
                 decisionJson.working_thesis = decisionJson.working_thesis || 'Autonomous Execution';
                 decisionJson.qty = qty || decisionJson.qty || 1;
+
+                // 🟢 Attach the full market state snapshot + influencing memory IDs
+                // so the trade record has the rich market data at entry and knows
+                // which core memories influenced the AI's decision.
+                if (marketState?.result) {
+                    decisionJson._full_market_snapshot = marketState.result;
+                }
+                if (memoryIds && memoryIds.length > 0) {
+                    decisionJson._influencing_memory_ids = memoryIds;
+                }
                 
                 if (decisionJson.action === "CLOSE" && activeOpenTrade) {
                     decisionJson.side = activeOpenTrade.side === 'BUY' ? 'SELL' : 'BUY';
@@ -865,7 +886,7 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
 
 // 🟢 THE EVOLUTION ENDPOINT (Agentic Reflection Loop)
 app.post('/api/autopsy', async (req, res) => {
-    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis } = req.body;
+    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis, trade_log_id } = req.body;
     console.log(`[AGENT CORTEX] Initiating Autopsy for ${asset}. PnL: $${pnl} (${execution_mode || 'UNKNOWN'})`);
     
     res.status(200).json({ status: "Autopsy initiated." });
@@ -893,7 +914,7 @@ app.post('/api/autopsy', async (req, res) => {
                 const stateData = await stateResp.json();
                 if (stateData?.result) {
                     marketContext += `\n\n--- MARKET CONTEXT AT AUTOPSY ---\n${JSON.stringify(stateData.result, null, 2).substring(0, 2000)}`;
-                    if (!persistedSnapshot) persistedSnapshot = stateData.result;
+                    persistedSnapshot = stateData.result; // Always prefer fresh market state
                 }
             }
         } catch (e) {
@@ -1003,7 +1024,8 @@ app.post('/api/autopsy', async (req, res) => {
             pnl: pnl ?? null,
             execution_mode: execution_mode || null,
             regime_at_close: regime_at_close || null,
-            market_snapshot: persistedSnapshot || null
+            market_snapshot: persistedSnapshot || null,
+            trade_log_id: trade_log_id || null
         }]);
 
     } catch (error) {
