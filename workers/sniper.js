@@ -353,6 +353,33 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
         const MAX_TRACKED_PNL = 500;
         const MAX_RECURRENCE = 5;
 
+        // 3j) Shadow Portfolio bonus (0 to ±30 points, minimum 5 records)
+        // VETOs that saved money → pattern confirmed → bonus
+        // VETOs that missed profit → pattern needs challenge → penalty
+        let shadowBonus = 0;
+        try {
+            const { data: shadowStats } = await supabase
+                .from('shadow_portfolio')
+                .select('verdict')
+                .eq('asset', asset)
+                .eq('tenant_id', tenantId)
+                .gte('created_at', new Date(Date.now() - 7 * 86400000).toISOString());
+
+            if (shadowStats && shadowStats.length >= 5) {
+                const savedCount = shadowStats.filter(s => s.verdict === 'SAVED').length;
+                const totalCount = shadowStats.length;
+                const savedRatio = savedCount / totalCount;
+                
+                if (savedRatio > 0.7) shadowBonus = 30;
+                else if (savedRatio > 0.5) shadowBonus = 15;
+                else if (savedRatio < 0.3) shadowBonus = -20;
+                
+                console.log(`[SHADOW SCORE] ${asset}: ${savedCount}/${totalCount} SAVED (${(savedRatio*100).toFixed(0)}%) → bonus=${shadowBonus}`);
+            }
+        } catch (e) {
+            console.error('[SHADOW SCORE] Query failed:', e.message);
+        }
+
         // Score each memory
         const scored = allMemories.map(m => {
             // 3a) Recency score (0-100 points, decays 1 point per day)
@@ -394,7 +421,7 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
             const ownBonus = (m.tenant_id === ownTenantId) ? 50 : 0;
 
             const total = recency + pnlImpact + regimeMatch + liveWt + lossWt
-                        + thesisSim + thesisAccWt + ownBonus;
+                        + thesisSim + thesisAccWt + ownBonus + shadowBonus;
 
             return { ...m, score: Math.round(total) };
         });
@@ -696,6 +723,30 @@ export async function startSniper(tenantId) {
                         const memoryString = scoredResult.text || "No core memory available for this asset.";
                         const memoryIds = scoredResult.ids || [];
 
+                        let shadowLine = '';
+                        try {
+                            const { data: shadowStats } = await supabase
+                                .from('shadow_portfolio')
+                                .select('verdict, saved_amount, missed_amount')
+                                .eq('asset', config.asset)
+                                .eq('tenant_id', tenantId)
+                                .gte('created_at', new Date(Date.now() - 7 * 86400000).toISOString());
+
+                            if (shadowStats && shadowStats.length >= 3) {
+                                const savedCount = shadowStats.filter(s => s.verdict === 'SAVED').length;
+                                const missedCount = shadowStats.filter(s => s.verdict === 'MISSED').length;
+                                const totalCount = shadowStats.length;
+                                const savedRatio = (savedCount / totalCount * 100).toFixed(0);
+                                
+                                let pattern = '';
+                                if (savedRatio > 70) pattern = '⚠ Your VETOs on this asset are mostly correct. Trust your caution.';
+                                else if (savedRatio < 30) pattern = '⚠ Your VETOs on this asset are mostly wrong. Consider taking more trades.';
+                                else pattern = 'Mixed VETO track record — evaluate each signal on its merits.';
+                                
+                                shadowLine = `\n\n--- SHADOW PORTFOLIO (${config.asset}, 7d) ---\n✅ SAVED: ${savedCount}/${totalCount} (${savedRatio}%)\n❌ MISSED: ${missedCount}/${totalCount}\n${pattern}`;
+                            }
+                        } catch (e) { /* non-fatal */ }
+
                         let activeTrapMessage = "";
                         if (!openTrade && config.trap_side && config.trap_price) {
                             const timeRemaining = Math.max(0, Math.round((new Date(config.trap_expires_at).getTime() - Date.now()) / 60000));
@@ -710,7 +761,7 @@ export async function startSniper(tenantId) {
                             tenant_id: tenantId,
                             asset: config.asset,
                             mode: "ENTRY",
-                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Top 3 Walls):\nBIDS:\n${bidWallsText}\n\nASKS:\n${askWallsText}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.\n\n── ALPHA HARVESTING FRAME ──\nThis is a new signal arriving while no trade is open. Your thesis and outcome will be stored in core memory and scored for future signals. Write your working_thesis for future-self: market context, the specific alpha edge, and your exit conditions.`,
+                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}${shadowLine}\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Top 3 Walls):\nBIDS:\n${bidWallsText}\n\nASKS:\n${askWallsText}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.\n\n── ALPHA HARVESTING FRAME ──\nThis is a new signal arriving while no trade is open. Your thesis and outcome will be stored in core memory and scored for future signals. Write your working_thesis for future-self: market context, the specific alpha edge, and your exit conditions.`,
                             openTrade: openTrade || null,
                             previous_thesis: config.active_thesis || "No previous thesis recorded.",
                             candles: triggerCandles.slice(-50),
