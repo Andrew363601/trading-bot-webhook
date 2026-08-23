@@ -583,6 +583,20 @@ export async function startSniper(tenantId) {
                                             continue;
                                         }
                                         global.__trapLocks.add(trapLockKey);
+
+                                        // 🟢 Fetch scored memories for trap payload
+                                        // so influencing_memory_ids are stored in trade_logs.
+                                        let trapMemoryIds = [];
+                                        try {
+                                            const scoredResult = await getScoredMemories(tenantId, config.asset, null, null);
+                                            if (scoredResult?.ids?.length > 0) trapMemoryIds = scoredResult.ids;
+                                        } catch (e) {
+                                            console.log(`[SNIPER-TRAP] Scored memory fetch failed (non-fatal): ${e.message}`);
+                                        }
+
+                                        // Augment trapPayload with memory IDs
+                                        trapPayload._influencing_memory_ids = trapMemoryIds;
+
                                         // Execute synchronously to prevent race conditions
                                         try {
                                             const result = await executeTradeMCP(trapPayload);

@@ -48,6 +48,10 @@ function PerformanceLogContent() {
   const [logFilter, setLogFilter] = useState('ALL');
   // Per-row toggle for the (often very long) oracle rationale. Keyed by trade.id.
   const [expandedThesis, setExpandedThesis] = useState({});
+  // 🟢 Tracks expanded core memories per trade
+  const [expandedMemories, setExpandedMemories] = useState({});
+  // 🟢 Cache of core memories keyed by trade_log_id for reverse lookup
+  const [linkedMemories, setLinkedMemories] = useState({});
   // In-flight ids for the action buttons so the UI can disable them while a request runs.
   const [reviewingId, setReviewingId] = useState(null);
   const [closingId, setClosingId] = useState(null);
@@ -174,7 +178,41 @@ function PerformanceLogContent() {
       if (isMounted) fetchPerformance(); 
   }, [fetchPerformance, isMounted]);
 
-  // 🔁 Force-review an open trade through the Oracle. Mirrors handler in pages/audit.js
+  // � Fetch linked core memories for displayed trades
+  useEffect(() => {
+    if (!supabase || !allValidTrades.length || !tenantId) return;
+    const fetchLinkedMemories = async () => {
+      const map = {};
+      const allMemoryIds = new Set();
+      const allTradeIds = new Set();
+      allValidTrades.forEach(t => {
+        if (t.id) allTradeIds.add(t.id);
+        if (t.influencing_memory_ids?.length) {
+          t.influencing_memory_ids.forEach(id => allMemoryIds.add(id));
+        }
+      });
+      if (allMemoryIds.size > 0) {
+        const ids = [...allMemoryIds];
+        for (let i = 0; i < ids.length; i += 50) {
+          const chunk = ids.slice(i, i + 50);
+          const { data } = await supabase.from('hermes_core_memory').select('*').in('id', chunk).limit(50);
+          if (data) data.forEach(m => { map[m.id] = m; });
+        }
+      }
+      if (allTradeIds.size > 0) {
+        const ids = [...allTradeIds];
+        for (let i = 0; i < ids.length; i += 50) {
+          const chunk = ids.slice(i, i + 50);
+          const { data } = await supabase.from('hermes_core_memory').select('*').in('trade_log_id', chunk).limit(50);
+          if (data) data.forEach(m => { map[m.id] = m; });
+        }
+      }
+      setLinkedMemories(map);
+    };
+    fetchLinkedMemories();
+  }, [allValidTrades, tenantId, supabase]);
+
+  // �🔁 Force-review an open trade through the Oracle. Mirrors handler in pages/audit.js
   // so the user can act from the Performance view without context-switching.
   const handleForceReview = useCallback(async (tradeId) => {
     if (!session?.access_token || !tradeId) return;
@@ -618,14 +656,16 @@ function PerformanceLogContent() {
                      ))}
                      <button
                         onClick={() => {
-                            const rows = [['Date','Time','Asset','Strategy','Side','Entry','Exit','PnL','Reason']];
+                            const rows = [['Date','Time','Asset','Strategy','Side','Entry','Exit','PnL','Mode','Memories','Reason']];
                             displayLogs.forEach(p => {
                                 const t = p.trade;
                                 if (!t) return;
                                 rows.push([
                                     p.dateStr, p.timeStr, p.asset, p.strategy,
                                     t.side || '', t.entry_price || '', t.exit_price || '',
-                                    t.pnl || '0', p.reasoning || ''
+                                    t.pnl || '0', t.execution_mode || '',
+                                    (t.influencing_memory_ids || []).join(';'),
+                                    p.reasoning || ''
                                 ]);
                             });
                             const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('\n');
@@ -685,6 +725,55 @@ function PerformanceLogContent() {
                              </p>
                           </div>
                         )}
+
+                        {/* 🟢 Linked Core Memories */}
+                        {(() => {
+                          const forwardMems = (t.influencing_memory_ids || [])
+                            .map(id => linkedMemories[id])
+                            .filter(Boolean);
+                          const reverseMems = Object.values(linkedMemories)
+                            .filter(m => m.trade_log_id === t.id);
+                          const allMems = [...forwardMems, ...reverseMems];
+                          const uniqueMems = [];
+                          const seen = new Set();
+                          allMems.forEach(m => { if (!seen.has(m.id)) { seen.add(m.id); uniqueMems.push(m); } });
+                          if (uniqueMems.length === 0) return null;
+                          return (
+                            <div className="border-l-2 border-indigo-500/30 pl-4 py-1">
+                              <div className="flex items-center justify-between mb-1">
+                                <h4 className="text-[9px] font-black uppercase tracking-widest text-indigo-400 flex items-center gap-2">
+                                  🧠 Core Memory {forwardMems.length > 0 && reverseMems.length > 0 ? '(Forward × Reverse)' : forwardMems.length > 0 ? '(Influenced This Trade)' : '(Generated By This Trade)'}
+                                </h4>
+                                <button
+                                  onClick={() => setExpandedMemories(prev => ({ ...prev, [t.id]: !prev[t.id] }))}
+                                  className="text-[9px] font-black uppercase tracking-widest text-indigo-300 hover:text-indigo-200 flex items-center gap-1"
+                                >
+                                  {expandedMemories[t.id] ? <>Collapse <ChevronUp size={10}/></> : <>View {uniqueMems.length} <ChevronDown size={10}/></>}
+                                </button>
+                              </div>
+                              {expandedMemories[t.id] && (
+                                <div className="space-y-2 mt-2">
+                                  {uniqueMems.map(m => (
+                                    <div key={m.id} className="bg-black/30 rounded-lg p-3 border border-indigo-500/10">
+                                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${m.win_loss === 'WIN' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300'}`}>{m.win_loss}</span>
+                                        {m.regime_at_close && <span className="text-[8px] font-mono text-slate-500 uppercase">{m.regime_at_close}</span>}
+                                        {m.pnl !== null && m.pnl !== undefined && <span className={`text-[9px] font-mono ${parseFloat(m.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>${parseFloat(m.pnl).toFixed(4)}</span>}
+                                        {m.thesis_accurate !== null && m.thesis_accurate !== undefined && <span className={`text-[8px] font-mono ${m.thesis_accurate ? 'text-emerald-400' : 'text-red-400'}`}>{m.thesis_accurate ? '✓ Accurate' : '✗ Inaccurate'}</span>}
+                                      </div>
+                                      <p className="text-[11px] text-slate-400 italic leading-relaxed line-clamp-3">{m.lesson_learned}</p>
+                                      {m.working_thesis && (
+                                        <p className="text-[9px] text-slate-500 mt-1.5 pt-1.5 border-t border-indigo-500/10 leading-relaxed">
+                                          <span className="font-black uppercase tracking-widest text-indigo-400">Thesis:</span> {m.working_thesis}
+                                        </p>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                         
                         <div className="border-l-2 border-slate-500/30 pl-4 py-1 flex flex-wrap gap-x-6 gap-y-2">
                            <div className="flex items-center gap-2">
