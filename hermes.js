@@ -2,6 +2,7 @@
 import { startSniper } from './workers/sniper.js';
 import { startWatchdog } from './workers/watchdog.js';
 import { startMCPGateway } from './mcp-gateway.js'; // 🟢 Added import
+import { startShadowPortfolio } from './workers/shadow-portfolio.js';
 
 console.log("[NEXUS COMMANDER] Booting continuous autonomous swarm...");
 
@@ -22,6 +23,9 @@ try {
     
     // 3. Boot the risk manager (Trailing Stops / SL)
     startWatchdog();
+
+    // 4. Boot the shadow portfolio evaluator (VETO accuracy)
+    startShadowPortfolio();
 
     // Heartbeat monitor
     setInterval(() => {

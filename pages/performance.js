@@ -177,7 +177,23 @@ function PerformanceLogContent() {
   useEffect(() => { 
       if (isMounted) fetchPerformance(); 
   }, [fetchPerformance, isMounted]);
+  // 🟢 Shadow Portfolio: fetch VETO labels
+  const [shadowRecords, setShadowRecords] = useState([]);
+  const [showVetos, setShowVetos] = useState(false);
 
+  useEffect(() => {
+    if (!supabase || !tenantId) return;
+    const fetchShadowPortfolio = async () => {
+      const { data } = await supabase
+        .from('shadow_portfolio')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: false })
+        .limit(200);
+      if (data) setShadowRecords(data);
+    };
+    fetchShadowPortfolio();
+  }, [tenantId, supabase]);
   // � Fetch linked core memories for displayed trades
   useEffect(() => {
     if (!supabase || !allValidTrades.length || !tenantId) return;
@@ -486,6 +502,14 @@ function PerformanceLogContent() {
                         {m}
                     </button>
                 ))}
+                <button
+                  onClick={() => setShowVetos(!showVetos)}
+                  className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
+                    showVetos ? 'bg-orange-500/20 border-orange-500/50 text-orange-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
+                  }`}
+                >
+                  🛡️ VETOs ({shadowRecords.length})
+                </button>
             </div>
         </div>
       </header>
@@ -802,7 +826,44 @@ function PerformanceLogContent() {
                 );
              })}
              
-             {displayLogs.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
+             {showVetos && shadowRecords.map((s, i) => (
+               <div key={i} className={`p-4 rounded-2xl border transition-all duration-300 bg-slate-900/60 ${
+                 s.verdict === 'SAVED' ? 'border-emerald-500/20' : s.verdict === 'MISSED' ? 'border-red-500/20' : 'border-slate-500/20'
+               }`}>
+                 <div className="flex justify-between items-center mb-2">
+                   <div className="flex items-center gap-3">
+                     <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest bg-orange-500/10 text-orange-400">VETO</span>
+                     <span className="text-sm font-bold text-white">{s.asset}</span>
+                     <span className="text-[10px] text-slate-500 font-mono">@ ${s.veto_price}</span>
+                   </div>
+                   <div className="flex items-center gap-3">
+                     <span className={`font-black font-mono text-sm ${
+                       s.verdict === 'SAVED' ? 'text-emerald-400' : s.verdict === 'MISSED' ? 'text-red-400' : 'text-slate-400'
+                     }`}>
+                       {s.verdict === 'SAVED' ? '✅ SAVED' : s.verdict === 'MISSED' ? '❌ MISSED' : '➖ NEUTRAL'}
+                     </span>
+                     {s.conviction_score !== null && (
+                       <span className="text-[10px] text-slate-400 font-mono">Conviction: {s.conviction_score}</span>
+                     )}
+                   </div>
+                 </div>
+                 <div className="flex gap-4 text-[10px] text-slate-400 font-mono pl-2">
+                   {s.saved_amount > 0 && <span className="text-emerald-400">Saved: ${parseFloat(s.saved_amount).toFixed(2)}</span>}
+                   {s.missed_amount > 0 && <span className="text-red-400">Missed: ${parseFloat(s.missed_amount).toFixed(2)}</span>}
+                   {s.duration_minutes !== null && <span>Duration: {s.duration_minutes}m</span>}
+                   {s.actual_move_pct !== null && <span>Price Δ: {s.actual_move_pct > 0 ? '+' : ''}{s.actual_move_pct}%</span>}
+                   {s.veto_regime && <span className="text-slate-500 uppercase">{s.veto_regime}</span>}
+                 </div>
+                 {s.counterfactual_direction && (
+                   <div className="mt-2 text-[9px] text-slate-500 font-mono pl-2">
+                     No trade found — price moved <span className={s.counterfactual_direction === 'WENT_AGAINST' ? 'text-emerald-400' : 'text-red-400'}>{s.counterfactual_direction.replace('_', ' ')}</span> within 6h
+                   </div>
+                 )}
+               </div>
+             ))}
+
+             {displayLogs.length === 0 && !showVetos && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
+             {displayLogs.length === 0 && showVetos && shadowRecords.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No VETO records found for this tenant.</div>}
           </div>
         </div>
       )}

@@ -1,6 +1,7 @@
 // hermes-multi-tenant.js
 import { syncAllTenants, startTenantWatcher } from './lib/tenant-worker-manager.js';
 import { startMCPGateway } from './mcp-gateway.js';
+import { startShadowPortfolio } from './workers/shadow-portfolio.js';
 
 console.log("[NEXUS COMMANDER] Booting multi-tenant autonomous swarm...");
 
@@ -17,11 +18,14 @@ async function bootSwarm() {
         // 1. Boot the MCP Translation Layer (Single instance for all tenants)
         startMCPGateway();
 
-        // 2. Initial sync of all active tenants
+        // 2. Boot the shadow portfolio evaluator (VETO accuracy)
+        startShadowPortfolio();
+
+        // 3. Initial sync of all active tenants
         await syncAllTenants();
         console.log("[NEXUS COMMANDER] Tenant sync complete. Workers spawned.");
         
-        // 3. Start the background watcher for new tenants
+        // 4. Start the background watcher for new tenants
         startTenantWatcher();
 
         // Heartbeat monitor
