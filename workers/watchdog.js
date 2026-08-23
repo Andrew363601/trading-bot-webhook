@@ -926,7 +926,7 @@ export async function startWatchdog(tenantId) {
                                 const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
                                 await fetch(autopsyUrl, {
                                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeExitPrice, exit_price: safeExitPrice, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'LIMIT_CANCELED', execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: null })
+                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeExitPrice, exit_price: safeExitPrice, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'LIMIT_CANCELED', execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: null, trade_log_id: openTrade?.id || null })
                                 });
                             } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
 
@@ -1054,7 +1054,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                 const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
                                 await fetch(autopsyUrl, {
                                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeEntryPrice, exit_price: safeExitPrice, pnl: rawPnl.toFixed(4), rolling_ledger: updatedReason, trigger: assumedReason, execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: telemetry.macro_regime_oracle || null, market_snapshot: closeSnapshot })
+                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeEntryPrice, exit_price: safeExitPrice, pnl: rawPnl.toFixed(4), rolling_ledger: updatedReason, trigger: assumedReason, execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: telemetry.macro_regime_oracle || null, market_snapshot: closeSnapshot, trade_log_id: openTrade?.id || null })
                                 });
                             } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
 
@@ -1371,7 +1371,8 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                             rolling_ledger: updatedReason, trigger: triggerType,
                                             execution_mode: 'PAPER',
                                             regime_at_close: telemetry.macro_regime_oracle || null,
-                                            market_snapshot: paperCloseSnapshot
+                                            market_snapshot: paperCloseSnapshot,
+                                            trade_log_id: openTrade?.id || null
                                         })
                                     });
                                 } catch (autopsyErr) {
@@ -1427,7 +1428,8 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                             rolling_ledger: updatedReason, trigger: triggerType,
                                             execution_mode: 'PAPER',
                                             regime_at_close: telemetry.macro_regime_oracle || null,
-                                            market_snapshot: orphanCloseSnapshot
+                                            market_snapshot: orphanCloseSnapshot,
+                                            trade_log_id: openTrade?.id || null
                                         })
                                     });
                                 } catch (autopsyErr) {
