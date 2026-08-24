@@ -153,11 +153,22 @@ export default function LandingPage() {
     return FUTURES_CODE_MAP[base] || base;
   };
 
-  // No more strategyModeMap — use trade.execution_mode directly (recorded at trade time).
+  // Helper to normalize execution mode across variants (e.g. 'LIVE', 'LIVE (EXCHANGE)', 'PAPER')
+  const getTradeMode = (t) => {
+    const raw = (t?.execution_mode || 'PAPER').toString().toUpperCase().trim();
+    if (raw.includes('LIVE')) return 'LIVE';
+    if (raw.includes('PAPER')) return 'PAPER';
+    return raw;
+  };
+
+  // Date filtering prioritizes closed trade exit_time, falling back to entry created_at
   const now = new Date();
   const dateFiltered = dateFilter === 'all' ? demoTrades
     : demoTrades.filter(t => {
-        const d = new Date(t.created_at);
+        const rawDate = t.exit_time || t.created_at;
+        if (!rawDate) return false;
+        const d = new Date(rawDate);
+        if (isNaN(d.getTime())) return false;
         const diff = (now - d) / (1000 * 60 * 60 * 24);
         if (dateFilter === 'today') return diff <= 1;
         if (dateFilter === '7d') return diff <= 7;
@@ -167,11 +178,13 @@ export default function LandingPage() {
 
   const filteredTrades = executionMode === 'ALL'
     ? dateFiltered
-    : dateFiltered.filter(t => (t.execution_mode || 'PAPER') === executionMode);
+    : dateFiltered.filter(t => getTradeMode(t) === executionMode);
 
   // Client-side sort: newest first by created_at, regardless of filter.
   const sortedFilteredTrades = [...filteredTrades].sort((a, b) => {
-    return new Date(b.created_at) - new Date(a.created_at);
+    const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return tb - ta;
   });
 
   const modeStats = (() => {
@@ -186,7 +199,7 @@ export default function LandingPage() {
       const greens = open.filter(t => (parseFloat(t.current_roe ?? t.pnl) || 0) > 0).length;
       return { winRate: ((greens / open.length) * 100).toFixed(1) + '%', totalTrades: open.length, totalPnL: `$${open.reduce((s, t) => s + (parseFloat(t.pnl) || 0), 0).toFixed(2)}`, mode: executionMode };
     }
-    return null;
+    return { winRate: '0%', totalTrades: 0, totalPnL: '$0.00', mode: executionMode };
   })();
 
   // Build the terminal feed. Two problems we fix here:
@@ -771,7 +784,7 @@ export default function LandingPage() {
                 const pnlVal = parseFloat(trade.pnl) || 0;
                 const isWin = !isOpen && pnlVal > 0;
                 const isLoss = !isOpen && pnlVal <= 0;
-                const mode = trade.execution_mode || 'PAPER';
+                const mode = getTradeMode(trade);
                 const isExpanded = expandedTrade === i;
                 const reasonText = trade.reason || trade.working_thesis;
 
