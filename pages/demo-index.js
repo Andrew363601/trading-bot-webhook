@@ -29,6 +29,10 @@ export default function LandingPage() {
   const [executionMode, setExecutionMode] = useState('ALL');
   const [dateFilter, setDateFilter] = useState('all');
   const [expandedTrade, setExpandedTrade] = useState(null);
+  // 🧠 Linked core memories (influencing + generated) keyed by memory id, fetched via /api/demo-feed
+  const [linkedMemories, setLinkedMemories] = useState({});
+  // Per-trade expand toggles for the two (separated) core memory groups
+  const [expandedMemories, setExpandedMemories] = useState({});
 
   useEffect(() => {
     fetchSiteContent(supabaseReadOnly).then(setContent);
@@ -81,6 +85,12 @@ export default function LandingPage() {
         hasRealData = true;
 
         if (data.logs?.length) setLogs(data.logs.map(toLog));
+        // Build linked memories map from feed response
+        if (data.memories?.length) {
+          const map = {};
+          data.memories.forEach(m => { map[m.id] = m; });
+          setLinkedMemories(map);
+        }
         // Configs are pre-filtered to is_active=true by /api/demo-feed.
         setDemoConfigs(data.configs || []);
 
@@ -843,6 +853,95 @@ export default function LandingPage() {
                         <p className="text-xs text-slate-300 font-mono leading-relaxed whitespace-pre-wrap">
                           {reasonText || 'No rationalization notes recorded for this trade.'}
                         </p>
+
+                        {/* 🧠 Core Memory (Influenced This Trade) */}
+                        {(() => {
+                          const forwardMems = (trade.influencing_memory_ids || [])
+                            .map(id => linkedMemories[id])
+                            .filter(Boolean);
+                          if (forwardMems.length === 0) return null;
+                          const memExpanded = expandedMemories[`${trade.id}-influenced`];
+                          return (
+                            <div className="mt-4 border-l-2 border-indigo-500/30 pl-4">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400 flex items-center gap-2">
+                                  🧠 Core Memory (Influenced This Trade)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setExpandedMemories(prev => ({ ...prev, [`${trade.id}-influenced`]: !prev[`${trade.id}-influenced`] })); }}
+                                  className="text-[9px] font-black uppercase tracking-widest text-indigo-300 hover:text-indigo-200 flex items-center gap-1 cursor-pointer"
+                                >
+                                  {memExpanded ? <>Collapse ▲</> : <>View {forwardMems.length} <ChevronRight className="w-3 h-3" /></>}
+                                </button>
+                              </div>
+                              {memExpanded && (
+                                <div className="space-y-2">
+                                  {forwardMems.map(m => (
+                                    <div key={m.id} className="bg-black/30 rounded-xl p-3 border border-indigo-500/10">
+                                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${m.win_loss === 'WIN' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300'}`}>{m.win_loss}</span>
+                                        {m.regime_at_close && <span className="text-[8px] font-mono text-slate-500 uppercase">{m.regime_at_close}</span>}
+                                        {m.pnl !== null && m.pnl !== undefined && <span className={`text-[9px] font-mono ${parseFloat(m.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>${parseFloat(m.pnl).toFixed(4)}</span>}
+                                        {m.thesis_accurate !== null && m.thesis_accurate !== undefined && <span className={`text-[8px] font-mono ${m.thesis_accurate ? 'text-emerald-400' : 'text-red-400'}`}>{m.thesis_accurate ? '✓ Accurate' : '✗ Inaccurate'}</span>}
+                                      </div>
+                                      <p className="text-[11px] text-slate-400 italic leading-relaxed line-clamp-3">{m.lesson_learned}</p>
+                                      {m.working_thesis && (
+                                        <p className="text-[9px] text-slate-500 mt-1.5 pt-1.5 border-t border-indigo-500/10 leading-relaxed">
+                                          <span className="font-black uppercase tracking-widest text-indigo-400">Thesis:</span> {m.working_thesis}
+                                        </p>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        {/* 🧠 Core Memory (Generated By This Trade) */}
+                        {(() => {
+                          const generatedMem = Object.values(linkedMemories)
+                            .filter(m => m.trade_log_id === trade.id);
+                          if (generatedMem.length === 0) return null;
+                          const memExpanded = expandedMemories[`${trade.id}-generated`];
+                          return (
+                            <div className="mt-4 border-l-2 border-emerald-500/30 pl-4">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400 flex items-center gap-2">
+                                  🧠 Core Memory (Generated By This Trade)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setExpandedMemories(prev => ({ ...prev, [`${trade.id}-generated`]: !prev[`${trade.id}-generated`] })); }}
+                                  className="text-[9px] font-black uppercase tracking-widest text-emerald-300 hover:text-emerald-200 flex items-center gap-1 cursor-pointer"
+                                >
+                                  {memExpanded ? <>Collapse ▲</> : <>View {generatedMem.length} <ChevronRight className="w-3 h-3" /></>}
+                                </button>
+                              </div>
+                              {memExpanded && (
+                                <div className="space-y-2">
+                                  {generatedMem.map(m => (
+                                    <div key={m.id} className="bg-black/30 rounded-xl p-3 border border-emerald-500/10">
+                                      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                                        <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${m.win_loss === 'WIN' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300'}`}>{m.win_loss}</span>
+                                        {m.regime_at_close && <span className="text-[8px] font-mono text-slate-500 uppercase">{m.regime_at_close}</span>}
+                                        {m.pnl !== null && m.pnl !== undefined && <span className={`text-[9px] font-mono ${parseFloat(m.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>${parseFloat(m.pnl).toFixed(4)}</span>}
+                                        {m.thesis_accurate !== null && m.thesis_accurate !== undefined && <span className={`text-[8px] font-mono ${m.thesis_accurate ? 'text-emerald-400' : 'text-red-400'}`}>{m.thesis_accurate ? '✓ Accurate' : '✗ Inaccurate'}</span>}
+                                      </div>
+                                      <p className="text-[11px] text-slate-400 italic leading-relaxed line-clamp-3">{m.lesson_learned}</p>
+                                      {m.working_thesis && (
+                                        <p className="text-[9px] text-slate-500 mt-1.5 pt-1.5 border-t border-emerald-500/10 leading-relaxed">
+                                          <span className="font-black uppercase tracking-widest text-emerald-400">Thesis:</span> {m.working_thesis}
+                                        </p>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>

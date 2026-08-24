@@ -28,7 +28,7 @@ export default async function handler(req, res) {
 
   if (!DEMO_TENANT_ID) {
     // No demo tenant configured — let the client fall back to synthetic data.
-    return res.status(200).json({ configured: false, logs: [], trades: [], configs: [] });
+    return res.status(200).json({ configured: false, logs: [], trades: [], configs: [], memories: [] });
   }
 
   try {
@@ -41,7 +41,7 @@ export default async function handler(req, res) {
         .limit(30),
       supabase
         .from('trade_logs')
-        .select('symbol, side, strategy_id, entry_price, exit_price, pnl, exit_time, reason, execution_mode, created_at')
+        .select('id, symbol, side, strategy_id, entry_price, exit_price, pnl, exit_time, reason, execution_mode, created_at, influencing_memory_ids')
         .eq('tenant_id', DEMO_TENANT_ID)
         .order('created_at', { ascending: false })
         .limit(500),
@@ -53,17 +53,55 @@ export default async function handler(req, res) {
         .order('last_updated', { ascending: false }),
     ]);
 
+    // Fetch linked core memories for all returned trades
+    const trades = tradesRes.data || [];
+    const allMemoryIds = new Set();
+    const allTradeIds = new Set();
+    trades.forEach(t => {
+      if (t.id) allTradeIds.add(t.id);
+      if (t.influencing_memory_ids?.length) {
+        t.influencing_memory_ids.forEach(id => allMemoryIds.add(id));
+      }
+    });
+    let memories = [];
+    if (allMemoryIds.size > 0 || allTradeIds.size > 0) {
+      const ids = [...allMemoryIds];
+      const tradeIds = [...allTradeIds];
+      const memoryQueries = [];
+      if (ids.length > 0) {
+        for (let i = 0; i < ids.length; i += 50) {
+          const chunk = ids.slice(i, i + 50);
+          memoryQueries.push(
+            supabase.from('hermes_core_memory').select('*').in('id', chunk).limit(50)
+          );
+        }
+      }
+      if (tradeIds.length > 0) {
+        for (let i = 0; i < tradeIds.length; i += 50) {
+          const chunk = tradeIds.slice(i, i + 50);
+          memoryQueries.push(
+            supabase.from('hermes_core_memory').select('*').in('trade_log_id', chunk).limit(50)
+          );
+        }
+      }
+      const memResults = await Promise.all(memoryQueries);
+      memResults.forEach(r => {
+        if (r.data) memories = memories.concat(r.data);
+      });
+    }
+
     // Cache at the edge for 10s to keep the landing page snappy and cheap.
     res.setHeader('Cache-Control', 's-maxage=10, stale-while-revalidate=30');
 
     return res.status(200).json({
       configured: true,
       logs: logsRes.data || [],
-      trades: tradesRes.data || [],
+      trades,
       configs: configsRes.data || [],
+      memories,
     });
   } catch (e) {
     console.error('[DEMO_FEED] Error:', e.message);
-    return res.status(200).json({ configured: true, logs: [], trades: [], configs: [], error: e.message });
+    return res.status(200).json({ configured: true, logs: [], trades: [], configs: [], memories: [], error: e.message });
   }
 }
