@@ -668,8 +668,8 @@ export default function LandingPage() {
       </div>
 
       {/* 🆕 Trade Log — Public Track Record */}
-      <div id="trades" className="py-24 bg-slate-900 border-y border-slate-800">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div id="trades" className="py-24 bg-slate-900 border-y border-slate-800 overflow-x-hidden">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
           <div className="text-center mb-12">
             <h2 className="text-cyan-400 font-semibold tracking-wide uppercase">Live Track Record</h2>
             <p className="mt-2 text-4xl font-extrabold text-white">Trade Execution Log</p>
@@ -679,12 +679,12 @@ export default function LandingPage() {
           </div>
 
           {/* Mode filter toggle */}
-          <div className="flex justify-center mb-10">
-            <div className="flex items-center bg-slate-950/70 p-1 rounded-xl border border-white/5">
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mb-10">
+            <div className="flex items-center bg-slate-950/70 p-1 rounded-xl border border-white/5 flex-wrap justify-center">
               <button
                 type="button"
                 onClick={() => setExecutionMode('ALL')}
-                className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${
+                className={`px-2 sm:px-4 py-1.5 rounded-lg text-[10px] sm:text-xs font-black uppercase tracking-widest transition-all ${
                   executionMode === 'ALL'
                     ? 'bg-indigo-600 text-white shadow-lg'
                     : 'text-slate-500 hover:text-slate-300'
@@ -695,7 +695,7 @@ export default function LandingPage() {
               <button
                 type="button"
                 onClick={() => setExecutionMode('LIVE')}
-                className={`relative px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${
+                className={`relative px-2 sm:px-4 py-1.5 rounded-lg text-[10px] sm:text-xs font-black uppercase tracking-widest transition-all ${
                   executionMode === 'LIVE'
                     ? 'bg-emerald-500/20 text-emerald-400 shadow-[inset_0_0_10px_rgba(52,211,153,0.15)]'
                     : 'text-slate-500 hover:text-slate-300'
@@ -709,7 +709,7 @@ export default function LandingPage() {
               <button
                 type="button"
                 onClick={() => setExecutionMode('PAPER')}
-                className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${
+                className={`px-2 sm:px-4 py-1.5 rounded-lg text-[10px] sm:text-xs font-black uppercase tracking-widest transition-all ${
                   executionMode === 'PAPER'
                     ? 'bg-amber-500/20 text-amber-400 shadow-[inset_0_0_10px_rgba(251,191,36,0.15)]'
                     : 'text-slate-500 hover:text-slate-300'
@@ -720,7 +720,7 @@ export default function LandingPage() {
             </div>
 
             {/* 🆕 Date filter */}
-            <div className="ml-4 inline-flex bg-slate-950/70 p-1 rounded-xl border border-white/5">
+            <div className="inline-flex bg-slate-950/70 p-1 rounded-xl border border-white/5 flex-wrap justify-center">
               {[
                 { key: 'all', label: 'All' },
                 { key: 'today', label: 'Today' },
@@ -731,7 +731,7 @@ export default function LandingPage() {
                   key={d.key}
                   type="button"
                   onClick={() => setDateFilter(d.key)}
-                  className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all ${
+                  className={`px-2 sm:px-4 py-1.5 rounded-lg text-[10px] sm:text-xs font-black uppercase tracking-widest transition-all ${
                     dateFilter === d.key
                       ? 'bg-indigo-600 text-white shadow-lg'
                       : 'text-slate-500 hover:text-slate-300'
@@ -745,27 +745,27 @@ export default function LandingPage() {
 
           {/* Summary bar showing filtered stats */}
           {modeStats && (
-            <div className="max-w-3xl mx-auto mb-10 bg-slate-950/50 border border-white/5 rounded-2xl p-6 flex justify-around items-center">
-              <div className="text-center">
-                <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest mb-1">Win Rate</p>
-                <p className="text-2xl font-black text-emerald-400 font-mono">{modeStats.winRate}</p>
+            <div className="max-w-3xl mx-auto mb-10 bg-slate-950/50 border border-white/5 rounded-2xl p-4 sm:p-6 flex flex-wrap justify-center gap-3 sm:gap-6 items-center">
+              <div className="text-center min-w-0 flex-1 sm:flex-none">
+                <p className="text-[8px] sm:text-[10px] text-slate-500 uppercase font-black tracking-widest mb-1">Win Rate</p>
+                <p className="text-lg sm:text-2xl font-black text-emerald-400 font-mono">{modeStats.winRate}</p>
               </div>
-              <div className="h-8 w-px bg-white/5" />
-              <div className="text-center">
-                <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest mb-1">Total PnL</p>
-                <p className="text-2xl font-black text-indigo-400 font-mono">{modeStats.totalPnL}</p>
+              <div className="h-8 w-px bg-white/5 hidden sm:block" />
+              <div className="text-center min-w-0 flex-1 sm:flex-none">
+                <p className="text-[8px] sm:text-[10px] text-slate-500 uppercase font-black tracking-widest mb-1">Total PnL</p>
+                <p className="text-lg sm:text-2xl font-black text-indigo-400 font-mono truncate max-w-[120px] sm:max-w-none">{modeStats.totalPnL}</p>
               </div>
-              <div className="h-8 w-px bg-white/5" />
-              <div className="text-center">
-                <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest mb-1">Total Trades</p>
-                <p className="text-2xl font-black text-white font-mono">{modeStats.totalTrades}</p>
+              <div className="h-8 w-px bg-white/5 hidden sm:block" />
+              <div className="text-center min-w-0 flex-1 sm:flex-none">
+                <p className="text-[8px] sm:text-[10px] text-slate-500 uppercase font-black tracking-widest mb-1">Total Trades</p>
+                <p className="text-lg sm:text-2xl font-black text-white font-mono">{modeStats.totalTrades}</p>
               </div>
             </div>
           )}
 
           {/* Trade list */}
           {sortedFilteredTrades.length > 0 ? (
-            <div className="max-h-[600px] overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+            <div className="max-h-[400px] sm:max-h-[600px] overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
               {sortedFilteredTrades.slice(0, 50).map((trade, i) => {
                 const isOpen = trade.exit_price === null || trade.exit_price === undefined;
                 const pnlVal = parseFloat(trade.pnl) || 0;
@@ -815,42 +815,42 @@ export default function LandingPage() {
                       </div>
 
                       {/* Right: prices, PnL, open/closed, chevron */}
-                      <div className="flex items-center gap-6 justify-between sm:justify-end">
-                        <div className="text-right font-mono text-xs text-slate-400">
-                          <span>${trade.entry_price || '—'}</span>
+                      <div className="flex items-center gap-2 sm:gap-4 justify-between sm:justify-end flex-wrap">
+                        <div className="text-right font-mono text-[10px] sm:text-xs text-slate-400 min-w-0">
+                          <span className="truncate inline-block max-w-[70px] sm:max-w-none align-bottom">${trade.entry_price || '—'}</span>
                           <span className="mx-1 text-slate-600">→</span>
-                          <span>{trade.exit_price ? `$${trade.exit_price}` : 'OPEN'}</span>
+                          <span className="truncate inline-block max-w-[70px] sm:max-w-none align-bottom">{trade.exit_price ? `$${trade.exit_price}` : 'OPEN'}</span>
                         </div>
 
-                        <div className="text-right min-w-[80px]">
-                          <span className={`text-sm font-bold font-mono ${
+                        <div className="text-right min-w-[60px] sm:min-w-[80px]">
+                          <span className={`text-xs sm:text-sm font-bold font-mono ${
                             pnlVal > 0 ? 'text-emerald-400' : (pnlVal < 0 ? 'text-red-400' : 'text-slate-300')
                           }`}>
                             {pnlVal > 0 ? '+' : ''}${pnlVal.toFixed(2)}
                           </span>
                         </div>
 
-                        <div className="flex items-center gap-2">
-                          <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded ${
+                        <div className="flex items-center gap-1 sm:gap-2">
+                          <span className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-wider px-1.5 sm:px-2 py-0.5 rounded ${
                             isOpen
                               ? 'bg-indigo-500/20 text-indigo-300'
                               : 'bg-slate-800 text-slate-400'
                           }`}>
                             {isOpen ? 'OPEN' : 'CLOSED'}
                           </span>
-                          <ChevronRight className={`w-4 h-4 text-slate-500 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
+                          <ChevronRight className={`w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-500 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
                         </div>
                       </div>
                     </div>
 
                     {/* Expandable Reasoning Panel */}
                     {isExpanded && (
-                      <div className="mt-4 pt-4 border-t border-slate-800/80 bg-indigo-950/20 -mx-4 -mb-4 sm:-mx-5 sm:-mb-5 p-4 rounded-b-2xl">
+                      <div className="mt-4 pt-4 border-t border-slate-800/80 bg-indigo-950/20 -mx-3 -mb-3 sm:-mx-4 sm:-mb-4 p-3 sm:p-4 rounded-b-2xl overflow-x-hidden">
                         <div className="flex items-center gap-2 mb-2">
                           <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
                           <span className="text-[10px] font-mono uppercase tracking-widest text-indigo-300">Agent Reasoning &amp; Working Thesis</span>
                         </div>
-                        <p className="text-xs text-slate-300 font-mono leading-relaxed whitespace-pre-wrap">
+                        <p className="text-xs text-slate-300 font-mono leading-relaxed whitespace-pre-wrap break-words">
                           {reasonText || 'No rationalization notes recorded for this trade.'}
                         </p>
 
