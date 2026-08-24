@@ -735,7 +735,6 @@ export default function LandingPage() {
             {/* 🆕 Date filter */}
             <div className="inline-flex bg-slate-950/70 p-1 rounded-xl border border-white/5 flex-wrap justify-center">
               {[
-                { key: 'all', label: 'All' },
                 { key: 'today', label: 'Today' },
                 { key: '7d', label: '7 Days' },
                 { key: '30d', label: '30 Days' },
