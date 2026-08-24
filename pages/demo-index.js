@@ -27,7 +27,7 @@ export default function LandingPage() {
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [showSignupPopup, setShowSignupPopup] = useState(false);
   const [executionMode, setExecutionMode] = useState('ALL');
-  const [dateFilter, setDateFilter] = useState('all');
+  const [dateFilter, setDateFilter] = useState('30d');
   const [expandedTrade, setExpandedTrade] = useState(null);
   // 🧠 Linked core memories (influencing + generated) keyed by memory id, fetched via /api/demo-feed
   const [linkedMemories, setLinkedMemories] = useState({});
