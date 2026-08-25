@@ -204,6 +204,9 @@ app.post('/api/wake', async (req, res) => {
             if (toolsResp?.ok) {
               const toolsData = await toolsResp.json();
               toolSchemas = toolsData.tools || {};
+              console.log(`[AGENT CORTEX] Loaded ${Object.keys(toolSchemas).length} tool schemas from gateway`);
+            } else {
+              console.warn(`[AGENT CORTEX] Tool schema fetch returned ${toolsResp?.status || 'no response'} — tools will not be available to the LLM`);
             }
           }
         } catch (e) {
@@ -419,6 +422,7 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
             instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. Output ONLY raw, valid JSON.`;
         }
 
+        console.log(`[AGENT CORTEX] Starting function-calling loop with ${toolDefinitions.length} tools available`);
         // 🆕 AGENTIC FUNCTION-CALLING LOOP
         let maxToolCalls = 15;
         let toolCallCount = 0;
@@ -504,6 +508,7 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
             }
 
             if (result.type === 'tool_calls') {
+                console.log(`[AGENT CORTEX] LLM called ${result.tool_calls.length} tool(s): ${result.tool_calls.map(tc => tc.function?.name || tc.id).join(', ')}`);
                 for (const tc of result.tool_calls) {
                     const fnName = tc.function?.name || tc.id;
                     let fnArgs = {};
@@ -548,9 +553,11 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                     }
                     toolCallCount++;
                 }
+                console.log(`[AGENT CORTEX] Tool call round ${toolCallCount}/${maxToolCalls} complete`);
             }
         }
 
+        console.log(`[AGENT CORTEX] Function-calling loop complete after ${toolCallCount} tool calls. Extracting final decision.`);
         if (!finalDecisionText) {
             throw new Error('Agent did not produce a final decision within the tool call limit.');
         }
