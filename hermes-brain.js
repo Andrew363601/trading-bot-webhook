@@ -36,7 +36,9 @@ async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_t
 const gatewayFetch = async (tool, args) => {
   const mcpUrl = process.env.MCP_GATEWAY_URL;
   if (!mcpUrl) throw new Error('MCP_GATEWAY_URL not configured');
-  const resp = await fetch(`${mcpUrl}/mcp/execute`, {
+  // Derive base URL: strip /mcp/execute suffix if present
+  const gatewayBase = mcpUrl.replace(/\/mcp\/execute$/, '');
+  const resp = await fetch(`${gatewayBase}/mcp/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tool, arguments: args })
@@ -200,7 +202,9 @@ app.post('/api/wake', async (req, res) => {
         try {
           const gatewayUrl = process.env.MCP_GATEWAY_URL;
           if (gatewayUrl) {
-            const toolsResp = await fetch(`${gatewayUrl}/mcp/tools`).catch(() => null);
+            // Derive base URL: strip /mcp/execute suffix if present
+            const gatewayBase = gatewayUrl.replace(/\/mcp\/execute$/, '');
+            const toolsResp = await fetch(`${gatewayBase}/mcp/tools`).catch(() => null);
             if (toolsResp?.ok) {
               const toolsData = await toolsResp.json();
               toolSchemas = toolsData.tools || {};
