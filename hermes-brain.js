@@ -1,4 +1,4 @@
-// hermes-brain.js (Now powered by Gemini 2.5 Pro)
+// hermes-brain.js 
 import express from 'express';
 import fs from 'fs';
 import { buildRadarChartUrl } from './lib/discord-chart.js';
@@ -32,6 +32,19 @@ async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_t
         console.error("[HERMES BRAIN LOGGING FATAL]: Uncaught error in logAgentActivity:", err.message);
     }
 }
+
+const gatewayFetch = async (tool, args) => {
+  const mcpUrl = process.env.MCP_GATEWAY_URL;
+  if (!mcpUrl) throw new Error('MCP_GATEWAY_URL not configured');
+  const resp = await fetch(`${mcpUrl}/mcp/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tool, arguments: args })
+  });
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || `Gateway returned ${resp.status}`);
+  return data.result || data;
+};
 
 const skillMemory = fs.readFileSync('./SKILL.md', 'utf-8');
 
@@ -182,6 +195,21 @@ app.post('/api/wake', async (req, res) => {
 
         console.log(`[AGENT CORTEX] Pulling X-Ray Telemetry & Native Institutional Intent...`);
         
+        // Fetch MCP tool schemas for function-calling
+        let toolSchemas = {};
+        try {
+          const gatewayUrl = process.env.MCP_GATEWAY_URL;
+          if (gatewayUrl) {
+            const toolsResp = await fetch(`${gatewayUrl}/mcp/tools`).catch(() => null);
+            if (toolsResp?.ok) {
+              const toolsData = await toolsResp.json();
+              toolSchemas = toolsData.tools || {};
+            }
+          }
+        } catch (e) {
+          console.warn('[AGENT CORTEX] Tool schema fetch failed:', e.message);
+        }
+
         // 🟢 THE UPGRADE: Fetch market state AND daily PnL in parallel
         const [stateResp, pnlResp] = await Promise.all([
             fetch(mcpUrl, {
@@ -228,6 +256,22 @@ app.post('/api/wake', async (req, res) => {
 
         console.log(`[AGENT CORTEX] Data acquired. Boot LLM inference engine...`);
         const activeModel = await getActiveModel(supabase);
+
+        // 🆕 Build tool declarations from gateway schemas
+        const toolDefinitions = Object.entries(toolSchemas).map(([name, def]) => ({
+          name,
+          description: `${def.description || ''}${def.timeframe ? ` [${def.timeframe.toUpperCase()} TIMEFRAME]` : ''}${def.tier ? ` (Tier ${def.tier})` : ''}`,
+          parameters: {
+            type: 'object',
+            properties: Object.fromEntries(
+              Object.entries(def.parameters || {}).map(([k, v]) => [k, {
+                type: 'string',
+                description: typeof v === 'string' ? String(v) : String(v)
+              }])
+            ),
+            required: Object.keys(def.parameters || {}).slice(0, 1)
+          }
+        }));
 
         // Fetch tenant risk profile for AI context
         let riskContext = '';
@@ -350,6 +394,21 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
         
         // 🟢 RISK PROFILE: Inject tenant risk boundaries
         instructionText += riskContext + '\n\n';
+
+        // 🆕 TIMEFRAME AWARENESS
+        instructionText += `
+<TIMEFRAME_AWARENESS>
+Your MACRO_TIMEFRAME is: ${macro_tf || 'ONE_HOUR'}
+Your TRIGGER_TIMEFRAME is: ${trigger_tf || 'FIVE_MINUTE'}
+
+When calling tools:
+- Tier 1-3 (OI, funding, ETF flows, exchange reserves, options, macro sentiment): Use the MACRO_TIMEFRAME interval
+- Tier 4-5 (CVD, taker ratio, orderbook depth, liquidation heatmap): Use the TRIGGER_TIMEFRAME interval
+
+Pass the appropriate interval parameter with every call. The gateway timestamp will be used as-is.
+</TIMEFRAME_AWARENESS>
+
+`;
         
         instructionText += `--- LIVE MULTI-TF MARKET STATE ---\n${JSON.stringify(marketState, null, 2)}\n\n`;
         
@@ -360,53 +419,143 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
             instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. Output ONLY raw, valid JSON.`;
         }
 
-        let llmUrl, llmHeaders, llmBody;
-        if (activeModel.provider === 'openrouter') {
-            const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
-            llmUrl = `${baseUrl}/chat/completions`;
-            llmHeaders = {
-                'Authorization': `Bearer ${activeModel.apiKey}`,
-                'Content-Type': 'application/json'
-            };
-            llmBody = {
-                model: activeModel.model,
-                messages: [
-                    { role: 'system', content: skillMemory },
-                    { role: 'user', content: instructionText }
-                ],
-                response_format: { type: 'json_object' }
-            };
-        } else {
-            llmUrl = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel.model}:generateContent?key=${activeModel.apiKey || geminiKey}`;
-            llmHeaders = { 'Content-Type': 'application/json' };
-            llmBody = {
-                systemInstruction: { parts: [{ text: skillMemory }] },
-                contents: [{
-                    role: "user",
-                    parts: [{ text: instructionText }]
-                }],
-                generationConfig: { responseMimeType: "application/json" }
-            };
+        // 🆕 AGENTIC FUNCTION-CALLING LOOP
+        let maxToolCalls = 15;
+        let toolCallCount = 0;
+        let accumulatedMessages = [];
+        let finalDecisionText = null;
+
+        const llmCall = async (messages) => {
+            let url, headers, body;
+
+            if (activeModel.provider === 'openrouter') {
+                const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+                url = `${baseUrl}/chat/completions`;
+                headers = {
+                    'Authorization': `Bearer ${activeModel.apiKey}`,
+                    'Content-Type': 'application/json'
+                };
+                body = {
+                    model: activeModel.model,
+                    messages: [
+                        { role: 'system', content: skillMemory },
+                        ...messages
+                    ],
+                    tools: toolDefinitions.map(d => ({ type: 'function', function: d })),
+                    tool_choice: 'auto'
+                };
+            } else {
+                url = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel.model}:generateContent?key=${activeModel.apiKey || geminiKey}`;
+                headers = { 'Content-Type': 'application/json' };
+                body = {
+                    systemInstruction: { parts: [{ text: skillMemory + '\n\nYou have access to tools listed below. Call them when needed to inform your thesis. When you have enough information, output your final decision as a JSON object with action, working_thesis, and all trade parameters.' }] },
+                    contents: messages.map(m => ({
+                        role: m.role === 'tool' || m.role === 'function' ? 'function' : m.role,
+                        parts: m.role === 'function'
+                            ? [{ functionResponse: { name: m.name, response: { content: m.content } } }]
+                            : (m.tool_calls ? [{ text: '' }] : [{ text: m.content || '' }])
+                    })),
+                    tools: [{ functionDeclarations: toolDefinitions.map(d => ({ ...d, parameters: { ...d.parameters, type: 'object' } })) }],
+                };
+            }
+
+            const resp = await fetch(url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(body)
+            });
+
+            if (!resp.ok) throw new Error(`AI API Error (${activeModel.provider}): ${await resp.text()}`);
+            const data = await resp.json();
+
+            if (activeModel.provider === 'openrouter') {
+                const msg = data.choices?.[0]?.message;
+                if (msg?.tool_calls?.length > 0) {
+                    return { type: 'tool_calls', tool_calls: msg.tool_calls };
+                }
+                return { type: 'text', content: msg?.content || '' };
+            } else {
+                const candidate = data.candidates?.[0];
+                const part = candidate?.content?.parts?.[0];
+                if (part?.functionCall) {
+                    return {
+                        type: 'tool_calls',
+                        tool_calls: [{
+                            id: part.functionCall.name,
+                            function: {
+                                name: part.functionCall.name,
+                                arguments: JSON.stringify(part.functionCall.args || {})
+                            }
+                        }]
+                    };
+                }
+                return { type: 'text', content: part?.text || '' };
+            }
+        };
+
+        accumulatedMessages.push({ role: 'user', content: instructionText });
+
+        while (toolCallCount < maxToolCalls) {
+            const result = await llmCall(accumulatedMessages);
+
+            if (result.type === 'text') {
+                finalDecisionText = result.content;
+                break;
+            }
+
+            if (result.type === 'tool_calls') {
+                for (const tc of result.tool_calls) {
+                    const fnName = tc.function?.name || tc.id;
+                    let fnArgs = {};
+                    try { fnArgs = JSON.parse(tc.function?.arguments || '{}'); } catch(e) {}
+
+                    fnArgs.tenant_id = tenant_id;
+                    fnArgs.trade_id = activeOpenTrade?.id || null;
+
+                    try {
+                        const gatewayResult = await gatewayFetch(fnName, fnArgs);
+                        const resultStr = typeof gatewayResult === 'string' ? gatewayResult : JSON.stringify(gatewayResult);
+                        
+                        if (activeModel.provider === 'openrouter') {
+                            accumulatedMessages.push({
+                                role: 'assistant',
+                                content: null,
+                                tool_calls: [{ id: tc.id, type: 'function', function: { name: fnName, arguments: JSON.stringify(fnArgs) } }]
+                            });
+                            accumulatedMessages.push({
+                                role: 'tool',
+                                tool_call_id: tc.id,
+                                content: resultStr.substring(0, 2000)
+                            });
+                        } else {
+                            accumulatedMessages.push({
+                                role: 'function',
+                                name: fnName,
+                                content: resultStr.substring(0, 2000)
+                            });
+                        }
+                    } catch (e) {
+                        const errStr = `Error: ${e.message}`;
+                        if (activeModel.provider === 'openrouter') {
+                            accumulatedMessages.push({
+                                role: 'tool',
+                                tool_call_id: tc.id,
+                                content: errStr
+                            });
+                        } else {
+                            accumulatedMessages.push({ role: 'function', name: fnName, content: errStr });
+                        }
+                    }
+                    toolCallCount++;
+                }
+            }
         }
 
-        const llmResp = await fetch(llmUrl, {
-            method: 'POST',
-            headers: llmHeaders,
-            body: JSON.stringify(llmBody)
-        });
-
-        if (!llmResp.ok) throw new Error(`AI API Error (${activeModel.provider}): ${await llmResp.text()}`);
-
-        const llmData = await llmResp.json();
-        let rawText = activeModel.provider === 'openrouter'
-            ? llmData.choices[0]?.message?.content
-            : llmData.candidates[0]?.content?.parts[0]?.text;
-
-        if (!rawText) {
-            throw new Error(`Empty response content returned from ${activeModel.provider}`);
+        if (!finalDecisionText) {
+            throw new Error('Agent did not produce a final decision within the tool call limit.');
         }
-        
-        // 🟢 THE FIX: Aggressive JSON Extractor to prevent trailing bracket crashes
+
+        let rawText = finalDecisionText;
         const firstBrace = rawText.indexOf('{');
         const lastBrace = rawText.lastIndexOf('}');
         

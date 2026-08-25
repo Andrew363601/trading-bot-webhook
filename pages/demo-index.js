@@ -33,6 +33,8 @@ export default function LandingPage() {
   const [linkedMemories, setLinkedMemories] = useState({});
   // Per-trade expand toggles for the two (separated) core memory groups
   const [expandedMemories, setExpandedMemories] = useState({});
+  const [toolCallsMap, setToolCallsMap] = useState({});
+  const [expandedToolCalls, setExpandedToolCalls] = useState({});
 
   useEffect(() => {
     fetchSiteContent(supabaseReadOnly).then(setContent);
@@ -90,6 +92,15 @@ export default function LandingPage() {
           const map = {};
           data.memories.forEach(m => { map[m.id] = m; });
           setLinkedMemories(map);
+        }
+        // Build tool calls map from feed response
+        if (data.toolCalls?.length) {
+          const tcMap = {};
+          data.toolCalls.forEach(tc => {
+            if (!tcMap[tc.trade_id]) tcMap[tc.trade_id] = [];
+            tcMap[tc.trade_id].push(tc);
+          });
+          setToolCallsMap(tcMap);
         }
         // Configs are pre-filtered to is_active=true by /api/demo-feed.
         setDemoConfigs(data.configs || []);
@@ -947,6 +958,41 @@ export default function LandingPage() {
                                           <span className="font-black uppercase tracking-widest text-emerald-400">Thesis:</span> {m.working_thesis}
                                         </p>
                                       )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+
+                        {/* 🆕 Tool Calls */}
+                        {(() => {
+                          const toolCalls = (toolCallsMap[trade.id] || []).filter(tc => tc.trade_id === trade.id);
+                          if (toolCalls.length === 0) return null;
+                          const tcExpanded = expandedToolCalls[trade.id];
+                          return (
+                            <div className="mt-4 border-l-2 border-cyan-500/30 pl-4">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-[10px] font-black uppercase tracking-widest text-cyan-400 flex items-center gap-2">
+                                  🔧 Tool Calls ({toolCalls.length})
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setExpandedToolCalls(prev => ({ ...prev, [trade.id]: !prev[trade.id] })); }}
+                                  className="text-[9px] font-black uppercase tracking-widest text-cyan-300 hover:text-cyan-200 flex items-center gap-1 cursor-pointer"
+                                >
+                                  {tcExpanded ? <>Collapse ▲</> : <>View {toolCalls.length} <ChevronRight className="w-3 h-3" /></>}
+                                </button>
+                              </div>
+                              {tcExpanded && (
+                                <div className="space-y-1 mt-1">
+                                  {toolCalls.map(tc => (
+                                    <div key={tc.id} className="flex items-center gap-3 bg-black/20 rounded-lg px-3 py-1.5 text-[10px] font-mono">
+                                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${tc.status === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                                      <span className="text-cyan-300 truncate flex-1">{tc.tool_name}</span>
+                                      <span className="text-slate-500">{tc.duration_ms}ms</span>
+                                      {tc.status !== 'success' && <span className="text-red-400 text-[8px]">ERROR</span>}
                                     </div>
                                   ))}
                                 </div>

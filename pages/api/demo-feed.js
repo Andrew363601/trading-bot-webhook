@@ -90,6 +90,17 @@ export default async function handler(req, res) {
       });
     }
 
+    // Fetch tool calls for returned trades
+    let toolCalls = [];
+    const tradeIds = [...allTradeIds];
+    if (tradeIds.length > 0) {
+      for (let i = 0; i < tradeIds.length; i += 50) {
+        const chunk = tradeIds.slice(i, i + 50);
+        const { data } = await supabase.from('agent_tool_calls').select('*').in('trade_id', chunk).order('created_at', { ascending: true }).limit(200);
+        if (data) toolCalls = toolCalls.concat(data);
+      }
+    }
+
     // Cache at the edge for 10s to keep the landing page snappy and cheap.
     res.setHeader('Cache-Control', 's-maxage=10, stale-while-revalidate=30');
 
@@ -99,6 +110,7 @@ export default async function handler(req, res) {
       trades,
       configs: configsRes.data || [],
       memories,
+      toolCalls,
     });
   } catch (e) {
     console.error('[DEMO_FEED] Error:', e.message);

@@ -180,6 +180,25 @@ function PerformanceLogContent() {
   // 🟢 Shadow Portfolio: fetch VETO labels
   const [shadowRecords, setShadowRecords] = useState([]);
   const [showVetos, setShowVetos] = useState(false);
+  const [riskBlocks, setRiskBlocks] = useState([]);
+  const [showRiskBlocks, setShowRiskBlocks] = useState(false);
+  const [toolCallsMap, setToolCallsMap] = useState({});
+  const [expandedToolCalls, setExpandedToolCalls] = useState({});
+
+  // 🆕 Fetch risk veto blocks
+  useEffect(() => {
+    if (!supabase || !tenantId) return;
+    const fetchRiskBlocks = async () => {
+      const { data } = await supabase
+        .from('risk_veto_log')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (data) setRiskBlocks(data);
+    };
+    fetchRiskBlocks();
+  }, [tenantId, supabase]);
 
   useEffect(() => {
     if (!supabase || !tenantId) return;
@@ -224,6 +243,21 @@ function PerformanceLogContent() {
         }
       }
       setLinkedMemories(map);
+
+      // 🆕 Fetch tool calls for displayed trades
+      const toolCallsMapAccum = {};
+      if (allTradeIds.size > 0) {
+        const ids = [...allTradeIds];
+        for (let i = 0; i < ids.length; i += 50) {
+          const chunk = ids.slice(i, i + 50);
+          const { data } = await supabase.from('agent_tool_calls').select('*').in('trade_id', chunk).order('created_at', { ascending: true }).limit(200);
+          if (data) data.forEach(tc => {
+            if (!toolCallsMapAccum[tc.trade_id]) toolCallsMapAccum[tc.trade_id] = [];
+            toolCallsMapAccum[tc.trade_id].push(tc);
+          });
+        }
+      }
+      setToolCallsMap(toolCallsMapAccum);
     };
     fetchLinkedMemories();
   }, [allValidTrades, tenantId, supabase]);
@@ -509,6 +543,14 @@ function PerformanceLogContent() {
                   }`}
                 >
                   🛡️ VETOs ({shadowRecords.length})
+                </button>
+                <button
+                  onClick={() => setShowRiskBlocks(!showRiskBlocks)}
+                  className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
+                    showRiskBlocks ? 'bg-red-500/20 border-red-500/50 text-red-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
+                  }`}
+                >
+                  🚫 Risk Blocks ({riskBlocks.length})
                 </button>
             </div>
         </div>
@@ -836,6 +878,40 @@ function PerformanceLogContent() {
                             </div>
                           );
                         })()}
+
+                        {/* 🆕 Tool Calls */}
+                        {t && (() => {
+                          const toolCalls = (toolCallsMap[t.id] || []).filter(tc => tc.trade_id === t.id);
+                          if (toolCalls.length === 0) return null;
+                          const isExpanded = expandedToolCalls[t.id];
+                          return (
+                            <div className="border-l-2 border-cyan-500/30 pl-4 py-1">
+                              <div className="flex items-center justify-between mb-1">
+                                <h4 className="text-[9px] font-black uppercase tracking-widest text-cyan-400 flex items-center gap-2">
+                                  🔧 Tool Calls ({toolCalls.length})
+                                </h4>
+                                <button
+                                  onClick={() => setExpandedToolCalls(prev => ({ ...prev, [t.id]: !prev[t.id] }))}
+                                  className="text-[9px] font-black uppercase tracking-widest text-cyan-300 hover:text-cyan-200 flex items-center gap-1"
+                                >
+                                  {isExpanded ? <>Collapse <ChevronUp size={10}/></> : <>View <ChevronDown size={10}/></>}
+                                </button>
+                              </div>
+                              {isExpanded && (
+                                <div className="space-y-1 mt-1">
+                                  {toolCalls.map(tc => (
+                                    <div key={tc.id} className="flex items-center gap-3 bg-black/20 rounded-lg px-3 py-1.5 text-[10px] font-mono">
+                                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${tc.status === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                                      <span className="text-cyan-300 truncate flex-1">{tc.tool_name}</span>
+                                      <span className="text-slate-500">{tc.duration_ms}ms</span>
+                                      {tc.status !== 'success' && <span className="text-red-400 text-[8px]">ERROR</span>}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                         
                         <div className="border-l-2 border-slate-500/30 pl-4 py-1 flex flex-wrap gap-x-6 gap-y-2">
                            <div className="flex items-center gap-2">
@@ -900,8 +976,30 @@ function PerformanceLogContent() {
                </div>
              ))}
 
-             {displayLogs.length === 0 && !showVetos && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
+             {showRiskBlocks && riskBlocks.map((rb, i) => (
+               <div key={i} className="p-4 rounded-2xl border border-red-500/20 bg-slate-900/60">
+                 <div className="flex justify-between items-center mb-2">
+                   <div className="flex items-center gap-3">
+                     <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest bg-red-500/10 text-red-400">RISK BLOCK</span>
+                     <span className="text-sm font-bold text-white">{rb.asset}</span>
+                     <span className="text-[10px] text-slate-500 font-mono">{rb.execution_mode}</span>
+                   </div>
+                   <span className="text-[10px] text-slate-500 font-mono">{new Date(rb.created_at).toLocaleString()}</span>
+                 </div>
+                 <div className="flex flex-wrap gap-3 text-[10px] text-slate-400 font-mono pl-2 mb-2">
+                   <span>{rb.side} {rb.entry_price ? `@ $${rb.entry_price}` : ''}</span>
+                   <span>Qty: {rb.qty}</span>
+                   <span>{rb.leverage}x</span>
+                 </div>
+                 <div className="border-l-2 border-red-500/30 pl-3">
+                   <p className="text-[11px] text-red-300 italic">{rb.reason}</p>
+                 </div>
+               </div>
+             ))}
+
+             {displayLogs.length === 0 && !showVetos && !showRiskBlocks && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
              {displayLogs.length === 0 && showVetos && shadowRecords.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No VETO records found for this tenant.</div>}
+             {displayLogs.length === 0 && showRiskBlocks && riskBlocks.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No Risk Block records found for this tenant.</div>}
           </div>
         </div>
       )}

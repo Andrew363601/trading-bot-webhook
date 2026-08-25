@@ -76,6 +76,10 @@ function AuditLogContent() {
   const [linkedMemories, setLinkedMemories] = useState({});
   // 🟢 Shadow Portfolio records for VETO outcome evaluation
   const [shadowRecords, setShadowRecords] = useState([]);
+  const [riskBlocks, setRiskBlocks] = useState([]);
+  const [showRiskBlocks, setShowRiskBlocks] = useState(false);
+  const [toolCallsMap, setToolCallsMap] = useState({});
+  const [expandedToolCalls, setExpandedToolCalls] = useState({});
   const supabase = useSupabaseClient();
   const session = useSession();
 
@@ -178,6 +182,19 @@ function AuditLogContent() {
         console.error('[AUDIT] Shadow portfolio fetch failed:', e.message);
       }
 
+      // 🆕 Fetch risk veto blocks
+      try {
+        const { data: riskData } = await supabase
+          .from('risk_veto_log')
+          .select('*')
+          .eq('tenant_id', tenantId)
+          .order('created_at', { ascending: false })
+          .limit(100);
+        if (riskData) setRiskBlocks(riskData);
+      } catch (e) {
+        console.error('[AUDIT] Risk veto log fetch failed:', e.message);
+      }
+
       // 🟢 Fetch linked core memories for all trades in this batch
       const map = {};
       const allMemoryIds = new Set();
@@ -205,6 +222,21 @@ function AuditLogContent() {
         }
       }
       setLinkedMemories(map);
+
+      // 🆕 Fetch tool calls for all trades
+      if (allTradeIds.size > 0) {
+        const toolCallsMapAccum = {};
+        const ids = [...allTradeIds];
+        for (let i = 0; i < ids.length; i += 50) {
+          const chunk = ids.slice(i, i + 50);
+          const { data: tcData } = await supabase.from('agent_tool_calls').select('*').in('trade_id', chunk).order('created_at', { ascending: true }).limit(200);
+          if (tcData) tcData.forEach(tc => {
+            if (!toolCallsMapAccum[tc.trade_id]) toolCallsMapAccum[tc.trade_id] = [];
+            toolCallsMapAccum[tc.trade_id].push(tc);
+          });
+        }
+        setToolCallsMap(toolCallsMapAccum);
+      }
     } catch (err) { console.error("[AUDIT FAULT]:", err); } finally { setLoading(false); }
   }, [supabase, tenantId, assetFilter]);
 
@@ -317,6 +349,7 @@ function AuditLogContent() {
              <button onClick={() => setStatusFilter('ALL')} className={`text-[8px] md:text-[9px] font-black uppercase px-2 md:px-3 py-1.5 rounded-lg border ${statusFilter === 'ALL' ? 'bg-indigo-500/20 border-indigo-500/30 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}>All</button>
              <button onClick={() => setStatusFilter('EXECUTED')} className={`text-[8px] md:text-[9px] font-black uppercase px-2 md:px-3 py-1.5 rounded-lg border ${statusFilter === 'EXECUTED' ? 'bg-cyan-500/20 border-cyan-500/30 text-cyan-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}>Executed</button>
              <button onClick={() => setStatusFilter('VETOED')} className={`text-[8px] md:text-[9px] font-black uppercase px-2 md:px-3 py-1.5 rounded-lg border ${statusFilter === 'VETOED' ? 'bg-red-500/20 border-red-500/30 text-red-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}>Vetoes</button>
+             <button onClick={() => setShowRiskBlocks(!showRiskBlocks)} className={`text-[8px] md:text-[9px] font-black uppercase px-2 md:px-3 py-1.5 rounded-lg border ${showRiskBlocks ? 'bg-red-500/20 border-red-500/50 text-red-300' : 'border-white/5 text-slate-500 hover:bg-white/5'}`}>🚫 Risk Blocks ({riskBlocks.length})</button>
           </div>
           <div className="flex items-center gap-2 px-3 border-l border-white/10">
             <Filter size={14} className="text-slate-400" />
@@ -603,10 +636,65 @@ function AuditLogContent() {
                     </div>
                   );
                 })()}
+
+                {/* 🆕 Tool Calls */}
+                {t && (() => {
+                  const toolCalls = (toolCallsMap[t.id] || []).filter(tc => tc.trade_id === t.id);
+                  if (toolCalls.length === 0) return null;
+                  const isExpanded = expandedToolCalls[t.id];
+                  return (
+                    <div className="border-l-2 border-cyan-500/30 pl-4 py-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <h4 className="text-[9px] font-black uppercase tracking-widest text-cyan-400 flex items-center gap-2">
+                          🔧 Tool Calls ({toolCalls.length})
+                        </h4>
+                        <button
+                          onClick={() => setExpandedToolCalls(prev => ({ ...prev, [t.id]: !prev[t.id] }))}
+                          className="text-[9px] font-black uppercase tracking-widest text-cyan-300 hover:text-cyan-200 flex items-center gap-1"
+                        >
+                          {isExpanded ? <>Collapse <ChevronUp size={10}/></> : <>View <ChevronDown size={10}/></>}
+                        </button>
+                      </div>
+                      {isExpanded && (
+                        <div className="space-y-1 mt-1">
+                          {toolCalls.map(tc => (
+                            <div key={tc.id} className="flex items-center gap-3 bg-black/20 rounded-lg px-3 py-1.5 text-[10px] font-mono">
+                              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${tc.status === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                              <span className="text-cyan-300 truncate flex-1">{tc.tool_name}</span>
+                              <span className="text-slate-500">{tc.duration_ms}ms</span>
+                              {tc.status !== 'success' && <span className="text-red-400 text-[8px]">ERROR</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           );
         })}
+
+        {showRiskBlocks && riskBlocks.map((rb, i) => (
+          <div key={i} className="p-4 rounded-2xl border border-red-500/20 bg-slate-900/60">
+            <div className="flex justify-between items-center mb-2">
+              <div className="flex items-center gap-3">
+                <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest bg-red-500/10 text-red-400">RISK BLOCK</span>
+                <span className="text-sm font-bold text-white">{rb.asset}</span>
+                <span className="text-[10px] text-slate-500 font-mono">{rb.execution_mode}</span>
+              </div>
+              <span className="text-[10px] text-slate-500 font-mono">{new Date(rb.created_at).toLocaleString()}</span>
+            </div>
+            <div className="flex flex-wrap gap-3 text-[10px] text-slate-400 font-mono pl-2 mb-2">
+              <span>{rb.side} {rb.entry_price ? `@ $${rb.entry_price}` : ''}</span>
+              <span>Qty: {rb.qty}</span>
+              <span>{rb.leverage}x</span>
+            </div>
+            <div className="border-l-2 border-red-500/30 pl-3">
+              <p className="text-[11px] text-red-300 italic">{rb.reason}</p>
+            </div>
+          </div>
+        ))}
       </main>
     </div>
   );
