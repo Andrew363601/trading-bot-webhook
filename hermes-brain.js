@@ -503,6 +503,8 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
 
         accumulatedMessages.push({ role: 'user', content: instructionText });
 
+        let executeOrderCalledInLoop = false;
+
         while (toolCallCount < maxToolCalls) {
             const result = await llmCall(accumulatedMessages);
 
@@ -514,9 +516,17 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
             if (result.type === 'tool_calls') {
                 console.log(`[AGENT CORTEX] LLM called ${result.tool_calls.length} tool(s): ${result.tool_calls.map(tc => tc.function?.name || tc.id).join(', ')}`);
                 for (const tc of result.tool_calls) {
-                    const fnName = tc.function?.name || tc.id;
+                    const fnName = tc.function?.name || tc.id || '';
+
                     let fnArgs = {};
                     try { fnArgs = JSON.parse(tc.function?.arguments || '{}'); } catch(e) {}
+
+                    // Flag if LLM called execute_order — prevents post-loop double-dispatch
+                    if (fnName === 'execute_order') {
+                        executeOrderCalledInLoop = true;
+                        fnArgs.strategy_id = strategy_id || 'MANUAL';
+                        fnArgs.execution_mode = execution_mode || 'PAPER';
+                    }
 
                     fnArgs.tenant_id = tenant_id;
                     fnArgs.trade_id = activeOpenTrade?.id || null;
@@ -1000,7 +1010,7 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                 return res.status(200).json({ status: "UPDATE_PARAMS_SUCCESS", params: mergedParams });
             }
             // 🟢 CLOSE or APPROVE (existing behavior)
-            else {
+            else if (!executeOrderCalledInLoop) {
                 decisionJson.tenant_id = tenant_id;
                 decisionJson.symbol = asset;
                 decisionJson.execution_mode = execution_mode || 'PAPER';
