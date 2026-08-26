@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 // 🟢 THE FIX: Explicitly import AreaSeries for V5 compatibility
 import { createChart, AreaSeries } from 'lightweight-charts';
 import { 
-  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers, Activity, ChevronDown, ChevronUp
+  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers, Activity, ChevronDown, ChevronUp, Crosshair
 } from 'lucide-react';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { createServerSupabaseClient } from '@supabase/auth-helpers-nextjs';
@@ -183,7 +183,6 @@ function PerformanceLogContent() {
   const [riskBlocks, setRiskBlocks] = useState([]);
   const [showRiskBlocks, setShowRiskBlocks] = useState(false);
   const [toolCallsMap, setToolCallsMap] = useState({});
-  const [expandedToolCalls, setExpandedToolCalls] = useState({});
 
   // 🆕 Fetch risk veto blocks
   useEffect(() => {
@@ -244,23 +243,40 @@ function PerformanceLogContent() {
       }
       setLinkedMemories(map);
 
-      // 🆕 Fetch tool calls for displayed trades
-      const toolCallsMapAccum = {};
-      if (allTradeIds.size > 0) {
-        const ids = [...allTradeIds];
-        for (let i = 0; i < ids.length; i += 50) {
-          const chunk = ids.slice(i, i + 50);
-          const { data } = await supabase.from('agent_tool_calls').select('*').in('trade_id', chunk).order('created_at', { ascending: true }).limit(200);
-          if (data) data.forEach(tc => {
-            if (!toolCallsMapAccum[tc.trade_id]) toolCallsMapAccum[tc.trade_id] = [];
-            toolCallsMapAccum[tc.trade_id].push(tc);
+      // 🟢 Agent Tool Calls: fetch and match by time window
+      try {
+        const { data: tcData } = await supabase
+          .from('agent_tool_calls')
+          .select('*')
+          .eq('tenant_id', tenantId)
+          .order('created_at', { ascending: false })
+          .limit(500);
+
+        const toolCallsMapAccum = {};
+        (tcData || []).forEach(tc => {
+          const tcTime = new Date(tc.created_at).getTime();
+          // Find matching trade in allValidTrades or openPositions
+          const matchingTrade = [...allValidTrades, ...openPositions].find(tr => {
+            const trTime = new Date(tr.created_at).getTime();
+            const diff = trTime - tcTime;
+            return diff >= 0 && diff < 120000;
           });
-        }
+
+          if (matchingTrade) {
+            if (!toolCallsMapAccum[matchingTrade.id]) toolCallsMapAccum[matchingTrade.id] = [];
+            const list = toolCallsMapAccum[matchingTrade.id];
+            const insertIdx = list.findIndex(existing => new Date(tc.created_at) < new Date(existing.created_at));
+            if (insertIdx === -1) list.push(tc); else list.splice(insertIdx, 0, tc);
+          }
+        });
+
+        setToolCallsMap(toolCallsMapAccum);
+      } catch (err) {
+        console.error('[PERFORMANCE] Tool calls fetch failed:', err.message);
       }
-      setToolCallsMap(toolCallsMapAccum);
     };
     fetchLinkedMemories();
-  }, [allValidTrades, tenantId, supabase]);
+  }, [allValidTrades, openPositions, tenantId, supabase]);
 
   // �🔁 Force-review an open trade through the Oracle. Mirrors handler in pages/audit.js
   // so the user can act from the Performance view without context-switching.
@@ -879,34 +895,58 @@ function PerformanceLogContent() {
                           );
                         })()}
 
-                        {/* 🆕 Tool Calls */}
+                        {/* 🛠️ Agent Tool Calls */}
                         {t && (() => {
-                          const toolCalls = (toolCallsMap[t.id] || []).filter(tc => tc.trade_id === t.id);
+                          const toolCalls = toolCallsMap[t.id] || [];
                           if (toolCalls.length === 0) return null;
-                          const isExpanded = expandedToolCalls[t.id];
+                          const isExpanded = expandedMemories[`${t.id}-tools`];
                           return (
-                            <div className="border-l-2 border-cyan-500/30 pl-4 py-1">
+                            <div className="border-l-2 border-amber-500/30 pl-4 py-1">
                               <div className="flex items-center justify-between mb-1">
-                                <h4 className="text-[9px] font-black uppercase tracking-widest text-cyan-400 flex items-center gap-2">
-                                  🔧 Tool Calls ({toolCalls.length})
+                                <h4 className="text-[10px] font-black uppercase tracking-widest text-amber-400 flex items-center gap-2">
+                                  <Crosshair size={12}/> Agent Tool Calls ({toolCalls.length})
                                 </h4>
                                 <button
-                                  onClick={() => setExpandedToolCalls(prev => ({ ...prev, [t.id]: !prev[t.id] }))}
-                                  className="text-[9px] font-black uppercase tracking-widest text-cyan-300 hover:text-cyan-200 flex items-center gap-1"
+                                  onClick={() => setExpandedMemories(prev => ({ ...prev, [`${t.id}-tools`]: !prev[`${t.id}-tools`] }))}
+                                  className="text-[9px] font-black uppercase tracking-widest text-amber-300 hover:text-amber-200 flex items-center gap-1"
                                 >
-                                  {isExpanded ? <>Collapse <ChevronUp size={10}/></> : <>View <ChevronDown size={10}/></>}
+                                  {isExpanded ? <>Collapse <ChevronUp size={10}/></> : <>View {toolCalls.length} <ChevronDown size={10}/></>}
                                 </button>
                               </div>
                               {isExpanded && (
-                                <div className="space-y-1 mt-1">
-                                  {toolCalls.map(tc => (
-                                    <div key={tc.id} className="flex items-center gap-3 bg-black/20 rounded-lg px-3 py-1.5 text-[10px] font-mono">
-                                      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${tc.status === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                                      <span className="text-cyan-300 truncate flex-1">{tc.tool_name}</span>
-                                      <span className="text-slate-500">{tc.duration_ms}ms</span>
-                                      {tc.status !== 'success' && <span className="text-red-400 text-[8px]">ERROR</span>}
+                                <div className="bg-black/20 rounded-xl border border-white/5 overflow-hidden max-h-[200px] overflow-y-auto">
+                                  <table className="w-full text-[10px] font-mono">
+                                    <thead>
+                                      <tr className="border-b border-white/5 text-[8px] uppercase tracking-widest text-slate-500">
+                                        <th className="px-3 py-2 text-left">Tool</th>
+                                        <th className="px-3 py-2 text-right">Duration</th>
+                                        <th className="px-3 py-2 text-right">Status</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {toolCalls.map(tc => (
+                                        <tr key={tc.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                                          <td className="px-3 py-2 text-slate-300">{tc.tool_name.replace('coinglass_', 'cg_')}</td>
+                                          <td className="px-3 py-2 text-right text-slate-400">{tc.duration_ms}ms</td>
+                                          <td className="px-3 py-2 text-right">
+                                            <span className={`px-1.5 py-0.5 rounded text-[9px] font-black ${
+                                              tc.status === 'success' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+                                            }`}>
+                                              {tc.status === 'success' ? 'OK' : 'ERR'}
+                                            </span>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                  {toolCalls.some(tc => tc.response_summary) && (
+                                    <div className="p-3 border-t border-white/5 bg-black/30">
+                                      <p className="text-[8px] uppercase tracking-widest text-slate-500 mb-1">Response:</p>
+                                      <pre className="text-[9px] text-slate-400 whitespace-pre-wrap break-all leading-relaxed">
+                                        {toolCalls.map(tc => `[${tc.tool_name}] ${tc.response_summary || ''}`).join('\n').substring(0, 500)}
+                                      </pre>
                                     </div>
-                                  ))}
+                                  )}
                                 </div>
                               )}
                             </div>

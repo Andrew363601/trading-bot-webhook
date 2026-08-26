@@ -78,8 +78,7 @@ function AuditLogContent() {
   const [shadowRecords, setShadowRecords] = useState([]);
   const [riskBlocks, setRiskBlocks] = useState([]);
   const [showRiskBlocks, setShowRiskBlocks] = useState(false);
-  const [toolCallsMap, setToolCallsMap] = useState({});
-  const [expandedToolCalls, setExpandedToolCalls] = useState({});
+  const [toolCalls, setToolCalls] = useState([]);
   const supabase = useSupabaseClient();
   const session = useSession();
 
@@ -182,6 +181,47 @@ function AuditLogContent() {
         console.error('[AUDIT] Shadow portfolio fetch failed:', e.message);
       }
 
+      // 🟢 Agent Tool Calls: fetch tool call audit data
+      let toolCallsData = [];
+      try {
+        const { data } = await supabase
+          .from('agent_tool_calls')
+          .select('*')
+          .eq('tenant_id', tenantId)
+          .order('created_at', { ascending: false })
+          .limit(500);
+        if (data) {
+          toolCallsData = data;
+          setToolCalls(data);
+        }
+      } catch (e) {
+        console.error('[AUDIT] Tool calls fetch failed:', e.message);
+      }
+
+      // 🟢 Match tool calls to pipeline entries by time window
+      const toolCallMap = new Map();
+      (toolCallsData || []).forEach(tc => {
+        const tcTime = new Date(tc.created_at).getTime();
+        const match = groupedPipelines.find(p => {
+          const diff = p.timestamp - tcTime;
+          return diff >= 0 && diff < 120000; // 2 min window before the pipeline event
+        });
+        if (match) {
+          const key = match.timestamp + '-' + (match.trade?.id || match.scan?.id || '');
+          if (!toolCallMap.has(key)) toolCallMap.set(key, []);
+          const calls = toolCallMap.get(key);
+          // Insert sorted by time ascending
+          const insertIdx = calls.findIndex(existing => new Date(tc.created_at) < new Date(existing.created_at));
+          if (insertIdx === -1) calls.push(tc); else calls.splice(insertIdx, 0, tc);
+        }
+      });
+
+      // Attach tool calls to pipeline entries
+      groupedPipelines.forEach(p => {
+        const key = p.timestamp + '-' + (p.trade?.id || p.scan?.id || '');
+        p.toolCalls = toolCallMap.get(key) || [];
+      });
+
       // 🆕 Fetch risk veto blocks
       try {
         const { data: riskData } = await supabase
@@ -222,21 +262,6 @@ function AuditLogContent() {
         }
       }
       setLinkedMemories(map);
-
-      // 🆕 Fetch tool calls for all trades
-      if (allTradeIds.size > 0) {
-        const toolCallsMapAccum = {};
-        const ids = [...allTradeIds];
-        for (let i = 0; i < ids.length; i += 50) {
-          const chunk = ids.slice(i, i + 50);
-          const { data: tcData } = await supabase.from('agent_tool_calls').select('*').in('trade_id', chunk).order('created_at', { ascending: true }).limit(200);
-          if (tcData) tcData.forEach(tc => {
-            if (!toolCallsMapAccum[tc.trade_id]) toolCallsMapAccum[tc.trade_id] = [];
-            toolCallsMapAccum[tc.trade_id].push(tc);
-          });
-        }
-        setToolCallsMap(toolCallsMapAccum);
-      }
     } catch (err) { console.error("[AUDIT FAULT]:", err); } finally { setLoading(false); }
   }, [supabase, tenantId, assetFilter]);
 
@@ -525,6 +550,62 @@ function AuditLogContent() {
                   </div>
                 )}
 
+                {/* 🛠️ Agent Tool Calls */}
+                {pipeline.toolCalls && pipeline.toolCalls.length > 0 && (() => {
+                  const isExpanded = expandedMemories[`${pipeline.timestamp}-tools`];
+                  return (
+                    <div className="border-l-2 border-amber-500/30 pl-4 py-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <h4 className="text-[10px] font-black uppercase tracking-widest text-amber-400 flex items-center gap-2">
+                          <Crosshair size={12}/> Agent Tool Calls ({pipeline.toolCalls.length})
+                        </h4>
+                        <button
+                          onClick={() => setExpandedMemories(prev => ({ ...prev, [`${pipeline.timestamp}-tools`]: !prev[`${pipeline.timestamp}-tools`] }))}
+                          className="text-[9px] font-black uppercase tracking-widest text-amber-300 hover:text-amber-200 flex items-center gap-1"
+                        >
+                          {isExpanded ? <>Collapse <ChevronUp size={10}/></> : <>View {pipeline.toolCalls.length} <ChevronDown size={10}/></>}
+                        </button>
+                      </div>
+                      {isExpanded && (
+                        <div className="bg-black/20 rounded-xl border border-white/5 overflow-hidden max-h-[200px] overflow-y-auto">
+                          <table className="w-full text-[10px] font-mono">
+                            <thead>
+                              <tr className="border-b border-white/5 text-[8px] uppercase tracking-widest text-slate-500">
+                                <th className="px-3 py-2 text-left">Tool</th>
+                                <th className="px-3 py-2 text-right">Duration</th>
+                                <th className="px-3 py-2 text-right">Status</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {pipeline.toolCalls.map(tc => (
+                                <tr key={tc.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                                  <td className="px-3 py-2 text-slate-300">{tc.tool_name.replace('coinglass_', 'cg_')}</td>
+                                  <td className="px-3 py-2 text-right text-slate-400">{tc.duration_ms}ms</td>
+                                  <td className="px-3 py-2 text-right">
+                                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-black ${
+                                      tc.status === 'success' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
+                                    }`}>
+                                      {tc.status === 'success' ? 'OK' : 'ERR'}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                          {pipeline.toolCalls.some(tc => tc.response_summary) && (
+                            <div className="p-3 border-t border-white/5 bg-black/30">
+                              <p className="text-[8px] uppercase tracking-widest text-slate-500 mb-1">Response:</p>
+                              <pre className="text-[9px] text-slate-400 whitespace-pre-wrap break-all leading-relaxed">
+                                {pipeline.toolCalls.map(tc => `[${tc.tool_name}] ${tc.response_summary || ''}`).join('\n').substring(0, 500)}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {t && (t.tp_price || t.sl_price || t.exit_price) && (
                   <div className={`border-l-2 pl-4 py-1 ${t.exit_price ? 'border-slate-500/30' : 'border-purple-500/30'}`}>
                      <h4 className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-2 mb-2 ${t.exit_price ? 'text-slate-400' : 'text-purple-400'}`}>
@@ -629,40 +710,6 @@ function AuditLogContent() {
                                   <span className="font-black uppercase tracking-widest text-emerald-400">Thesis:</span> {m.working_thesis}
                                 </p>
                               )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-
-                {/* 🆕 Tool Calls */}
-                {t && (() => {
-                  const toolCalls = (toolCallsMap[t.id] || []).filter(tc => tc.trade_id === t.id);
-                  if (toolCalls.length === 0) return null;
-                  const isExpanded = expandedToolCalls[t.id];
-                  return (
-                    <div className="border-l-2 border-cyan-500/30 pl-4 py-1">
-                      <div className="flex items-center justify-between mb-1">
-                        <h4 className="text-[9px] font-black uppercase tracking-widest text-cyan-400 flex items-center gap-2">
-                          🔧 Tool Calls ({toolCalls.length})
-                        </h4>
-                        <button
-                          onClick={() => setExpandedToolCalls(prev => ({ ...prev, [t.id]: !prev[t.id] }))}
-                          className="text-[9px] font-black uppercase tracking-widest text-cyan-300 hover:text-cyan-200 flex items-center gap-1"
-                        >
-                          {isExpanded ? <>Collapse <ChevronUp size={10}/></> : <>View <ChevronDown size={10}/></>}
-                        </button>
-                      </div>
-                      {isExpanded && (
-                        <div className="space-y-1 mt-1">
-                          {toolCalls.map(tc => (
-                            <div key={tc.id} className="flex items-center gap-3 bg-black/20 rounded-lg px-3 py-1.5 text-[10px] font-mono">
-                              <span className={`w-2 h-2 rounded-full flex-shrink-0 ${tc.status === 'success' ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                              <span className="text-cyan-300 truncate flex-1">{tc.tool_name}</span>
-                              <span className="text-slate-500">{tc.duration_ms}ms</span>
-                              {tc.status !== 'success' && <span className="text-red-400 text-[8px]">ERROR</span>}
                             </div>
                           ))}
                         </div>
