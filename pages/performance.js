@@ -264,12 +264,26 @@ function PerformanceLogContent() {
             matchingTrade = combinedTrades.find(tr => String(tr.id) === String(tc.trade_id));
           }
 
-          // 2. Lifetime / Inception window match
+          // 2. Direct scan_id match
+          if (!matchingTrade && tc.scan_id) {
+            matchingTrade = combinedTrades.find(tr => String(tr.scan_id) === String(tc.scan_id));
+          }
+
+          // 3. Asset & Lifetime / Inception window match (within 5 minutes of trade entry)
           if (!matchingTrade) {
             matchingTrade = combinedTrades.find(tr => {
-              const entryTime = new Date(tr.created_at).getTime();
+              const entryTime = new Date(tr.created_at || tr.exit_time).getTime();
               const exitTime = tr.exit_time ? new Date(tr.exit_time).getTime() : Date.now();
-              return tcTime >= entryTime - 180000 && tcTime <= exitTime + 30000;
+              const timeMatches = tcTime >= entryTime - 300000 && tcTime <= exitTime + 60000;
+              
+              let symbolMatches = true;
+              if (tc.params_snapshot) {
+                try {
+                  const params = typeof tc.params_snapshot === 'string' ? JSON.parse(tc.params_snapshot) : tc.params_snapshot;
+                  if (params?.symbol) symbolMatches = params.symbol === tr.symbol;
+                } catch (e) {}
+              }
+              return timeMatches && symbolMatches;
             });
           }
 

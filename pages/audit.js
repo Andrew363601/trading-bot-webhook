@@ -213,7 +213,15 @@ function AuditLogContent() {
         if (!match) {
           match = groupedPipelines.find(p => {
             const diff = p.timestamp - tcTime;
-            return diff >= -30000 && diff < 180000;
+            const inWindow = diff >= -60000 && diff < 300000;
+            let symbolMatches = true;
+            if (tc.params_snapshot) {
+              try {
+                const params = typeof tc.params_snapshot === 'string' ? JSON.parse(tc.params_snapshot) : tc.params_snapshot;
+                if (params?.symbol) symbolMatches = params.symbol === p.asset;
+              } catch (e) {}
+            }
+            return inWindow && symbolMatches;
           });
         }
 

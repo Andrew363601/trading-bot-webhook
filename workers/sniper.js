@@ -705,9 +705,9 @@ export async function startSniper(tenantId) {
                     macro_regime_oracle: microstructure?.macro_regime || "EVALUATING", oracle_reasoning: "Awaiting signal..."
                 };
 
+                let scanId = null;
                 if (decision.signal) {
                     await logAgentActivity(tenantId, "Sniper", config.asset, `Signal detected: ${decision.signal} for ${config.strategy}.`, "SIGNAL_DETECTED");
-                    let scanId = null;
                     if (isCooldownActive) {
                         decision.statusOverride = `COOLDOWN (${cooldownMins}M)`;
                         decision.telemetry.oracle_reasoning = `System in penalty box. Ignoring ${decision.signal} signal.`;
