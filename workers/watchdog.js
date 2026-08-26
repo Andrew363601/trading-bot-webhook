@@ -120,6 +120,14 @@ async function pingHermes(payload) {
     }
 }
 
+function getAutopsyUrl() {
+    if (process.env.HERMES_WEBHOOK_URL) {
+        const baseHermes = process.env.HERMES_WEBHOOK_URL.replace(/\/api\/wake\/?$/, '').replace(/\/wake\/?$/, '');
+        return `${baseHermes}/api/autopsy`;
+    }
+    return 'http://localhost:8000/api/autopsy';
+}
+
 const heartbeatTracker = {};
 const missingBracketTracker = {};
 const bracketRejectionTracker = {}; // tradeId -> count of consecutive bracket rejections
@@ -922,8 +930,7 @@ export async function startWatchdog(tenantId) {
                             await logAgentActivity(tenantId, "Watchdog", asset, `Limit order for ${asset} was canceled. Initiating autopsy.`, "ORDER_CANCELED");
                             
                             try {
-                                const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
-                                const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
+                                const autopsyUrl = getAutopsyUrl();
                                 await fetch(autopsyUrl, {
                                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeExitPrice, exit_price: safeExitPrice, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'LIMIT_CANCELED', execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: null, trade_log_id: openTrade?.id || null })
@@ -1050,8 +1057,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                             });
 
                             try {
-                                const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
-                                const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
+                                const autopsyUrl = getAutopsyUrl();
                                 await fetch(autopsyUrl, {
                                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeEntryPrice, exit_price: safeExitPrice, pnl: rawPnl.toFixed(4), rolling_ledger: updatedReason, trigger: assumedReason, execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: telemetry.macro_regime_oracle || null, market_snapshot: closeSnapshot, trade_log_id: openTrade?.id || null })
@@ -1360,8 +1366,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
 
                                 // 🟢 AUTOPSY: Paper trades must receive Hermes analysis just like live trades.
                                 try {
-                                    const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
-                                    const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
+                                    const autopsyUrl = getAutopsyUrl();
                                     await fetch(autopsyUrl, {
                                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({
@@ -1417,8 +1422,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
 
                                 // 🟢 AUTOPSY: Every paper trade gets analyzed, even orphans.
                                 try {
-                                    const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
-                                    const autopsyUrl = hermesEndpoint.replace('/wake', '/autopsy');
+                                    const autopsyUrl = getAutopsyUrl();
                                     await fetch(autopsyUrl, {
                                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({

@@ -142,6 +142,44 @@ app.post('/api/wake', async (req, res) => {
     await logAgentActivity(tenant_id, "Agent Cortex", asset, `Awakened. Mode: ${mode}. Initial message: ${message.substring(0, 100)}...`, "AGENT_AWAKENED");
     console.log(`[AGENT CORTEX] Awakened by Sniper. Tenant: ${tenant_id} | Asset: ${asset} | Mode: ${mode}`);
     
+    // 🟢 MEMORY FALLBACK: If memoryIds was not supplied by caller (e.g., webhook or manual triggers),
+    // query active core memory records for this asset so lessons are always in context and tagged.
+    let resolvedMemoryIds = (Array.isArray(memoryIds) && memoryIds.length > 0) ? memoryIds : [];
+    if (resolvedMemoryIds.length === 0 && tenant_id && asset) {
+        try {
+            let shareMemory = true;
+            try {
+                const { data: memSettings } = await supabase
+                    .from('tenant_settings')
+                    .select('share_memory')
+                    .eq('tenant_id', tenant_id)
+                    .single();
+                if (memSettings && memSettings.share_memory === false) {
+                    shareMemory = false;
+                }
+            } catch (e) {}
+
+            let memQuery = supabase
+                .from('hermes_core_memory')
+                .select('id, win_loss, pnl, lesson_learned, working_thesis, regime_at_close, created_at')
+                .eq('asset', asset)
+                .order('created_at', { ascending: false })
+                .limit(5);
+
+            if (!shareMemory) {
+                memQuery = memQuery.eq('tenant_id', tenant_id);
+            }
+
+            const { data: fallbackMems } = await memQuery;
+            if (fallbackMems && fallbackMems.length > 0) {
+                resolvedMemoryIds = fallbackMems.map(m => m.id).filter(Boolean);
+                console.log(`[AGENT CORTEX] Resolved ${resolvedMemoryIds.length} fallback core memory IDs for ${asset}`);
+            }
+        } catch (memFallbackErr) {
+            console.warn(`[AGENT CORTEX] Failed to fetch fallback core memories: ${memFallbackErr.message}`);
+        }
+    }
+
     // 🟢 THESIS INTEGRITY: Check for open trades & determine if we should re-evaluate or block
     let activeOpenTrade = null;
     let isReEvaluation = false;
@@ -526,6 +564,16 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                         executeOrderCalledInLoop = true;
                         fnArgs.strategy_id = strategy_id || 'MANUAL';
                         fnArgs.execution_mode = execution_mode || 'PAPER';
+                        fnArgs.macro_tf = macro_tf || 'ONE_HOUR';
+                        fnArgs.trigger_tf = trigger_tf || 'FIVE_MINUTE';
+
+                        // 🟢 Ensure influencing memories & market snapshot are attached during tool execution
+                        if (resolvedMemoryIds && resolvedMemoryIds.length > 0) {
+                            fnArgs._influencing_memory_ids = resolvedMemoryIds;
+                        }
+                        if (marketState?.result) {
+                            fnArgs._full_market_snapshot = marketState.result;
+                        }
                     }
 
                     fnArgs.tenant_id = tenant_id;
@@ -843,6 +891,10 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                             price: decisionJson.price,
                             tp_price: decisionJson.tp_price,
                             sl_price: decisionJson.sl_price,
+                            macro_tf: macro_tf || 'ONE_HOUR',
+                            trigger_tf: trigger_tf || 'FIVE_MINUTE',
+                            _influencing_memory_ids: (resolvedMemoryIds && resolvedMemoryIds.length > 0) ? resolvedMemoryIds : null,
+                            _full_market_snapshot: marketState?.result || null,
                             reason: `[REVERSE_OPEN] ${decisionJson.working_thesis}`
                         }
                     })
@@ -1025,8 +1077,8 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                 if (marketState?.result) {
                     decisionJson._full_market_snapshot = marketState.result;
                 }
-                if (memoryIds && memoryIds.length > 0) {
-                    decisionJson._influencing_memory_ids = memoryIds;
+                if (resolvedMemoryIds && resolvedMemoryIds.length > 0) {
+                    decisionJson._influencing_memory_ids = resolvedMemoryIds;
                 }
                 
                 if (decisionJson.action === "CLOSE" && activeOpenTrade) {
