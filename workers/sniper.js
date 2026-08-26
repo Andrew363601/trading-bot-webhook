@@ -707,6 +707,7 @@ export async function startSniper(tenantId) {
 
                 if (decision.signal) {
                     await logAgentActivity(tenantId, "Sniper", config.asset, `Signal detected: ${decision.signal} for ${config.strategy}.`, "SIGNAL_DETECTED");
+                    let scanId = null;
                     if (isCooldownActive) {
                         decision.statusOverride = `COOLDOWN (${cooldownMins}M)`;
                         decision.telemetry.oracle_reasoning = `System in penalty box. Ignoring ${decision.signal} signal.`;
@@ -714,6 +715,31 @@ export async function startSniper(tenantId) {
                         const normalizedSignal = (decision.signal === 'LONG' || decision.signal === 'BUY') ? 'BUY' : 'SELL';
                         console.log(`[SNIPER-${tenantId}] Math signal detected for ${config.asset}. Fetching Core Memory & Waking Hermes...`);
                         
+                        // 🟢 Pre-create scan_results row so scan_id can be passed to Hermes and agent_tool_calls
+                        try {
+                            const preTelemetry = { 
+                                ...decision.telemetry, 
+                                status_overlay: "HANDED TO AGENT", 
+                                oracle_reasoning: "Ping sent to Agent Cortex. Awaiting autonomous execution or veto." 
+                            };
+                            const { data: scanRow, error: scanErr } = await supabase
+                                .from('scan_results')
+                                .insert([{
+                                    tenant_id: tenantId,
+                                    strategy: config.strategy,
+                                    asset: config.asset,
+                                    telemetry: preTelemetry,
+                                    status: 'HERMES_NOTIFIED'
+                                }])
+                                .select('id')
+                                .single();
+                            if (!scanErr && scanRow?.id) {
+                                scanId = scanRow.id;
+                            }
+                        } catch (sErr) {
+                            console.warn(`[SNIPER-${tenantId}] Pre-scan creation failed:`, sErr.message);
+                        }
+
                         const currentRegime = config.parameters?.regime 
                             || microstructure?.macro_regime 
                             || null;
@@ -760,6 +786,7 @@ export async function startSniper(tenantId) {
                         await pingHermes({
                             tenant_id: tenantId,
                             asset: config.asset,
+                            scan_id: scanId,
                             mode: "ENTRY",
                             message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}${shadowLine}\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Top 3 Walls):\nBIDS:\n${bidWallsText}\n\nASKS:\n${askWallsText}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.\n\n── ALPHA HARVESTING FRAME ──\nThis is a new signal arriving while no trade is open. Your thesis and outcome will be stored in core memory and scored for future signals. Write your working_thesis for future-self: market context, the specific alpha edge, and your exit conditions.`,
                             openTrade: openTrade || null,
@@ -787,7 +814,11 @@ export async function startSniper(tenantId) {
                 let baseStatus = (config.trap_side && config.trap_price) ? "TRAP_ACTIVE" : "STABLE";
                 const finalStatus = decision.statusOverride || (decision.signal ? "RESONANT" : baseStatus);
                 
-                await supabase.from('scan_results').insert([{ tenant_id: tenantId, strategy: config.strategy, asset: config.asset, telemetry: decision.telemetry, status: finalStatus }]);
+                if (scanId) {
+                    await supabase.from('scan_results').update({ telemetry: decision.telemetry, status: finalStatus }).eq('id', scanId);
+                } else {
+                    await supabase.from('scan_results').insert([{ tenant_id: tenantId, strategy: config.strategy, asset: config.asset, telemetry: decision.telemetry, status: finalStatus }]);
+                }
 
             } catch (e) {
                 console.error(`[SNIPER-${tenantId}] ASSET ERROR ${config.asset}:`, e.message);

@@ -134,7 +134,7 @@ function buildContractCostBlock(asset, qty, price, feeRate) {
 
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
-    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds } = req.body;
+    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id } = req.body;
     
     // Track Hermes API usage
     await recordUsage(tenant_id, 'HERMES_API_CALL', 1);
@@ -259,11 +259,11 @@ app.post('/api/wake', async (req, res) => {
         const [stateResp, pnlResp] = await Promise.all([
             fetch(mcpUrl, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tool: 'get_market_state', arguments: { symbol: asset, macro_tf, trigger_tf, tenant_id } })
+                body: JSON.stringify({ tool: 'get_market_state', arguments: { symbol: asset, macro_tf, trigger_tf, tenant_id, scan_id: scan_id || null, trade_id: activeOpenTrade?.id || null } })
             }).catch(() => ({ json: () => ({ error: "Market State offline" }) })),
             fetch(mcpUrl, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ tool: 'get_daily_pnl', arguments: { tenant_id, execution_mode: execution_mode || (mode === 'ENTRY' ? 'PAPER' : null) } })
+                body: JSON.stringify({ tool: 'get_daily_pnl', arguments: { tenant_id, execution_mode: execution_mode || (mode === 'ENTRY' ? 'PAPER' : null), scan_id: scan_id || null, trade_id: activeOpenTrade?.id || null } })
             }).catch(() => ({ json: () => ({ result: { total_pnl: 0, mode_pnl: 0, target: 1000, remaining_to_target: 1000 } }) }))
         ]);
 
@@ -578,10 +578,22 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
 
                     fnArgs.tenant_id = tenant_id;
                     fnArgs.trade_id = activeOpenTrade?.id || null;
+                    fnArgs.scan_id = scan_id || null;
 
                     try {
                         const gatewayResult = await gatewayFetch(fnName, fnArgs);
                         const resultStr = typeof gatewayResult === 'string' ? gatewayResult : JSON.stringify(gatewayResult);
+
+                        // 🟢 If execute_order was invoked in-loop and generated a trade_id, backfill tool calls
+                        const generatedTradeId = gatewayResult?.trade_id || gatewayResult?.result?.trade_id;
+                        if (generatedTradeId && scan_id) {
+                            supabase.from('agent_tool_calls')
+                                .update({ trade_id: generatedTradeId })
+                                .eq('scan_id', scan_id)
+                                .eq('tenant_id', tenant_id)
+                                .then(() => {})
+                                .catch(() => {});
+                        }
                         
                         if (activeModel.provider === 'openrouter') {
                             accumulatedMessages.push({
@@ -1070,6 +1082,8 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                 decisionJson.version = version || 'v1.0';
                 decisionJson.working_thesis = decisionJson.working_thesis || 'Autonomous Execution';
                 decisionJson.qty = qty || decisionJson.qty || 1;
+                decisionJson.scan_id = scan_id || null;
+                decisionJson.trade_id = activeOpenTrade?.id || null;
 
                 // 🟢 Attach the full market state snapshot + influencing memory IDs
                 // so the trade record has the rich market data at entry and knows
@@ -1093,11 +1107,27 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                     decisionJson.reason = decisionJson.working_thesis;
                 }
                 
-                await fetch(mcpUrl, {
-                    method: 'POST', 
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ tool: 'execute_order', arguments: decisionJson })
-                });
+                try {
+                    const execResp = await fetch(mcpUrl, {
+                        method: 'POST', 
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ tool: 'execute_order', arguments: decisionJson })
+                    });
+                    if (execResp.ok) {
+                        const execData = await execResp.json().catch(() => ({}));
+                        const postTradeId = execData?.result?.trade_id || execData?.trade_id;
+                        if (postTradeId && scan_id) {
+                            supabase.from('agent_tool_calls')
+                                .update({ trade_id: postTradeId })
+                                .eq('scan_id', scan_id)
+                                .eq('tenant_id', tenant_id)
+                                .then(() => {})
+                                .catch(() => {});
+                        }
+                    }
+                } catch (execErr) {
+                    console.error('[AGENT CORTEX] Post-loop order execution failed:', execErr.message);
+                }
             }
         }
 

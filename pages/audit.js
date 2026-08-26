@@ -198,14 +198,25 @@ function AuditLogContent() {
         console.error('[AUDIT] Tool calls fetch failed:', e.message);
       }
 
-      // 🟢 Match tool calls to pipeline entries by time window
+      // 🟢 Match tool calls to pipeline entries hierarchically (trade_id -> scan_id -> time window)
       const toolCallMap = new Map();
       (toolCallsData || []).forEach(tc => {
         const tcTime = new Date(tc.created_at).getTime();
-        const match = groupedPipelines.find(p => {
-          const diff = p.timestamp - tcTime;
-          return diff >= 0 && diff < 120000; // 2 min window before the pipeline event
-        });
+        
+        let match = null;
+        if (tc.trade_id) {
+          match = groupedPipelines.find(p => p.trade && String(p.trade.id) === String(tc.trade_id));
+        }
+        if (!match && tc.scan_id) {
+          match = groupedPipelines.find(p => p.scan && String(p.scan.id) === String(tc.scan_id));
+        }
+        if (!match) {
+          match = groupedPipelines.find(p => {
+            const diff = p.timestamp - tcTime;
+            return diff >= -30000 && diff < 180000;
+          });
+        }
+
         if (match) {
           const key = match.timestamp + '-' + (match.trade?.id || match.scan?.id || '');
           if (!toolCallMap.has(key)) toolCallMap.set(key, []);

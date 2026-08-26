@@ -20,9 +20,10 @@ async function logToolCall({ tool, args, result, duration, status, error }) {
     const summary = error
       ? String(error).substring(0, 500)
       : JSON.stringify(result).substring(0, 500);
+    const resolvedTradeId = args?.trade_id || result?.trade_id || result?.result?.trade_id || null;
     await supabase.from('agent_tool_calls').insert([{
       tenant_id: args?.tenant_id || null,
-      trade_id: args?.trade_id || null,
+      trade_id: resolvedTradeId,
       scan_id: args?.scan_id || null,
       tool_name: tool,
       params_snapshot: args ? JSON.stringify(args) : null,
@@ -275,26 +276,62 @@ app.post('/mcp/execute', async (req, res) => {
     try {
         if (tool === 'execute_order') {
             console.log(`[MCP GATEWAY] Hermes Agent invoked execute_order for ${args?.symbol}`);
-            const result = await executeTradeMCP(args);
-            return res.json({ result });
+            const start = Date.now();
+            try {
+                const result = await executeTradeMCP(args);
+                const duration = Date.now() - start;
+                logToolCall({ tool, args, result, duration, status: result?.error ? 'error' : 'success' }).catch(() => {});
+                return res.json({ result });
+            } catch (err) {
+                const duration = Date.now() - start;
+                logToolCall({ tool, args, error: err.message, duration, status: 'error' }).catch(() => {});
+                throw err;
+            }
         }
         
         if (tool === 'get_market_state') {
             console.log(`[MCP GATEWAY] Hermes Agent analyzing market state for ${args?.symbol}`);
-            const result = await getMarketStateMCP(args); 
-            return res.json({ result });                  
+            const start = Date.now();
+            try {
+                const result = await getMarketStateMCP(args); 
+                const duration = Date.now() - start;
+                logToolCall({ tool, args, result, duration, status: result?.error ? 'error' : 'success' }).catch(() => {});
+                return res.json({ result });
+            } catch (err) {
+                const duration = Date.now() - start;
+                logToolCall({ tool, args, error: err.message, duration, status: 'error' }).catch(() => {});
+                throw err;
+            }
         }
 
         if (tool === 'get_atr_levels') {
             console.log(`[MCP GATEWAY] Hermes Agent calculating ATR levels`);
-            const result = await getAtrLevels(args?.triggerCandles, args?.triggerTimeframe, args?.options);
-            return res.json({ result });
+            const start = Date.now();
+            try {
+                const result = await getAtrLevels(args?.triggerCandles, args?.triggerTimeframe, args?.options);
+                const duration = Date.now() - start;
+                logToolCall({ tool, args, result, duration, status: result?.error ? 'error' : 'success' }).catch(() => {});
+                return res.json({ result });
+            } catch (err) {
+                const duration = Date.now() - start;
+                logToolCall({ tool, args, error: err.message, duration, status: 'error' }).catch(() => {});
+                throw err;
+            }
         }
 
         if (tool === 'get_daily_pnl') {
             console.log(`[MCP GATEWAY] Hermes Agent fetching daily PnL for tenant ${args?.tenant_id}`);
-            const result = await getDailyPnlMCP(args);
-            return res.json({ result });
+            const start = Date.now();
+            try {
+                const result = await getDailyPnlMCP(args);
+                const duration = Date.now() - start;
+                logToolCall({ tool, args, result, duration, status: result?.error ? 'error' : 'success' }).catch(() => {});
+                return res.json({ result });
+            } catch (err) {
+                const duration = Date.now() - start;
+                logToolCall({ tool, args, error: err.message, duration, status: 'error' }).catch(() => {});
+                throw err;
+            }
         }
 
         if (tool && tool.startsWith('coinglass_')) {

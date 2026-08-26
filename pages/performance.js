@@ -243,7 +243,7 @@ function PerformanceLogContent() {
       }
       setLinkedMemories(map);
 
-      // 🟢 Agent Tool Calls: fetch and match by time window
+      // 🟢 Agent Tool Calls: fetch and match hierarchically (trade_id -> trade lifetime window)
       try {
         const { data: tcData } = await supabase
           .from('agent_tool_calls')
@@ -253,14 +253,25 @@ function PerformanceLogContent() {
           .limit(500);
 
         const toolCallsMapAccum = {};
+        const combinedTrades = [...allValidTrades, ...openPositions];
+
         (tcData || []).forEach(tc => {
           const tcTime = new Date(tc.created_at).getTime();
-          // Find matching trade in allValidTrades or openPositions
-          const matchingTrade = [...allValidTrades, ...openPositions].find(tr => {
-            const trTime = new Date(tr.created_at).getTime();
-            const diff = trTime - tcTime;
-            return diff >= 0 && diff < 120000;
-          });
+          
+          // 1. Direct trade_id match
+          let matchingTrade = null;
+          if (tc.trade_id) {
+            matchingTrade = combinedTrades.find(tr => String(tr.id) === String(tc.trade_id));
+          }
+
+          // 2. Lifetime / Inception window match
+          if (!matchingTrade) {
+            matchingTrade = combinedTrades.find(tr => {
+              const entryTime = new Date(tr.created_at).getTime();
+              const exitTime = tr.exit_time ? new Date(tr.exit_time).getTime() : Date.now();
+              return tcTime >= entryTime - 180000 && tcTime <= exitTime + 30000;
+            });
+          }
 
           if (matchingTrade) {
             if (!toolCallsMapAccum[matchingTrade.id]) toolCallsMapAccum[matchingTrade.id] = [];
