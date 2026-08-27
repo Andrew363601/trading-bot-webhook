@@ -184,12 +184,15 @@ function AuditLogContent() {
       // 🟢 Agent Tool Calls: fetch tool call audit data
       let toolCallsData = [];
       try {
-        const { data } = await supabase
+        const { data, error: tcErr } = await supabase
           .from('agent_tool_calls')
           .select('*')
           .eq('tenant_id', tenantId)
           .order('created_at', { ascending: false })
           .limit(500);
+        if (tcErr) {
+          console.warn('[AUDIT] Tool calls fetch error:', tcErr.message);
+        }
         if (data) {
           toolCallsData = data;
           setToolCalls(data);
@@ -198,20 +201,48 @@ function AuditLogContent() {
         console.error('[AUDIT] Tool calls fetch failed:', e.message);
       }
 
-      // 🟢 Match tool calls to pipeline entries hierarchically (trade_id -> scan_id -> time window)
+      // 🟢 Match tool calls to pipeline entries hierarchically (trade_id -> scan_id -> reverse/time window)
       const toolCallMap = new Map();
       (toolCallsData || []).forEach(tc => {
         const tcTime = new Date(tc.created_at).getTime();
         
-        let match = null;
+        // Find matching pipeline entries (allow matching both a closing reverse trade and the new open reverse trade)
+        const matches = [];
+
+        // 1. Direct trade_id match
         if (tc.trade_id) {
-          match = groupedPipelines.find(p => p.trade && String(p.trade.id) === String(tc.trade_id));
+          const directMatch = groupedPipelines.find(p => p.trade && String(p.trade.id) === String(tc.trade_id));
+          if (directMatch) matches.push(directMatch);
         }
-        if (!match && tc.scan_id) {
-          match = groupedPipelines.find(p => p.scan && String(p.scan.id) === String(tc.scan_id));
+
+        // 2. Direct scan_id match
+        if (tc.scan_id) {
+          const scanMatch = groupedPipelines.find(p => p.scan && String(p.scan.id) === String(tc.scan_id));
+          if (scanMatch && !matches.includes(scanMatch)) matches.push(scanMatch);
         }
-        if (!match) {
-          match = groupedPipelines.find(p => {
+
+        // 3. Reverse correlation: if trade has [REVERSE_OPEN] or [REVERSE_CLOSE] for same asset within 3m
+        groupedPipelines.forEach(p => {
+          if (matches.includes(p)) return;
+          const isReverseTrade = p.trade?.reason?.includes('[REVERSE_OPEN]') || p.trade?.reason?.includes('[REVERSE_CLOSE]');
+          if (isReverseTrade && p.asset) {
+            let symbolMatches = false;
+            if (tc.params_snapshot) {
+              try {
+                const params = typeof tc.params_snapshot === 'string' ? JSON.parse(tc.params_snapshot) : tc.params_snapshot;
+                symbolMatches = params?.symbol === p.asset;
+              } catch (e) {}
+            }
+            const diff = Math.abs(p.timestamp - tcTime);
+            if (diff < 180000 && (symbolMatches || !tc.params_snapshot)) {
+              matches.push(p);
+            }
+          }
+        });
+
+        // 4. Fallback time window
+        if (matches.length === 0) {
+          const timeMatch = groupedPipelines.find(p => {
             const diff = p.timestamp - tcTime;
             const inWindow = diff >= -60000 && diff < 300000;
             let symbolMatches = true;
@@ -223,16 +254,16 @@ function AuditLogContent() {
             }
             return inWindow && symbolMatches;
           });
+          if (timeMatch) matches.push(timeMatch);
         }
 
-        if (match) {
+        matches.forEach(match => {
           const key = match.timestamp + '-' + (match.trade?.id || match.scan?.id || '');
           if (!toolCallMap.has(key)) toolCallMap.set(key, []);
           const calls = toolCallMap.get(key);
-          // Insert sorted by time ascending
           const insertIdx = calls.findIndex(existing => new Date(tc.created_at) < new Date(existing.created_at));
           if (insertIdx === -1) calls.push(tc); else calls.splice(insertIdx, 0, tc);
-        }
+        });
       });
 
       // Attach tool calls to pipeline entries

@@ -21,18 +21,21 @@ async function logToolCall({ tool, args, result, duration, status, error }) {
       ? String(error).substring(0, 500)
       : JSON.stringify(result).substring(0, 500);
     const resolvedTradeId = args?.trade_id || result?.trade_id || result?.result?.trade_id || null;
-    await supabase.from('agent_tool_calls').insert([{
+    const { error: insertError } = await supabase.from('agent_tool_calls').insert([{
       tenant_id: args?.tenant_id || null,
       trade_id: resolvedTradeId,
       scan_id: args?.scan_id || null,
       tool_name: tool,
-      params_snapshot: args ? JSON.stringify(args) : null,
+      params_snapshot: args || null,
       response_summary: summary,
       duration_ms: duration,
       status: status || 'success'
     }]);
+    if (insertError) {
+      console.warn(`[TOOL LOG] Insert failed:`, insertError.message);
+    }
   } catch (e) {
-    console.warn(`[TOOL LOG] Insert failed:`, e.message);
+    console.warn(`[TOOL LOG] Insert exception:`, e.message);
   }
 }
 

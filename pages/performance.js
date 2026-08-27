@@ -245,33 +245,59 @@ function PerformanceLogContent() {
 
       // 🟢 Agent Tool Calls: fetch and match hierarchically (trade_id -> trade lifetime window)
       try {
-        const { data: tcData } = await supabase
+        const { data: tcData, error: tcErr } = await supabase
           .from('agent_tool_calls')
           .select('*')
           .eq('tenant_id', tenantId)
           .order('created_at', { ascending: false })
           .limit(500);
 
+        if (tcErr) {
+          console.warn('[PERFORMANCE] Tool calls fetch error:', tcErr.message);
+        }
+
         const toolCallsMapAccum = {};
         const combinedTrades = [...allValidTrades, ...openPositions];
 
         (tcData || []).forEach(tc => {
           const tcTime = new Date(tc.created_at).getTime();
+          const matches = [];
           
           // 1. Direct trade_id match
-          let matchingTrade = null;
           if (tc.trade_id) {
-            matchingTrade = combinedTrades.find(tr => String(tr.id) === String(tc.trade_id));
+            const direct = combinedTrades.find(tr => String(tr.id) === String(tc.trade_id));
+            if (direct) matches.push(direct);
           }
 
           // 2. Direct scan_id match
-          if (!matchingTrade && tc.scan_id) {
-            matchingTrade = combinedTrades.find(tr => String(tr.scan_id) === String(tc.scan_id));
+          if (tc.scan_id) {
+            const scanMatch = combinedTrades.find(tr => String(tr.scan_id) === String(tc.scan_id));
+            if (scanMatch && !matches.includes(scanMatch)) matches.push(scanMatch);
           }
 
-          // 3. Asset & Lifetime / Inception window match (within 5 minutes of trade entry)
-          if (!matchingTrade) {
-            matchingTrade = combinedTrades.find(tr => {
+          // 3. Reverse trade correlation ([REVERSE_OPEN] or [REVERSE_CLOSE])
+          combinedTrades.forEach(tr => {
+            if (matches.includes(tr)) return;
+            const isReverse = tr.reason?.includes('[REVERSE_OPEN]') || tr.reason?.includes('[REVERSE_CLOSE]');
+            if (isReverse) {
+              const entryTime = new Date(tr.created_at || tr.exit_time).getTime();
+              const diff = Math.abs(entryTime - tcTime);
+              let symbolMatches = false;
+              if (tc.params_snapshot) {
+                try {
+                  const params = typeof tc.params_snapshot === 'string' ? JSON.parse(tc.params_snapshot) : tc.params_snapshot;
+                  symbolMatches = params?.symbol === tr.symbol;
+                } catch (e) {}
+              }
+              if (diff < 180000 && (symbolMatches || !tc.params_snapshot)) {
+                matches.push(tr);
+              }
+            }
+          });
+
+          // 4. Asset & Lifetime / Inception window match (within 5 minutes of trade entry)
+          if (matches.length === 0) {
+            const windowMatch = combinedTrades.find(tr => {
               const entryTime = new Date(tr.created_at || tr.exit_time).getTime();
               const exitTime = tr.exit_time ? new Date(tr.exit_time).getTime() : Date.now();
               const timeMatches = tcTime >= entryTime - 300000 && tcTime <= exitTime + 60000;
@@ -285,14 +311,15 @@ function PerformanceLogContent() {
               }
               return timeMatches && symbolMatches;
             });
+            if (windowMatch) matches.push(windowMatch);
           }
 
-          if (matchingTrade) {
-            if (!toolCallsMapAccum[matchingTrade.id]) toolCallsMapAccum[matchingTrade.id] = [];
-            const list = toolCallsMapAccum[matchingTrade.id];
+          matches.forEach(tr => {
+            if (!toolCallsMapAccum[tr.id]) toolCallsMapAccum[tr.id] = [];
+            const list = toolCallsMapAccum[tr.id];
             const insertIdx = list.findIndex(existing => new Date(tc.created_at) < new Date(existing.created_at));
             if (insertIdx === -1) list.push(tc); else list.splice(insertIdx, 0, tc);
-          }
+          });
         });
 
         setToolCallsMap(toolCallsMapAccum);
@@ -303,7 +330,7 @@ function PerformanceLogContent() {
     fetchLinkedMemories();
   }, [allValidTrades, openPositions, tenantId, supabase]);
 
-  // �🔁 Force-review an open trade through the Oracle. Mirrors handler in pages/audit.js
+  // 🆕 Force-review an open trade through the Oracle. Mirrors handler in pages/audit.js
   // so the user can act from the Performance view without context-switching.
   const handleForceReview = useCallback(async (tradeId) => {
     if (!session?.access_token || !tradeId) return;

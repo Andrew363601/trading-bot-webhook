@@ -135,6 +135,7 @@ function buildContractCostBlock(asset, qty, price, feeRate) {
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
     const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id } = req.body;
+    const wakeStartTime = new Date().toISOString();
     
     // Track Hermes API usage
     await recordUsage(tenant_id, 'HERMES_API_CALL', 1);
@@ -891,7 +892,7 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                 
                 // STEP 3: Open new opposite position
                 console.log(`[AGENT CORTEX] 🔄 REVERSE step 2: Opening ${decisionJson.side} position...`);
-                await fetch(mcpUrl, {
+                const openOppositeResp = await fetch(mcpUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -911,6 +912,18 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                         }
                     })
                 });
+
+                if (openOppositeResp.ok) {
+                    const openData = await openOppositeResp.json().catch(() => ({}));
+                    const newOppositeTradeId = openData?.result?.trade_id || openData?.trade_id;
+                    if (newOppositeTradeId) {
+                        // Re-attribute session tool calls to the new reversed position
+                        await supabase.from('agent_tool_calls')
+                            .update({ trade_id: newOppositeTradeId })
+                            .eq('tenant_id', tenant_id)
+                            .gte('created_at', wakeStartTime);
+                    }
+                }
             }
             // 🟢 ADJUST_TP_SL: Cancel brackets + place new ones (handled via execute_order with reason flag)
             else if (decisionJson.action === "ADJUST_TP_SL" && openTrade) {
