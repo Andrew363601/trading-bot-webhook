@@ -350,7 +350,7 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
         }
 
         const now = Date.now();
-        const MAX_TRACKED_PNL = 500;
+        const MAX_TRACKED_PNL = 1000;
         const MAX_RECURRENCE = 5;
 
         // 3j) Shadow Portfolio bonus (0 to ±30 points, minimum 5 records)
@@ -380,27 +380,17 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
             console.error('[SHADOW SCORE] Query failed:', e.message);
         }
 
-        // Score each memory
+        // Score each memory — multiplicative regime & accuracy, additive everything else
         const scored = allMemories.map(m => {
             // 3a) Recency score (0-100 points, decays 1 point per day)
             const ageHours = (now - new Date(m.created_at).getTime()) / (1000 * 60 * 60);
             const recency = Math.max(0, 100 - (ageHours / 24));
 
-            // 3b) PnL impact score (0-100 points, capped at $500)
+            // 3b) PnL impact score (0-100 points, capped at $1000)
             const absPnl = Math.abs(parseFloat(m.pnl) || 0);
             const pnlImpact = Math.min(absPnl, MAX_TRACKED_PNL) / MAX_TRACKED_PNL * 100;
 
-            // 3c) Regime match score (0 or 100 points)
-            const regimeMatch = (currentRegime && m.regime_at_close === currentRegime) ? 100 : 0;
-
-            // 3d) LIVE weight (0 or 50 points)
-            const liveWt = (m.execution_mode === 'LIVE') ? 50 : 0;
-
-            // 3e) Loss bonus (0 or 25 points)
-            const lossWt = (m.win_loss === 'LOSS') ? 25 : 0;
-
-            // 3g) Working thesis similarity (0-50 points)
-            // Matches past thesis direction against current signal direction
+            // 3c) Working thesis similarity (0-50 points)
             let thesisSim = 0;
             if (m.working_thesis && signalDirection) {
                 const directionWords = signalDirection === 'BUY'
@@ -409,20 +399,43 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
                 thesisSim = wordOverlap(m.working_thesis.toLowerCase(), directionWords) * 50;
             }
 
-            // 3h) Thesis accuracy weight (0 or 50 points)
-            // We want to train the AI to produce ACCURATE theses.
-            // thesis_accurate: true  → strong bonus, confirms the pattern
-            // thesis_accurate: false → small penalty (not zero — still learn)
-            const thesisAccWt = m.thesis_accurate === true ? 50 :
-                                m.thesis_accurate === false ? -10 : 0;
+            // 3d) Base score = recency + thesis similarity (things that always apply)
+            let baseScore = recency + thesisSim;
 
-            // 3i) Own-tenant bonus (0 or 50 points) — gives a "tie goes to you"
-            // edge so cross-tenant lessons must be significantly more relevant
-            // (right regime, recent, high impact) to outrank own-tenant ones.
-            const ownBonus = (m.tenant_id === ownTenantId) ? 50 : 0;
+            // 3e) Regime match multiplies base by 1.5x
+            // Same market conditions make a memory FAR more applicable
+            const regimeMultiplier = (currentRegime && m.regime_at_close === currentRegime) ? 1.5 : 1.0;
 
-            const total = recency + pnlImpact + regimeMatch + liveWt + lossWt
-                        + thesisSim + thesisAccWt + ownBonus + shadowBonus;
+            // 3f) Accuracy & PnL multiplier tiers:
+            //    - Accurate + high PnL (>50) = validated thesis, ×1.2
+            //    - Accurate only = base (×1.0)
+            //    - Inaccurate + high PnL (>50) = expensive mistake, ×0.8
+            //    - Inaccurate only = wrong thesis, ×0.75
+            //    - NULL/unknown = neutral (×1.0)
+            let accPnlMultiplier = 1.0;
+            if (m.thesis_accurate === true) {
+                if (pnlImpact > 50) {
+                    accPnlMultiplier = 1.2;  // ✅ Right AND made real money
+                }
+            } else if (m.thesis_accurate === false) {
+                if (pnlImpact > 50) {
+                    accPnlMultiplier = 0.8;  // ❌ Wrong AND expensive
+                } else {
+                    accPnlMultiplier = 0.75; // ❌ Wrong thesis
+                }
+            }
+
+            // 3g) Combined multiplier (regime × accuracy-PnL)
+            const multiplier = regimeMultiplier * accPnlMultiplier;
+
+            // 3h) LIVE weight (0 or 50 points)
+            const liveWt = (m.execution_mode === 'LIVE') ? 50 : 0;
+
+            // 3i) Own-tenant bonus (0 or 5 points) — pure tiebreaker
+            const ownBonus = (m.tenant_id === ownTenantId) ? 5 : 0;
+
+            // Total = (base × multiplier) + additive bonuses
+            const total = (baseScore * multiplier) + pnlImpact + liveWt + ownBonus + shadowBonus;
 
             return { ...m, score: Math.round(total) };
         });

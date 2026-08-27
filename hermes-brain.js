@@ -423,7 +423,7 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
         }
         
         if (message.includes('CORE MEMORY (Past Lessons') && message.includes('Score:')) {
-            instructionText += `\n\n--- SCORING CONTEXT ---\nThe 3 memories above are scored by: recency, PnL magnitude, regime match, LIVE weight, and loss bonus. The highest-score memory is the most relevant lesson for this exact moment. Use it as your primary reference when forming your thesis. Read each memory's thesis context to understand what was attempted before — then decide if this signal is the same pattern or a new one.\n\n`;
+            instructionText += `\n\n--- SCORING CONTEXT ---\nThe 3 memories above are scored by: recency, thesis direction similarity, and PnL impact. Regime match multiplies base score by 1.5×. Accurate theses compounded with high PnL get an additional 1.2× multiplier. Inaccurate theses are penalized (0.75×-0.8×). The highest-score memory is the most objectively relevant lesson for this exact moment in this exact regime. Use it as your primary reference when forming your thesis.\n\n`;
         }
         
         // Also inject contract cost analysis for ANY entry evaluation (new trades too)
