@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Activity, Filter, RefreshCw, CheckCircle2, Zap, BrainCircuit, Server, Crosshair, Target, Loader2, Clock, XCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { createPagesServerClient } from '@supabase/auth-helpers-nextjs';
+import { getTierInfo, getStageColor } from '../lib/tier-mapping';
 
 function ThesisDisplay({ reasoning, isVeto, score }) {
   const [expanded, setExpanded] = useState(false);
@@ -617,20 +618,48 @@ function AuditLogContent() {
                         </button>
                       </div>
                       {isExpanded && (
-                        <div className="bg-black/20 rounded-xl border border-white/5 overflow-hidden max-h-[200px] overflow-y-auto">
+                        <div className="bg-black/20 rounded-xl border border-white/5 overflow-hidden max-h-[300px] overflow-y-auto">
                           <table className="w-full text-[10px] font-mono">
                             <thead>
-                              <tr className="border-b border-white/5 text-[8px] uppercase tracking-widest text-slate-500">
+                              <tr className="border-b border-white/5 text-[8px] uppercase tracking-widest text-slate-500 sticky top-0 bg-black/90">
                                 <th className="px-3 py-2 text-left">Tool</th>
+                                <th className="px-3 py-2 text-center">Tier</th>
+                                <th className="px-3 py-2 text-center">Stage</th>
+                                <th className="px-3 py-2 text-left">Why</th>
                                 <th className="px-3 py-2 text-right">Duration</th>
                                 <th className="px-3 py-2 text-right">Status</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {pipeline.toolCalls.map(tc => (
+                              {pipeline.toolCalls.map(tc => {
+                                const info = getTierInfo(tc.tool_name);
+                                const [stageLetter] = info.stage === 1 ? ['E'] :
+                                  info.stage === 2 ? ['V'] :
+                                  info.stage === 3 ? ['D'] :
+                                  info.stage === 4 ? ['R'] :
+                                  info.stage === 'SYSTEM' ? ['S'] :
+                                  info.stage === 'EXECUTION' ? ['X'] : ['?'];
+                                return (
                                 <tr key={tc.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
-                                  <td className="px-3 py-2 text-slate-300">{tc.tool_name.replace('coinglass_', 'cg_')}</td>
-                                  <td className="px-3 py-2 text-right text-slate-400">{tc.duration_ms}ms</td>
+                                  <td className="px-3 py-2 text-slate-300 whitespace-nowrap">{tc.tool_name.replace('coinglass_', 'cg_')}</td>
+                                  <td className="px-3 py-2 text-center">
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black"
+                                      style={{ backgroundColor: `${info.tierColor}20`, color: info.tierColor, border: `1px solid ${info.tierColor}40` }}
+                                      title={info.tierLabel}>
+                                      {typeof info.tier === 'number' ? `T${info.tier}` : info.tier === 'SYSTEM' ? '⚙️' : info.tier === 'EXECUTION' ? '▶️' : '?'}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-2 text-center">
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black"
+                                      style={{ backgroundColor: `${getStageColor(info.stage)}20`, color: getStageColor(info.stage), border: `1px solid ${getStageColor(info.stage)}40` }}
+                                      title={info.stageLabel}>
+                                      {stageLetter}
+                                    </span>
+                                  </td>
+                                  <td className="px-3 py-2 text-left text-slate-400 text-[9px] leading-tight max-w-[200px] truncate" title={info.reason}>
+                                    {info.reason}
+                                  </td>
+                                  <td className="px-3 py-2 text-right text-slate-400 whitespace-nowrap">{tc.duration_ms}ms</td>
                                   <td className="px-3 py-2 text-right">
                                     <span className={`px-1.5 py-0.5 rounded text-[9px] font-black ${
                                       tc.status === 'success' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
@@ -639,7 +668,7 @@ function AuditLogContent() {
                                     </span>
                                   </td>
                                 </tr>
-                              ))}
+                              )})}
                             </tbody>
                           </table>
                           {pipeline.toolCalls.some(tc => tc.response_summary) && (
