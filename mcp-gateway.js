@@ -278,6 +278,12 @@ app.post('/mcp/execute', async (req, res) => {
 
     try {
         if (tool === 'execute_order') {
+            // 🟢 FIX: In-loop mock calls carry _skip_execution — ignore them
+            if (args?._skip_execution) {
+                console.log(`[MCP GATEWAY] Skipping execute_order for ${args?.symbol} (in-loop mock, real execution deferred to post-loop)`);
+                logToolCall({ tool, args, result: { status: 'deferred_to_post_loop' }, duration: 0, status: 'success' }).catch(() => {});
+                return res.json({ result: { status: 'deferred_to_post_loop' } });
+            }
             console.log(`[MCP GATEWAY] Hermes Agent invoked execute_order for ${args?.symbol}`);
             const start = Date.now();
             try {

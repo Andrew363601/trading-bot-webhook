@@ -542,8 +542,6 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
 
         accumulatedMessages.push({ role: 'user', content: instructionText });
 
-        let executeOrderCalledInLoop = false;
-
         while (toolCallCount < maxToolCalls) {
             const result = await llmCall(accumulatedMessages);
 
@@ -560,21 +558,62 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                     let fnArgs = {};
                     try { fnArgs = JSON.parse(tc.function?.arguments || '{}'); } catch(e) {}
 
-                    // Flag if LLM called execute_order — prevents post-loop double-dispatch
+                    // 🟢 FIX: execute_order in-loop is now a NO-OP (mock only).
+                    // All real execution flows through the post-loop handler below.
+                    // This eliminates the dual-path collision where Path 1 (in-loop)
+                    // and Path 2 (post-loop) both try to execute, causing missing trades
+                    // when Path 1 silently fails but the post-loop is skipped.
                     if (fnName === 'execute_order') {
-                        executeOrderCalledInLoop = true;
                         fnArgs.strategy_id = strategy_id || 'MANUAL';
                         fnArgs.execution_mode = execution_mode || 'PAPER';
                         fnArgs.macro_tf = macro_tf || 'ONE_HOUR';
                         fnArgs.trigger_tf = trigger_tf || 'FIVE_MINUTE';
 
-                        // 🟢 Ensure influencing memories & market snapshot are attached during tool execution
                         if (resolvedMemoryIds && resolvedMemoryIds.length > 0) {
                             fnArgs._influencing_memory_ids = resolvedMemoryIds;
                         }
                         if (marketState?.result) {
                             fnArgs._full_market_snapshot = marketState.result;
                         }
+                        fnArgs.tenant_id = tenant_id;
+                        fnArgs.trade_id = activeOpenTrade?.id || null;
+                        fnArgs.scan_id = scan_id || null;
+
+                        // Mock success — the agent thinks it called execute_order
+                        // Real execution happens in the post-loop handler
+                        const mockResult = { status: "deferred_to_post_loop", note: "Intent recorded. Execution dispatched after analysis completes." };
+
+                        // Log the tool call intent to agent_tool_calls
+                        const gatewayUrl = process.env.MCP_GATEWAY_URL || 'http://localhost:3000';
+                        try {
+                            await fetch(`${gatewayUrl.replace(/\/mcp\/execute$/, '')}/mcp/execute`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ tool: fnName, arguments: { ...fnArgs, _skip_execution: true } })
+                            }).catch(() => {});
+                        } catch (e) {}
+
+                        const resultStr = JSON.stringify(mockResult);
+                        if (activeModel.provider === 'openrouter') {
+                            accumulatedMessages.push({
+                                role: 'assistant',
+                                content: null,
+                                tool_calls: [{ id: tc.id, type: 'function', function: { name: fnName, arguments: JSON.stringify(fnArgs) } }]
+                            });
+                            accumulatedMessages.push({
+                                role: 'tool',
+                                tool_call_id: tc.id,
+                                content: resultStr
+                            });
+                        } else {
+                            accumulatedMessages.push({
+                                role: 'function',
+                                name: fnName,
+                                content: resultStr
+                            });
+                        }
+                        toolCallCount++;
+                        continue;
                     }
 
                     fnArgs.tenant_id = tenant_id;
@@ -585,7 +624,6 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                         const gatewayResult = await gatewayFetch(fnName, fnArgs);
                         const resultStr = typeof gatewayResult === 'string' ? gatewayResult : JSON.stringify(gatewayResult);
 
-                        // 🟢 If execute_order was invoked in-loop and generated a trade_id, backfill tool calls
                         const generatedTradeId = gatewayResult?.trade_id || gatewayResult?.result?.trade_id;
                         if (generatedTradeId && scan_id) {
                             supabase.from('agent_tool_calls')
@@ -1087,7 +1125,7 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                 return res.status(200).json({ status: "UPDATE_PARAMS_SUCCESS", params: mergedParams });
             }
             // 🟢 CLOSE or APPROVE (existing behavior)
-            else if (!executeOrderCalledInLoop) {
+            else {
                 decisionJson.tenant_id = tenant_id;
                 decisionJson.symbol = asset;
                 decisionJson.execution_mode = execution_mode || 'PAPER';
