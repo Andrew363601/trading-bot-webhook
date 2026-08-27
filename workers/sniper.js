@@ -409,11 +409,12 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
                 thesisSim = wordOverlap(m.working_thesis.toLowerCase(), directionWords) * 50;
             }
 
-            // 3h) Thesis accuracy weight (0 or 15 points)
-            // thesis_accurate: false → wrong thesis, extra weight to learn harder
-            // thesis_accurate: true  → good thesis, confirm the pattern
-            const thesisAccWt = m.thesis_accurate === false ? 15 :
-                                m.thesis_accurate === true ? 10 : 0;
+            // 3h) Thesis accuracy weight (0 or 50 points)
+            // We want to train the AI to produce ACCURATE theses.
+            // thesis_accurate: true  → strong bonus, confirms the pattern
+            // thesis_accurate: false → small penalty (not zero — still learn)
+            const thesisAccWt = m.thesis_accurate === true ? 50 :
+                                m.thesis_accurate === false ? -10 : 0;
 
             // 3i) Own-tenant bonus (0 or 50 points) — gives a "tie goes to you"
             // edge so cross-tenant lessons must be significantly more relevant

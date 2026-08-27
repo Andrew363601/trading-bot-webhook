@@ -707,6 +707,15 @@ function AuditLogContent() {
                             <div key={m.id} className="bg-black/30 rounded-xl p-3 border border-indigo-500/10">
                               <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                                 <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${m.win_loss === 'WIN' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300'}`}>{m.win_loss}</span>
+                                {m.tenant_id && (
+                                  <span className={`text-[8px] font-black px-1.5 py-0.5 rounded ${
+                                    String(m.tenant_id) === String(tenantId)
+                                      ? 'bg-indigo-500/20 text-indigo-300'
+                                      : 'bg-slate-500/20 text-slate-400'
+                                  }`}>
+                                    {String(m.tenant_id) === String(tenantId) ? '🧠 YOUR MEMORY' : '🌐 SHARED MEMORY'}
+                                  </span>
+                                )}
                                 {m.regime_at_close && <span className="text-[8px] font-mono text-slate-500 uppercase">{m.regime_at_close}</span>}
                                 {m.pnl !== null && m.pnl !== undefined && <span className={`text-[9px] font-mono ${parseFloat(m.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>${parseFloat(m.pnl).toFixed(4)}</span>}
                                 {m.thesis_accurate !== null && m.thesis_accurate !== undefined && <span className={`text-[8px] font-mono ${m.thesis_accurate ? 'text-emerald-400' : 'text-red-400'}`}>{m.thesis_accurate ? '✓ Accurate' : '✗ Inaccurate'}</span>}
@@ -750,6 +759,15 @@ function AuditLogContent() {
                             <div key={m.id} className="bg-black/30 rounded-xl p-3 border border-emerald-500/10">
                               <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                                 <span className={`text-[9px] font-black px-1.5 py-0.5 rounded ${m.win_loss === 'WIN' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300'}`}>{m.win_loss}</span>
+                                {m.tenant_id && (
+                                  <span className={`text-[8px] font-black px-1.5 py-0.5 rounded ${
+                                    String(m.tenant_id) === String(tenantId)
+                                      ? 'bg-indigo-500/20 text-indigo-300'
+                                      : 'bg-slate-500/20 text-slate-400'
+                                  }`}>
+                                    {String(m.tenant_id) === String(tenantId) ? '🧠 YOUR MEMORY' : '🌐 SHARED MEMORY'}
+                                  </span>
+                                )}
                                 {m.regime_at_close && <span className="text-[8px] font-mono text-slate-500 uppercase">{m.regime_at_close}</span>}
                                 {m.pnl !== null && m.pnl !== undefined && <span className={`text-[9px] font-mono ${parseFloat(m.pnl) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>${parseFloat(m.pnl).toFixed(4)}</span>}
                                 {m.thesis_accurate !== null && m.thesis_accurate !== undefined && <span className={`text-[8px] font-mono ${m.thesis_accurate ? 'text-emerald-400' : 'text-red-400'}`}>{m.thesis_accurate ? '✓ Accurate' : '✗ Inaccurate'}</span>}
