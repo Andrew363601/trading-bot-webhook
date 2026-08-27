@@ -69,14 +69,7 @@ function DashboardContent() {
     let base = String(symbol).toUpperCase().trim();
     base = base.replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '');
     base = base.split('-')[0];
-    // Convert CDE/perp codes to base ticker
-    const CODE_MAP = {
-        BIT: 'BTC', BIP: 'BTC', ETP: 'ETH',
-        SLP: 'SOL', DOP: 'DOGE',
-        LCP: 'LTC', AVP: 'AVAX',
-        LNP: 'LINK', XPP: 'XRP',
-    };
-    return CODE_MAP[base] || base;
+    return base;
   }, []);
 
   const [activeAsset, setActiveAsset] = useState('BTC-PERP-INTX');

@@ -164,14 +164,10 @@ export default function LandingPage() {
     };
   }, []);
 
-  // Collapse a raw product id (BIP-20DEC30-CDE, BTC-PERP-INTX, …) to its base
-  // ticker (BTC/SOL/ETH/…). Coinbase dated futures encode the base in a
-  // non-standard first segment, so map those explicitly.
-  const FUTURES_CODE_MAP = { BIT: 'BTC', BIP: 'BTC', ETP: 'ETH', SLP: 'SOL', DOP: 'DOGE', LCP: 'LTC', AVP: 'AVAX', LNP: 'LINK', XPP: 'XRP', WLD: 'WLD' };
   const baseTicker = (symbol) => {
     if (!symbol) return '';
     let base = String(symbol).toUpperCase().replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '').split('-')[0];
-    return FUTURES_CODE_MAP[base] || base;
+    return base;
   };
 
   // Helper to normalize execution mode across variants (e.g. 'LIVE', 'LIVE (EXCHANGE)', 'PAPER')
