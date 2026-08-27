@@ -342,7 +342,26 @@ app.post('/mcp/execute', async (req, res) => {
             try {
                 const mod = await import(`./lib/${tool}.js`);
                 const paramNames = COINGLASS_PARAMS[tool] || Object.keys(args || {});
-                const callArgs = paramNames.map(pn => args?.[pn]);
+                // Coinglass symbol normalization
+                const CDE_TO_BASE = {
+                    BIT: 'BTC', BIP: 'BTC', ETP: 'ETH',
+                    SLP: 'SOL', DOP: 'DOGE',
+                    LCP: 'LTC', AVP: 'AVAX',
+                    LNP: 'LINK', XPP: 'XRP',
+                };
+                const CALL_MAP = { symbol: 1, asset: 1 };
+                const callArgs = paramNames.map(pn => {
+                    let val = args?.[pn];
+                    if (CALL_MAP[pn] && val && tool.startsWith('coinglass_')) {
+                        let base = String(val).toUpperCase().trim()
+                            .replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '')
+                            .split('-')[0];
+                        val = CDE_TO_BASE[base] || base;
+                        // v4 history endpoints need "ETHUSDT" not bare "ETH"
+                        if (pn === 'symbol' && !val.includes('USDT')) val = `${val}USDT`;
+                    }
+                    return val;
+                });
                 const result = await mod[tool](...callArgs);
                 const duration = Date.now() - start;
                 // Log tool call — fire and forget
