@@ -1175,6 +1175,16 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                                 .then(() => {})
                                 .catch(() => {});
                         }
+                        console.log(`[AGENT CORTEX] Trade executed successfully: ${asset} ${decisionJson.action} — trade_id=${postTradeId || 'unknown'}`);
+                    } else {
+                        let errorBody = '';
+                        try { errorBody = await execResp.text().catch(() => ''); } catch(e) {}
+                        console.error(`[AGENT CORTEX] Post-loop execution FAILED for ${asset} (${execResp.status}): ${errorBody.substring(0, 300)}`);
+                        await sendDiscordAlert(tenant_id, {
+                            title: `❌ Trade Execution Failed: ${asset}`,
+                            description: `**Action:** ${decisionJson.action}\n**Status:** ${execResp.status}\n**Error:** ${errorBody.substring(0, 500) || 'Unknown error'}`,
+                            color: 15548997
+                        });
                     }
                 } catch (execErr) {
                     console.error('[AGENT CORTEX] Post-loop order execution failed:', execErr.message);
