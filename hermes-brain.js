@@ -1155,6 +1155,27 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                     decisionJson.qty = openTrade.qty;
                     decisionJson.reason = `[CLOSE] ${decisionJson.working_thesis}`;
                 } else {
+                    // Resolve intended side for APPROVE / new entry if not explicitly set
+                    if (!decisionJson.side) {
+                        const thesisLower = (decisionJson.working_thesis || '').toLowerCase();
+                        if (thesisLower.includes('short') || thesisLower.includes('sell')) {
+                            decisionJson.side = 'SELL';
+                        } else if (thesisLower.includes('long') || thesisLower.includes('buy')) {
+                            decisionJson.side = 'BUY';
+                        } else if (message && typeof message === 'string') {
+                            const msgUpper = message.toUpperCase();
+                            if (msgUpper.includes('SELL') || msgUpper.includes('SHORT')) {
+                                decisionJson.side = 'SELL';
+                            } else {
+                                decisionJson.side = 'BUY';
+                            }
+                        } else {
+                            decisionJson.side = 'BUY';
+                        }
+                    } else {
+                        const sideUpper = String(decisionJson.side).toUpperCase();
+                        decisionJson.side = (sideUpper === 'LONG' || sideUpper === 'BUY') ? 'BUY' : 'SELL';
+                    }
                     decisionJson.reason = decisionJson.working_thesis;
                 }
                 
@@ -1166,16 +1187,31 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                     });
                     if (execResp.ok) {
                         const execData = await execResp.json().catch(() => ({}));
-                        const postTradeId = execData?.result?.trade_id || execData?.trade_id;
-                        if (postTradeId && scan_id) {
-                            supabase.from('agent_tool_calls')
-                                .update({ trade_id: postTradeId })
-                                .eq('scan_id', scan_id)
-                                .eq('tenant_id', tenant_id)
-                                .then(() => {})
-                                .catch(() => {});
+                        const resultPayload = execData?.result || execData || {};
+                        const postTradeId = resultPayload.trade_id;
+                        const execStatus = resultPayload.status;
+                        const execReason = resultPayload.reason || resultPayload.message || 'No reason provided';
+
+                        const nonSuccessStatuses = ['duplicate_suppressed', 'strategy_not_active', 'risk_vetoed', 'rr_vetoed', 'ignored_already_open', 'already_closed_natively', 'duplicate'];
+                        
+                        if (execStatus && nonSuccessStatuses.includes(execStatus)) {
+                            console.warn(`[AGENT CORTEX] ⚠️ Trade execution not opened (${execStatus}) for ${asset}: ${execReason}`);
+                            await sendDiscordAlert(tenant_id, {
+                                title: `⚠️ Trade Execution Blocked/Suppressed: ${asset}`,
+                                description: `**Action:** ${decisionJson.action}\n**Side:** ${decisionJson.side}\n**Status:** ${execStatus}\n**Reason:** ${execReason}\n**Thesis:** ${decisionJson.working_thesis || 'None'}`,
+                                color: 15844367
+                            });
+                        } else {
+                            if (postTradeId && scan_id) {
+                                supabase.from('agent_tool_calls')
+                                    .update({ trade_id: postTradeId })
+                                    .eq('scan_id', scan_id)
+                                    .eq('tenant_id', tenant_id)
+                                    .then(() => {})
+                                    .catch(() => {});
+                            }
+                            console.log(`[AGENT CORTEX] Trade executed: ${asset} ${decisionJson.action} (${decisionJson.side}) — trade_id=${postTradeId || 'unknown'} (status=${execStatus || 'executed'})`);
                         }
-                        console.log(`[AGENT CORTEX] Trade executed successfully: ${asset} ${decisionJson.action} — trade_id=${postTradeId || 'unknown'}`);
                     } else {
                         let errorBody = '';
                         try { errorBody = await execResp.text().catch(() => ''); } catch(e) {}
