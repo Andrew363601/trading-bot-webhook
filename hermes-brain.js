@@ -248,6 +248,9 @@ app.post('/api/wake', async (req, res) => {
               const toolsData = await toolsResp.json();
               toolSchemas = toolsData.tools || {};
               console.log(`[AGENT CORTEX] Loaded ${Object.keys(toolSchemas).length} tool schemas from gateway`);
+              // 🟢 FIX: Remove execute_order from LLM function-calling tools.
+              // Data gathering in the loop, trade execution in post-loop dispatch.
+              delete toolSchemas['execute_order'];
             } else {
               console.warn(`[AGENT CORTEX] Tool schema fetch returned ${toolsResp?.status || 'no response'} — tools will not be available to the LLM`);
             }
@@ -558,64 +561,6 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                     let fnArgs = {};
                     try { fnArgs = JSON.parse(tc.function?.arguments || '{}'); } catch(e) {}
 
-                    // 🟢 FIX: execute_order in-loop is now a NO-OP (mock only).
-                    // All real execution flows through the post-loop handler below.
-                    // This eliminates the dual-path collision where Path 1 (in-loop)
-                    // and Path 2 (post-loop) both try to execute, causing missing trades
-                    // when Path 1 silently fails but the post-loop is skipped.
-                    if (fnName === 'execute_order') {
-                        fnArgs.strategy_id = strategy_id || 'MANUAL';
-                        fnArgs.execution_mode = execution_mode || 'PAPER';
-                        fnArgs.macro_tf = macro_tf || 'ONE_HOUR';
-                        fnArgs.trigger_tf = trigger_tf || 'FIVE_MINUTE';
-
-                        if (resolvedMemoryIds && resolvedMemoryIds.length > 0) {
-                            fnArgs._influencing_memory_ids = resolvedMemoryIds;
-                        }
-                        if (marketState?.result) {
-                            fnArgs._full_market_snapshot = marketState.result;
-                        }
-                        fnArgs.tenant_id = tenant_id;
-                        fnArgs.trade_id = activeOpenTrade?.id || null;
-                        fnArgs.scan_id = scan_id || null;
-
-                        // Mock success — the agent thinks it called execute_order
-                        // Real execution happens in the post-loop handler
-                        const mockResult = { status: "deferred_to_post_loop", note: "Intent recorded. Execution dispatched after analysis completes." };
-
-                        // Log the tool call intent to agent_tool_calls
-                        const gatewayUrl = process.env.MCP_GATEWAY_URL || 'http://localhost:3000';
-                        try {
-                            await fetch(`${gatewayUrl.replace(/\/mcp\/execute$/, '')}/mcp/execute`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ tool: fnName, arguments: { ...fnArgs, _skip_execution: true } })
-                            }).catch(() => {});
-                        } catch (e) {}
-
-                        const resultStr = JSON.stringify(mockResult);
-                        if (activeModel.provider === 'openrouter') {
-                            accumulatedMessages.push({
-                                role: 'assistant',
-                                content: null,
-                                tool_calls: [{ id: tc.id, type: 'function', function: { name: fnName, arguments: JSON.stringify(fnArgs) } }]
-                            });
-                            accumulatedMessages.push({
-                                role: 'tool',
-                                tool_call_id: tc.id,
-                                content: resultStr
-                            });
-                        } else {
-                            accumulatedMessages.push({
-                                role: 'function',
-                                name: fnName,
-                                content: resultStr
-                            });
-                        }
-                        toolCallCount++;
-                        continue;
-                    }
-
                     fnArgs.tenant_id = tenant_id;
                     fnArgs.trade_id = activeOpenTrade?.id || null;
                     fnArgs.scan_id = scan_id || null;
@@ -623,16 +568,6 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                     try {
                         const gatewayResult = await gatewayFetch(fnName, fnArgs);
                         const resultStr = typeof gatewayResult === 'string' ? gatewayResult : JSON.stringify(gatewayResult);
-
-                        const generatedTradeId = gatewayResult?.trade_id || gatewayResult?.result?.trade_id;
-                        if (generatedTradeId && scan_id) {
-                            supabase.from('agent_tool_calls')
-                                .update({ trade_id: generatedTradeId })
-                                .eq('scan_id', scan_id)
-                                .eq('tenant_id', tenant_id)
-                                .then(() => {})
-                                .catch(() => {});
-                        }
                         
                         if (activeModel.provider === 'openrouter') {
                             accumulatedMessages.push({
