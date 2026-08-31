@@ -294,7 +294,8 @@ app.post('/mcp/execute', async (req, res) => {
             } catch (err) {
                 const duration = Date.now() - start;
                 logToolCall({ tool, args, error: err.message, duration, status: 'error' }).catch(() => {});
-                throw err;
+                console.error(`[MCP GATEWAY] execute_order FATAL:`, err.message);
+                return res.status(502).json({ error: err.message });
             }
         }
         

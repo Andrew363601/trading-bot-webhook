@@ -1134,7 +1134,12 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                 decisionJson.working_thesis = decisionJson.working_thesis || 'Autonomous Execution';
                 decisionJson.qty = qty || decisionJson.qty || 1;
                 decisionJson.scan_id = scan_id || null;
-                decisionJson.trade_id = activeOpenTrade?.id || null;
+                // Only attach trade_id for CLOSE/ADJUST actions — fresh APPROVE is a new entry
+                if (decisionJson.action === "CLOSE" || decisionJson.action === "ADJUST_TP_SL" || decisionJson.action === "UPDATE_TRIPWIRE") {
+                    decisionJson.trade_id = activeOpenTrade?.id || openTrade?.id || null;
+                } else {
+                    decisionJson.trade_id = null;  // fresh entry, no stale trade_id
+                }
 
                 // 🟢 Attach the full market state snapshot + influencing memory IDs
                 // so the trade record has the rich market data at entry and knows
