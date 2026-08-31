@@ -832,6 +832,7 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                         tool: 'execute_order',
                         arguments: {
                             tenant_id, symbol: asset, execution_mode, strategy_id, version,
+                            trade_id: activeOpenTrade.id,
                             side: activeOpenTrade.side === 'BUY' ? 'SELL' : 'BUY',
                             qty: activeOpenTrade.qty,
                             price: decisionJson.price,
