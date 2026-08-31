@@ -801,20 +801,32 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
             }
 
             try {
-                await supabase.from('scan_results').insert([{
-                    tenant_id: tenant_id,
-                    strategy: strategy_id || 'MANUAL',
-                    asset: asset,
-                    status: finalStatus,
-                    telemetry: {
-                        status_overlay: `AGENT ${decisionJson.action}`,
-                        oracle_reasoning: decisionJson.working_thesis,
-                        cvd: marketState?.multi_timeframe_cvd?.["5M_Micro_Ripple"] || 0,
-                        open_position: displayPosition
-                    }
-                }]);
+                const telemetryPayload = {
+                    status_overlay: `AGENT ${decisionJson.action}`,
+                    oracle_reasoning: decisionJson.working_thesis,
+                    cvd: marketState?.multi_timeframe_cvd?.["5M_Micro_Ripple"] || 0,
+                    open_position: displayPosition
+                };
+
+                // 🛡️ FIX: Use the pre-created scan_id from sniper if available.
+                // This prevents creating a duplicate orphan scan_results row that
+                // would cause tool calls to lose their parent pipeline entry.
+                if (scan_id) {
+                    await supabase.from('scan_results').update({
+                        status: finalStatus,
+                        telemetry: telemetryPayload
+                    }).eq('id', scan_id);
+                } else {
+                    await supabase.from('scan_results').insert([{
+                        tenant_id: tenant_id,
+                        strategy: strategy_id || 'MANUAL',
+                        asset: asset,
+                        status: finalStatus,
+                        telemetry: telemetryPayload
+                    }]);
+                }
             } catch (error) {
-                console.error(`[SUPABASE ERROR] Failed to insert scan_results for ${asset}:`, error.message);
+                console.error(`[SUPABASE ERROR] Failed to record scan_results for ${asset}:`, error.message);
             }
         }
         
