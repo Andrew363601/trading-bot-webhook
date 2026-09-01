@@ -109,23 +109,32 @@ def extract_features(snap, trade):
             return None, None, None, None
 
         price = _get(snap, ['current_price'], ['price'], default=0) or trade.get('entry_price') or 0
-        price = float(price or 0)
-        poc = float(_get(snap, ['volume_profile', 'macro_poc'], ['macro_poc'], default=0) or 0)
-        atr = float(_get(snap, ['volatility_atr', '5M'], ['atr'], default=1) or 1)
-        cvd_6h = float(_get(snap, ['multi_timeframe_cvd', '6H_Macro_Tide'], ['macro_cvd'], default=0) or 0)
-        cvd_1h = float(_get(snap, ['multi_timeframe_cvd', '1H_Macro_Trend'], default=0) or 0)
-        cvd_5m = float(_get(snap, ['multi_timeframe_cvd', '5M_Micro_Ripple'], ['cvd'], default=0) or 0)
-        trigger_flow = float(_get(snap, ['multi_timeframe_cvd', 'Trigger_Flow'], ['trigger_flow'], default=0) or 0)
+
+        def _sf(v, fallback=0.0):
+            """Safe float — tolerates 'Unavailable' strings, None, bad formats, NaN."""
+            try:
+                f = float(v)
+                return f if f == f else fallback  # NaN guard
+            except (TypeError, ValueError):
+                return fallback
+
+        price = _sf(price, 0.0)
+        poc = _sf(_get(snap, ['volume_profile', 'macro_poc'], ['macro_poc'], default=0), 0.0)
+        atr = _sf(_get(snap, ['volatility_atr', '5M'], ['atr'], default=1), 1.0) or 1.0
+        cvd_6h = _sf(_get(snap, ['multi_timeframe_cvd', '6H_Macro_Tide'], ['macro_cvd'], default=0), 0.0)
+        cvd_1h = _sf(_get(snap, ['multi_timeframe_cvd', '1H_Macro_Trend'], default=0), 0.0)
+        cvd_5m = _sf(_get(snap, ['multi_timeframe_cvd', '5M_Micro_Ripple'], ['cvd'], default=0), 0.0)
+        trigger_flow = _sf(_get(snap, ['multi_timeframe_cvd', 'Trigger_Flow'], ['trigger_flow'], default=0), 0.0)
         seq = _get(snap, ['multi_timeframe_cvd', '5M_Sequence'], ['cvd_sequence'], default=None)
-        deep_bids = float(_get(snap, ['order_book_depth', 'deep_bids'], ['bids'], default=0) or 0)
-        deep_asks = float(_get(snap, ['order_book_depth', 'deep_asks'], ['asks'], default=1) or 1)
-        funding = float(_get(snap, ['derivatives_premium', 'funding_rate'], ['funding_rate'], default=0) or 0)
-        funding_ann = float(_get(snap, ['derivatives_premium', 'annualized_funding_percent'], ['funding_annualized'], default=0) or 0)
-        oi = float(_get(snap, ['derivatives_premium', 'open_interest'], ['open_interest'], default=0) or 0)
-        sp500 = float(_get(snap, ['cross_asset_macro', 'SP500'], ['sp500'], default=0) or 0)
-        dxy = float(_get(snap, ['cross_asset_macro', 'DXY'], ['dxy'], default=0) or 0)
-        upper_node = float(_get(snap, ['volume_profile', 'upper_node'], ['upper_node'], default=price) or price)
-        lower_node = float(_get(snap, ['volume_profile', 'lower_node'], ['lower_node'], default=price) or price)
+        deep_bids = _sf(_get(snap, ['order_book_depth', 'deep_bids'], ['bids'], default=0), 0.0)
+        deep_asks = _sf(_get(snap, ['order_book_depth', 'deep_asks'], ['asks'], default=1), 1.0) or 1.0
+        funding = _sf(_get(snap, ['derivatives_premium', 'funding_rate'], ['funding_rate'], default=0), 0.0)
+        funding_ann = _sf(_get(snap, ['derivatives_premium', 'annualized_funding_percent'], ['funding_annualized'], default=0), 0.0)
+        oi = _sf(_get(snap, ['derivatives_premium', 'open_interest'], ['open_interest'], default=0), 0.0)
+        sp500 = _sf(_get(snap, ['cross_asset_macro', 'SP500'], ['sp500'], default=0), 0.0)
+        dxy = _sf(_get(snap, ['cross_asset_macro', 'DXY'], ['dxy'], default=0), 0.0)
+        upper_node = _sf(_get(snap, ['volume_profile', 'upper_node'], ['upper_node'], default=price), price)
+        lower_node = _sf(_get(snap, ['volume_profile', 'lower_node'], ['lower_node'], default=price), price)
 
         price_dist_poc = abs(price - poc) / max(atr, 0.01) if poc else 0
         multi_align = 1 if (cvd_6h > 0 and cvd_5m > 0 and cvd_1h > 0) else (-1 if (cvd_6h < 0 and cvd_5m < 0 and cvd_1h < 0) else 0)
@@ -168,7 +177,9 @@ def extract_features(snap, trade):
 # ─────────────────────────────────────────────────────────────
 
 print('=== NEXUS Trainer starting ===')
-select_cols = ('id,tenant_id,asset,symbol,strategy_id,macro_tf,trigger_tf,regime_at_entry,pnl,side,'
+# NOTE: trade_logs has no 'asset'/'macro_tf'/'trigger_tf' columns yet.
+# extract_features() falls back: asset→symbol, tf_pair→'ANY/ANY'.
+select_cols = ('id,tenant_id,symbol,strategy_id,regime_at_entry,pnl,side,'
                'entry_price,exit_price,market_snapshot_at_entry,tp_price,sl_price,exit_time,created_at')
 trades = sb_get('trade_logs', select_cols,
                 filters='&market_snapshot_at_entry=not.is.null&exit_price=not.is.null',
@@ -191,6 +202,9 @@ for t in trades:
     if feat is None:
         continue
     pnl = float(t.get('pnl') or 0)
+    # Winsorize: corrupt rows (±$100M+) poison expected_pnl for every bucket.
+    # Cap magnitude at $10K — beyond that it's a data bug, not a trade.
+    pnl = max(-10000.0, min(10000.0, pnl))
     label = 1 if pnl >= 0 else 0
     asset = t.get('asset') or t.get('symbol') or 'UNKNOWN'
     tenant = t.get('tenant_id')
@@ -230,72 +244,6 @@ def _sb_delete(table, filters):
 
 
 def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb_mod, feat_names):
-
-
-def summarize(samples):
-    n = len(samples)
-    wins = sum(1 for _, l, _ in samples if l == 1)
-    avg_pnl = sum(p for _, _, p in samples) / n
-    # Optimal TP/SL in ATR terms (from stored tp/sl vs entry + snapshot atr)
-    return {'n': n, 'win_rate': wins / n if n else 0, 'avg_pnl': avg_pnl}
-
-
-# ─────────────────────────────────────────────────────────────
-# STEP 3: Train models (XGBoost when available; empirical-only otherwise)
-# ─────────────────────────────────────────────────────────────
-
-xgb = None
-try:
-    import xgboost as xgb  # noqa
-    import numpy as np
-    HAS_NP = True
-except ImportError:
-    print('xgboost/numpy not installed — empirical stats only.')
-    print('Install with: pip install xgboost scikit-learn numpy')
-    HAS_NP = False
-
-model_rows = []
-tf_report = defaultdict(lambda: {'n': 0, 'wins': 0, 'pnl': 0.0, 'hold_sum': 0.0, 'hold_n': 0})
-
-# Per-tenant rows (exact + ANY fallbacks within tenant)
-for (tenant, asset, regime), samples in sorted(any_pool.items(), key=lambda kv: -len(kv[1])):
-    if len(samples) < MIN_TENANT_SAMPLES:
-        continue
-    _emit_model(model_rows, tenant, asset, regime, 'ANY', 'ANY', samples, xgb, feature_names)
-for (tenant, asset, regime, strategy, tf_pair), samples in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
-    if tenant is None or len(samples) < MIN_TENANT_SAMPLES:
-        continue
-    _emit_model(model_rows, tenant, asset, regime, strategy, tf_pair, samples, xgb, feature_names)
-
-# Global rows (tenant_id NULL): exact, ANY-strategy, and asset-level
-for (asset, regime), samples in sorted(global_pool.items(), key=lambda kv: -len(kv[1])):
-    if len(samples) < MIN_GLOBAL_SAMPLES:
-        continue
-    _emit_model(model_rows, None, asset, regime, 'ANY', 'ANY', samples, xgb, feature_names)
-for (tenant, asset, regime, strategy, tf_pair), samples in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
-    if tenant is not None or len(samples) < MIN_GLOBAL_SAMPLES:
-        continue
-    _emit_model(model_rows, None, asset, regime, strategy, tf_pair, samples, xgb, feature_names)
-
-if model_rows:
-    # calibration_models has no natural unique key across all dims; upsert on
-    # (tenant_id, asset, regime, strategy) via Postgres-side dedupe is not
-    # available, so delete-then-insert per bucket for idempotency.
-    for row in model_rows:
-        filters = []
-        if row['tenant_id']:
-            filters.append(f"tenant_id=eq.{row['tenant_id']}")
-        else:
-            filters.append('tenant_id=is.null')
-        filters.append(f"asset=eq.{urllib.parse.quote(row['asset'])}")
-        filters.append(f"regime=eq.{urllib.parse.quote(row['regime'] or '')}")
-        filters.append(f"strategy=eq.{urllib.parse.quote(row['strategy'] or 'ANY')}")
-        _sb_delete('calibration_models', '&'.join(filters))
-    sb_upsert('calibration_models', model_rows, 'id')
-    print(f'Upserted {len(model_rows)} calibration_models rows.')
-
-
-# ─────────────────────────────────────────────────────────────
     """Train one model (or compute empirical stats) and stage an upsert row."""
     n = len(samples)
     wins = sum(1 for _, l, _ in samples if l == 1)
@@ -348,6 +296,75 @@ if model_rows:
     })
     scope = 'GLOBAL' if tenant is None else str(tenant)[:8]
     print(f'  [{scope}] {asset}/{regime}/{strategy}/{tf_pair}: n={n} wr={wr:.2f} acc={accuracy:.2f} E[pnl]={expected_mean:.1f}')
+
+
+def summarize(samples):
+    n = len(samples)
+    wins = sum(1 for _, l, _ in samples if l == 1)
+    avg_pnl = sum(p for _, _, p in samples) / n
+    # Optimal TP/SL in ATR terms (from stored tp/sl vs entry + snapshot atr)
+    return {'n': n, 'win_rate': wins / n if n else 0, 'avg_pnl': avg_pnl}
+
+
+# ─────────────────────────────────────────────────────────────
+# STEP 3: Train models (XGBoost when available; empirical-only otherwise)
+# ─────────────────────────────────────────────────────────────
+
+xgb = None
+try:
+    import xgboost as xgb  # noqa
+    import numpy as np
+    HAS_NP = True
+except ImportError:
+    print('xgboost/numpy not installed — empirical stats only.')
+    print('Install with: pip install xgboost scikit-learn numpy')
+    HAS_NP = False
+
+model_rows = []
+tf_report = defaultdict(lambda: {'n': 0, 'wins': 0, 'pnl': 0.0, 'hold_sum': 0.0, 'hold_n': 0})
+
+# Per-tenant rows (exact + ANY fallbacks within tenant)
+for (tenant, asset, regime), samples in sorted(any_pool.items(), key=lambda kv: -len(kv[1])):
+    if len(samples) < MIN_TENANT_SAMPLES:
+        continue
+    _emit_model(model_rows, tenant, asset, regime, 'ANY', 'ANY', samples, xgb, feature_names)
+for (tenant, asset, regime, strategy, tf_pair), samples in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
+    if tenant is None or len(samples) < MIN_TENANT_SAMPLES:
+        continue
+    _emit_model(model_rows, tenant, asset, regime, strategy, tf_pair, samples, xgb, feature_names)
+
+# Global rows (tenant_id NULL): asset-level ANY/ANY pool
+for (asset, regime), samples in sorted(global_pool.items(), key=lambda kv: -len(kv[1])):
+    if len(samples) < MIN_GLOBAL_SAMPLES:
+        continue
+    _emit_model(model_rows, None, asset, regime, 'ANY', 'ANY', samples, xgb, feature_names)
+
+# Global exact-strategy rows: aggregate ACROSS tenants per
+# (asset, regime, strategy, tf_pair) — one row per key, no duplicates.
+global_exact_pool = defaultdict(list)
+for (tenant, asset, regime, strategy, tf_pair), samples in buckets.items():
+    global_exact_pool[(asset, regime, strategy, tf_pair)].extend(samples)
+for (asset, regime, strategy, tf_pair), samples in sorted(global_exact_pool.items(), key=lambda kv: -len(kv[1])):
+    if len(samples) < MIN_GLOBAL_SAMPLES:
+        continue
+    _emit_model(model_rows, None, asset, regime, strategy, tf_pair, samples, xgb, feature_names)
+
+if model_rows:
+    # calibration_models has no natural unique key across all dims; upsert on
+    # (tenant_id, asset, regime, strategy) via Postgres-side dedupe is not
+    # available, so delete-then-insert per bucket for idempotency.
+    for row in model_rows:
+        filters = []
+        if row['tenant_id']:
+            filters.append(f"tenant_id=eq.{row['tenant_id']}")
+        else:
+            filters.append('tenant_id=is.null')
+        filters.append(f"asset=eq.{urllib.parse.quote(row['asset'])}")
+        filters.append(f"regime=eq.{urllib.parse.quote(row['regime'] or '')}")
+        filters.append(f"strategy=eq.{urllib.parse.quote(row['strategy'] or 'ANY')}")
+        _sb_delete('calibration_models', '&'.join(filters))
+    sb_upsert('calibration_models', model_rows, 'id')
+    print(f'Upserted {len(model_rows)} calibration_models rows.')
 
 
 # ─────────────────────────────────────────────────────────────
@@ -468,7 +485,7 @@ if transition_rows:
 
 print('\n=== Archetype stats ===')
 arch_trades = sb_get('trade_logs',
-                     'tenant_id,asset,symbol,microstructure_archetype,pnl,entry_price,exit_price,tp_price,sl_price,exit_time,created_at',
+                     'tenant_id,symbol,microstructure_archetype,pnl,entry_price,exit_price,tp_price,sl_price,exit_time,created_at',
                      filters='&microstructure_archetype=not.is.null&exit_price=not.is.null',
                      order='created_at.desc', limit=2000)
 arch_agg = defaultdict(list)
