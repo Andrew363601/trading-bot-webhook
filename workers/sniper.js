@@ -767,6 +767,14 @@ export async function startSniper(tenantId) {
                 };
 
                 const microstructure = await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
+
+                // 🟢 Phase D enrichment hooks (placeholder — populated in Push #3).
+                // Declared here so preTelemetry/pingHermes can pass them through safely.
+                let calibrationBlock = null;      // getCalibrationPriors (Phase 2A)
+                let modelPrediction = null;       // getModelPrediction (Phase 2B)
+                let regimeTransition = null;      // getRegimeTransitions (Phase 2C)
+                let microstructureChange = null;  // getMicrostructureChange (Phase 2D)
+                let archetypeResult = null;       // classifyArchetype (Phase 2D)
                 
                 const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).eq('tenant_id', tenantId).is('exit_price', null).limit(1);
                 const openTrade = openTrades?.[0];
@@ -828,7 +836,10 @@ export async function startSniper(tenantId) {
                             const preTelemetry = { 
                                 ...decision.telemetry, 
                                 status_overlay: "HANDED TO AGENT", 
-                                oracle_reasoning: "Ping sent to Agent Cortex. Awaiting autonomous execution or veto." 
+                                oracle_reasoning: "Ping sent to Agent Cortex. Awaiting autonomous execution or veto.",
+                                // 🟢 Phase 3E: archetype from the enrichment pipeline
+                                // (NULL until Phase D adds classifyArchetype upstream)
+                                microstructure_archetype: archetypeResult?.archetype || null
                             };
                             const { data: scanRow, error: scanErr } = await supabase
                                 .from('scan_results')

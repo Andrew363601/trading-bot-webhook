@@ -143,8 +143,11 @@ function deriveRegime(marketState) {
         const poc = s.volume_profile?.macro_poc || s.macro_poc || 0;
         const atr = s.volatility_atr?.["5M"] || s.atr || 1;
         const cvd = s.multi_timeframe_cvd?.["6H_Macro_Tide"] || s.macro_cvd || 0;
-        const bids = s.order_book_depth?.immediate_bids || s.deep_bids || s.bids || 0;
-        const asks = s.order_book_depth?.immediate_asks || s.deep_asks || s.asks || 1;
+        // Prefer the 50-level depth to EXACTLY match the sniper's canon bid/ask
+        // ratio — immediate_bids/asks could classify borderline ACC/DIST differently
+        // between the two paths.
+        const bids = s.order_book_depth?.bids_50_levels || s.deep_bids || s.bids || 0;
+        const asks = s.order_book_depth?.asks_50_levels || s.deep_asks || s.asks || 1;
         const atrDist = poc > 0 ? Math.abs(price - poc) / Math.max(atr, 0.01) : 0;
         if (atrDist > 1.5 && Math.abs(cvd) > 25000) return 'TREND';
         if (atrDist < 1.0 && cvd > 2500 && (bids / Math.max(asks, 0.01)) > 1.2) return 'ACCUMULATION';
@@ -155,7 +158,7 @@ function deriveRegime(marketState) {
 
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
-    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id } = req.body;
+    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id, calibrationPriors, modelPrediction, regimeTransition, microstructureChange, archetypeResult } = req.body;
     const wakeStartTime = new Date().toISOString();
     
     // Track Hermes API usage
@@ -1140,6 +1143,15 @@ When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_a
                 if (resolvedMemoryIds && resolvedMemoryIds.length > 0) {
                     decisionJson._influencing_memory_ids = resolvedMemoryIds;
                 }
+
+                // 🟢 Phase 3D: attach model/archetype/conviction enrichment so
+                // execute-trade-mcp persists them onto trade_logs at entry.
+                // (Values flow in from the sniper's Phase D enrichment calls;
+                // NULL-safe until that lands — columns just stay null.)
+                decisionJson._microstructure_archetype = archetypeResult?.archetype || null;
+                decisionJson._model_predicted_win_prob = modelPrediction?.winProbability ?? null;
+                decisionJson._model_predicted_pnl = modelPrediction?.expectedPnl ?? null;
+                decisionJson._conviction_score = decisionJson.conviction_score ?? null;
                 
                 if (decisionJson.action === "CLOSE" && activeOpenTrade) {
                     decisionJson.side = activeOpenTrade.side === 'BUY' ? 'SELL' : 'BUY';
@@ -1230,7 +1242,8 @@ When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_a
 
 // 🟢 THE EVOLUTION ENDPOINT (Agentic Reflection Loop)
 app.post('/api/autopsy', async (req, res) => {
-    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis, trade_log_id } = req.body;
+    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis, trade_log_id, strategy_id } = req.body;
+    const strategyId = strategy_id || null;
     console.log(`[AGENT CORTEX] Initiating Autopsy for ${asset}. PnL: $${pnl} (${execution_mode || 'UNKNOWN'})`);
     
     res.status(200).json({ status: "Autopsy initiated." });
@@ -1369,7 +1382,13 @@ app.post('/api/autopsy', async (req, res) => {
             execution_mode: execution_mode || null,
             regime_at_close: regime_at_close || null,
             market_snapshot: persistedSnapshot || null,
-            trade_log_id: trade_log_id || null
+            trade_log_id: trade_log_id || null,
+            // 🟢 Phase 0.7.2: persist strategy + TF keys so memory scoring can
+            // bonus-match same-strategy / same-TF lessons (layered keying).
+            // strategy_id is UPPER-normalized — case-split buckets fragment silently.
+            strategy_id: (strategyId || 'ANY').toUpperCase(),
+            macro_tf: macro_tf || 'ANY',
+            trigger_tf: trigger_tf || 'ANY'
         }]);
 
     } catch (error) {
