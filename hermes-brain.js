@@ -495,7 +495,124 @@ Smaller TF = tighter structural stops. Larger TF = wider noise buffer.
 When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_atr), prefer those calibrated values over these defaults.
 
 `;
-        
+
+        // ═══════════════ NEXUS INTELLIGENCE BLOCKS (Phase D) ═══════════════
+        const currentRegimeCtx = marketState?.result?.regime
+            || marketState?.result?.macro_regime_oracle
+            || (marketState?.result ? deriveRegime(marketState) : null)
+            || null;
+
+        // ── L1/L2: EMPIRICAL PRIORS ──
+        if (calibrationPriors?.available) {
+            const p = calibrationPriors;
+            const pick = (ownVal, globalVal) => {
+                if (ownVal !== undefined && ownVal !== null) return { v: ownVal, scope: '' };
+                if (globalVal !== undefined && globalVal !== null) return { v: globalVal, scope: ' (all users)' };
+                return null;
+            };
+            let priorBlock = `\n--- EMPIRICAL PRIORS (Track Record) ---`;
+            const wr = pick(p.own?.regimeWR?.[currentRegimeCtx], p.global?.regimeWR?.[currentRegimeCtx]);
+            if (wr) {
+                const pnl = pick(p.own?.regimeAvgPnl?.[currentRegimeCtx], p.global?.regimeAvgPnl?.[currentRegimeCtx]);
+                const wrPct = (wr.v * 100).toFixed(0);
+                const ownOrGlobal = wr.scope === '' ? 'Your' : 'All-users';
+                priorBlock += `\n${ownOrGlobal} WR in ${currentRegimeCtx || 'current regime'}: ${wrPct}%${pnl ? ` | avg pnl $${(pnl.v).toFixed(0)}` : ''}${wr.scope}`;
+            }
+            const assetW = pick(p.own?.assetWR?.[asset], p.global?.assetWR?.[asset]);
+            if (assetW) priorBlock += `\n${assetW.scope === '' ? 'Your' : 'All-users'} WR on ${asset}: ${(assetW.v * 100).toFixed(0)}%`;
+            const bias = pick(p.own?.convictionBias?.[currentRegimeCtx], p.global?.convictionBias?.[currentRegimeCtx]);
+            if (bias) priorBlock += `\nConviction in ${currentRegimeCtx || 'this regime'} typically runs ${Math.abs(bias.v)}pts ${bias.v > 0 ? 'hot (overconfident)' : 'cold (underconfident)'} — adjust your conviction_score accordingly`;
+            const minConv = pick(p.own?.calibratedMinConviction, p.global?.calibratedMinConviction);
+            if (minConv) priorBlock += `\nCalibrated minimum conviction for this regime: ${minConv.v}`;
+            const samples = pick(p.own?.sampleCount, p.global?.sampleCount);
+            if (samples) priorBlock += `\n(Based on ${samples.v} closed trades${samples.scope})`;
+            instructionText += priorBlock + '\n';
+        }
+
+        // ── L3: PREDICTIVE MODEL ──
+        if (modelPrediction?.available) {
+            const mp = modelPrediction;
+            const scopeLabel = mp.scope === 'global' ? ` (trained on all users' ${mp.sampleCount} trades, anonymized)` : ` (trained on your ${mp.sampleCount} trades)`;
+            let modelBlock = `\n--- PREDICTIVE MODEL OUTPUT ---`;
+            modelBlock += `\nTrained model for ${asset}/${currentRegimeCtx || 'this regime'}${scopeLabel}`;
+            if (mp.modelAccuracy) modelBlock += `\nModel accuracy: ${(mp.modelAccuracy * 100).toFixed(0)}%`;
+            modelBlock += `\nWIN PROBABILITY: ${(mp.winProbability * 100).toFixed(0)}% | Expected PnL: $${mp.expectedPnl?.toFixed(0) ?? '?'}`;
+            if (mp.confidenceInterval) modelBlock += `\n95% CI: [$${mp.confidenceInterval[0]}, $${mp.confidenceInterval[1]}]`;
+            if (mp.topFeatures?.length > 0) {
+                modelBlock += `\nTop predictors (importance | current value):`;
+                for (const f of mp.topFeatures) {
+                    const cur = f.currentValue !== null && f.currentValue !== undefined ? Number(f.currentValue).toLocaleString() : '?';
+                    modelBlock += `\n  ${f.name}: ${(f.importance * 100).toFixed(0)}% | now: ${cur}`;
+                }
+            }
+            modelBlock += `\nCompare your conviction against these independent odds — a large gap means re-examine your thesis.\n`;
+            instructionText += modelBlock;
+        }
+
+        // ── L4: REGIME TRANSITION RISK ──
+        if (regimeTransition?.available) {
+            const rt = regimeTransition;
+            let transitBlock = `\n--- REGIME TRANSITION RISK (all users, this asset) ---`;
+            transitBlock += `\nCurrent regime: ${rt.currentRegime || 'UNKNOWN'}${rt.persistenceMinutes !== null ? ` (persistent for ${rt.persistenceMinutes} min)` : ''}`;
+            if (rt.avgDuration) transitBlock += `\nAvg duration in ${rt.currentRegime}: ${rt.avgDuration.toFixed(1)}h`;
+            if (rt.transitions?.length > 0) {
+                transitBlock += `\nTransition probabilities (next regime move):`;
+                for (const tr of rt.transitions) {
+                    transitBlock += `\n  → ${tr.toRegime}: ${(tr.probability * 100).toFixed(0)}%${tr.avgCvdAtTransition !== null ? ` (avg CVD at flip: ${Number(tr.avgCvdAtTransition).toLocaleString()})` : ''}`;
+                }
+            }
+            const li = rt.leadingIndicators || {};
+            if (li.cvd_absolute_90th_percentile) {
+                transitBlock += `\nLeading indicators before past flips: |CVD| above ${Number(li.cvd_absolute_90th_percentile).toLocaleString()} in 90% of cases`;
+            }
+            if (rt.breakoutStats?.direction) {
+                const d = rt.breakoutStats.direction;
+                transitBlock += `\nCHOP→TREND breakout direction historically: BUY ${(d.BUY * 100).toFixed(0)}% / SELL ${(d.SELL * 100).toFixed(0)}%`;
+            }
+            instructionText += transitBlock + '\n';
+        }
+
+        // ── L5a: MICROSTRUCTURE CHANGE ──
+        if (microstructureChange?.available) {
+            const mc = microstructureChange;
+            let microBlock = `\n--- MICROSTRUCTURE CHANGE DETECTION ---`;
+            if (mc.divergence?.detected) {
+                microBlock += `\n⚠ CVD DIVERGENCE: ${mc.divergence.description}`;
+                microBlock += `\n  Strength: ${mc.divergence.strength}/100 (${mc.divergence.type})`;
+            } else {
+                microBlock += `\n✓ CVD convergence — price and volume direction aligned`;
+            }
+            if (mc.absorption) {
+                microBlock += `\nOrder book absorption: ${mc.absorption.rate} — ${mc.absorption.description}`;
+            }
+            if (mc.volatility) {
+                microBlock += `\nVolatility: ${mc.volatility.state}${mc.volatility.atrChangePercent !== null && mc.volatility.atrChangePercent !== undefined ? ` (tick-range ${mc.volatility.atrChangePercent > 0 ? '+' : ''}${mc.volatility.atrChangePercent}%)` : ''}`;
+            }
+            instructionText += microBlock + '\n';
+        }
+
+        // ── L5b: ARCHETYPE ──
+        if (archetypeResult?.archetype) {
+            const ar = archetypeResult;
+            let archBlock = `\n--- MICROSTRUCTURE ARCHETYPE ---`;
+            archBlock += `\nIdentified: ${ar.archetype.replace(/_/g, ' ')}`;
+            if (ar.archetypeStats) {
+                const s = ar.archetypeStats;
+                const scopeTag = ar.scope === 'tenant' ? '' : ' (all users)';
+                archBlock += `\nWR: ${s.winRate !== null && s.winRate !== undefined ? (s.winRate * 100).toFixed(0) + '%' : '?'} | Avg PnL: $${s.avgPnl?.toFixed(0) ?? '?'}${scopeTag}`;
+                if (s.optimalTpAtr) archBlock += `\nOptimal TP: ${Number(s.optimalTpAtr).toFixed(1)}x ATR`;
+                if (s.optimalSlAtr) archBlock += `\nOptimal SL: ${Number(s.optimalSlAtr).toFixed(1)}x ATR`;
+                if (s.optimalTripwirePercent) archBlock += `\nOptimal tripwire: ${(s.optimalTripwirePercent * 100).toFixed(2)}%`;
+                if (s.avgHoldTimeMinutes) archBlock += `\nAvg hold time: ${Math.round(s.avgHoldTimeMinutes / 60)}h`;
+                archBlock += `\n(Based on ${s.sampleCount} prior trades in this exact archetype)`;
+                if (s.optimalTpAtr && s.optimalSlAtr) {
+                    archBlock += `\nPREFER these calibrated TP/SL over the bracket defaults above.`;
+                }
+            }
+            instructionText += archBlock + '\n';
+        }
+        // ═══════════════ END NEXUS BLOCKS ═══════════════
+
         instructionText += `--- LIVE MULTI-TF MARKET STATE ---\n${JSON.stringify(marketState, null, 2)}\n\n`;
         
         // 🟢 THE UPGRADE: Guiding Hermes to the native Intent Data

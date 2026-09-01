@@ -6,6 +6,11 @@ import WebSocket from 'ws';
 import { evaluateStrategy } from '../lib/strategy-router.js';
 import { executeTradeMCP } from '../lib/execute-trade-mcp.js'; 
 import { isTenantBillingActive, deactivateTenantStrategies } from '../lib/tenant-context.js';
+// 🟢 NEXUS intelligence layers (Phase D)
+import { getCalibrationPriors } from '../lib/calibration-engine.js';
+import { getModelPrediction } from '../lib/predictive-regression.js';
+import { getRegimeTransitions } from '../lib/regime-transitions.js';
+import { getMicrostructureChange, classifyArchetype } from '../lib/microstructure-detector.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -386,7 +391,7 @@ function wordOverlap(textA, textB) {
     return union.size > 0 ? intersection.size / union.size : 0;
 }
 
-async function getScoredMemories(tenantId, asset, currentRegime, signalDirection) {
+async function getScoredMemories(tenantId, asset, currentRegime, signalDirection, strategyId = null, macroTf = null, triggerTf = null) {
     try {
         // Check if this tenant has opted into the cross-tenant memory pool
         let shareMemory = true;
@@ -401,7 +406,7 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
 
         let query = supabase
             .from('hermes_core_memory')
-            .select('id, tenant_id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at, working_thesis, thesis_accurate')
+            .select('id, tenant_id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at, working_thesis, thesis_accurate, strategy_id, macro_tf, trigger_tf')
             .eq('asset', asset)
             .order('created_at', { ascending: false })
             .limit(50);
@@ -494,10 +499,25 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
             // 3h) Own-tenant bonus (0 or 50 points) — your memories should dominate
             // A cross-tenant memory must be significantly more relevant to outrank yours
             const ownBonus = (m.tenant_id === ownTenantId) ? 50 : 0;
+            const isOwn = m.tenant_id === ownTenantId;
+
+            // 3j-new) Strategy match bonus (+30 own / +15 shared) — Phase 0.7.4/0.9.4.
+            // Ownership-gated: a shared same-strategy lesson is useful but must never
+            // outrank your own. Legacy 'ANY' memories get 0 (no penalty).
+            const stratBase = (m.strategy_id && strategyId && m.strategy_id !== 'ANY'
+                && m.strategy_id === String(strategyId).toUpperCase()) ? 30 : 0;
+            const strategyMatch = isOwn ? stratBase : Math.round(stratBase / 2);
+
+            // 3k-new) TF-pair match bonus (+25 own / +12 shared) — Phase 0.7.4/0.9.4
+            const tfBase = (m.macro_tf && m.trigger_tf && macroTf && triggerTf
+                && m.macro_tf !== 'ANY' && m.trigger_tf !== 'ANY'
+                && m.macro_tf === String(macroTf).toUpperCase()
+                && m.trigger_tf === String(triggerTf).toUpperCase()) ? 25 : 0;
+            const tfMatch = isOwn ? tfBase : Math.round(tfBase / 2);
 
             // 3i) Total = fully additive, all factors weighted independently
             const total = recency + pnlImpact + thesisSim + regimeMatch + thesisAccBonus
-                        + lossBonus + liveWt + ownBonus + shadowBonus;
+                        + lossBonus + liveWt + ownBonus + shadowBonus + strategyMatch + tfMatch;
 
             return { ...m, score: Math.round(total) };
         });
@@ -517,7 +537,7 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
             memories: top3,
             ids: top3.map(m => m.id),
             text: top3.map(m =>
-                `[Past ${m.win_loss} | Score: ${m.score} | Regime: ${m.regime_at_close || 'ANY'} | Thesis: ${m.working_thesis || 'No thesis'} | Accurate: ${m.thesis_accurate ?? 'N/A'}]: ${m.lesson_learned}`
+                `[Past ${m.win_loss} | Score: ${m.score} | ${m.tenant_id ? 'OWN' : 'SHARED'} | Strat: ${m.strategy_id || 'ANY'} | TF: ${m.macro_tf || '?'}/${m.trigger_tf || '?'} | Regime: ${m.regime_at_close || 'ANY'} | Thesis: ${m.working_thesis || 'No thesis'} | Accurate: ${m.thesis_accurate ?? 'N/A'}]: ${m.lesson_learned}`
             ).join('\n')
         };
     } catch (e) {
@@ -691,7 +711,10 @@ export async function startSniper(tenantId) {
                                         // so influencing_memory_ids are stored in trade_logs.
                                         let trapMemoryIds = [];
                                         try {
-                                            const scoredResult = await getScoredMemories(tenantId, config.asset, null, null);
+                                            const scoredResult = await getScoredMemories(
+                                                tenantId, config.asset, null, null,
+                                                config.strategy, params.macro_tf, params.trigger_tf
+                                            );
                                             if (scoredResult?.ids?.length > 0) trapMemoryIds = scoredResult.ids;
                                         } catch (e) {
                                             console.log(`[SNIPER-TRAP] Scored memory fetch failed (non-fatal): ${e.message}`);
@@ -768,13 +791,43 @@ export async function startSniper(tenantId) {
 
                 const microstructure = await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
 
-                // 🟢 Phase D enrichment hooks (placeholder — populated in Push #3).
-                // Declared here so preTelemetry/pingHermes can pass them through safely.
-                let calibrationBlock = null;      // getCalibrationPriors (Phase 2A)
-                let modelPrediction = null;       // getModelPrediction (Phase 2B)
-                let regimeTransition = null;      // getRegimeTransitions (Phase 2C)
-                let microstructureChange = null;  // getMicrostructureChange (Phase 2D)
-                let archetypeResult = null;       // classifyArchetype (Phase 2D)
+                // ── NEXUS EMPIRICAL PRIOR PIPELINE (Phase D) ──
+                // All 5 calls are non-fatal — priors enrich the agent's context
+                // but never block the signal path. Module-level caching keeps
+                // this ~1 DB round-trip per layer per 5-15 min.
+                let calibrationBlock = null;      // L1/L2: empirical priors
+                let modelPrediction = null;       // L3: win-probability model
+                let regimeTransition = null;      // L4: transition probabilities
+                let microstructureChange = null;  // L5: divergence/absorption/vol
+                let archetypeResult = null;       // L5: archetype + stats
+
+                const currentRegimeCanon = decision.telemetry?.macro_regime_oracle || microstructure?.macro_regime || null;
+                const snapshotForFeatures = {
+                    current_price: currentPrice,
+                    multi_timeframe_cvd: { '6H_Macro_Tide': parseFloat(decision.telemetry?.macro_cvd) || 0, '5M_Micro_Ripple': parseFloat(decision.telemetry?.cvd) || 0 },
+                    volume_profile: { macro_poc: parseFloat(decision.telemetry?.macro_poc) || null, upper_node: parseFloat(decision.telemetry?.upper_macro_node) || null, lower_node: parseFloat(decision.telemetry?.lower_macro_node) || null },
+                    order_book_depth: { bids_50_levels: parseFloat(decision.telemetry?.bids) || 0, asks_50_levels: parseFloat(decision.telemetry?.asks) || 0 },
+                    volatility_atr: { '5M': microstructure?.indicators?.current_atr ? parseFloat(microstructure.indicators.current_atr) : null, Trigger: microstructure?.indicators?.current_atr ? parseFloat(microstructure.indicators.current_atr) : null },
+                    regime: currentRegimeCanon
+                };
+
+                try {
+                    calibrationBlock = await getCalibrationPriors(tenantId, config.asset, currentRegimeCanon, config.strategy);
+                } catch (e) { /* non-fatal */ }
+                try {
+                    modelPrediction = await getModelPrediction(tenantId, config.asset, currentRegimeCanon, config.strategy, `${macroTf}/${triggerTf}`, snapshotForFeatures);
+                } catch (e) { /* non-fatal */ }
+                try {
+                    regimeTransition = await getRegimeTransitions(config.asset, currentRegimeCanon);
+                } catch (e) { /* non-fatal */ }
+                try {
+                    microstructureChange = await getMicrostructureChange(config.asset, snapshotForFeatures);
+                } catch (e) { /* non-fatal */ }
+                try {
+                    if (microstructureChange?.available) {
+                        archetypeResult = await classifyArchetype(tenantId, config.asset, snapshotForFeatures, currentRegimeCanon, microstructureChange);
+                    }
+                } catch (e) { /* non-fatal */ }
                 
                 const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).eq('tenant_id', tenantId).is('exit_price', null).limit(1);
                 const openTrade = openTrades?.[0];
@@ -863,7 +916,10 @@ export async function startSniper(tenantId) {
                             || microstructure?.macro_regime 
                             || null;
 
-                        const scoredResult = await getScoredMemories(tenantId, config.asset, currentRegime, normalizedSignal);
+                        const scoredResult = await getScoredMemories(
+                            tenantId, config.asset, currentRegime, normalizedSignal,
+                            config.strategy, macroTf, triggerTf
+                        );
                         const scoredMemories = scoredResult.memories || [];
                         const memoryString = scoredResult.text || "No core memory available for this asset.";
                         const memoryIds = scoredResult.ids || [];
@@ -918,7 +974,13 @@ export async function startSniper(tenantId) {
                             strategy_id: config.strategy,
                             version: config.version,
                             qty: params.qty || 1,
-                            memoryIds: memoryIds
+                            memoryIds: memoryIds,
+                            // ── NEXUS intelligence payloads (Phase D) ──
+                            calibrationPriors: calibrationBlock,
+                            modelPrediction: modelPrediction,
+                            regimeTransition: regimeTransition,
+                            microstructureChange: microstructureChange,
+                            archetypeResult: archetypeResult
                         });
                         await logAgentActivity(tenantId, "Sniper", config.asset, `Hermes notified about ${normalizedSignal} signal for ${config.asset}. Awaiting decision.`, "HERMES_NOTIFIED");
 
