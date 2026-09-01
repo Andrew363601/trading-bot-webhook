@@ -643,6 +643,11 @@ export async function startWatchdog(tenantId) {
                     }
 
                     if (!activePosition && !entryOrderExists) {
+                        // 🟢 PHASE 0.7.2: Strategy config is needed by BOTH close paths
+                        // (LIMIT_CANCELED and main close) to thread strategy_id/TFs/thesis
+                        // into the autopsy payload. Fetched once here for branch-wide scope.
+                        const { data: configData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
+                        const params = configData?.parameters || {};
                         let wasCanceled = false; let wasFilled = false;
                         let exactExitPrice = currentPrice;
                         let assumedReason = 'MANUAL_EXCHANGE_CLOSE';
@@ -934,7 +939,7 @@ export async function startWatchdog(tenantId) {
                                 const autopsyUrl = getAutopsyUrl();
                                 await fetch(autopsyUrl, {
                                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeExitPrice, exit_price: safeExitPrice, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'LIMIT_CANCELED', execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: null, trade_log_id: openTrade?.id || null })
+                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeExitPrice, exit_price: safeExitPrice, pnl: "0.0000", rolling_ledger: updatedReason, trigger: 'LIMIT_CANCELED', execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: telemetry.macro_regime_oracle || null, market_snapshot: null, working_thesis: configData?.active_thesis || null, strategy_id: (openTrade.strategy_id || 'ANY').toUpperCase(), macro_tf: (params?.macro_tf || 'ANY'), trigger_tf: (params?.trigger_tf || 'ANY'), trade_log_id: openTrade?.id || null })
                                 });
                             } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
 
@@ -1061,7 +1066,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                 const autopsyUrl = getAutopsyUrl();
                                 await fetch(autopsyUrl, {
                                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeEntryPrice, exit_price: safeExitPrice, pnl: rawPnl.toFixed(4), rolling_ledger: updatedReason, trigger: assumedReason, execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: telemetry.macro_regime_oracle || null, market_snapshot: closeSnapshot, trade_log_id: openTrade?.id || null })
+                                    body: JSON.stringify({ tenant_id: tenantId, asset: asset, entry_price: safeEntryPrice, exit_price: safeExitPrice, pnl: rawPnl.toFixed(4), rolling_ledger: updatedReason, trigger: assumedReason, execution_mode: openTrade.execution_mode || 'PAPER', regime_at_close: telemetry.macro_regime_oracle || null, market_snapshot: closeSnapshot, working_thesis: configData?.active_thesis || null, strategy_id: (openTrade.strategy_id || 'ANY').toUpperCase(), macro_tf: (params?.macro_tf || 'ANY'), trigger_tf: (params?.trigger_tf || 'ANY'), trade_log_id: openTrade?.id || null })
                                 });
                             } catch (autopsyErr) { console.error("[WATCHDOG AUTOPSY TRIGGER FAULT]:", autopsyErr.message); }
 
@@ -1378,6 +1383,10 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                             execution_mode: 'PAPER',
                                             regime_at_close: telemetry.macro_regime_oracle || null,
                                             market_snapshot: paperCloseSnapshot,
+                                            working_thesis: paperConfigData?.active_thesis || null,
+                                            strategy_id: (openTrade.strategy_id || 'ANY').toUpperCase(),
+                                            macro_tf: (paperParams?.macro_tf || 'ANY'),
+                                            trigger_tf: (paperParams?.trigger_tf || 'ANY'),
                                             trade_log_id: openTrade?.id || null
                                         })
                                     });
@@ -1391,6 +1400,10 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
                         const ORPHAN_TIMEOUT_MINUTES = 1440; // 24 hours
                         if (minutesOpen > ORPHAN_TIMEOUT_MINUTES) {
+                            // 🟢 PHASE 0.7.2: paperConfigData is out of scope in this else-branch
+                            // (declared inside the TP/SL branch) — fetch it for thesis/TF threading.
+                            const { data: orphanPaperConfigData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
+                            const orphanPaperParams = orphanPaperConfigData?.parameters || {};
                             const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
                             const safeExitPrice = parseFloat(currentPrice) || 0;
                             const safeQty = parseFloat(openTrade.qty) || 1;
@@ -1434,6 +1447,10 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                             execution_mode: 'PAPER',
                                             regime_at_close: telemetry.macro_regime_oracle || null,
                                             market_snapshot: orphanCloseSnapshot,
+                                            working_thesis: orphanPaperConfigData?.active_thesis || null,
+                                            strategy_id: (openTrade.strategy_id || 'ANY').toUpperCase(),
+                                            macro_tf: (orphanPaperParams?.macro_tf || 'ANY'),
+                                            trigger_tf: (orphanPaperParams?.trigger_tf || 'ANY'),
                                             trade_log_id: openTrade?.id || null
                                         })
                                     });
