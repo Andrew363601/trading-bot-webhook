@@ -791,44 +791,6 @@ export async function startSniper(tenantId) {
 
                 const microstructure = await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
 
-                // ── NEXUS EMPIRICAL PRIOR PIPELINE (Phase D) ──
-                // All 5 calls are non-fatal — priors enrich the agent's context
-                // but never block the signal path. Module-level caching keeps
-                // this ~1 DB round-trip per layer per 5-15 min.
-                let calibrationBlock = null;      // L1/L2: empirical priors
-                let modelPrediction = null;       // L3: win-probability model
-                let regimeTransition = null;      // L4: transition probabilities
-                let microstructureChange = null;  // L5: divergence/absorption/vol
-                let archetypeResult = null;       // L5: archetype + stats
-
-                const currentRegimeCanon = decision.telemetry?.macro_regime_oracle || microstructure?.macro_regime || null;
-                const snapshotForFeatures = {
-                    current_price: currentPrice,
-                    multi_timeframe_cvd: { '6H_Macro_Tide': parseFloat(decision.telemetry?.macro_cvd) || 0, '5M_Micro_Ripple': parseFloat(decision.telemetry?.cvd) || 0 },
-                    volume_profile: { macro_poc: parseFloat(decision.telemetry?.macro_poc) || null, upper_node: parseFloat(decision.telemetry?.upper_macro_node) || null, lower_node: parseFloat(decision.telemetry?.lower_macro_node) || null },
-                    order_book_depth: { bids_50_levels: parseFloat(decision.telemetry?.bids) || 0, asks_50_levels: parseFloat(decision.telemetry?.asks) || 0 },
-                    volatility_atr: { '5M': microstructure?.indicators?.current_atr ? parseFloat(microstructure.indicators.current_atr) : null, Trigger: microstructure?.indicators?.current_atr ? parseFloat(microstructure.indicators.current_atr) : null },
-                    regime: currentRegimeCanon
-                };
-
-                try {
-                    calibrationBlock = await getCalibrationPriors(tenantId, config.asset, currentRegimeCanon, config.strategy);
-                } catch (e) { /* non-fatal */ }
-                try {
-                    modelPrediction = await getModelPrediction(tenantId, config.asset, currentRegimeCanon, config.strategy, `${macroTf}/${triggerTf}`, snapshotForFeatures);
-                } catch (e) { /* non-fatal */ }
-                try {
-                    regimeTransition = await getRegimeTransitions(config.asset, currentRegimeCanon);
-                } catch (e) { /* non-fatal */ }
-                try {
-                    microstructureChange = await getMicrostructureChange(config.asset, snapshotForFeatures);
-                } catch (e) { /* non-fatal */ }
-                try {
-                    if (microstructureChange?.available) {
-                        archetypeResult = await classifyArchetype(tenantId, config.asset, snapshotForFeatures, currentRegimeCanon, microstructureChange);
-                    }
-                } catch (e) { /* non-fatal */ }
-                
                 const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).eq('tenant_id', tenantId).is('exit_price', null).limit(1);
                 const openTrade = openTrades?.[0];
 
@@ -873,6 +835,46 @@ export async function startSniper(tenantId) {
                     open_pnl: openTrade ? (openTrade.pnl || 0) : 0,
                     macro_regime_oracle: canonRegime || "EVALUATING", oracle_reasoning: "Awaiting signal..."
                 };
+
+                // ── NEXUS EMPIRICAL PRIOR PIPELINE (Phase D) ──
+                // All 5 calls are non-fatal — priors enrich the agent's context
+                // but never block the signal path. Module-level caching keeps
+                // this ~1 DB round-trip per layer per 5-15 min.
+                // NOTE: runs AFTER canon telemetry — currentRegimeCanon IS the
+                // TF-invariant canon label (Phase 0.11), not the config-TF one.
+                let calibrationBlock = null;      // L1/L2: empirical priors
+                let modelPrediction = null;       // L3: win-probability model
+                let regimeTransition = null;      // L4: transition probabilities
+                let microstructureChange = null;  // L5: divergence/absorption/vol
+                let archetypeResult = null;       // L5: archetype + stats
+
+                const currentRegimeCanon = canonRegime;
+                const snapshotForFeatures = {
+                    current_price: currentPrice,
+                    multi_timeframe_cvd: { '6H_Macro_Tide': parseFloat(decision.telemetry?.macro_cvd) || 0, '5M_Micro_Ripple': parseFloat(decision.telemetry?.cvd) || 0 },
+                    volume_profile: { macro_poc: parseFloat(decision.telemetry?.macro_poc) || null, upper_node: parseFloat(decision.telemetry?.upper_macro_node) || null, lower_node: parseFloat(decision.telemetry?.lower_macro_node) || null },
+                    order_book_depth: { bids_50_levels: parseFloat(decision.telemetry?.bids) || 0, asks_50_levels: parseFloat(decision.telemetry?.asks) || 0 },
+                    volatility_atr: { '5M': microstructure?.indicators?.current_atr ? parseFloat(microstructure.indicators.current_atr) : null, Trigger: microstructure?.indicators?.current_atr ? parseFloat(microstructure.indicators.current_atr) : null },
+                    regime: currentRegimeCanon
+                };
+
+                try {
+                    calibrationBlock = await getCalibrationPriors(tenantId, config.asset, currentRegimeCanon, config.strategy);
+                } catch (e) { /* non-fatal */ }
+                try {
+                    modelPrediction = await getModelPrediction(tenantId, config.asset, currentRegimeCanon, config.strategy, `${macroTf}/${triggerTf}`, snapshotForFeatures);
+                } catch (e) { /* non-fatal */ }
+                try {
+                    regimeTransition = await getRegimeTransitions(config.asset, currentRegimeCanon);
+                } catch (e) { /* non-fatal */ }
+                try {
+                    microstructureChange = await getMicrostructureChange(config.asset, snapshotForFeatures);
+                } catch (e) { /* non-fatal */ }
+                try {
+                    if (microstructureChange?.available) {
+                        archetypeResult = await classifyArchetype(tenantId, config.asset, snapshotForFeatures, currentRegimeCanon, microstructureChange);
+                    }
+                } catch (e) { /* non-fatal */ }
 
                 let scanId = null;
                 if (decision.signal) {
