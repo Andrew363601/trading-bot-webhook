@@ -497,7 +497,8 @@ export async function startWatchdog(tenantId) {
                                 openTrade: openTrade,
                                 strategy_id: openTrade.strategy_id,
                                 macro_tf: params.macro_tf || 'ONE_HOUR',
-                                trigger_tf: params.trigger_tf || 'THIRTY_MINUTE',
+                                // 🟢 TF CANON (Phase 0.11): 5M default — matches sniper canon
+                                trigger_tf: params.trigger_tf || 'FIVE_MINUTE',
                                 previous_thesis: configData?.active_thesis
                             });
 

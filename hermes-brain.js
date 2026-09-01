@@ -132,6 +132,27 @@ function buildContractCostBlock(asset, qty, price, feeRate) {
     };
 }
 
+// 🟢 REGIME DERIVATION (Phase 1A): re-derive the canonical regime label from a
+// market snapshot so agent VETO/HOLD scan rows never lose the regime that the
+// sniper computed. Uses the FIXED-TF canon (6H POC, 5M ATR, 6H CVD tide) —
+// identical inputs to the live classifier in workers/sniper.js.
+function deriveRegime(marketState) {
+    try {
+        const s = marketState?.result || marketState || {};
+        const price = s.current_price || s.price || 0;
+        const poc = s.volume_profile?.macro_poc || s.macro_poc || 0;
+        const atr = s.volatility_atr?.["5M"] || s.atr || 1;
+        const cvd = s.multi_timeframe_cvd?.["6H_Macro_Tide"] || s.macro_cvd || 0;
+        const bids = s.order_book_depth?.immediate_bids || s.deep_bids || s.bids || 0;
+        const asks = s.order_book_depth?.immediate_asks || s.deep_asks || s.asks || 1;
+        const atrDist = poc > 0 ? Math.abs(price - poc) / Math.max(atr, 0.01) : 0;
+        if (atrDist > 1.5 && Math.abs(cvd) > 25000) return 'TREND';
+        if (atrDist < 1.0 && cvd > 2500 && (bids / Math.max(asks, 0.01)) > 1.2) return 'ACCUMULATION';
+        if (atrDist < 1.0 && cvd < -2500 && (bids / Math.max(asks, 0.01)) < 0.8) return 'DISTRIBUTION';
+        return 'CHOP';
+    } catch (e) { return null; }
+}
+
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
     const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id } = req.body;
@@ -456,6 +477,19 @@ When calling tools:
 
 Pass the appropriate interval parameter with every call. The gateway timestamp will be used as-is.
 </TIMEFRAME_AWARENESS>
+
+`;
+
+        // 🟢 BRACKET GUIDANCE (Phase 0.13.3): TF-aware structural anchor.
+        // The anchor data already exists in every snapshot (volatility_atr.Trigger) —
+        // this block makes it actionable instead of emergent.
+        const triggerAtr = marketState?.volatility_atr?.Trigger
+            || marketState?.result?.volatility_atr?.Trigger;
+        instructionText += `--- BRACKET GUIDANCE ---
+Your TRIGGER_TIMEFRAME is ${trigger_tf || 'FIVE_MINUTE'}. Typical ATR at this timeframe: ${triggerAtr || 'see volatility_atr.Trigger in market state'}.
+Structural guidance: SL ≈ 2-3x ATR(trigger), TP ≈ 4-6x ATR(trigger).
+Smaller TF = tighter structural stops. Larger TF = wider noise buffer.
+When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_atr), prefer those calibrated values over these defaults.
 
 `;
         
@@ -805,6 +839,14 @@ Pass the appropriate interval parameter with every call. The gateway timestamp w
                     status_overlay: `AGENT ${decisionJson.action}`,
                     oracle_reasoning: decisionJson.working_thesis,
                     cvd: marketState?.multi_timeframe_cvd?.["5M_Micro_Ripple"] || 0,
+                    // 🟢 Phase 1A: preserve full macro context on non-execution scans.
+                    // Previously these rows were missing macro_cvd/POC/regime, so the
+                    // next trade's telemetry fetch picked this row → null regime.
+                    macro_cvd: marketState?.multi_timeframe_cvd?.["6H_Macro_Tide"] || marketState?.result?.multi_timeframe_cvd?.["6H_Macro_Tide"] || 0,
+                    macro_poc: marketState?.volume_profile?.macro_poc || marketState?.result?.volume_profile?.macro_poc || null,
+                    upper_macro_node: marketState?.volume_profile?.upper_node || marketState?.result?.volume_profile?.upper_node || null,
+                    lower_macro_node: marketState?.volume_profile?.lower_node || marketState?.result?.volume_profile?.lower_node || null,
+                    macro_regime_oracle: deriveRegime(marketState),
                     open_position: displayPosition
                 };
 

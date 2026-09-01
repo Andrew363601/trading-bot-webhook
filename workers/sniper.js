@@ -159,6 +159,84 @@ async function fetchMacroAsset(ticker) {
     } catch (e) { return null; }
 }
 
+// ── TF CANON (Phase 0.13) — TF-derived evaluation cadence ──
+const TF_SECONDS = {
+    ONE_MINUTE: 60, FIVE_MINUTE: 300, FIFTEEN_MINUTE: 900, THIRTY_MINUTE: 1800,
+    ONE_HOUR: 3600, TWO_HOUR: 7200, SIX_HOUR: 21600, ONE_DAY: 86400
+};
+function getEvalIntervalMs(triggerTf) {
+    const secs = TF_SECONDS[(triggerTf || 'FIVE_MINUTE').toUpperCase()] || 300;
+    return Math.min(Math.max(secs * 1000 / 6, 60000), 3600000);  // clamp [60s, 1h]
+}
+
+// 🟢 Shared microstructure helpers — used for BOTH the config-TF microstructure
+// and the FIXED-TF canon regime computation (Phase 0.11 Hazard 2/3).
+function computeCandleCvd(candles, window = 50) {
+    let cvd = 0;
+    const slice = (candles || []).slice(-window);
+    for (let i = 0; i < slice.length; i++) {
+        const c = slice[i]; const range = c.high - c.low;
+        let openPrice = c.open;
+        if (isNaN(openPrice) || openPrice === undefined) { openPrice = i > 0 ? slice[i-1].close : c.close; }
+        if (range > 0) { cvd += c.volume * ((c.close - openPrice) / range); }
+    }
+    return cvd;
+}
+
+function computeAtr(candles, period = 14) {
+    const trueRanges = [];
+    for (let i = 1; i < (candles || []).length; i++) {
+        const c = candles[i]; const prev = candles[i-1];
+        trueRanges.push(Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close)));
+    }
+    return trueRanges.length > 0 ? trueRanges.slice(-period).reduce((a, b) => a + b, 0) / Math.min(period, trueRanges.length) : 0;
+}
+
+function computeVolumeProfile(macroCandles, currentPrice) {
+    let minPrice = Infinity; let maxPrice = -Infinity; const pocCandles = (macroCandles || []).slice(-150);
+    pocCandles.forEach(c => { if (c.low < minPrice) minPrice = c.low; if (c.high > maxPrice) maxPrice = c.high; });
+    if (!isFinite(minPrice) || !isFinite(maxPrice) || maxPrice <= minPrice) {
+        return { macro_poc: currentPrice, upper_macro_node: null, lower_macro_node: null };
+    }
+    const numBuckets = 50; const bucketSize = (maxPrice - minPrice) / numBuckets;
+    const volumeProfile = new Array(numBuckets).fill(0);
+    pocCandles.forEach(c => {
+        const typicalPrice = (c.high + c.low + c.close) / 3;
+        let bucketIndex = Math.floor((typicalPrice - minPrice) / bucketSize);
+        if (bucketIndex >= numBuckets) bucketIndex = numBuckets - 1;
+        if (bucketIndex < 0) bucketIndex = 0;
+        volumeProfile[bucketIndex] += c.volume;
+    });
+    let peaks = [];
+    for (let i = 1; i < numBuckets - 1; i++) {
+        if (volumeProfile[i] > volumeProfile[i-1] && volumeProfile[i] > volumeProfile[i+1]) {
+            peaks.push({ price: minPrice + (i * bucketSize) + (bucketSize / 2), volume: volumeProfile[i] });
+        }
+    }
+    peaks.sort((a, b) => b.volume - a.volume);
+    const macro_poc = peaks.length > 0 ? peaks[0].price : currentPrice;
+    const upperPeaks = peaks.filter(p => p.price > currentPrice);
+    const lowerPeaks = peaks.filter(p => p.price < currentPrice);
+    return {
+        macro_poc,
+        upper_macro_node: upperPeaks.length > 0 ? upperPeaks[0].price : null,
+        lower_macro_node: lowerPeaks.length > 0 ? lowerPeaks[0].price : null
+    };
+}
+
+// 🟢 CANON REGIME CLASSIFIER (Phase 0.11 — Hazard 2+3 fix)
+// Regime label must be TF-INVARIANT: always computed from FIXED timeframes —
+//   POC from 6H candles, ATR from fixed 5M candles, CVD from the 6H tide.
+// Changing a strategy's macro_tf/trigger_tf must NEVER change the regime label.
+// CVD threshold is 6H-tide scale (calibrated for volume-weighted 6H delta).
+function classifyCanonRegime({ price, poc, atr5m, cvd6h, bidAskRatio }) {
+    const atrDist = poc > 0 ? Math.abs(price - poc) / Math.max(atr5m, 0.01) : 0;
+    if (atrDist > 1.5 && Math.abs(cvd6h) > 25000) return 'TREND';
+    if (atrDist < 1.0 && cvd6h > 2500 && (bidAskRatio || 0) > 1.2) return 'ACCUMULATION';
+    if (atrDist < 1.0 && cvd6h < -2500 && (bidAskRatio || 0) < 0.8) return 'DISTRIBUTION';
+    return 'CHOP';
+}
+
 async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, secret) {
     try {
         let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = []; let cvd = 0; 
@@ -644,7 +722,12 @@ export async function startSniper(tenantId) {
             const lastRun = state.lastMathRun[config.id] || 0;
             const isProcessing = state.isProcessingMath[config.id] || false;
 
-            if (isProcessing || (now - lastRun < 60000)) continue; 
+            // 🟢 TF CANON (Phase 0.13.1): TF-derived evaluation gate — replaces fixed 60s.
+            // macroTf/triggerTf must be extracted BEFORE the gate (moved up from below).
+            const macroTf = params.macro_tf || 'ONE_HOUR';
+            const triggerTf = params.trigger_tf || 'FIVE_MINUTE';
+
+            if (isProcessing || (now - lastRun < getEvalIntervalMs(triggerTf))) continue; 
 
             state.isProcessingMath[config.id] = true;
             state.lastMathRun[config.id] = now;
@@ -652,12 +735,13 @@ export async function startSniper(tenantId) {
             await logAgentActivity(tenantId, "Sniper", config.asset, `Starting strategy evaluation for ${config.strategy} on ${config.asset}.`, "STRATEGY_EVAL_START");
 
             try {
-                const cooldownMins = params.veto_cooldown_minutes || 15;
+                // 🟢 TF CANON (Phase 0.13.2): TF-scaled cooldown default.
+                // 1M→5min | 5M→15min (identical to old default) | 15M→45min | 1H→3h | 1D→12h cap.
+                // Explicit veto_cooldown_minutes in strategy config still wins.
+                const triggerTfMinutes = (TF_SECONDS[(triggerTf || 'FIVE_MINUTE').toUpperCase()] || 300) / 60;
+                const cooldownMins = params.veto_cooldown_minutes || Math.min(Math.max(3 * triggerTfMinutes, 5), 720);
                 const lastVeto = config.last_veto_time ? new Date(config.last_veto_time).getTime() : 0;
                 const isCooldownActive = (Date.now() - lastVeto) < (cooldownMins * 60000);
-
-                const macroTf = params.macro_tf || 'ONE_HOUR';
-                const triggerTf = params.trigger_tf || 'FIVE_MINUTE';
 
                 const [macroCandles, triggerCandles, candles15M, candles30M, candles6H, candles5M, candles1H] = await Promise.all([
                     fetchCoinbaseData(config.asset, macroTf, apiKeyName, apiSecret),
@@ -689,10 +773,36 @@ export async function startSniper(tenantId) {
 
                 let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
 
+                // 🟢 TF CANON REGIME (Phase 0.11.1C — Hazard 2+3): compute the regime label
+                // from FIXED timeframes (6H POC, 5M ATR, 6H CVD tide) so it never changes
+                // with a strategy's macro_tf/trigger_tf. Signal evaluation still uses config
+                // TFs (intended). Telemetry POC/nodes now match the snapshot canon
+                // (get_market_state 6H volume profile) — live labels, backfill, and future
+                // models all share one POC source.
+                const canon6H = (candles6H && candles6H.length > 0) ? candles6H : (c1h || macroCandles);
+                const canon5M = candles5M || c5m || triggerCandles;
+                const canonProfile = computeVolumeProfile(canon6H, currentPrice);
+                const canonAtr5m = computeAtr(canon5M, 14);
+                const canonCvd6h = computeCandleCvd(canon6H, 50);
+                const canonBidAskRatio = (() => {
+                    try {
+                        const bids = parseFloat(microstructure?.orderBook?.bids_50_levels) || 0;
+                        const asks = parseFloat(microstructure?.orderBook?.asks_50_levels) || 0;
+                        return asks > 0 ? bids / asks : 0;
+                    } catch (e) { return 0; }
+                })();
+                const canonRegime = classifyCanonRegime({
+                    price: currentPrice,
+                    poc: canonProfile.macro_poc,
+                    atr5m: canonAtr5m,
+                    cvd6h: canonCvd6h,
+                    bidAskRatio: canonBidAskRatio
+                });
+
                 decision.telemetry = { 
                     ...decision.telemetry, 
-                    macro_poc: microstructure.indicators.macro_poc, upper_macro_node: microstructure.indicators.upper_macro_node, lower_macro_node: microstructure.indicators.lower_macro_node,
-                    macro_cvd: microstructure.indicators.macro_cvd, cvd: microstructure.indicators.current_cvd, 
+                    macro_poc: canonProfile.macro_poc.toFixed(2), upper_macro_node: canonProfile.upper_macro_node ? canonProfile.upper_macro_node.toFixed(2) : microstructure.indicators.upper_macro_node, lower_macro_node: canonProfile.lower_macro_node ? canonProfile.lower_macro_node.toFixed(2) : microstructure.indicators.lower_macro_node,
+                    macro_cvd: canonCvd6h.toFixed(2), cvd: microstructure.indicators.current_cvd, 
                     sp500: microstructure.crossAsset?.sp500 || "N/A", 
                     dxy: microstructure.crossAsset?.dxy || "N/A",     
                     bids: microstructure.orderBook.bids_50_levels || 0, asks: microstructure.orderBook.asks_50_levels || 0, premium: microstructure.derivativesData.basis_premium_percent || 0,
@@ -700,7 +810,7 @@ export async function startSniper(tenantId) {
                     open_tp: openTrade?.tp_price || "NONE",
                     open_sl: openTrade?.sl_price || "NONE",
                     open_pnl: openTrade ? (openTrade.pnl || 0) : 0,
-                    macro_regime_oracle: microstructure?.macro_regime || "EVALUATING", oracle_reasoning: "Awaiting signal..."
+                    macro_regime_oracle: canonRegime || "EVALUATING", oracle_reasoning: "Awaiting signal..."
                 };
 
                 let scanId = null;
