@@ -619,7 +619,16 @@ When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_a
         if (mode === "TRIPWIRE_HIT") {
             instructionText += `THE HARVEST PROTOCOL IS ACTIVE. You are currently in profit and your Stop Loss is secured at Break-Even. Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. If the momentum is explosive and the runway is clear, output action "HOLD". If OI is dropping, absorption is failing, or funding is extremely skewed against you, output action "CLOSE" to harvest the profit immediately. Output ONLY raw, valid JSON.`;
         } else {
-            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. Output ONLY raw, valid JSON.`;
+            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. Output ONLY raw, valid JSON.
+
+VIRTUAL_TRAP GEOMETRY RULES: A trap order is a position — size its risk like one.
+trap_sl_price must sit 2-3x ATR(trigger_tf) away from trap_price, and trap_tp_price
+4-6x ATR(trigger_tf) from trap_price. Use the ATR.Trigger value already present in
+the telemetry block for the computation. A stop closer than 1x ATR(trigger_tf) to
+trap_price is NOISE, not risk — it will be scraped by routine bar wicks and is
+forbidden. Anchor both levels to trap_price assuming the fill can slip a few ticks
+past it. If your edge requires a tighter stop than 1x ATR to be profitable, the
+trap is not worth placing — output VETO instead.`;
         }
 
         console.log(`[AGENT CORTEX] Starting function-calling loop with ${toolDefinitions.length} tools available`);
