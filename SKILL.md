@@ -133,6 +133,17 @@ If a lesson says "stop was too tight in CHOP," you must widen sl_percent.
 If a lesson says "TP got swept before filling," you must tighten tp_percent.
 The system writes these values to the strategy config before the trade opens.
 
+#### RISK-ANCHORED DERIVATION (compute these, do not guess):
+- tripwire_percent: must equal at least 0.5 × sl_percent × leverage — the tripwire may
+  only arm after price has travelled at least HALF the risk distance. For wide targets
+  (tp_percent ≥ 4 × sl_percent), use 0.75 × sl_percent × leverage. A tripwire that arms
+  inside 0.25 × sl_percent × leverage is a noise-lock and is forbidden.
+- trail_step_percent: at least 0.25 × sl_percent × leverage.
+- UNITS WARNING: these are decimal fractions of EQUITY. 0.25 = 250% ROE and will never
+  fire. If your value is ≥ 0.05 you have made a units error — recompute.
+- If a computed value exceeds the max backstop below, use the backstop max — the trade
+  is wide; the tripwire will simply arm later, never earlier.
+
 #### PARAMETER BOUNDARIES:
 
 - sl_percent: 0.002 to 0.10 (0.2% to 10%)
