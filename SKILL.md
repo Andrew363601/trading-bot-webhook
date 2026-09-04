@@ -149,6 +149,9 @@ The system writes these values to the strategy config before the trade opens.
   of price, a noise-lock.
 - If a computed value exceeds the max backstop below, use the backstop max — the trade
   is wide; the tripwire will simply arm later, never earlier.
+- Derive with the leverage value in this strategy's config parameters — the
+  system records that same leverage on the trade row. If the config has no
+  leverage, use 1.
 
 #### PARAMETER BOUNDARIES:
 

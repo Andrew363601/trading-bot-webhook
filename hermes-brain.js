@@ -829,6 +829,9 @@ output HOLD for an unfilled trap.`;
             // IMPORTANT: Must merge with existing params — never replace the entire
             // parameters JSONB object or ALL other params (qty, leverage, ema, etc.)
             // get deleted.
+            // Hoisted so both the params-merge block and the config-write try below
+            // (and the dispatch block) can read the resolved config row.
+            let configIdRow = null;
             if (decisionJson.action === "APPROVE" || decisionJson.action === "VETO" || decisionJson.action === "HOLD") {
                 let newTripwirePct = decisionJson.tripwire_percent;
                 let newTrailStepPct = decisionJson.trail_step_percent;
@@ -850,7 +853,7 @@ output HOLD for an unfilled trap.`;
                         .eq('asset', asset)
                         .order('is_active', { ascending: false })
                         .limit(1);
-                    const configIdRow = configRows?.[0] || null;
+                    configIdRow = configRows?.[0] || null;
                     const existingConfig = configIdRow ? { id: configIdRow.id, parameters: configIdRow.parameters } : null;
 
                     if (existingConfig) {

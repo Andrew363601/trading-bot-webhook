@@ -458,7 +458,7 @@ export async function startWatchdog(tenantId) {
                                     if (!twResp.ok || twResult.success === false) {
                                         const twErr = twResult.error_response?.preview_failure_reason || twResult.error_response?.error || JSON.stringify(twResult);
                                         console.error(`[TRIPWIRE BRACKET REJECT]:`, twErr);
-                                        await sendDiscordAlert(tenantId, { title: `🚨 Tripwire Bracket Failed: ${asset}`, description: `SL cancelled but new BE bracket REJECTED: ${twErr}. **${tripwireQty} contracts unprotected.** Preserving old SL ($${openTrade.sl_price}). Safety Net will retry.`, color: 15158332 });
+                                        await sendDiscordAlert(tenantId, { title: `🚨 Tripwire Bracket Failed: ${asset}`, description: `SL cancelled but new BE bracket REJECTED: ${twErr}. **${tripwireQty} contracts unprotected.** Attempted trigger $${tripwireSlStr}, current price $${currentPrice}, tick ${tickSize}. Preserving old SL ($${openTrade.sl_price}). Safety Net will retry.`, color: 15158332 });
                                     } else {
                                         console.log(`[TRIPWIRE BRACKET] BE bracket deployed inline: TP ${tripwireTpStr} / SL ${tripwireSlStr} on ${tripwireQty} contracts.`);
                                         tripwireBracketDeployed = true;
@@ -532,7 +532,14 @@ export async function startWatchdog(tenantId) {
                         } else if (trailStep > 0 && trailActivation > 0 && pnlPercent >= trailActivation) {
                             const assetTrailStep = trailStep / leverage; 
                             const dynamicSL = openTrade.side === 'BUY' ? currentPrice * (1 - assetTrailStep) : currentPrice * (1 + assetTrailStep);
-                            const safeDynamicSL = parseFloat((Math.round(dynamicSL / tickSize) * tickSize).toFixed(4));
+                            const rawDynamicSL = parseFloat((Math.round(dynamicSL / tickSize) * tickSize).toFixed(4));
+                            // 🛡️ Exchange band clamp: stop triggers outside Coinbase's accepted band
+                            // around the current price are rejected (PREVIEW_STOP_TRIGGER_PRICE_OUT_OF_
+                            // BOUNDS), and the old bracket was already cancelled → naked position.
+                            const clampedDynamicSL = openTrade.side === 'BUY'
+                                ? Math.min(rawDynamicSL, currentPrice * 0.995)
+                                : Math.max(rawDynamicSL, currentPrice * 1.005);
+                            const safeDynamicSL = parseFloat((Math.round(clampedDynamicSL / tickSize) * tickSize).toFixed(4));
                             
                             let shouldMoveSL = false;
                             if (openTrade.side === 'BUY' && safeDynamicSL > openTrade.sl_price) shouldMoveSL = true;
@@ -585,7 +592,7 @@ export async function startWatchdog(tenantId) {
                                         if (!trResp.ok || trResult.success === false) {
                                             const trErr = trResult.error_response?.preview_failure_reason || trResult.error_response?.error || JSON.stringify(trResult);
                                             console.error(`[TRAIL BRACKET REJECT]:`, trErr);
-                                            await sendDiscordAlert(tenantId, { title: `🚨 Trailing SL Bracket Failed: ${asset}`, description: `Old bracket cancelled but new trailing SL REJECTED: ${trErr}. **${trailQty} contracts unprotected.** Preserving old SL ($${openTrade.sl_price}). Safety Net will retry.`, color: 15158332 });
+                                            await sendDiscordAlert(tenantId, { title: `🚨 Trailing SL Bracket Failed: ${asset}`, description: `Old bracket cancelled but new trailing SL REJECTED: ${trErr}. **${trailQty} contracts unprotected.** Attempted trigger $${trailSlStr}, current price $${currentPrice}, tick ${tickSize}. Preserving old SL ($${openTrade.sl_price}). Safety Net will retry.`, color: 15158332 });
                                         } else {
                                             console.log(`[TRAIL BRACKET] Trailing bracket deployed inline: TP ${trailTpStr} / SL ${trailSlStr} on ${trailQty} contracts.`);
                                             trailBracketDeployed = true;
