@@ -251,7 +251,20 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
     pnls_arr = [p for _, _, p in samples]
     avg_pnl = sum(pnls_arr) / n
 
-    metrics = {'sample_count': n, 'win_rate': wr, 'avg_pnl': avg_pnl}
+    pos_pnls = [p for p in pnls_arr if p > 0]
+    neg_pnls = [p for p in pnls_arr if p < 0]
+    avg_win_pnl = (sum(pos_pnls) / len(pos_pnls)) if pos_pnls else None
+    avg_loss_pnl = (sum(neg_pnls) / len(neg_pnls)) if neg_pnls else None
+    capture_ratio = (sum(pos_pnls) / abs(sum(neg_pnls))) if neg_pnls else None
+
+    metrics = {
+        'sample_count': n,
+        'win_rate': wr,
+        'avg_pnl': avg_pnl,
+        'avg_win_pnl': avg_win_pnl,
+        'avg_loss_pnl': avg_loss_pnl,
+        'capture_ratio': capture_ratio
+    }
     feature_importance = {}
     model_params = {'tf_pair': tf_pair}
     expected_mean, expected_std = avg_pnl, 0.0
@@ -485,7 +498,7 @@ if transition_rows:
 
 print('\n=== Archetype stats ===')
 arch_trades = sb_get('trade_logs',
-                     'tenant_id,symbol,microstructure_archetype,pnl,entry_price,exit_price,tp_price,sl_price,exit_time,created_at',
+                     'tenant_id,symbol,microstructure_archetype,pnl,entry_price,exit_price,market_snapshot_at_entry,tp_price,sl_price,exit_time,created_at',
                      filters='&microstructure_archetype=not.is.null&exit_price=not.is.null',
                      order='created_at.desc', limit=2000)
 arch_agg = defaultdict(list)
@@ -495,7 +508,7 @@ for t in arch_trades:
 
 arch_rows = []
 for (tenant, asset, arch), ts in sorted(arch_agg.items(), key=lambda kv: -len(kv[1])):
-    min_n = 20 if tenant else 30
+    min_n = 6 if tenant else 10
     if len(ts) < min_n:
         continue
     n = len(ts)
@@ -507,13 +520,32 @@ for (tenant, asset, arch), ts in sorted(arch_agg.items(), key=lambda kv: -len(kv
             entry = float(t.get('entry_price') or 0)
             tp = float(t.get('tp_price') or 0)
             sl = float(t.get('sl_price') or 0)
-            # ATR proxy from tp/sl distance — snapshot-derived ATR preferable but
-            # keeps this pass cheap; refine later from market_snapshot_at_entry.
+            snap = t.get('market_snapshot_at_entry')
+            if isinstance(snap, str):
+                try:
+                    snap = json.loads(snap)
+                except Exception:
+                    snap = None
+            atr5m = None
+            if isinstance(snap, dict):
+                try:
+                    raw_atr = _get(snap, ['volatility_atr', '5M'], ['atr'], default=None)
+                    if raw_atr is not None:
+                        f_atr = float(raw_atr)
+                        if f_atr == f_atr:
+                            atr5m = f_atr
+                except (TypeError, ValueError):
+                    atr5m = None
+
+            # Real sl_atr from snapshot; avg_tp_atr holds a TP:Risk R-multiple, not an ATR multiple (kept for schema compatibility).
             if entry and tp and sl:
                 risk = abs(entry - sl)
                 if risk > 0:
                     tp_atrs.append(abs(tp - entry) / risk)
-                    sl_atrs.append(1.0)
+                    if atr5m is not None and atr5m > 0:
+                        sl_atrs.append(risk / atr5m)
+                    else:
+                        sl_atrs.append(1.0)
             if t.get('created_at') and t.get('exit_time'):
                 d = (ts_iso(t['exit_time']) - ts_iso(t['created_at'])).total_seconds() / 60
                 holds.append(max(0, d))
@@ -529,6 +561,7 @@ for (tenant, asset, arch), ts in sorted(arch_agg.items(), key=lambda kv: -len(kv
         'avg_tp_atr': sum(tp_atrs) / len(tp_atrs) if tp_atrs else None,
         'avg_sl_atr': sum(sl_atrs) / len(sl_atrs) if sl_atrs else None,
         'avg_hold_time_minutes': sum(holds) / len(holds) if holds else None,
+        # requires MFE telemetry per trade (deferred — classifier reads these columns and tolerates NULL)
         'last_updated': now_iso
     })
     scope = 'GLOBAL' if tenant is None else str(tenant)[:8]

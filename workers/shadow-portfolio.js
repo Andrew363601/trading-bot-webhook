@@ -16,12 +16,27 @@
 
 import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import { retrieveAPIKey } from '../lib/secrets-manager.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
   { global: { WebSocket: WebSocket }, realtime: { transport: WebSocket } }
 );
+
+// Cache tenant keys to avoid repeated vault queries
+const tenantKeyCache = new Map();
+
+function generateCoinbaseToken(method, path, apiKey, apiSecret) {
+    const privateKey = crypto.createPrivateKey({ key: apiSecret.replace(/\\n/g, '\n'), format: 'pem' });
+    const uriPath = path.split('?')[0];
+    return jwt.sign(
+        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `${method} api.coinbase.com${uriPath}` },
+        privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
+    );
+}
 
 /**
  * Maps asset symbols to their public spot equivalent.
@@ -43,28 +58,48 @@ function getSpotSymbol(symbol) {
 }
 
 /**
- * Fetches 5-min candles from public Coinbase exchange API.
+ * Fetches 5-min candles from authenticated Coinbase CDP API.
  */
-async function fetchCounterfactualCandles(symbol, startTime, hours = 6) {
+async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId = null) {
   try {
+    if (!tenantId) return null;
+    let apiKey, apiSecret;
+    if (tenantKeyCache.has(tenantId)) {
+      ({ apiKey, apiSecret } = tenantKeyCache.get(tenantId));
+    } else {
+      try {
+        const keys = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+        apiKey = keys.apiKey;
+        apiSecret = keys.apiSecret;
+        tenantKeyCache.set(tenantId, { apiKey, apiSecret });
+      } catch (e) {
+        console.error(`[SHADOW] No exchange keys for tenant ${tenantId}:`, e.message);
+        return null;
+      }
+    }
+
     const spotSymbol = getSpotSymbol(symbol);
     const start = Math.floor(new Date(startTime).getTime() / 1000);
     const end = start + (hours * 3600);
-    const resp = await fetch(
-      `https://api.exchange.coinbase.com/products/${spotSymbol}/candles?start=${start}&end=${end}&granularity=300`
-    );
-    if (!resp.ok) return null;
-    const candles = await resp.json();
-    if (!candles || !Array.isArray(candles) || candles.length === 0) return null;
-    let high = -Infinity, low = Infinity;
-    let firstClose = null, lastClose = null;
-    const sorted = candles.sort((a, b) => a[0] - b[0]);
-    sorted.forEach(c => {
-      high = Math.max(high, parseFloat(c[2]));
-      low = Math.min(low, parseFloat(c[1]));
-      if (firstClose === null) firstClose = parseFloat(c[4]);
-      lastClose = parseFloat(c[4]);
+    const candlePath = `/api/v3/brokerage/products/${spotSymbol}/candles?start=${start}&end=${end}&granularity=FIVE_MINUTE`;
+    const token = generateCoinbaseToken('GET', candlePath, apiKey, apiSecret);
+
+    const resp = await fetch(`https://api.coinbase.com${candlePath}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
     });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const candles = data?.candles;
+    if (!candles || !Array.isArray(candles) || candles.length === 0) return null;
+
+    let high = -Infinity, low = Infinity;
+    const highs = candles.map(c => parseFloat(c.high));
+    const lows = candles.map(c => parseFloat(c.low));
+    high = Math.max(...highs);
+    low = Math.min(...lows);
+    const firstClose = parseFloat(candles[candles.length - 1].close); // OLDEST candle
+    const lastClose = parseFloat(candles[0].close); // NEWEST candle
+
     return { high, low, firstClose, lastClose };
   } catch (e) {
     console.error(`[SHADOW] Candle fetch failed for ${symbol}:`, e.message);
@@ -269,7 +304,7 @@ async function processUnlabeledVetos() {
         missedAmount = result.missed;
       } else {
         // No trade followed — use counterfactual candle data
-        const candles = await fetchCounterfactualCandles(asset, vetoTime, 6);
+        const candles = await fetchCounterfactualCandles(asset, vetoTime, 6, scan.tenant_id);
         if (candles && vetoPrice) {
           cLow = candles.low;
           cHigh = candles.high;

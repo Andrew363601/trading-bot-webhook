@@ -445,6 +445,7 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
                 .select('verdict')
                 .eq('asset', asset)
                 .eq('tenant_id', tenantId)
+                .in('verdict', ['SAVED', 'MISSED'])
                 .gte('created_at', new Date(Date.now() - 7 * 86400000).toISOString());
 
             if (shadowStats && shadowStats.length >= 5) {

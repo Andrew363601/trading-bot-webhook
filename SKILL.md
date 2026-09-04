@@ -148,7 +148,11 @@ The system writes these values to the strategy config before the trade opens.
   the value is 0.20 (capped 0.05) — writing 0.01 makes BE arm after just 0.05%
   of price, a noise-lock.
 - If a computed value exceeds the max backstop below, use the backstop max — the trade
-  is wide; the tripwire will simply arm later, never earlier.
+  is wide; the tripwire will simply arm later, never earlier. — EXCEPTION: if a top-3 core memory for this asset AND
+  regime explicitly documents a later-arming rule (e.g., ratchet engages only at
+  ≥ 1× 1H-ATR peak favorable excursion), you may exceed the backstop up to 0.08.
+  The backstop exists to catch units errors, not to override learned wide-stop
+  geometry in TREND.
 - Derive with the leverage value in this strategy's config parameters — the
   system records that same leverage on the trade row. If the config has no
   leverage, use 1.
@@ -197,6 +201,14 @@ If any single tier flags an invalid structural state or hits a hard VETO limit, 
 * **Tier 4 Intercepts:** VETO immediately if price makes local highs but Spot CVD Divergence breaks down ($\le -2.0$), identifying an artificial, futures-driven trap lacking spot accumulation.
 * **Tier 5 Intercepts:** VETO immediately if the 24-hour Large Limit Order Cancellation Rate exceeds 80%, declaring the order book deeply compromised by institutional spoofing bots.
 * **Crypto Volatility Normalization:** Crypto requires wider breathing room. Call `get_atr_levels` and apply 1.5x - 3.0x ATR for your Stop Loss (SL) to prevent being whipsawed by localized noise and stop-hunts. Target TP at the next major HVN or 50% ATR front-run of the Macro POC. ROI ÷ Risk must ALWAYS be > 1.5 EVEN WHEN APPLYING A WIDER ATR, NO EXCEPTIONS.
+  * **WALL GEOMETRY (order book, from telemetry only):** Your SL must sit BEHIND
+  (beyond) the largest bid wall between entry and the invalidation zone — a stop
+  in front of a wall gets tagged by the wick the wall defends against. Your TP
+  must sit IN FRONT OF the largest ask wall between entry and target, unless you
+  explicitly justify eating that wall (trigger-flow budget > wall size). NEVER
+  quote a wall size that is not present in the provided telemetry — walls come
+  from the snapshot's largest_bid_wall / largest_ask_wall and the LIQUIDITY MAP,
+  nowhere else.
 
 #### 5. Core Memory Parameter Learning
 Core memory lessons are injected into every signal evaluation. If past lessons
@@ -209,6 +221,10 @@ to improve performance, you MUST include these values in your output JSON:
 - The system will write updated parameters to the strategy config.
 - No trade needs to be open to adjust parameters — lessons from closed trades
   apply to future entries too.
+  - Shadow-portfolio entries marked NEUTRAL are UNEVALUATED — they carry zero
+  information about whether past vetoes were right or wrong. NEVER cite a
+  "0/N saved" ratio, unevaluated veto counts, or "missed opportunities" derived
+  from them as entry justification. Only SAVED/MISSED verdicts are evidence.
 
 ### REQUIRED JSON OUTPUT
 You must output a raw JSON object containing: { "action": "APPROVE", "REVERSE", "CLOSE", "HOLD", "VETO", "VIRTUAL_TRAP", "ADJUST_TP_SL", or "UPDATE_TRIPWIRE", "side": "BUY" or "SELL", "conviction_score": 0 to 100, "working_thesis": "[MARKET CONTEXT: regime/CVD/order-book | ALPHA THESIS: specific edge | EXIT CONDITIONS: what invalidates/triggers TP — written for future-self, stored in core memory]", "price": 0.00, "tp_price": 0.00, "sl_price": 0.00, "sl_percent": 0.00, "tp_percent": 0.00, "order_type": "MARKET" or "LIMIT", "trap_price": 0.00, "trap_tp_price": 0.00, "trap_sl_price": 0.00, "new_tp_price": 0.00, "new_sl_price": 0.00, "tripwire_percent": 0.00, "trail_step_percent": 0.00 }
