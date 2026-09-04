@@ -71,6 +71,8 @@ export default async function handler(req, res) {
     }
     if (is_active !== undefined) {
       updateData.is_active = is_active;
+      // If user explicitly toggles a strategy, clear any automated billing pause flag
+      updateData.billing_paused = false;
     }
     updateData.updated_at = new Date().toISOString();
     updateData.tenant_id = actualTenantId; // Security: Ensure tenant_id is preserved

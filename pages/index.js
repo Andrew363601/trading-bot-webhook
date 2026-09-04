@@ -99,6 +99,8 @@ function DashboardContent() {
   const [loading, setLoading] = useState(true);
   const [tenantId, setTenantId] = useState(null); // Cache tenant_id for data filtering
   const [billingTier, setBillingTier] = useState('FREE_TRIAL'); // Track user tier for banners
+  const [billingStatus, setBillingStatus] = useState(null); // { active: bool, reason: str, pausedCount: num, tier: str }
+  const [portalLoading, setPortalLoading] = useState(false);
   
   // Header metrics state for reactive updates
   const [latestScan, setLatestScan] = useState(null);
@@ -438,6 +440,22 @@ function DashboardContent() {
           }
 
           console.log('[DEBUG] Loaded tenant_id for data filtering');
+
+          // Fetch billing status
+          try {
+            const bRes = await fetch('/api/billing-status', {
+              headers: {
+                'Authorization': session?.access_token ? `Bearer ${session.access_token}` : ''
+              }
+            });
+            if (bRes.ok) {
+              const bData = await bRes.json();
+              setBillingStatus(bData);
+              if (bData.tier) setBillingTier(bData.tier);
+            }
+          } catch (err) {
+            console.warn('[BILLING_STATUS] Failed to fetch billing status:', err.message);
+          }
 
           // Fetch onboarding state
           try {
@@ -1366,6 +1384,32 @@ function DashboardContent() {
     fetchRiskPreview();
   }, [showProfileModal, tenantId, supabase]);
 
+  const handleOpenBillingPortal = async () => {
+    if (!session?.access_token) return;
+    setPortalLoading(true);
+    try {
+      const res = await fetch('/api/create-portal-session', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Failed to open billing portal');
+        return;
+      }
+      if (data.url) {
+        window.location.assign(data.url);
+      }
+    } catch (err) {
+      alert(`Error opening billing portal: ${err.message}`);
+    } finally {
+      setPortalLoading(false);
+    }
+  };
+
 
   return (
     <div className="min-h-screen dark:bg-[#020617] dark:text-slate-200 bg-white text-slate-900 px-2 sm:px-4 py-4 font-sans flex flex-col gap-4 relative">
@@ -1385,8 +1429,30 @@ function DashboardContent() {
          </div>
       )}
 
+      {/* Amber Billing Issue Banner (Active strategy paused or subscription inactive) */}
+      {billingStatus && (billingStatus.active === false || (billingStatus.pausedCount > 0)) && (
+        <div className="max-w-[1800px] w-full mx-auto mt-2 px-4 sm:px-0">
+          <div className="bg-amber-600/20 border border-amber-500/40 rounded-2xl p-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-bold text-amber-300">⏸ Trading paused — billing issue.</p>
+                <p className="text-xs text-amber-400/80">Update your payment method to resume trading activity.</p>
+              </div>
+            </div>
+            <button
+              onClick={handleOpenBillingPortal}
+              disabled={portalLoading}
+              className="text-[10px] font-black uppercase tracking-widest bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/50 px-4 py-2 rounded-lg transition-all flex-shrink-0 disabled:opacity-50"
+            >
+              {portalLoading ? 'Redirecting...' : 'Manage billing'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Free Trial Banner */}
-      {billingTier === 'FREE_TRIAL' && !graceBanner && (
+      {billingTier === 'FREE_TRIAL' && !graceBanner && (!billingStatus || (billingStatus.active !== false && billingStatus.pausedCount === 0)) && (
         <div className="max-w-[1800px] w-full mx-auto mt-2 px-4 sm:px-0">
           <div className="bg-blue-600/20 border border-blue-500/30 rounded-2xl p-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -1987,9 +2053,16 @@ function DashboardContent() {
                             <span className={`text-[13px] font-black tracking-tighter ${strat.is_active ? 'dark:text-white text-slate-900' : 'text-slate-500'}`}>
                               {strat.strategy || ''}
                             </span>
-                            <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-0.5">
-                              {strat.execution_mode || 'PAPER'} MODE
-                            </span>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">
+                                {strat.execution_mode || 'PAPER'} MODE
+                              </span>
+                              {strat.billing_paused && (
+                                <span className="text-[8px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-black uppercase tracking-wider">
+                                  ⏸ Billing paused
+                                </span>
+                              )}
+                            </div>
                           </div>
                           
                           <div className="flex gap-2">
@@ -2473,6 +2546,24 @@ function DashboardContent() {
                 >
                   ⚙️ Edit in Settings →
                 </Link>
+              </div>
+
+              {/* Billing & Subscription */}
+              <div className="border-t border-white/5 pt-4">
+                <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2">💳 Billing & Subscription</h3>
+                <div className="flex items-center justify-between bg-slate-950/40 border border-white/5 rounded-xl p-3 mb-3">
+                  <div>
+                    <span className="text-[8px] font-black uppercase tracking-widest text-slate-500 block">Current Tier</span>
+                    <span className="text-xs font-bold text-white uppercase">{billingTier || 'FREE_TRIAL'}</span>
+                  </div>
+                  <button
+                    onClick={handleOpenBillingPortal}
+                    disabled={portalLoading}
+                    className="text-[9px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {portalLoading ? 'Redirecting...' : 'Manage Billing →'}
+                  </button>
+                </div>
               </div>
 
               {profileMessage && (

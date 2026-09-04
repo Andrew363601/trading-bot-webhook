@@ -7,6 +7,21 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_type = 'INFO') {
+    try {
+        await supabase.from('agent_activity_logs').insert([{
+            tenant_id,
+            agent_name,
+            asset,
+            log_message,
+            log_type,
+            timestamp: new Date().toISOString()
+        }]);
+    } catch (err) {
+        console.error("[STRIPE WEBHOOK LOGGING FATAL]: Uncaught error in logAgentActivity:", err.message);
+    }
+}
+
 async function sendGA4ServerEvent(eventName, params = {}) {
   const measurementId = 'G-7REMMP1S7R';
   const apiSecret = process.env.GA4_MEASUREMENT_PROTOCOL_SECRET || process.env.GA4_API_SECRET;
@@ -261,13 +276,35 @@ export default async function handler(req, res) {
                         && PAID_TIERS.includes((tenantAfter?.billing_tier || '').toUpperCase());
                     if (!manualOverride) {
                         await supabase.from('strategy_config')
-                            .update({ is_active: false, updated_at: new Date().toISOString() })
+                            .update({ is_active: false, billing_paused: true, updated_at: new Date().toISOString() })
                             .eq('tenant_id', tenantId)
                             .eq('is_active', true);
                         console.warn(`[STRIPE_WEBHOOK] Deactivated strategies for ${tenantId} (status=${sub.status}).`);
                     } else {
                         console.log(`[STRIPE_WEBHOOK] Skipping lockdown for ${tenantId} due to manual override (tier=${tenantAfter.billing_tier}).`);
                     }
+                }
+            }
+
+            // 🟢 BILLING RESUME: subscription returned to active (payment recovered
+            // via dunning retry or portal update) — re-activate every strategy that
+            // was auto-deactivated by the billing lockdown. User-deactivated configs
+            // (billing_paused = false) stay untouched.
+            if (event.type === 'customer.subscription.updated' && sub.status === 'active') {
+                const { data: pausedConfigs } = await supabase
+                    .from('strategy_config')
+                    .select('id')
+                    .eq('tenant_id', tenantId)
+                    .eq('billing_paused', true);
+                const pausedCount = pausedConfigs?.length || 0;
+                if (pausedCount > 0) {
+                    await supabase.from('strategy_config')
+                        .update({ is_active: true, billing_paused: false, updated_at: new Date().toISOString() })
+                        .eq('tenant_id', tenantId)
+                        .eq('billing_paused', true);
+                    await logAgentActivity(tenantId, "Stripe", "N/A",
+                        `Billing recovered — re-activated ${pausedCount} strategy(ies) previously paused by billing lockdown.`, "BILLING_RESUME");
+                    console.log(`[STRIPE_WEBHOOK] BILLING_RESUME: reactivated ${pausedCount} strategies for ${tenantId}.`);
                 }
             }
 
