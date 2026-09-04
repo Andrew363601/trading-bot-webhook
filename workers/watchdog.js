@@ -35,10 +35,23 @@ async function sendDiscordAlert(tenant_id, { title, description, color, fields =
         return;
     }
     try {
-        const embed = { title, description, color, timestamp: new Date().toISOString() };
-        if (fields.length > 0) embed.fields = fields;
+        const embed = { title, color, timestamp: new Date().toISOString() };
+        // Discord embed description hard limit = 4096 chars. Over the limit
+        // Discord rejects the whole webhook POST with 400 — silently losing
+        // the alert. Keep head + tail of long theses.
+        let desc = description || '';
+        if (desc.length > 3800) {
+            desc = desc.slice(0, 2000) + '\n\n…[thesis truncated — full text in UI audit log]…\n\n' + desc.slice(-1600);
+            console.warn(`[DISCORD ALERT] Description truncated for ${tenant_id} (was ${description?.length} chars)`);
+        }
+        embed.description = desc;
+        if (fields.length > 0) embed.fields = fields.filter(f => String(f.value ?? '').length <= 1024);
         if (imageUrl) embed.image = { url: imageUrl };
-        await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) });
+        const resp = await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) });
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => '');
+            console.error(`[DISCORD ALERT ERROR]: webhook returned ${resp.status}: ${body.slice(0, 200)}`);
+        }
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
 
@@ -359,7 +372,10 @@ export async function startWatchdog(tenantId) {
                     }
 
                     if (activePosition && openTrade.entry_price) {
-                        const { data: configData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
+                        // 🟢 ID-FIRST RESOLUTION: prefer the live (is_active) config row
+                        // so an inactive legacy duplicate can never shadow the real one.
+                        const { data: configRows } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).order('is_active', { ascending: false }).limit(1);
+                        const configData = configRows?.[0] || null;
                         const params = configData?.parameters || {};
                         
                         const leverage = parseFloat(openTrade.leverage || 1);
@@ -646,7 +662,8 @@ export async function startWatchdog(tenantId) {
                         // 🟢 PHASE 0.7.2: Strategy config is needed by BOTH close paths
                         // (LIMIT_CANCELED and main close) to thread strategy_id/TFs/thesis
                         // into the autopsy payload. Fetched once here for branch-wide scope.
-                        const { data: configData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
+                        const { data: configRows } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).order('is_active', { ascending: false }).limit(1);
+                        const configData = configRows?.[0] || null;
                         const params = configData?.parameters || {};
                         let wasCanceled = false; let wasFilled = false;
                         let exactExitPrice = currentPrice;
@@ -1239,7 +1256,8 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                             heartbeatTracker[openTrade.id] = now;
                         }
 
-                        // 🟢 PAPER TRIPWIRE: Fetch strategy config for tripwire/trailing params
+                        // 🟢 PAPER TRIPWIRE: FetRows } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).order('is_active', { ascending: false }).limit(1);
+                        const paperConfigData = paperConfigRows?.[0] || null
                         const { data: paperConfigData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
                         const paperParams = paperConfigData?.parameters || {};
                         
@@ -1400,7 +1418,8 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
                         const ORPHAN_TIMEOUT_MINUTES = 1440; // 24 hours
                         if (minutesOpen > ORPHAN_TIMEOUT_MINUTES) {
-                            // 🟢 PHASE 0.7.2: paperConfigData is out of scope in this else-branch
+                            // 🟢 PHASE 0.7.2: paperConfigDRows } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).order('is_active', { ascending: false }).limit(1);
+                            const orphanPaperConfigData = orphanPaperConfigRows?.[0] || null
                             // (declared inside the TP/SL branch) — fetch it for thesis/TF threading.
                             const { data: orphanPaperConfigData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
                             const orphanPaperParams = orphanPaperConfigData?.parameters || {};

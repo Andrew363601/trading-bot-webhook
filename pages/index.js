@@ -836,7 +836,7 @@ function DashboardContent() {
   });
 
   const paperPositions = useMemo(() => debouncedTradeLogs.filter(log => 
-    !log.exit_price && 
+    (log.exit_price == null) && // explicit null check: exit_price === 0 means CLOSED AT ZERO, not open
     log.execution_mode === 'PAPER' &&
     normalizeAssetSymbol(log.symbol) === normalizeAssetSymbol(activeAsset)
   ), [debouncedTradeLogs, activeAsset, normalizeAssetSymbol]);
@@ -858,7 +858,7 @@ function DashboardContent() {
   const openPositions = useMemo(() => [...formattedLivePositions, ...paperPositions], [formattedLivePositions, paperPositions]);
   
   const tradeHistory = useMemo(() => debouncedTradeLogs.filter(log => 
-    log.exit_price &&
+    (log.exit_price != null) && // explicit null check: exit_price === 0 is a valid close, not "open"
     normalizeAssetSymbol(log.symbol) === normalizeAssetSymbol(activeAsset)
   ), [debouncedTradeLogs, activeAsset, normalizeAssetSymbol]);
   
@@ -1220,7 +1220,15 @@ function DashboardContent() {
       });
 
       // Draw trap price line for active strategy
-      const currentStrat = activeStrategies.find(s => normalizeAssetSymbol(s.asset) === normalizeAssetSymbol(activeAsset));
+      // Prefer a config that actually holds a live ghost order (trap_price set,
+      // not expired, is_active first) so an inactive legacy config can never
+      // shadow the active one.
+      const currentStrat = activeStrategies.find(s =>
+        normalizeAssetSymbol(s.asset) === normalizeAssetSymbol(activeAsset)
+        && s.is_active
+        && s.trap_price
+        && (!s.trap_expires_at || new Date(s.trap_expires_at) > new Date())
+      );
       if (currentStrat?.trap_price) {
         const tPrice = parseFloat(currentStrat.trap_price);
         const color = currentStrat.trap_side === 'BUY' ? '#10b981' : '#ef4444';
@@ -1332,7 +1340,7 @@ function DashboardContent() {
       else if (logStatusFilter === 'LOSER') filteredByStatus = filteredByStrategy.filter(log => log.pnl < 0);
       else if (logStatusFilter === 'SHADOW') filteredByStatus = filteredByStrategy.filter(log => log.execution_mode === 'SHADOW');
     } else if (activeTab === 'POSITIONS') {
-      if (logStatusFilter === 'ACTIVE') filteredByStatus = filteredByStrategy.filter(log => !log.exit_price);
+      if (logStatusFilter === 'ACTIVE') filteredByStatus = filteredByStrategy.filter(log => log.exit_price == null);
     } else if (activeTab === 'OPEN_ORDERS') {
       if (logStatusFilter === 'PENDING') filteredByStatus = filteredByStrategy.filter(log => log.execution_mode === 'PENDING_LIMIT');
     }
@@ -1869,7 +1877,7 @@ function DashboardContent() {
                       let pnlDisplay = '--';
                       if (isShadow) {
                           pnlDisplay = <span className="text-slate-600">VETO</span>;
-                      } else if (log.exit_price) {
+                      } else if (log.exit_price != null) {
                           pnlDisplay = <span className={log.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)}</span>;
                       } else if (log.execution_mode === 'LIVE (EXCHANGE)') {
                           pnlDisplay = <span className={log.pnl >= 0 ? 'text-cyan-400 animate-pulse' : 'text-amber-400 animate-pulse'}>{log.pnl >= 0 ? '+' : ''}${log.pnl?.toFixed(4)} (U)</span>;
@@ -1923,7 +1931,7 @@ function DashboardContent() {
                         </td>
                         <td className="responsive-table-cell status text-center px-1.5 sm:px-2 py-1 sm:py-1.5">
                             {isShadow ? <span className="text-[8px] sm:text-[9px] text-red-400 font-bold">VETOED</span> :
-                            (log.exit_price ? <span className="text-[8px] sm:text-[10px] text-slate-400">${log.exit_price.toFixed(2)}</span> : 
+                            (log.exit_price != null ? <span className="text-[8px] sm:text-[10px] text-slate-400">${log.exit_price.toFixed(2)}</span> : 
                              <><span className="text-indigo-400 animate-pulse font-black text-[8px] sm:text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
                              <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-1 sm:ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-1 sm:px-2 py-0.5 rounded text-[7px] sm:text-[8px] font-black">X</button></>)}
                         </td>
@@ -1957,7 +1965,7 @@ function DashboardContent() {
                 const strat = currentAssetStrategies[currentStrategyIndex % currentAssetStrategies.length];
                 if (!strat) return null;
                 
-                const stratLogs = tradeLogs.filter(l => (l.strategy_id === strat.strategy || l.strategy_id === strat.id) && l.execution_mode !== 'SHADOW' && l.exit_price);
+                const stratLogs = tradeLogs.filter(l => (l.strategy_id === strat.strategy || l.strategy_id === strat.id) && l.execution_mode !== 'SHADOW' && (l.exit_price != null));
                 const totalPnL = stratLogs.reduce((sum, l) => sum + (l.pnl || 0), 0);
                 
                 // Win Rate Calculation: (Winning Trades / Total Trades) * 100
@@ -2062,10 +2070,18 @@ function DashboardContent() {
               </select>
             </div>
             <div className="p-4 overflow-y-auto custom-scrollbar font-mono text-xs space-y-2 max-h-[250px] sm:max-h-full dark:text-slate-400 text-slate-600">
-                {sessionLogs.filter(log => sessionLogAgentFilter === 'ALL' || log.agent_name === sessionLogAgentFilter).length === 0 ? (
-                    <div className="text-slate-600 italic">Awaiting agent activity...</div>
-                ) : (
-                    sessionLogs.filter(log => sessionLogAgentFilter === 'ALL' || log.agent_name === sessionLogAgentFilter).filter(log => normalizeAssetSymbol(log.asset) === normalizeAssetSymbol(activeAsset)).map((log, i) => {
+                {/* 🟢 Decision-grade feed: exclude asset="N/A" maintenance chatter
+                    (sweeps, config syncs, heartbeats) that floods the 200-row fetch
+                    and pushes real AGENT_DECISION rows out. Critical system events
+                    logged under "N/A" (BILLING_HALT, TRAP_SPRUNG etc.) are kept. */}
+                {(() => {
+                    const DECISION_GRADE_TYPES = ['AGENT_DECISION', 'BILLING_HALT', 'TRAP_SPRUNG', 'TRADE_CLOSE_SKIPPED'];
+                    const decisionGrade = sessionLogs.filter(log =>
+                        (sessionLogAgentFilter === 'ALL' || log.agent_name === sessionLogAgentFilter)
+                        && (log.asset !== 'N/A' || DECISION_GRADE_TYPES.includes(log.log_type))
+                    );
+                    if (decisionGrade.length === 0) return <div className="text-slate-600 italic">Awaiting agent activity...</div>;
+                    return decisionGrade.filter(log => normalizeAssetSymbol(log.asset) === normalizeAssetSymbol(activeAsset)).map((log, i) => {
                         const agentColor = 
                             log.agent_name === 'Sniper' ? 'text-emerald-400' : 
                             log.agent_name === 'Watchdog' ? 'text-rose-400' : 
@@ -2079,8 +2095,8 @@ function DashboardContent() {
                                 <span className="text-[9px] dark:text-white/70 text-slate-700 whitespace-pre-wrap leading-relaxed">{log.log_message}</span>
                             </div>
                         );
-                    })
-                )}
+                    });
+                })()}
             </div>
           </div>
           <div id="nexus-chat" className="dark:bg-slate-950 bg-white border dark:border-white/10 border-slate-300/50 rounded-2xl sm:rounded-[2.5rem] flex flex-col flex-grow overflow-hidden shadow-2xl min-h-[500px]">

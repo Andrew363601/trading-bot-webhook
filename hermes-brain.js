@@ -94,10 +94,23 @@ async function sendDiscordAlert(tenant_id, { title, description, color, fields =
         return;
     }
     try {
-        const embed = { title, description, color, timestamp: new Date().toISOString() };
-        if (fields.length > 0) embed.fields = fields;
+        const embed = { title, color, timestamp: new Date().toISOString() };
+        // Discord embed description hard limit = 4096 chars. Over the limit
+        // Discord rejects the whole webhook POST with 400 — silently losing
+        // the alert. Keep head + tail of long theses.
+        let desc = description || '';
+        if (desc.length > 3800) {
+            desc = desc.slice(0, 2000) + '\n\n…[thesis truncated — full text in UI audit log]…\n\n' + desc.slice(-1600);
+            console.warn(`[DISCORD ALERT] Description truncated for ${tenant_id} (was ${description?.length} chars)`);
+        }
+        embed.description = desc;
+        if (fields.length > 0) embed.fields = fields.filter(f => String(f.value ?? '').length <= 1024);
         if (imageUrl) embed.image = { url: imageUrl };
-        await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) });
+        const resp = await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) });
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => '');
+            console.error(`[DISCORD ALERT ERROR]: webhook returned ${resp.status}: ${body.slice(0, 200)}`);
+        }
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
 
@@ -628,7 +641,14 @@ the telemetry block for the computation. A stop closer than 1x ATR(trigger_tf) t
 trap_price is NOISE, not risk — it will be scraped by routine bar wicks and is
 forbidden. Anchor both levels to trap_price assuming the fill can slip a few ticks
 past it. If your edge requires a tighter stop than 1x ATR to be profitable, the
-trap is not worth placing — output VETO instead.`;
+trap is not worth placing — output VETO instead.
+
+HOLD SEMANTICS: HOLD is valid ONLY when open_position shows an actual filled
+position (a side @ price, not a TRAP). An armed ghost order needs no HOLD — it
+persists until its TTL or your exit/cancel conditions. With no open position:
+if you want the trap to remain armed, output VETO and say so in the thesis; if
+you want to move it, output a new VIRTUAL_TRAP with the new levels. Never
+output HOLD for an unfilled trap.`;
         }
 
         console.log(`[AGENT CORTEX] Starting function-calling loop with ${toolDefinitions.length} tools available`);
@@ -818,14 +838,20 @@ trap is not worth placing — output VETO instead.`;
                 let newTpPercent = normalizePercent(decisionJson.tp_percent, 'TP percent');
 
                 if (newTripwirePct !== undefined || newTrailStepPct !== undefined || newSlPercent !== undefined || newTpPercent !== undefined) {
-                    const { data: existingConfig } = await supabase
+                    // 🟢 ID-FIRST RESOLUTION: resolve the config row explicitly (preferring
+                    // is_active) so the write path can key on id instead of the
+                    // (tenant, strategy, asset) triple — an inactive legacy duplicate
+                    // config must never shadow the live one.
+                    const { data: configRows } = await supabase
                         .from('strategy_config')
-                        .select('id, parameters')
+                        .select('id, parameters, is_active')
                         .eq('tenant_id', tenant_id)
                         .eq('strategy', strategy_id || 'MANUAL')
                         .eq('asset', asset)
-                        .limit(1)
-                        .maybeSingle();
+                        .order('is_active', { ascending: false })
+                        .limit(1);
+                    const configIdRow = configRows?.[0] || null;
+                    const existingConfig = configIdRow ? { id: configIdRow.id, parameters: configIdRow.parameters } : null;
 
                     if (existingConfig) {
                         const mergedParams = { ...(existingConfig.parameters || {}) };
@@ -856,11 +882,16 @@ trap is not worth placing — output VETO instead.`;
             }
 
             try {
-                await supabase.from('strategy_config')
-                    .update(updatePayload)
-                    .eq('tenant_id', tenant_id)
-                    .eq('strategy', strategy_id || 'MANUAL')
-                    .eq('asset', asset);
+                // 🟢 ID-KEYED WRITE: update by resolved config id + tenant filter.
+                // Falls back to the (tenant, strategy, asset) triple only if no
+                // row was resolved above (fresh-config edge case).
+                let configUpdateQuery = supabase.from('strategy_config').update(updatePayload).eq('tenant_id', tenant_id);
+                if (configIdRow?.id) {
+                    configUpdateQuery = configUpdateQuery.eq('id', configIdRow.id);
+                } else {
+                    configUpdateQuery = configUpdateQuery.eq('strategy', strategy_id || 'MANUAL').eq('asset', asset);
+                }
+                await configUpdateQuery;
             } catch (error) {
                 console.error(`[SUPABASE ERROR] Failed to update strategy_config for ${asset}:`, error.message);
             }
@@ -911,8 +942,10 @@ trap is not worth placing — output VETO instead.`;
             alertTitle = `👻 Agent GHOST ORDER SET: ${asset}`;
             alertColor = 10181046; 
         } else if (isHold) {
-            alertTitle = mode === "TRIPWIRE_HIT" ? `📈 Agent HARVESTING (HOLD): ${asset}` : `🛡️ Agent HOLDING: ${asset}`;
-            alertColor = mode === "TRIPWIRE_HIT" ? 5763719 : 11184810; 
+            // 🟢 Distinguish a no-trade HOLD (armed trap persistence) from real
+            // position management so Discord alerts can't be misread.
+            alertTitle = mode === "TRIPWIRE_HIT" ? `📈 Agent HARVESTING (HOLD): ${asset}` : (openTrade ? `🛡️ Agent HOLDING: ${asset}` : `👻 Agent holds armed trap: ${asset}`);
+            alertColor = mode === "TRIPWIRE_HIT" ? 5763719 : 11184810;
         } else if (isClose) {
             alertTitle = mode === "TRIPWIRE_HIT" ? `💰 Agent SECURED PROFIT: ${asset}` : `🛑 Agent CLOSED: ${asset}`; 
             alertColor = 16753920; 

@@ -141,6 +141,12 @@ The system writes these values to the strategy config before the trade opens.
 - trail_step_percent: at least 0.25 × sl_percent × leverage.
 - UNITS WARNING: these are decimal fractions of EQUITY. 0.25 = 250% ROE and will never
   fire. If your value is ≥ 0.05 you have made a units error — recompute.
+- WORKED EXAMPLE (leverage matters): sl_percent 0.02 (2% price), leverage 20.
+  Half-risk tripwire = 0.5 × 0.02 × 20 = 0.20 ROE → exceeds the 0.05 backstop →
+  use 0.05 (= 2.5% price move at 20x). tripwire_percent is ROE: price_move% ×
+  leverage. If you intend BE to arm after a 1% PRICE move on a 20x strategy,
+  the value is 0.20 (capped 0.05) — writing 0.01 makes BE arm after just 0.05%
+  of price, a noise-lock.
 - If a computed value exceeds the max backstop below, use the backstop max — the trade
   is wide; the tripwire will simply arm later, never earlier.
 

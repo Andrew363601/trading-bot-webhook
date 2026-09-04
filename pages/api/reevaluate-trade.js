@@ -18,12 +18,25 @@ async function sendDiscordAlert(title, description, color, imageUrl = null) {
     const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
     if (!webhookUrl) return;
     try {
-        const embed = { title, description, color, timestamp: new Date().toISOString() };
+        const embed = { title, color, timestamp: new Date().toISOString() };
+        // Discord embed description hard limit = 4096 chars. Over the limit
+        // Discord rejects the whole webhook POST with 400 — silently losing
+        // the alert. Keep head + tail of long theses.
+        let desc = description || '';
+        if (desc.length > 3800) {
+            desc = desc.slice(0, 2000) + '\n\n…[thesis truncated — full text in UI audit log]…\n\n' + desc.slice(-1600);
+            console.warn(`[DISCORD ALERT] Description truncated (was ${description?.length} chars)`);
+        }
+        embed.description = desc;
         if (imageUrl) embed.image = { url: imageUrl };
-        await fetch(webhookUrl, {
+        const resp = await fetch(webhookUrl, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ embeds: [embed] })
         });
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => '');
+            console.error(`[DISCORD ALERT ERROR]: webhook returned ${resp.status}: ${body.slice(0, 200)}`);
+        }
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
 
