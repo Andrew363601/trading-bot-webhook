@@ -1256,9 +1256,9 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                             heartbeatTracker[openTrade.id] = now;
                         }
 
-                        // 🟢 PAPER TRIPWIRE: FetRows } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).order('is_active', { ascending: false }).limit(1);
-                        const paperConfigData = paperConfigRows?.[0] || null
-                        const { data: paperConfigData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
+                        // 🟢 PAPER TRIPWIRE: Fetch config for tripwire/trail params (is_active-first, resolved to one row)
+                        const { data: paperConfigRows } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).order('is_active', { ascending: false }).limit(1);
+                        const paperConfigData = paperConfigRows?.[0] || null;
                         const paperParams = paperConfigData?.parameters || {};
                         
                         // Tripwire/trailing values are always decimal fractions (e.g. 0.005 = 0.5%).
@@ -1418,10 +1418,11 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                         const minutesOpen = (Date.now() - new Date(openTrade.created_at || Date.now()).getTime()) / 60000;
                         const ORPHAN_TIMEOUT_MINUTES = 1440; // 24 hours
                         if (minutesOpen > ORPHAN_TIMEOUT_MINUTES) {
-                            // 🟢 PHASE 0.7.2: paperConfigDRows } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).order('is_active', { ascending: false }).limit(1);
-                            const orphanPaperConfigData = orphanPaperConfigRows?.[0] || null
-                            // (declared inside the TP/SL branch) — fetch it for thesis/TF threading.
-                            const { data: orphanPaperConfigData } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).maybeSingle();
+                            // 🟢 PHASE 0.7.2: orphan paper config — fetched here because
+                            // paperConfigData is out of scope (declared inside the TP/SL branch).
+                            // is_active-first so an inactive legacy duplicate can't shadow the live row.
+                            const { data: orphanPaperConfigRows } = await supabase.from('strategy_config').select('*').eq('tenant_id', tenantId).ilike('strategy', openTrade.strategy_id).eq('asset', asset).order('is_active', { ascending: false }).limit(1);
+                            const orphanPaperConfigData = orphanPaperConfigRows?.[0] || null;
                             const orphanPaperParams = orphanPaperConfigData?.parameters || {};
                             const safeEntryPrice = parseFloat(openTrade.entry_price) || 0;
                             const safeExitPrice = parseFloat(currentPrice) || 0;
