@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS public_profiles (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL UNIQUE REFERENCES tenants(id) ON DELETE CASCADE,
   alias TEXT NOT NULL UNIQUE,
-  opt_in BOOLEAN NOT NULL DEFAULT FALSE,
+  opt_in BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -31,3 +31,12 @@ CREATE POLICY "Tenant insert/update public_profiles" ON public_profiles
   USING (tenant_id IN (
     SELECT tenant_id FROM tenant_users WHERE auth_user_id = auth.uid()
   ));
+
+-- Backfill existing tenants into public_profiles with opt_in = TRUE and NX-XXXX alias
+INSERT INTO public_profiles (tenant_id, alias, opt_in)
+SELECT 
+  t.id AS tenant_id,
+  'NX-' || UPPER(SUBSTRING(MD5(t.id::TEXT), 1, 4)) AS alias,
+  TRUE AS opt_in
+FROM tenants t
+ON CONFLICT (tenant_id) DO NOTHING;

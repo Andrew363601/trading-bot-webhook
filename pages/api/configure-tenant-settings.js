@@ -29,7 +29,8 @@ async function handler(req, res) {
             agent_open_trade_tripwire_adjust,
             agent_taker_fee_rate,
             terms_accepted,
-            jurisdiction
+            jurisdiction,
+            share_memory
         } = req.body;
         const { tenantId, supabase, role } = req.tenant;
 
@@ -73,6 +74,7 @@ async function handler(req, res) {
         if (agent_taker_fee_rate !== undefined) updateData.agent_taker_fee_rate = agent_taker_fee_rate;
         if (terms_accepted !== undefined) updateData.terms_accepted = terms_accepted;
         if (jurisdiction !== undefined) updateData.jurisdiction = jurisdiction;
+        if (share_memory !== undefined) updateData.share_memory = Boolean(share_memory);
 
         // Update or insert tenant settings
         const { error } = await supabase

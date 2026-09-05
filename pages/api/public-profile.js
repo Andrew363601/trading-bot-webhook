@@ -30,7 +30,7 @@ export default async function handler(req, res) {
       const defaultAlias = `NX-${crypto.createHash('sha256').update(tenantId).digest('hex').substring(0, 4).toUpperCase()}`;
 
       return res.status(200).json({
-        optIn: profile ? Boolean(profile.opt_in) : false,
+        optIn: profile ? Boolean(profile.opt_in) : true,
         alias: profile?.alias || defaultAlias
       });
     } catch (err) {

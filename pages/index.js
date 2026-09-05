@@ -141,7 +141,8 @@ function DashboardContent() {
   const [profileApiSecret, setProfileApiSecret] = useState('');
   const [profileWebhookUrl, setProfileWebhookUrl] = useState('');
   const [profileNexusWebhookUrl, setProfileNexusWebhookUrl] = useState('');
-  const [profileLeaderboardOptIn, setProfileLeaderboardOptIn] = useState(false);
+  const [profileLeaderboardOptIn, setProfileLeaderboardOptIn] = useState(true);
+  const [profileShareMemory, setProfileShareMemory] = useState(true);
   const [profileAlias, setProfileAlias] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
@@ -1368,17 +1369,20 @@ function DashboardContent() {
 
   displayLogs = filteredByStatus;
 
-  // Fetch risk profile preview and public profile when profile modal opens
+  // Fetch risk profile preview, core memory settings, and public profile when profile modal opens
   useEffect(() => {
     if (!showProfileModal || !tenantId) return;
-    const fetchRiskPreview = async () => {
+    const fetchRiskAndSettings = async () => {
       try {
         const { data } = await supabase
           .from('tenant_settings')
-          .select('account_balance_usd, risk_per_trade_percent, max_position_size_usd, max_leverage, daily_roi_target_usd, max_concurrent_trades')
+          .select('account_balance_usd, risk_per_trade_percent, max_position_size_usd, max_leverage, daily_roi_target_usd, max_concurrent_trades, share_memory')
           .eq('tenant_id', tenantId)
           .single();
         setRiskPreview(data || null);
+        if (data && data.share_memory !== undefined) {
+          setProfileShareMemory(data.share_memory !== false);
+        }
       } catch (e) {
         setRiskPreview(null);
       }
@@ -1398,7 +1402,7 @@ function DashboardContent() {
         console.error('[INDEX] Failed to load public profile:', e);
       }
     };
-    fetchRiskPreview();
+    fetchRiskAndSettings();
     fetchPublicProfile();
   }, [showProfileModal, tenantId, supabase, session?.access_token]);
 
@@ -2540,7 +2544,7 @@ function DashboardContent() {
                   </label>
                 </div>
                 <p className="text-[9px] text-slate-500 mb-2">
-                  Opt in to display your anonymized performance (size-invariant R & win rate) on the public leaderboard.
+                  Opt in to display your anonymized performance (size-invariant R & win rate) on the public leaderboard. Defaults to active.
                 </p>
                 {profileLeaderboardOptIn && (
                   <div>
@@ -2555,6 +2559,25 @@ function DashboardContent() {
                     />
                   </div>
                 )}
+              </div>
+
+              {/* Collective Intelligence / Core Memory Sharing */}
+              <div className="border-t border-white/5 pt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-[10px] font-black uppercase tracking-widest text-indigo-400">🧠 Collective Intelligence (Core Memories)</h3>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={profileShareMemory}
+                      onChange={e => setProfileShareMemory(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-8 h-4 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-600"></div>
+                  </label>
+                </div>
+                <p className="text-[9px] text-slate-500">
+                  Participate in the cross-tenant AI memory pool. Anonymized trade lesson reflections help calibrate and shield all agents. Defaults to active.
+                </p>
               </div>
 
               {/* Risk Profile Preview (read-only) */}
@@ -2637,17 +2660,20 @@ function DashboardContent() {
                       });
                       if (!keyRes.ok) throw new Error('Failed to save API keys');
                     }
-                    const webhookPayload = {};
+                    const webhookPayload = {
+                      share_memory: profileShareMemory
+                    };
                     if (profileWebhookUrl) webhookPayload.notification_webhook_url = profileWebhookUrl;
                     if (profileNexusWebhookUrl) webhookPayload.notification_nexus_webhook_url = profileNexusWebhookUrl;
-                    if (Object.keys(webhookPayload).length > 0) {
-                      const webhookRes = await fetch('/api/configure-tenant-settings', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(webhookPayload)
-                      });
-                      if (!webhookRes.ok) throw new Error('Failed to save webhook');
-                    }
+                    const webhookRes = await fetch('/api/configure-tenant-settings', {
+                      method: 'POST',
+                      headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': session?.access_token ? `Bearer ${session.access_token}` : ''
+                      },
+                      body: JSON.stringify(webhookPayload)
+                    });
+                    if (!webhookRes.ok) throw new Error('Failed to save settings');
 
                     // Save public profile settings
                     if (session?.access_token) {
