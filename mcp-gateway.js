@@ -96,11 +96,12 @@ const TOOLS = {
         }
     },
     get_atr_levels: {
-        description: "Calculate ATR-based Stop Loss and Take Profit levels with 50% ATR front-run protection.",
+        description: "Calculate ATR-based Stop Loss and Take Profit levels with 50% ATR front-run protection. Candles are fetched server-side at the given timeframes.",
         parameters: {
-            triggerCandles: "array of {open, high, low, close, volume} (trigger TF)",
-            triggerTimeframe: "string (e.g., '5M', '15M', '1H')",
-            options: "object {regime: 'TREND'|'CHOP', macroCandles: [], sweepLow: number, targetPrice: number, side: 'BUY'|'SELL'}"
+            symbol: "string (e.g., ETH-PERP-INTX)",
+            triggerTimeframe: "Coinbase granularity, e.g. FIVE_MINUTE",
+            macroTimeframe: "optional, default ONE_HOUR",
+            options: "{regime, sweepLow, targetPrice, side}"
         }
     },
     get_daily_pnl: {
@@ -318,7 +319,7 @@ app.post('/mcp/execute', async (req, res) => {
             console.log(`[MCP GATEWAY] Hermes Agent calculating ATR levels`);
             const start = Date.now();
             try {
-                const result = await getAtrLevels(args?.triggerCandles, args?.triggerTimeframe, args?.options);
+                const result = await getAtrLevels(args);
                 const duration = Date.now() - start;
                 logToolCall({ tool, args, result, duration, status: result?.error ? 'error' : 'success' }).catch(() => {});
                 return res.json({ result });

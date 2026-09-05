@@ -1,14 +1,18 @@
 // components/SiteNav.js
-// Fixed public site navbar — used by pages/leaderboard.js only.
-// Extracted from pages/demo-index.js navbar JSX (FIX 33d).
+// Public site navbar — sales-page parity (FIX 37). Used by pages/leaderboard.js.
+// Links replicate the demo-index (sales page) nav exactly; cross-page hash
+// navigation must use <Link> (plain <a href="/#..."> trips the
+// no-html-link-for-pages lint rule).
 
 import Link from 'next/link';
 
 export default function SiteNav({ active = '' }) {
   const links = [
-    { href: '/', label: 'Demo', key: 'demo' },
-    { href: '/leaderboard', label: 'Leaderboard', key: 'leaderboard' },
-    { href: '/plans', label: 'Plans', key: 'plans' }
+    { href: '/#features', label: 'Features', key: 'features' },
+    { href: '/#architecture', label: 'Architecture', key: 'architecture' },
+    { href: '/#pricing', label: 'Pricing', key: 'pricing' },
+    { href: '/#trades', label: 'Trade Log', key: 'trades' },
+    { href: '/leaderboard', label: 'Leaderboard', key: 'leaderboard' }
   ];
 
   return (
@@ -36,7 +40,13 @@ export default function SiteNav({ active = '' }) {
           </div>
           <div className="flex items-center gap-4">
             <Link
-              href="/plans"
+              href="/#pricing"
+              className="hidden sm:block text-slate-300 hover:text-cyan-400 font-semibold transition-colors"
+            >
+              Dashboard
+            </Link>
+            <Link
+              href="/#pricing"
               className="hidden sm:block bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-6 py-2 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]"
             >
               Deploy Your Agent

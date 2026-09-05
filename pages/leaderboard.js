@@ -28,6 +28,82 @@ export default function Leaderboard() {
     ? <Crown className="w-3 h-3" />
     : <Medal className="w-3 h-3" />;
 
+  // ── Top-3 Podium Section (FIX: dedicated section, uniform table below) ──
+  const PodiumSection = ({ rows }) => {
+    if (!rows || rows.length === 0) return null;
+    const [champ, runnerUp, third] = rows;
+
+    const Stat = ({ label, value }) => (
+      <div className="text-right">
+        <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">{label}</div>
+        <div className="text-xs font-black font-mono text-white">{value}</div>
+      </div>
+    );
+
+    return (
+      <div className="mb-8">
+        <h2 className="text-sm font-black uppercase tracking-widest text-white mb-1">Top Performers</h2>
+        <p className="text-[10px] text-slate-500 mb-4">Podium for the selected window &amp; mode</p>
+
+        {/* Champion card */}
+        {champ && (
+          <div className="relative overflow-hidden rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-400/[0.07] via-emerald-400/[0.04] to-slate-900/40 p-6 backdrop-blur-sm mb-4">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+              <div>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-black uppercase tracking-widest bg-amber-400/10 border-amber-400/40 text-amber-300 mb-2">
+                  <Crown className="w-3 h-3" /> Champion
+                </span>
+                <div className="text-2xl font-black text-white tracking-tight">{champ.alias}</div>
+                <div className="text-[11px] text-slate-400 font-medium mt-0.5">
+                  <span className="text-slate-500">US</span> · Ranked #1
+                </div>
+              </div>
+              <div className="flex flex-col items-start sm:items-end gap-2">
+                <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Total PnL</div>
+                <div className={`text-4xl font-black font-mono tracking-tight ${pnlColor(champ.totalPnl)} drop-shadow-[0_0_18px_rgba(52,211,153,0.35)]`}>
+                  {champ.totalPnl >= 0 ? `$${champ.totalPnl.toFixed(2)}` : `-$${Math.abs(champ.totalPnl).toFixed(2)}`}
+                </div>
+                <div className="flex items-center gap-5">
+                  <Stat label="Win Rate" value={`${(champ.winRate * 100).toFixed(1)}%`} />
+                  <Stat label="Trades" value={champ.trades} />
+                  <Stat label="Days" value={champ.days} />
+                  <Stat label="Profit Factor" value={champ.profitFactor ?? '—'} />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Runner-up + Third cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {[{ row: runnerUp, p: PODIUM[2] }, { row: third, p: PODIUM[3] }].map(({ row, p }, i) =>
+            row ? (
+              <div key={p.label} className="rounded-2xl border border-white/5 bg-slate-900/40 p-4 backdrop-blur-sm flex items-center gap-4">
+                <div className={`flex-shrink-0 w-10 h-10 rounded-xl border flex items-center justify-center font-black text-sm ${i === 0 ? 'bg-slate-300/10 border-slate-300/30 text-slate-200' : 'bg-amber-600/10 border-amber-600/30 text-amber-500'}`}>
+                  {i + 2}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-white truncate">{row.alias}</span>
+                    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8px] font-black uppercase tracking-widest ${p.badge}`}>
+                      <PodiumIcon name={p.icon} /> {p.label}
+                    </span>
+                  </div>
+                  <div className={`text-lg font-black font-mono ${pnlColor(row.totalPnl)}`}>
+                    {row.totalPnl >= 0 ? `$${row.totalPnl.toFixed(2)}` : `-$${Math.abs(row.totalPnl).toFixed(2)}`}
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-mono">
+                    {(row.winRate * 100).toFixed(0)}% win · {row.trades} trades
+                  </div>
+                </div>
+              </div>
+            ) : null
+          )}
+        </div>
+      </div>
+    );
+  };
+
   // Category Records card (2x2 grid cell)
   const RecordCard = ({ title, entries, valueHeader, renderValue }) => (
     <div className="rounded-2xl border border-white/5 bg-slate-900/40 p-4 backdrop-blur-sm">
@@ -150,6 +226,9 @@ export default function Leaderboard() {
           </div>
         </div>
 
+        {/* Top-3 Podium — dedicated section above the table */}
+        {!loading && !error && <PodiumSection rows={(data?.rows || []).slice(0, 3)} />}
+
         {/* Category Records — above the table */}
         <div className="mb-6">
           <h2 className="text-sm font-black uppercase tracking-widest text-white mb-1">Category Records</h2>
@@ -238,31 +317,7 @@ export default function Leaderboard() {
                       rank === 3 ? 'text-amber-600 bg-amber-600/10 border-amber-600/30' :
                       'text-slate-500 bg-slate-800/40 border-transparent';
 
-                    // Podium parity: rank 1 champion row treatment
-                    if (rank === 1) {
-                      return (
-                        <tr key={`${row.alias}-${idx}`} className="bg-amber-400/[0.04] hover:bg-amber-400/[0.07] transition-colors">
-                          <td className="py-4 px-4 font-mono font-bold">
-                            <span className={`inline-flex items-center justify-center w-6 h-6 rounded-lg text-xs border ${rankBadgeColor}`}>1</span>
-                          </td>
-                          <td className="py-4 px-4" colSpan={7}>
-                            <div className="flex items-center gap-2 mb-1.5">
-                              <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[9px] font-black uppercase tracking-widest ${p.badge}`}>
-                                <PodiumIcon name={p.icon} /> {p.label}
-                              </span>
-                              <span className="font-bold text-white">{row.alias}</span>
-                            </div>
-                            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-                              <span className={`text-2xl font-black font-mono ${pnlColor(row.totalPnl)}`}>{fmtPnl(row.totalPnl)}</span>
-                              <span className="text-[10px] text-slate-400 font-mono">
-                                {(row.winRate * 100).toFixed(1)}% WR · {row.trades} trades · {row.days} days · PF {row.profitFactor ?? '—'}
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    }
-
+                    // Uniform rows for ALL ranks — podium lives in its own section above.
                     return (
                       <tr key={`${row.alias}-${idx}`} className="hover:bg-white/[0.02] transition-colors">
                         <td className="py-3.5 px-4 font-mono font-bold">
