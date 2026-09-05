@@ -17,6 +17,13 @@ const PODIUM = {
 const fmtPnl = (v) => (v >= 0 ? `+$${v.toFixed(2)}` : `-$${Math.abs(v).toFixed(2)}`);
 const pnlColor = (v) => (v >= 0 ? 'text-emerald-400' : 'text-rose-400');
 
+export default function Leaderboard() {
+  const [windowKey, setWindowKey] = useState('30D');
+  const [mode, setMode] = useState('LIVE');
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
   const PodiumIcon = ({ name }) => name === 'crown'
     ? <Crown className="w-3 h-3" />
     : <Medal className="w-3 h-3" />;
