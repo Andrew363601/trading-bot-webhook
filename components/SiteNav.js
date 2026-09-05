@@ -1,5 +1,5 @@
 // components/SiteNav.js
-// Fixed public site navbar shared by demo landing page and public leaderboard.
+// Fixed public site navbar — used by pages/leaderboard.js only.
 // Extracted from pages/demo-index.js navbar JSX (FIX 33d).
 
 import Link from 'next/link';
@@ -35,12 +35,6 @@ export default function SiteNav({ active = '' }) {
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <Link
-              href="/leaderboard"
-              className={`transition-colors ${active === 'leaderboard' ? 'text-cyan-400 font-semibold' : 'hover:text-cyan-400'}`}
-            >
-              Leaderboard
-            </Link>
             <Link
               href="/plans"
               className="hidden sm:block bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-6 py-2 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]"

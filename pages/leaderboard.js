@@ -81,9 +81,6 @@ const pnlColor = (v) => (v >= 0 ? 'text-emerald-400' : 'text-rose-400');
     };
   }, [windowKey, mode]);
 
-  const WINDOW_OPTIONS = ['1D', '7D', '30D', '90D'];
-  const MODE_OPTIONS = ['LIVE', 'PAPER'];
-
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 font-sans selection:bg-indigo-500 selection:text-white">
       <Head>
