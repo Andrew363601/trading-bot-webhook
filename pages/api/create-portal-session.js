@@ -45,7 +45,7 @@ export default async function handler(req, res) {
 
         const session = await stripe.billingPortal.sessions.create({
             customer: customerId,
-            return_url: `${siteUrl}/dashboard?billing=updated`
+            return_url: `${siteUrl}/?billing=updated`
         });
 
         return res.status(200).json({ url: session.url });
