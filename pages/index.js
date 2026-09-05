@@ -141,6 +141,8 @@ function DashboardContent() {
   const [profileApiSecret, setProfileApiSecret] = useState('');
   const [profileWebhookUrl, setProfileWebhookUrl] = useState('');
   const [profileNexusWebhookUrl, setProfileNexusWebhookUrl] = useState('');
+  const [profileLeaderboardOptIn, setProfileLeaderboardOptIn] = useState(false);
+  const [profileAlias, setProfileAlias] = useState('');
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
 
@@ -1366,7 +1368,7 @@ function DashboardContent() {
 
   displayLogs = filteredByStatus;
 
-  // Fetch risk profile preview when profile modal opens
+  // Fetch risk profile preview and public profile when profile modal opens
   useEffect(() => {
     if (!showProfileModal || !tenantId) return;
     const fetchRiskPreview = async () => {
@@ -1381,8 +1383,24 @@ function DashboardContent() {
         setRiskPreview(null);
       }
     };
+    const fetchPublicProfile = async () => {
+      if (!session?.access_token) return;
+      try {
+        const res = await fetch('/api/public-profile', {
+          headers: { 'Authorization': `Bearer ${session.access_token}` }
+        });
+        if (res.ok) {
+          const profile = await res.json();
+          setProfileLeaderboardOptIn(Boolean(profile.optIn));
+          setProfileAlias(profile.alias || '');
+        }
+      } catch (e) {
+        console.error('[INDEX] Failed to load public profile:', e);
+      }
+    };
     fetchRiskPreview();
-  }, [showProfileModal, tenantId, supabase]);
+    fetchPublicProfile();
+  }, [showProfileModal, tenantId, supabase, session?.access_token]);
 
   const handleOpenBillingPortal = async () => {
     if (!session?.access_token) return;
@@ -2507,6 +2525,38 @@ function DashboardContent() {
                 />
               </div>
 
+              {/* Public Rolling Leaderboard Settings */}
+              <div className="border-t border-white/5 pt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-[10px] font-black uppercase tracking-widest text-amber-400">🏆 Public Rolling Leaderboard</h3>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={profileLeaderboardOptIn}
+                      onChange={e => setProfileLeaderboardOptIn(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-8 h-4 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-amber-500"></div>
+                  </label>
+                </div>
+                <p className="text-[9px] text-slate-500 mb-2">
+                  Opt in to display your anonymized performance (size-invariant R & win rate) on the public leaderboard.
+                </p>
+                {profileLeaderboardOptIn && (
+                  <div>
+                    <label className="text-[9px] font-black uppercase tracking-widest text-slate-400 block mb-1">Public Alias (16 chars max)</label>
+                    <input
+                      type="text"
+                      maxLength={16}
+                      value={profileAlias}
+                      onChange={e => setProfileAlias(e.target.value)}
+                      placeholder="e.g. QuantAlpha_01"
+                      className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-white focus:ring-2 focus:ring-amber-500/50 outline-none transition-all placeholder:text-slate-700 font-mono"
+                    />
+                  </div>
+                )}
+              </div>
+
               {/* Risk Profile Preview (read-only) */}
               <div className="border-t border-white/5 pt-4">
                 <h3 className="text-[10px] font-black uppercase tracking-widest text-amber-400 mb-3">⚡ Risk Profile</h3>
@@ -2598,6 +2648,25 @@ function DashboardContent() {
                       });
                       if (!webhookRes.ok) throw new Error('Failed to save webhook');
                     }
+
+                    // Save public profile settings
+                    if (session?.access_token) {
+                      const profileRes = await fetch('/api/public-profile', {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          'Authorization': `Bearer ${session.access_token}`
+                        },
+                        body: JSON.stringify({
+                          opt_in: profileLeaderboardOptIn,
+                          alias: profileAlias || undefined
+                        })
+                      });
+                      const profileJson = await profileRes.json();
+                      if (!profileRes.ok) throw new Error(profileJson.error || 'Failed to update public profile');
+                      if (profileJson.alias) setProfileAlias(profileJson.alias);
+                    }
+
                     setProfileMessage('Settings saved successfully.');
                     setTimeout(() => setShowProfileModal(false), 1500);
                   } catch (err) {

@@ -62,6 +62,10 @@ function PerformanceLogContent() {
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
 
+  // Engine Intelligence state
+  const [engineIntel, setEngineIntel] = useState(null);
+  const [engineIntelLoading, setEngineIntelLoading] = useState(true);
+
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
 
@@ -92,6 +96,30 @@ function PerformanceLogContent() {
     };
     loadTenantId();
   }, [session?.user?.id, supabase]);
+
+  // Fetch Engine Intelligence data
+  useEffect(() => {
+    if (!session?.access_token) return;
+    let isCancelled = false;
+    const fetchEngineIntel = async () => {
+      setEngineIntelLoading(true);
+      try {
+        const res = await fetch('/api/engine-intel', {
+          headers: { 'Authorization': `Bearer ${session.access_token}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (!isCancelled) setEngineIntel(json);
+        }
+      } catch (err) {
+        console.error('[PERFORMANCE] Failed to load engine intelligence:', err);
+      } finally {
+        if (!isCancelled) setEngineIntelLoading(false);
+      }
+    };
+    fetchEngineIntel();
+    return () => { isCancelled = true; };
+  }, [session?.access_token]);
 
   // Helper: format a Date as a local YYYY-MM-DD (avoids UTC off-by-one issues).
   const toLocalDateStr = (d) => {
@@ -647,6 +675,124 @@ function PerformanceLogContent() {
                  <div className="text-[9px] font-black uppercase tracking-widest text-indigo-400">Filtered Trades Evaluated: <span className="text-white">{globalFilteredTrades.length}</span></div>
              </div>
           </div>
+      </div>
+
+      {/* ⚙️ Engine Intelligence Section */}
+      <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col gap-6">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/5 pb-4">
+          <div className="flex items-center gap-2">
+            <BrainCircuit className="w-5 h-5 text-indigo-400" />
+            <h3 className="text-xs md:text-sm font-black uppercase text-white tracking-widest">⚙️ Engine Intelligence</h3>
+          </div>
+
+          {/* Health Status Chips */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Trainer Status Chip */}
+            <div className={`px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider flex items-center gap-1.5 border ${
+              engineIntel?.engineHealth?.trainerStatus === 'OK'
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                : engineIntel?.engineHealth?.trainerStatus === 'STALE'
+                ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                : 'bg-slate-800 border-white/5 text-slate-400'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                engineIntel?.engineHealth?.trainerStatus === 'OK' ? 'bg-emerald-400' : 'bg-amber-400'
+              }`} />
+              Trainer {engineIntel?.engineHealth?.trainerStatus || 'LOADING'}
+            </div>
+
+            {/* Shadow Portfolio Chip */}
+            <div className="px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider bg-slate-800/60 border border-white/10 text-slate-300 flex items-center gap-1.5">
+              <span>Shadow:</span>
+              <span className="text-emerald-400 font-mono">{engineIntel?.engineHealth?.shadow?.SAVED ?? 0} saved</span>
+              <span className="text-slate-600">·</span>
+              <span className="text-rose-400 font-mono">{engineIntel?.engineHealth?.shadow?.MISSED ?? 0} missed</span>
+            </div>
+
+            {/* Archetypes Chip */}
+            <div className="px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-wider bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 flex items-center gap-1">
+              <Layers className="w-3 h-3" /> Archetypes: <span className="font-mono text-white ml-0.5">{engineIntel?.engineHealth?.archetypesCount ?? 0}</span>
+            </div>
+          </div>
+        </div>
+
+        {engineIntelLoading ? (
+          <div className="py-8 flex items-center justify-center text-slate-500 text-xs font-mono animate-pulse">
+            Loading Engine Intelligence...
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Calibration Bins & Brier Score */}
+            <div className="bg-black/30 border border-white/5 rounded-2xl p-4 flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Model Calibration (Predicted vs Realized)</span>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    Brier: <span className="text-white font-bold">{engineIntel?.calibration?.brierScore !== null && engineIntel?.calibration?.brierScore !== undefined ? engineIntel.calibration.brierScore : '--'}</span>
+                  </span>
+                </div>
+                <div className="space-y-2.5">
+                  {(engineIntel?.calibration?.buckets || []).map((b, idx) => (
+                    <div key={idx} className="space-y-1">
+                      <div className="flex items-center justify-between text-[10px] font-mono">
+                        <span className="text-slate-400">{b.range} (n={b.n})</span>
+                        <span className={b.n > 0 ? (b.realizedWR >= 0.5 ? 'text-emerald-400 font-bold' : 'text-slate-300') : 'text-slate-600'}>
+                          {b.n > 0 ? `${(b.realizedWR * 100).toFixed(1)}% WR` : 'No samples'}
+                        </span>
+                      </div>
+                      <div className="h-2 w-full bg-slate-950 rounded-full overflow-hidden border border-white/5">
+                        <div
+                          className="h-full bg-indigo-500 rounded-full transition-all"
+                          style={{ width: `${Math.min(100, Math.max(0, (b.realizedWR || 0) * 100))}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div className="mt-4 pt-3 border-t border-white/5 text-[9px] text-slate-500">
+                Total evaluated closed trades with model predictions: {engineIntel?.calibration?.totalEvaluated ?? 0}
+              </div>
+            </div>
+
+            {/* Priors Table */}
+            <div className="bg-black/30 border border-white/5 rounded-2xl p-4 flex flex-col">
+              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Learned Model Priors</span>
+              <div className="overflow-x-auto max-h-[220px] overflow-y-auto">
+                <table className="w-full text-left text-[10px] font-mono border-collapse">
+                  <thead>
+                    <tr className="border-b border-white/5 text-slate-500 uppercase text-[8px] font-black tracking-wider">
+                      <th className="pb-2">Asset / Regime</th>
+                      <th className="pb-2">Strategy</th>
+                      <th className="pb-2 text-center">N</th>
+                      <th className="pb-2 text-right">Win Rate</th>
+                      <th className="pb-2 text-right">Exp PnL</th>
+                      <th className="pb-2 text-right">Capture</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 text-slate-300">
+                    {!engineIntel?.priors || engineIntel.priors.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-6 text-center text-slate-600 italic">No calibration priors available</td>
+                      </tr>
+                    ) : (
+                      engineIntel.priors.map((p, idx) => (
+                        <tr key={idx} className="hover:bg-white/[0.02]">
+                          <td className="py-2 text-white font-bold">{p.asset} <span className="text-slate-500 font-normal">({p.regime})</span></td>
+                          <td className="py-2 text-slate-400">{p.strategy}</td>
+                          <td className="py-2 text-center">{p.n}</td>
+                          <td className="py-2 text-right text-emerald-400 font-bold">{p.win_rate !== null ? `${(p.win_rate * 100).toFixed(0)}%` : '--'}</td>
+                          <td className="py-2 text-right">{p.expected_pnl_mean !== null ? `$${p.expected_pnl_mean.toFixed(2)}` : '--'}</td>
+                          <td className="py-2 text-right">{p.capture_ratio !== null ? `${(p.capture_ratio * 100).toFixed(0)}%` : '--'}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl overflow-x-auto">
