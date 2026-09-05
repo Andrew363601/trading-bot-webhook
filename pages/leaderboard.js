@@ -1,14 +1,54 @@
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
-import Link from 'next/link';
-import { Trophy, ArrowLeft, ShieldAlert, Award, TrendingUp, BarChart2 } from 'lucide-react';
+import SiteNav from '../components/SiteNav';
+import { Trophy, ShieldAlert, Award, Crown, Medal } from 'lucide-react';
 
-export default function Leaderboard() {
-  const [windowKey, setWindowKey] = useState('30D');
-  const [mode, setMode] = useState('LIVE');
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+const WINDOW_OPTIONS = ['1D', '7D', '30D'];
+const WINDOW_LABELS = { '1D': 'Today', '7D': 'Week', '30D': 'Month' };
+const MODE_OPTIONS = ['LIVE', 'PAPER'];
+
+// Podium accents for ranks 1-3
+const PODIUM = {
+  1: { label: 'CHAMPION', badge: 'bg-amber-400/10 border-amber-400/40 text-amber-300', icon: 'crown' },
+  2: { label: 'II · RUNNER-UP', badge: 'bg-slate-300/10 border-slate-300/40 text-slate-200', icon: 'medal' },
+  3: { label: 'III · THIRD', badge: 'bg-amber-600/10 border-amber-600/40 text-amber-500', icon: 'medal' }
+};
+
+const fmtPnl = (v) => (v >= 0 ? `+$${v.toFixed(2)}` : `-$${Math.abs(v).toFixed(2)}`);
+const pnlColor = (v) => (v >= 0 ? 'text-emerald-400' : 'text-rose-400');
+
+  const PodiumIcon = ({ name }) => name === 'crown'
+    ? <Crown className="w-3 h-3" />
+    : <Medal className="w-3 h-3" />;
+
+  // Category Records card (2x2 grid cell)
+  const RecordCard = ({ title, entries, valueHeader, renderValue }) => (
+    <div className="rounded-2xl border border-white/5 bg-slate-900/40 p-4 backdrop-blur-sm">
+      <h3 className="text-[10px] font-black uppercase tracking-widest text-slate-300 mb-3">{title}</h3>
+      <table className="w-full text-left border-collapse">
+        <thead>
+          <tr className="text-[8px] font-black uppercase tracking-widest text-slate-500 border-b border-white/5">
+            <th className="py-1.5 pr-2">#</th>
+            <th className="py-1.5 pr-2">Agent</th>
+            <th className="py-1.5 text-right">{valueHeader}</th>
+          </tr>
+        </thead>
+        <tbody className="text-[11px] font-mono">
+          {(!entries || entries.length === 0) ? (
+            <tr><td colSpan={3} className="py-3 text-center text-slate-600 italic">No data yet</td></tr>
+          ) : entries.map((e, i) => (
+            <tr key={i} className="border-b border-white/5 last:border-0 hover:bg-white/[0.02]">
+              <td className="py-1.5 pr-2">
+                <span className="inline-flex items-center justify-center w-5 h-5 rounded bg-slate-800 text-[9px] font-bold text-slate-400">{i + 1}</span>
+              </td>
+              <td className="py-1.5 pr-2 text-slate-200">{e.alias}{e.symbol ? ` · ${e.symbol}` : ''}</td>
+              <td className={`py-1.5 text-right font-bold ${e.color || 'text-white'}`}>{renderValue(e)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 
   useEffect(() => {
     let isCancelled = false;
@@ -51,25 +91,9 @@ export default function Leaderboard() {
         <meta name="description" content="Public rolling leaderboard of top performing autonomous execution agents on Nexus Terminal." />
       </Head>
 
-      {/* Top Navigation */}
-      <header className="border-b border-white/5 bg-slate-900/40 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link href="/" className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors text-xs font-bold uppercase tracking-wider">
-              <ArrowLeft className="w-4 h-4" /> Nexus Terminal
-            </Link>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="flex h-2 w-2 relative">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-            </span>
-            <span className="text-[10px] uppercase font-black tracking-widest text-emerald-400">Public Rolling Rank</span>
-          </div>
-        </div>
-      </header>
+      <SiteNav active="leaderboard" />
 
-      <main className="max-w-6xl mx-auto px-4 py-10">
+      <main className="max-w-6xl mx-auto px-4 pt-28 pb-10">
         {/* Header Title */}
         <div className="mb-8">
           <div className="flex items-center gap-3 mb-2">
@@ -97,7 +121,7 @@ export default function Leaderboard() {
                     : 'text-slate-400 hover:text-white hover:bg-white/5'
                 }`}
               >
-                {w}
+                {WINDOW_LABELS[w]}
               </button>
             ))}
           </div>
@@ -122,6 +146,38 @@ export default function Leaderboard() {
           </div>
         </div>
 
+        {/* Category Records — above the table */}
+        <div className="mb-6">
+          <h2 className="text-sm font-black uppercase tracking-widest text-white mb-1">Category Records</h2>
+          <p className="text-[10px] text-slate-500 mb-4">Standout single-metric leaders</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <RecordCard
+              title="Largest Win"
+              entries={(data?.records?.largestWin || []).map(e => ({ ...e, color: 'text-emerald-400' }))}
+              valueHeader="VALUE"
+              renderValue={e => fmtPnl(e.value)}
+            />
+            <RecordCard
+              title="Largest Loss"
+              entries={(data?.records?.largestLoss || []).map(e => ({ ...e, color: 'text-rose-400' }))}
+              valueHeader="VALUE"
+              renderValue={e => fmtPnl(e.value)}
+            />
+            <RecordCard
+              title="Most Trading Days"
+              entries={data?.records?.mostDays || []}
+              valueHeader="DAYS"
+              renderValue={e => `${e.days} days`}
+            />
+            <RecordCard
+              title="Highest Volume"
+              entries={data?.records?.highestVolume || []}
+              valueHeader="TRADES"
+              renderValue={e => `${e.trades} trades`}
+            />
+          </div>
+        </div>
+
         {/* Leaderboard Table Container */}
         <div className="rounded-2xl border border-white/5 bg-slate-900/40 overflow-hidden backdrop-blur-sm">
           <div className="overflow-x-auto">
@@ -134,7 +190,8 @@ export default function Leaderboard() {
                   <th className="py-3.5 px-4 text-right">Win Rate</th>
                   <th className="py-3.5 px-4 text-right">Total R</th>
                   <th className="py-3.5 px-4 text-right">PnL</th>
-                  <th className="py-3.5 px-4 text-right">Best Trade (R)</th>
+                  <th className="py-3.5 px-4 text-right">Days</th>
+                  <th className="py-3.5 px-4 text-right">Profit Factor</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5 text-xs">
@@ -148,19 +205,20 @@ export default function Leaderboard() {
                       <td className="py-4 px-4"><div className="h-4 w-16 bg-slate-800 rounded ml-auto"></div></td>
                       <td className="py-4 px-4"><div className="h-4 w-16 bg-slate-800 rounded ml-auto"></div></td>
                       <td className="py-4 px-4"><div className="h-4 w-16 bg-slate-800 rounded ml-auto"></div></td>
+                      <td className="py-4 px-4"><div className="h-4 w-10 bg-slate-800 rounded ml-auto"></div></td>
                       <td className="py-4 px-4"><div className="h-4 w-14 bg-slate-800 rounded ml-auto"></div></td>
                     </tr>
                   ))
                 ) : error ? (
                   <tr>
-                    <td colSpan={7} className="py-12 text-center text-rose-400">
+                    <td colSpan={8} className="py-12 text-center text-rose-400">
                       <ShieldAlert className="w-6 h-6 mx-auto mb-2 opacity-80" />
                       <p className="text-xs font-semibold">{error}</p>
                     </td>
                   </tr>
                 ) : !data?.rows || data.rows.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-16 text-center text-slate-500">
+                    <td colSpan={8} className="py-16 text-center text-slate-500">
                       <Award className="w-8 h-8 mx-auto mb-2 opacity-30" />
                       <p className="text-sm font-bold text-slate-400">No qualifying agents for this period</p>
                       <p className="text-xs mt-1 text-slate-600">Requires a minimum of 5 closed trades in the selected window.</p>
@@ -169,12 +227,37 @@ export default function Leaderboard() {
                 ) : (
                   data.rows.map((row, idx) => {
                     const rank = idx + 1;
-                    const isTop3 = rank <= 3;
+                    const p = PODIUM[rank];
                     const rankBadgeColor =
                       rank === 1 ? 'text-amber-400 bg-amber-400/10 border-amber-400/30' :
                       rank === 2 ? 'text-slate-300 bg-slate-300/10 border-slate-300/30' :
                       rank === 3 ? 'text-amber-600 bg-amber-600/10 border-amber-600/30' :
                       'text-slate-500 bg-slate-800/40 border-transparent';
+
+                    // Podium parity: rank 1 champion row treatment
+                    if (rank === 1) {
+                      return (
+                        <tr key={`${row.alias}-${idx}`} className="bg-amber-400/[0.04] hover:bg-amber-400/[0.07] transition-colors">
+                          <td className="py-4 px-4 font-mono font-bold">
+                            <span className={`inline-flex items-center justify-center w-6 h-6 rounded-lg text-xs border ${rankBadgeColor}`}>1</span>
+                          </td>
+                          <td className="py-4 px-4" colSpan={7}>
+                            <div className="flex items-center gap-2 mb-1.5">
+                              <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md border text-[9px] font-black uppercase tracking-widest ${p.badge}`}>
+                                <PodiumIcon name={p.icon} /> {p.label}
+                              </span>
+                              <span className="font-bold text-white">{row.alias}</span>
+                            </div>
+                            <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                              <span className={`text-2xl font-black font-mono ${pnlColor(row.totalPnl)}`}>{fmtPnl(row.totalPnl)}</span>
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                {(row.winRate * 100).toFixed(1)}% WR · {row.trades} trades · {row.days} days · PF {row.profitFactor ?? '—'}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    }
 
                     return (
                       <tr key={`${row.alias}-${idx}`} className="hover:bg-white/[0.02] transition-colors">
@@ -186,7 +269,11 @@ export default function Leaderboard() {
                         <td className="py-3.5 px-4 font-semibold text-slate-200">
                           <div className="flex items-center gap-2">
                             <span>{row.alias}</span>
-                            {isTop3 && <Award className="w-3.5 h-3.5 text-amber-400" />}
+                            {p && (
+                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8px] font-black uppercase tracking-widest ${p.badge}`}>
+                                <PodiumIcon name={p.icon} /> {p.label}
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="py-3.5 px-4 text-center font-mono text-slate-300">
@@ -203,12 +290,13 @@ export default function Leaderboard() {
                           </span>
                         </td>
                         <td className="py-3.5 px-4 text-right font-mono">
-                          <span className={row.totalPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                            {row.totalPnl >= 0 ? `+$${row.totalPnl.toFixed(2)}` : `-$${Math.abs(row.totalPnl).toFixed(2)}`}
-                          </span>
+                          <span className={pnlColor(row.totalPnl)}>{fmtPnl(row.totalPnl)}</span>
+                        </td>
+                        <td className="py-3.5 px-4 text-right font-mono text-white">
+                          {row.days}
                         </td>
                         <td className="py-3.5 px-4 text-right font-mono text-slate-300">
-                          {row.bestR > 0 ? `+${row.bestR.toFixed(2)}R` : `${row.bestR.toFixed(2)}R`}
+                          {row.profitFactor ?? '—'}
                         </td>
                       </tr>
                     );

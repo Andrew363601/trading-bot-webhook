@@ -8,6 +8,7 @@ import WebhookCreator from '../components/WebhookCreator';
 import { fetchSiteContent, FALLBACK_CONTENT } from '../lib/site-content';
 import { trackEvent } from '../lib/analytics';
 import QuickSignupPopup from '../components/QuickSignupPopup';
+import SiteNav from '../components/SiteNav';
 
 const supabaseReadOnly = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -338,31 +339,22 @@ export default function LandingPage() {
       </Head>
 
       {/* Navbar */}
-      <nav className="fixed w-full z-50 bg-slate-900/60 backdrop-blur-md border-b border-white/5">
+      <SiteNav active="demo" />
+      <nav className="fixed w-full z-40 top-20 bg-slate-900/40 backdrop-blur-md border-b border-white/5">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-20">
-            <div className="flex-shrink-0 flex items-center gap-2">
-              <svg className="w-8 h-8 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-              </svg>
-              <span className="font-bold text-2xl tracking-wider">NEXUS</span>
-            </div>
-            <div className="hidden md:block">
-              <div className="ml-10 flex items-baseline space-x-8">
-                <a href="#features" className="hover:text-cyan-400 transition-colors">Features</a>
-                <a href="#architecture" className="hover:text-cyan-400 transition-colors">Architecture</a>
-                <a href="#pricing" className="hover:text-cyan-400 transition-colors">Pricing</a>
-                <a href="#trades" className="hover:text-cyan-400 transition-colors">Trade Log</a>
-              </div>
+          <div className="flex items-center justify-between h-11 text-xs">
+            <div className="hidden md:flex items-baseline space-x-6">
+              <a href="#features" className="hover:text-cyan-400 transition-colors">Features</a>
+              <a href="#architecture" className="hover:text-cyan-400 transition-colors">Architecture</a>
+              <a href="#pricing" className="hover:text-cyan-400 transition-colors">Pricing</a>
+              <a href="#trades" className="hover:text-cyan-400 transition-colors">Trade Log</a>
             </div>
             <div className="flex items-center gap-4">
-              <a href="#pricing" className="hover:text-cyan-400 transition-colors">
-                Dashboard
-              </a>
-              <a href="#pricing" className="md:hidden bg-indigo-600 text-white px-4 py-2 rounded-full text-xs font-bold">
+              <a href="/#pricing" className="hover:text-cyan-400 transition-colors">Dashboard</a>
+              <a href="/#pricing" className="md:hidden bg-indigo-600 text-white px-4 py-1.5 rounded-full text-[10px] font-bold">
                 Deploy Agent
               </a>
-              <a href="#pricing" className="hidden sm:block bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-6 py-2 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]">
+              <a href="/#pricing" className="hidden sm:block bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-5 py-1.5 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]">
                 Deploy Your Agent
               </a>
             </div>

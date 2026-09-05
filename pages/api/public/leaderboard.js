@@ -24,7 +24,7 @@ function checkRateLimit(ip) {
   return true;
 }
 
-const WINDOWS = { '1D': 1, '7D': 7, '30D': 30, '90D': 90 };
+const WINDOWS = { '1D': 1, '7D': 7, '30D': 30 };
 
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
@@ -53,7 +53,7 @@ export default async function handler(req, res) {
     // Query 1: trade_logs where exit_price NOT NULL, created_at >= (now - period)
     const { data: trades, error: tradeErr } = await supabase
       .from('trade_logs')
-      .select('id, tenant_id, symbol, side, entry_price, exit_price, tp_price, sl_price, pnl, qty, execution_mode, exit_time')
+      .select('id, tenant_id, symbol, side, entry_price, exit_price, tp_price, sl_price, pnl, qty, execution_mode, created_at')
       .not('exit_price', 'is', null)
       .gte('created_at', sinceDate)
       .eq('execution_mode', mode);
@@ -99,15 +99,24 @@ export default async function handler(req, res) {
           wins: 0,
           totalR: 0,
           totalPnl: 0,
-          bestR: -Infinity
+          bestR: -Infinity,
+          grossProfit: 0,
+          grossLoss: 0,
+          exitDays: new Set(),
+          tradeList: []   // { pnl, symbol } for category records
         });
       }
 
       const stat = statsMap.get(groupKey);
       stat.trades += 1;
       const pnl = Number(t.pnl) || 0;
-      if (pnl > 0) stat.wins += 1;
+      if (pnl > 0) { stat.wins += 1; stat.grossProfit += pnl; }
+      else if (pnl < 0) { stat.grossLoss += Math.abs(pnl); }
       stat.totalPnl += pnl;
+      // Distinct UTC exit dates
+      const exitTs = t.created_at;
+      if (exitTs) stat.exitDays.add(String(exitTs).slice(0, 10));
+      stat.tradeList.push({ pnl, symbol: t.symbol });
 
       // Risk calculation: Math.abs(entry - sl) * qty (skip R when sl/qty missing or 0)
       const entry = Number(t.entry_price);
@@ -126,34 +135,64 @@ export default async function handler(req, res) {
       }
     });
 
-    // Filter >= 5 trades and format rows
-    const rows = [];
+    // Filter >= 5 trades and format rows (alias-only privacy output)
+    const rankedGroups = [];
     for (const stat of statsMap.values()) {
       if (stat.trades >= 5) {
         const winRate = stat.trades > 0 ? (stat.wins / stat.trades) : 0;
-        rows.push({
-          alias: stat.alias,
-          mode: stat.mode,
-          trades: stat.trades,
-          winRate: Number(winRate.toFixed(4)),
-          totalR: Number(stat.totalR.toFixed(2)),
-          totalPnl: Number(stat.totalPnl.toFixed(2)),
-          bestR: stat.bestR === -Infinity ? 0 : Number(stat.bestR.toFixed(2))
+        const profitFactor = stat.grossLoss > 0
+          ? Number((stat.grossProfit / stat.grossLoss).toFixed(2))
+          : null;
+        rankedGroups.push({
+          stat,
+          row: {
+            alias: stat.alias,
+            mode: stat.mode,
+            trades: stat.trades,
+            winRate: Number(winRate.toFixed(4)),
+            profitFactor,
+            days: stat.exitDays.size,
+            totalR: Number(stat.totalR.toFixed(2)),
+            totalPnl: Number(stat.totalPnl.toFixed(2)),
+            bestR: stat.bestR === -Infinity ? 0 : Number(stat.bestR.toFixed(2))
+          }
         });
       }
     }
 
-    // Sort by totalR desc
-    rows.sort((a, b) => b.totalR - a.totalR);
+    // Sort by totalR desc, top 50 rows
+    rankedGroups.sort((a, b) => b.row.totalR - a.row.totalR);
+    const top50 = rankedGroups.slice(0, 50).map(g => g.row);
 
-    // Limit to top 50
-    const top50 = rows.slice(0, 50);
+    // Category records: top 5 lists built from ranked groups' trades only (alias-only)
+    const allTrades = [];
+    rankedGroups.forEach(g => {
+      g.stat.tradeList.forEach(tr => allTrades.push({ alias: g.stat.alias, ...tr }));
+    });
+    const byPnlDesc = [...allTrades].sort((a, b) => b.pnl - a.pnl);
+    const byPnlAsc = [...allTrades].sort((a, b) => a.pnl - b.pnl);
+
+    const records = {
+      largestWin: byPnlDesc.slice(0, 5).map(t => ({ alias: t.alias, value: Number(t.pnl.toFixed(2)), symbol: t.symbol })),
+      largestLoss: byPnlAsc.slice(0, 5).map(t => ({ alias: t.alias, value: Number(t.pnl.toFixed(2)), symbol: t.symbol })),
+      mostDays: rankedGroups
+        .slice()
+        .sort((a, b) => b.stat.exitDays.size - a.stat.exitDays.size)
+        .slice(0, 5)
+        .map(g => ({ alias: g.stat.alias, days: g.stat.exitDays.size })),
+      highestVolume: rankedGroups
+        .slice()
+        .sort((a, b) => b.stat.trades - a.stat.trades)
+        .slice(0, 5)
+        .map(g => ({ alias: g.stat.alias, trades: g.stat.trades }))
+    };
 
     return res.status(200).json({
       generatedAt: new Date().toISOString(),
       window: windowKey,
       mode,
-      rows: top50
+      rows: top50,
+      records
     });
   } catch (err) {
     console.error('[LEADERBOARD_API] Unexpected error:', err);
