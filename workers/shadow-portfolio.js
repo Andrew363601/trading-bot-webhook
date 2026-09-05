@@ -223,6 +223,9 @@ async function processUnlabeledVetos() {
       .select('id, tenant_id, asset, strategy, telemetry, status, created_at')
       .eq('status', 'VETO')
       .gte('created_at', cutoff)
+      // 🕕 EVALUATION AGE GATE: only label vetos whose 6h counterfactual window
+      // has fully elapsed — labeling earlier locks a meaningless NEUTRAL verdict.
+      .lt('created_at', new Date(Date.now() - 6 * 3600 * 1000).toISOString())
       .order('created_at', { ascending: true });
 
     if (error) { console.error('[SHADOW] Query failed:', error.message); return; }
