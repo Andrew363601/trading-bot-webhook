@@ -12,6 +12,26 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// FIX 41: write-path allowlist for TF params — prevents sniper-death configs
+// (sub-30m macro TFs / unsupported trigger TFs) from ever being written.
+// Only keys present in the incoming `parameters` payload are validated;
+// legacy stored values are accepted unchanged.
+const TF_ALLOWLIST = {
+  macro_tf: ['THIRTY_MINUTE', 'ONE_HOUR', 'TWO_HOUR', 'SIX_HOUR', 'ONE_DAY'],
+  trigger_tf: ['FIVE_MINUTE', 'FIFTEEN_MINUTE', 'THIRTY_MINUTE', 'ONE_HOUR'],
+};
+
+function validateTfParams(parameters) {
+  const errors = [];
+  for (const [key, allowed] of Object.entries(TF_ALLOWLIST)) {
+    if (parameters[key] === undefined) continue;
+    if (!allowed.includes(String(parameters[key]).toUpperCase())) {
+      errors.push(`${key} must be one of: ${allowed.join(', ')}`);
+    }
+  }
+  return errors;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
@@ -21,6 +41,16 @@ export default async function handler(req, res) {
 
   if (!strategy_config_id) {
     return res.status(400).json({ error: 'Missing strategy_config_id' });
+  }
+
+  // FIX 41: reject unsupported TF values before any write.
+  const tfErrors = validateTfParams(parameters);
+  if (tfErrors.length > 0) {
+    return res.status(400).json({
+      error: 'Invalid timeframe configuration',
+      details: tfErrors,
+      allowed: TF_ALLOWLIST,
+    });
   }
 
   // Verify JWT and extract tenant_id

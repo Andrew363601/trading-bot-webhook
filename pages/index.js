@@ -219,14 +219,58 @@ function DashboardContent() {
       '1HR': '1h', '5MIN': '5m', '15MIN': '15m', '30MIN': '30m'
     };
 
+    // FIX 41: Dual-platform TF dropdowns (Coinglass STARTUP x Coinbase granularities).
+    // macro_tf / trigger_tf ONLY — every value is a native Coinbase granularity, so
+    // the ATR fetch path is always native (Fix 42 dropped). Offered values cover
+    // Coinglass STARTUP plan intervals (>= 30m) plus real-time trigger TFs.
+    const TF_SELECT_CONFIG = {
+      trigger_tf: {
+        groupLabel: 'Coinglass STARTUP intervals — Trigger',
+        options: [
+          { value: '5m', hint: 'real-time' },
+          { value: '15m', hint: 'real-time' },
+          { value: '30m', hint: '90d' },
+          { value: '1h', hint: '180d' },
+        ],
+      },
+      macro_tf: {
+        groupLabel: 'Coinglass STARTUP intervals — Macro',
+        options: [
+          { value: '30m', hint: '90d' },
+          { value: '1h', hint: '180d' },
+          { value: '2h', hint: '180d' },
+          { value: '6h', hint: '360d' },
+          { value: '1d', hint: 'all-time' },
+        ],
+      },
+    };
+
     const normalized = {};
     for (const key in params) {
       const value = params[key];
       if (typeof value === 'object' && value !== null && 'default' in value && 'type' in value) {
         normalized[key] = value;
+      } else if (TF_SELECT_CONFIG[key]) {
+        // FIX 41: dual-platform TF dropdown — macro_tf / trigger_tf only.
+        const cfg = TF_SELECT_CONFIG[key];
+        let displayValue = value;
+        if (coinbaseToShort[displayValue?.toUpperCase()]) {
+          displayValue = coinbaseToShort[displayValue.toUpperCase()];
+        }
+        // Legacy stored value outside the offered set → keep visible but fall back
+        // to first offered option for the select; the raw value is preserved in
+        // legacyValue so save keeps it unchanged when untouched.
+        const isOffered = cfg.options.some(o => o.value === displayValue);
+        normalized[key] = {
+          default: isOffered ? displayValue : cfg.options[0].value,
+          legacyValue: isOffered ? undefined : displayValue,
+          type: 'select',
+          options: cfg.options,
+          label: cfg.groupLabel,
+        };
       } else {
         let displayValue = value;
-        // Convert Coinbase timeframe format to short display format for macro_tf and trigger_tf
+        // Convert Coinbase timeframe format to short display format for other _tf keys
         if ((key === 'macro_tf' || key === 'trigger_tf') && coinbaseToShort[displayValue?.toUpperCase()]) {
           displayValue = coinbaseToShort[displayValue.toUpperCase()];
         }
@@ -262,6 +306,12 @@ function DashboardContent() {
       const value = params[key];
       if (typeof value === 'object' && value !== null && ('default' in value || 'value' in value)) {
         let rawValue = value.value !== undefined ? value.value : value.default;
+        // FIX 41: legacy values outside the dual-platform dropdown set are
+        // preserved unchanged (user never touched them in the editor).
+        if (value.legacyValue !== undefined && value.legacyValue !== null && value.legacyValue !== '') {
+          flattened[key] = value.legacyValue;
+          continue;
+        }
         // Convert short timeframe formats to Coinbase format for macro_tf and trigger_tf
         if ((key === 'macro_tf' || key === 'trigger_tf') && tfToCoinbase[rawValue?.toLowerCase()]) {
           rawValue = tfToCoinbase[rawValue.toLowerCase()];
@@ -272,6 +322,28 @@ function DashboardContent() {
       }
     }
     return flattened;
+  }, []);
+
+  // FIX 41: write-path allowlist for TF params — prevents sniper-death configs
+  // (sub-30m macro TFs / unsupported trigger TFs) from ever being written.
+  // Mirrors pages/api/strategy-config-update.js; the dashboard editor saves
+  // directly to Supabase, so the guard must also live client-side.
+  const TF_ALLOWLIST = {
+    macro_tf: ['THIRTY_MINUTE', 'ONE_HOUR', 'TWO_HOUR', 'SIX_HOUR', 'ONE_DAY'],
+    trigger_tf: ['FIVE_MINUTE', 'FIFTEEN_MINUTE', 'THIRTY_MINUTE', 'ONE_HOUR'],
+  };
+  const validateTfParams = useCallback((flatParams, editorParams) => {
+    const errors = [];
+    for (const [key, allowed] of Object.entries(TF_ALLOWLIST)) {
+      if (flatParams[key] === undefined) continue; // untouched keys pass through
+      // FIX 41: legacy stored values outside the offered set are accepted
+      // unchanged (the user never edited them in the editor).
+      if (editorParams?.[key]?.legacyValue !== undefined) continue;
+      if (!allowed.includes(String(flatParams[key]).toUpperCase())) {
+        errors.push(`${key} must be one of: ${allowed.join(', ')}`);
+      }
+    }
+    return errors;
   }, []);
 
   const [messages, setMessages] = useState([]);
@@ -810,10 +882,18 @@ function DashboardContent() {
   const saveStrategyChanges = async () => {
     if (!editingStrategy) return;
     try {
+      const flatParams = flattenParametersForSave(editingParameters);
+      // FIX 41: client-side TF allowlist — the dashboard editor writes directly
+      // to Supabase and bypasses strategy-config-update.js, so guard here too.
+      const tfErrors = validateTfParams(flatParams, editingParameters);
+      if (tfErrors.length > 0) {
+        alert(`❌ Invalid timeframe config:\n${tfErrors.join('\n')}`);
+        return;
+      }
       const { error } = await supabase
         .from('strategy_config')
         .update({
-          parameters: flattenParametersForSave(editingParameters),
+          parameters: flatParams,
           execution_mode: editingExecutionMode,
           last_updated: new Date().toISOString()
         })
@@ -2374,39 +2454,45 @@ function DashboardContent() {
                   <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Parameters</h3>
                   <div className="space-y-3">
                     {Object.entries(editingParameters).map(([key, value]) => {
-                      const isTimeframe = key.toLowerCase().includes('_tf') || key.toLowerCase().includes('timeframe');
-                      const timeframeOptions = ['1m', '5m', '15m', '1h', '6h', '1d'];
-                      
+                      // FIX 41: dual-platform TF dropdowns render via type:'select'
+                      // (macro_tf / trigger_tf only, set in normalizeParametersForEditor).
+                      if (value.type === 'select' && Array.isArray(value.options)) {
+                        return (
+                          <div key={key}>
+                            <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest block mb-1">
+                              {value.label || key}
+                            </label>
+                            <select
+                              value={editingParameters[key].default}
+                              onChange={(e) => setEditingParameters(prev => ({
+                                ...prev,
+                                [key]: { ...prev[key], default: e.target.value, legacyValue: undefined }
+                              }))}
+                              className="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
+                            >
+                              {value.options.map(opt => (
+                                <option key={opt.value} value={opt.value}>
+                                  {opt.hint ? `${opt.value} — ${opt.hint}` : opt.value}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      }
                       return (
                         <div key={key}>
                           <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest block mb-1">
                             {value.label || key}
                           </label>
-                          {isTimeframe ? (
-                            <select
-                              value={editingParameters[key].default}
-                              onChange={(e) => setEditingParameters(prev => ({
-                                ...prev,
-                                [key]: { ...prev[key], default: e.target.value }
-                              }))}
-                              className="w-full bg-slate-800 border border-white/10 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
-                            >
-                              <option value="">Select Timeframe</option>
-                              {timeframeOptions.map(tf => (
-                                <option key={tf} value={tf}>{tf}</option>
-                              ))}
-                            </select>
-                          ) : (
-                            <input
-                              type={value.type}
-                              value={editingParameters[key].default}
-                              onChange={(e) => setEditingParameters(prev => ({
-                                ...prev,
-                                [key]: { ...prev[key], default: value.type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value }
-                              }))}
-                              className="w-full bg-slate-800 border border-white/5 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
-                            />
-                          )}
+                          <input
+                            type={value.type}
+                            value={editingParameters[key].default}
+                            onChange={(e) => setEditingParameters(prev => ({
+                              ...prev,
+                              [key]: { ...prev[key], default: value.type === 'number' ? parseFloat(e.target.value) || 0 : e.target.value }
+                            }))}
+                            className="w-full bg-slate-800 border border-white/5 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
+                          />
                         </div>
                       );
                     })}

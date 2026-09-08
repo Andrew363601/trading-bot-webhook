@@ -123,6 +123,7 @@ export default async function handler(req, res) {
             case 'ONE_MINUTE': lookbackSeconds = 60; break;
             case 'FIVE_MINUTE': lookbackSeconds = 300; break;
             case 'FIFTEEN_MINUTE': lookbackSeconds = 900; break;
+            case 'THIRTY_MINUTE': lookbackSeconds = 1800; break; // FIX 41: newly offered trigger TF
             case 'ONE_HOUR': lookbackSeconds = 3600; break;
             case 'ONE_DAY': lookbackSeconds = 86400; break;
             default: lookbackSeconds = 300;
