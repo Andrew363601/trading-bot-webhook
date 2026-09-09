@@ -9,7 +9,7 @@ const supabase = createClient(
 
 async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_type = 'INFO') {
     try {
-        await supabase.from('agent_activity_logs').insert([{
+        await supabase.from('agent_session_logs').insert([{
             tenant_id,
             agent_name,
             asset,
