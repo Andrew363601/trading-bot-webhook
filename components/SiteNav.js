@@ -8,10 +8,10 @@ import Link from 'next/link';
 
 export default function SiteNav({ active = '' }) {
   const links = [
-    { href: '/#features', label: 'Features', key: 'features' },
-    { href: '/#architecture', label: 'Architecture', key: 'architecture' },
-    { href: '/#pricing', label: 'Pricing', key: 'pricing' },
-    { href: '/#trades', label: 'Trade Log', key: 'trades' },
+    { href: '/demo-index#features', label: 'Features', key: 'features' },
+    { href: '/demo-index#architecture', label: 'Architecture', key: 'architecture' },
+    { href: '/demo-index#pricing', label: 'Pricing', key: 'pricing' },
+    { href: '/demo-index#trades', label: 'Trade Log', key: 'trades' },
     { href: '/leaderboard', label: 'Leaderboard', key: 'leaderboard' }
   ];
 
@@ -40,13 +40,13 @@ export default function SiteNav({ active = '' }) {
           </div>
           <div className="flex items-center gap-4">
             <Link
-              href="/#pricing"
+              href="/demo-index#pricing"
               className="hidden sm:block text-slate-300 hover:text-cyan-400 font-semibold transition-colors"
             >
               Dashboard
             </Link>
             <Link
-              href="/#pricing"
+              href="/demo-index#pricing"
               className="hidden sm:block bg-gradient-to-r from-cyan-500 to-purple-600 text-white px-6 py-2 rounded-full font-semibold transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_0_20px_rgba(34,211,238,0.5)]"
             >
               Deploy Your Agent
