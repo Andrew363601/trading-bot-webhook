@@ -43,12 +43,8 @@ async function logToolCall({ tool, args, result, duration, status, error }) {
 const COINGLASS_PARAMS = {
   coinglass_oi_momentum_v4: ['symbol', 'n_minutes', 'interval'],
   coinglass_funding_rate_reversion_v4: ['symbol', 'k_minutes', 'interval'],
-  coinglass_aggregated_liquidation_map_v4: ['symbol', 'range_percent'],
-  coinglass_liquidation_heatmap_v4: ['symbol', 'interval'],
-  coinglass_aggregated_orderbook_depth_v4: ['symbol'],
-  coinglass_orderbook_depth_imbalance_v4: ['symbol'],
-  coinglass_large_limit_order_tracker_v4: ['symbol'],
-  coinglass_large_limit_order_history_v4: ['symbol'],
+  coinglass_aggregated_orderbook_depth_v4: ['symbol', 'interval'],
+  coinglass_orderbook_depth_imbalance_v4: ['symbol', 'interval'],
   coinglass_etf_net_flow_momentum_v4: ['asset', 'k_days'],
   coinglass_exchange_balance_reserve_v4: ['symbol'],
   coinglass_exchange_balance_trend_v4: ['symbol', 'k_days'],
@@ -70,8 +66,6 @@ const COINGLASS_PARAMS = {
   coinglass_option_vs_futures_leverage_v4: ['symbol'],
   coinglass_options_max_pain_pin_v4: ['symbol'],
   coinglass_options_strike_distribution_v4: ['symbol'],
-  coinglass_options_exchange_oi_trend_v4: ['symbol'],
-  coinglass_options_exchange_volume_trend_v4: ['symbol'],
 };
 
 // 🟢 1. THE TOOL REGISTRY (What Hermes reads)
@@ -110,7 +104,7 @@ const TOOLS = {
             tenant_id: "string (UUID of the tenant)"
         }
     },
-    // 31 Coinglass v4 Tools
+    // 25 Coinglass v4 Tools (6 plan-locked/deprecated tools removed 2026-09-09)
     coinglass_oi_momentum_v4: {
         description: "Is capital backing this price move? (ΔOI × sign(ΔP)) — Macro Trend-Following, Short-Squeeze Regime. Use MACRO_TF interval.",
         parameters: { symbol: "string (e.g., ETH or BTC)", n_minutes: "number (optional, default 15)", interval: "string (optional, e.g., '30m' or '1h')" },
@@ -161,20 +155,10 @@ const TOOLS = {
         parameters: { symbol: "string" },
         tier: 5, timeframe: "trigger"
     },
-    coinglass_large_limit_order_tracker_v4: {
-        description: "Are there large resting orders that validate or threaten? — Large Limit Order Tracker. Use TRIGGER_TF interval.",
-        parameters: { symbol: "string" },
-        tier: 5, timeframe: "trigger"
-    },
     coinglass_aggregated_orderbook_depth_v4: {
-        description: "Full depth picture across exchanges — Aggregated Orderbook Depth. Use TRIGGER_TF interval.",
-        parameters: { symbol: "string" },
+        description: "Full depth picture across exchanges — Aggregated Orderbook Depth. Use TRIGGER_TF interval (floored to 30m).",
+        parameters: { symbol: "string", interval: "string (optional, >= 30m)" },
         tier: 5, timeframe: "trigger"
-    },
-    coinglass_aggregated_liquidation_map_v4: {
-        description: "Where are the liquidation clusters? (target below the cluster) — Aggregated Liquidation Map. Use TRIGGER_TF interval.",
-        parameters: { symbol: "string", range_percent: "number (optional)" },
-        tier: 2, timeframe: "trigger"
     },
     coinglass_pair_liquidation_velocity_v4: {
         description: "Is liquidation pressure accelerating? — Liquidation Burst Velocity. Use TRIGGER_TF interval.",
@@ -245,26 +229,6 @@ const TOOLS = {
         description: "GBTC/ETHE premium or discount — Grayscale Trust Premium/Discount. Use MACRO_TF interval.",
         parameters: { asset: "string (optional)" },
         tier: 1, timeframe: "macro"
-    },
-    coinglass_large_limit_order_history_v4: {
-        description: "24h cancellation rate (spoof detection, >80% = VETO) — Orderbook Spoofing Detection. Use TRIGGER_TF interval.",
-        parameters: { symbol: "string" },
-        tier: 5, timeframe: "trigger"
-    },
-    coinglass_options_exchange_oi_trend_v4: {
-        description: "Options OI trend across exchanges — Options Open Interest Exchange Breakdown. Use MACRO_TF interval.",
-        parameters: { symbol: "string" },
-        tier: 3, timeframe: "macro"
-    },
-    coinglass_options_exchange_volume_trend_v4: {
-        description: "Options volume trend — Options Trading Volume Exchange Breakdown. Use MACRO_TF interval.",
-        parameters: { symbol: "string" },
-        tier: 3, timeframe: "macro"
-    },
-    coinglass_liquidation_heatmap_v4: {
-        description: "Liquidation Heatmap Raster — Dense Liquidation Map. Use TRIGGER_TF interval.",
-        parameters: { symbol: "string", interval: "string (optional)" },
-        tier: 2, timeframe: "trigger"
     }
 };
 
