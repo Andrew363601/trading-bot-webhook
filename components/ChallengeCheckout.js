@@ -4,6 +4,7 @@
 // (Apple/Google Pay/Link per dashboard settings + card) → Step 3: confirmation.
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { loadStripe } from '@stripe/stripe-js';
 import {
   EmbeddedCheckoutProvider,
@@ -177,13 +178,13 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
               >
                 Join Discord
               </button>
-              <a
+              <Link
                 href="/#dashboard"
                 className="rounded-xl border border-white/15 px-4 py-3 font-bold text-white transition hover:bg-white/10"
                 onClick={onClose}
               >
                 Deploy your first strategy
-              </a>
+              </Link>
             </div>
           </div>
         )}
