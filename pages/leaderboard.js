@@ -190,6 +190,14 @@ export default function Leaderboard() {
     };
   }, [windowKey, mode]);
 
+  // Resume challenge checkout after OAuth/magic-link redirect back to this page.
+  useEffect(() => {
+    if (sessionStorage.getItem('challenge_checkout_resume') !== '1') return;
+    if (!session?.access_token) return; // wait for session to hydrate
+    sessionStorage.removeItem('challenge_checkout_resume');
+    setCheckoutOpen(true);
+  }, [session?.access_token]);
+
   // Challenge status (personal, only when authed)
   useEffect(() => {
     let isCancelled = false;
@@ -333,11 +341,10 @@ export default function Leaderboard() {
             </div>
             <p className="text-[11px] text-slate-400 mb-3">RETAIL — paper trading — 30 days free, then $X/mo — card required at checkout.</p>
             <button
-              onClick={() => (session ? setCheckoutOpen(true) : null)}
-              disabled={!session}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold transition-all"
+              onClick={() => setCheckoutOpen(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all"
             >
-              {session ? 'Enter the challenge' : 'Sign up first'}
+              Enter the Challenge
             </button>
           </div>
           <div className="rounded-2xl border border-white/5 bg-slate-900/40 p-5 backdrop-blur-sm">
