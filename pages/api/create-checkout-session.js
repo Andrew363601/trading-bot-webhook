@@ -10,7 +10,8 @@ const supabase = createClient(
 export default async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-    const { tier, email, tenantId } = req.body;
+    const { tier, email, tenantId, uiMode } = req.body;
+    const isEmbedded = uiMode === 'embedded';
 
     // Define price IDs for your Stripe products (Sandbox IDs)
     const priceIds = {
@@ -107,25 +108,29 @@ export default async function handler(req, res) {
             }, { onConflict: 'tenant_id' });
         }
 
-        // 3. 100K Challenge coupon guard: active challenge entry + buying PRO
+        // 3. 100K Challenge coupon guard: active challenge entry + buying PRO or RETAIL
         //    → 100% off first 30 days (coupon IS their free window, so no 7d trial).
-        const isChallengeBuyer = tier === 'PRO' && await (async () => {
+        //    Entry may be 'pending_payment' (pre-checkout) or 'active'. No window_start
+        //    bound — buyers may check out before the challenge start date.
+        const isChallengeBuyer = ['PRO', 'RETAIL'].includes(tier) && await (async () => {
             const nowIso = new Date().toISOString();
             const { data: entry } = await supabase
                 .from('challenge_entries')
                 .select('id')
                 .eq('tenant_id', realTenantId)
-                .eq('status', 'active')
-                .lte('window_start', nowIso)
+                .in('status', ['active', 'pending_payment'])
                 .gte('window_end', nowIso)
                 .maybeSingle();
             return !!entry;
         })();
 
         // 4. Create Checkout Session
+        //    Embedded mode (challenge popup): dashboard-driven payment methods
+        //    (Apple/Google Pay/Link + card), no redirects, clientSecret returned.
+        //    Hosted mode: byte-identical to previous behavior.
         const session = await stripe.checkout.sessions.create({
             customer: customerId,
-            payment_method_types: ['card'],
+            ...(isEmbedded ? {} : { payment_method_types: ['card'] }),
             line_items: [{ price: priceId, quantity: 1 }],
             mode: 'subscription',
             ...(isChallengeBuyer
@@ -142,11 +147,21 @@ export default async function handler(req, res) {
                         metadata: { tenantId: realTenantId, tier }
                     }
                 }),
-            success_url: `${siteUrl}/auth?paid=true`,
-            cancel_url: `${siteUrl}/plans`,
+            ...(isEmbedded
+                ? {
+                    ui_mode: 'embedded',
+                    redirect_on_completion: 'never'
+                }
+                : {
+                    success_url: `${siteUrl}/auth?paid=true`,
+                    cancel_url: `${siteUrl}/plans`
+                }),
             metadata: { tenantId: realTenantId, tier }
         });
 
+        if (isEmbedded) {
+            return res.status(200).json({ sessionId: session.id, clientSecret: session.client_secret });
+        }
         res.status(200).json({ sessionId: session.id, url: session.url });
     } catch (error) {
         console.error('[STRIPE_CHECKOUT_ERROR]:', error.message);

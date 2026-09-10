@@ -209,6 +209,23 @@ export default async function handler(req, res) {
                         max_concurrent_strategies: tierLimit,
                         updated_at: new Date().toISOString()
                     }).eq('id', csTenantId);
+
+                    // 🏆 100K Challenge: pre-checkout entry flips to active once payment completes.
+                    // The tenants.update above already granted billing_tier + subscription_active
+                    // for the purchased tier — no extra grant logic needed here.
+                    const { data: pendingEntry } = await supabase
+                        .from('challenge_entries')
+                        .select('id')
+                        .eq('tenant_id', csTenantId)
+                        .eq('status', 'pending_payment')
+                        .maybeSingle();
+                    if (pendingEntry) {
+                        await supabase
+                            .from('challenge_entries')
+                            .update({ status: 'active' })
+                            .eq('id', pendingEntry.id);
+                        console.log(`[STRIPE_WEBHOOK] Challenge entry activated for ${csTenantId}.`);
+                    }
                 }
             }
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import SiteNav from '../components/SiteNav';
+import ChallengeCheckout from '../components/ChallengeCheckout';
 import { useSession } from '@supabase/auth-helpers-react';
 import { Trophy, ShieldAlert, Award, Crown, Medal, Flag, ScrollText, Rocket, LineChart, Zap } from 'lucide-react';
 
@@ -34,7 +35,7 @@ const CHALLENGE_RULES = [
 ];
 
 const CHALLENGE_STEPS = [
-  { icon: Rocket, title: 'Pick a plan', body: 'The free paper tier (RETAIL) is enough to compete. No card required.' },
+  { icon: Rocket, title: 'Pick a plan', body: 'RETAIL — paper trading — 30 days free, then $X/mo — card required at checkout.' },
   { title: 'Deploy a strategy', body: 'Get an agent running before the window opens so you start trading at the bell.', icon: Zap },
   { icon: LineChart, title: 'Trade the window', body: 'The board tracks your $100k simulated balance live for 30 days.' }
 ];
@@ -46,7 +47,8 @@ export default function Leaderboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const session = useSession();
-  const [challengeState, setChallengeState] = useState({ entered: false, daysRemaining: null, joining: false, joined: false });
+  const [challengeState, setChallengeState] = useState({ entered: false, status: null, daysRemaining: null, joining: false, joined: false });
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
 
   const PodiumIcon = ({ name }) => name === 'crown'
     ? <Crown className="w-3 h-3" />
@@ -200,7 +202,7 @@ export default function Leaderboard() {
         if (!res.ok) return;
         const json = await res.json();
         if (!isCancelled && json.entered) {
-          setChallengeState(s => ({ ...s, entered: true, daysRemaining: json.days_remaining }));
+          setChallengeState(s => ({ ...s, entered: true, status: json.status || 'active', daysRemaining: json.days_remaining }));
         }
       } catch { /* non-blocking */ }
     };
@@ -218,11 +220,11 @@ export default function Leaderboard() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session.access_token}`
         },
-        body: JSON.stringify({})
+        body: JSON.stringify({ intent: 'active' })
       });
       const json = await res.json().catch(() => ({}));
       if (res.ok) {
-        setChallengeState(s => ({ ...s, entered: true, joined: true, joining: false }));
+        setChallengeState(s => ({ ...s, entered: true, status: json.status || 'active', joined: true, joining: false }));
       } else if (res.status === 409) {
         setChallengeState(s => ({ ...s, entered: true, joining: false }));
       } else {
@@ -262,6 +264,14 @@ export default function Leaderboard() {
                 <Link href="/auth" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold transition-all shadow-lg shadow-indigo-600/30">
                   Sign up to enter
                 </Link>
+              ) : challengeState.status === 'pending_payment' ? (
+                <button
+                  onClick={() => setCheckoutOpen(true)}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-black uppercase tracking-wide transition-all shadow-lg shadow-amber-500/30"
+                >
+                  <Flag className="w-4 h-4" />
+                  Complete checkout
+                </button>
               ) : challengeState.entered ? (
                 <span className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/40 text-emerald-300 text-sm font-bold">
                   <Trophy className="w-4 h-4" />
@@ -269,12 +279,11 @@ export default function Leaderboard() {
                 </span>
               ) : (
                 <button
-                  onClick={joinChallenge}
-                  disabled={challengeState.joining}
+                  onClick={() => setCheckoutOpen(true)}
                   className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 text-sm font-black uppercase tracking-wide transition-all shadow-lg shadow-amber-500/30"
                 >
                   <Flag className="w-4 h-4" />
-                  {challengeState.joining ? 'Entering…' : 'Enter the Challenge'}
+                  Enter the 100K Challenge
                 </button>
               )}
             </div>
@@ -322,10 +331,14 @@ export default function Leaderboard() {
                 Compete in the challenge
               </span>
             </div>
-            <p className="text-[11px] text-slate-400 mb-3">Everything you need to enter the 100K Simulation Challenge and climb the board.</p>
-            <Link href="/auth" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all">
-              Start free
-            </Link>
+            <p className="text-[11px] text-slate-400 mb-3">RETAIL — paper trading — 30 days free, then $X/mo — card required at checkout.</p>
+            <button
+              onClick={() => (session ? setCheckoutOpen(true) : null)}
+              disabled={!session}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold transition-all"
+            >
+              {session ? 'Enter the challenge' : 'Sign up first'}
+            </button>
           </div>
           <div className="rounded-2xl border border-white/5 bg-slate-900/40 p-5 backdrop-blur-sm">
             <div className="flex items-center justify-between mb-2">
@@ -334,7 +347,7 @@ export default function Leaderboard() {
                 First 30 days free with challenge entry
               </span>
             </div>
-            <p className="text-[11px] text-slate-400 mb-3">Live execution, higher limits, priority infrastructure.</p>
+            <p className="text-[11px] text-slate-400 mb-3">Live execution — first 30 days free with challenge entry.</p>
             <Link href="/demo-index#pricing" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all">
               See PRO
             </Link>
@@ -595,6 +608,13 @@ export default function Leaderboard() {
           )}
         </div>
       </main>
+
+      {checkoutOpen && (
+        <ChallengeCheckout
+          onClose={() => setCheckoutOpen(false)}
+          onEntered={() => setChallengeState(s => ({ ...s, entered: true, status: 'active' }))}
+        />
+      )}
     </div>
   );
 }

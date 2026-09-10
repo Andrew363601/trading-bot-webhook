@@ -1,11 +1,19 @@
 // pages/api/challenge-join.js
 // 100K Simulation Challenge — join endpoint (auth required).
-// One entry per tenant. Requires an opted-in leaderboard profile.
+// One entry per tenant. Leaderboard profile optional — alias auto-generated if absent.
+// intent='pending' (default): pre-checkout entry, status='pending_payment' (no grants).
+// intent='active': API/free path — immediate entry + RETAIL grant if no paid sub.
 
 import { withTenantAuth } from '../../lib/auth-middleware';
 
 const CHALLENGE_START = '2026-09-11T00:00:00Z';
 const CHALLENGE_DAYS = 30;
+
+function sanitizeAlias(email) {
+  const local = String(email || '').split('@')[0];
+  const cleaned = local.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return (cleaned || 'trader').slice(0, 16);
+}
 
 export default withTenantAuth(async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -14,9 +22,15 @@ export default withTenantAuth(async function handler(req, res) {
 
   const supabase = req.tenant.supabase;
   const tenantId = req.tenant.tenantId;
+  const intent = req.body?.intent === 'active' ? 'active' : 'pending';
+  const status = intent === 'active' ? 'active' : 'pending_payment';
 
   try {
-    // 1. Look up tenant's leaderboard profile; must be opted in.
+    // 1. Leaderboard profile is optional now. If present and opted in, reuse its alias;
+    //    otherwise auto-generate from the email local-part. The entry itself IS the
+    //    leaderboard opt-in for the challenge cohort (alias-only output — privacy unchanged).
+    let alias = null;
+
     const { data: profile, error: profileErr } = await supabase
       .from('public_profiles')
       .select('alias, opt_in')
@@ -28,20 +42,32 @@ export default withTenantAuth(async function handler(req, res) {
       return res.status(500).json({ error: 'Failed to verify leaderboard profile' });
     }
 
-    if (!profile || !profile.opt_in) {
-      return res.status(400).json({
-        error: 'Join the leaderboard first (opt in with an alias), then enter the challenge.'
-      });
+    if (profile && profile.opt_in && profile.alias) {
+      alias = profile.alias;
+    } else {
+      alias = sanitizeAlias(req.tenant.email);
     }
 
-    // 2. Reject if an entry already exists (UNIQUE constraint on tenant_id).
+    // 2. Entry uniqueness (UNIQUE constraint on tenant_id) + resume logic:
+    //    - pending_payment → return ok so the user can resume at checkout step 2
+    //    - active          → 409 Already entered
     const { data: existing } = await supabase
       .from('challenge_entries')
-      .select('id')
+      .select('id, status, window_start, window_end, alias')
       .eq('tenant_id', tenantId)
       .maybeSingle();
 
     if (existing) {
+      if (existing.status === 'pending_payment') {
+        return res.status(200).json({
+          ok: true,
+          resumed: true,
+          status: existing.status,
+          window_start: existing.window_start,
+          window_end: existing.window_end,
+          alias: existing.alias
+        });
+      }
       return res.status(409).json({ error: 'Already entered' });
     }
 
@@ -54,44 +80,63 @@ export default withTenantAuth(async function handler(req, res) {
       .from('challenge_entries')
       .insert({
         tenant_id: tenantId,
-        alias: profile.alias,
+        alias,
         window_start: windowStart.toISOString(),
         window_end: windowEnd.toISOString(),
-        status: 'active'
+        status
       });
 
     if (insertErr) {
-      // Race on UNIQUE constraint
+      // Race on UNIQUE constraint — re-read and apply resume logic.
       if (insertErr.code === '23505') {
+        const { data: raced } = await supabase
+          .from('challenge_entries')
+          .select('status, window_start, window_end, alias')
+          .eq('tenant_id', tenantId)
+          .maybeSingle();
+        if (raced && raced.status === 'pending_payment') {
+          return res.status(200).json({
+            ok: true,
+            resumed: true,
+            status: raced.status,
+            window_start: raced.window_start,
+            window_end: raced.window_end,
+            alias: raced.alias
+          });
+        }
         return res.status(409).json({ error: 'Already entered' });
       }
       console.error('[CHALLENGE_JOIN] Insert error:', insertErr);
       return res.status(500).json({ error: 'Failed to create challenge entry' });
     }
 
-    // Grant paper-trading access for the full window (idempotent).
-    // Do NOT downgrade anyone on a paid Stripe sub.
-    const { data: sub } = await supabase
-      .from('subscriptions')
-      .select('status')
-      .eq('tenant_id', tenantId)
-      .maybeSingle();
+    // 5. Grant paper-trading access ONLY for the immediate ('active') path.
+    //    pending_payment users get the grant from the webhook on checkout completion.
+    //    Do NOT downgrade anyone on a paid Stripe sub.
+    if (intent === 'active') {
+      const { data: sub } = await supabase
+        .from('subscriptions')
+        .select('status')
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
 
-    const hasPaidSub = sub && ['active', 'trialing'].includes(String(sub.status).toLowerCase());
+      const hasPaidSub = sub && ['active', 'trialing'].includes(String(sub.status).toLowerCase());
 
-    if (!hasPaidSub) {
-      await supabase
-        .from('tenants')
-        .update({ billing_tier: 'RETAIL', subscription_active: true })
-        .eq('id', tenantId);
+      if (!hasPaidSub) {
+        await supabase
+          .from('tenants')
+          .update({ billing_tier: 'RETAIL', subscription_active: true })
+          .eq('id', tenantId);
+      }
     }
 
-    // 5. Return.
+    // 6. Return.
     return res.status(200).json({
       ok: true,
+      status,
       window_start: windowStart.toISOString(),
       window_end: windowEnd.toISOString(),
-      alias: profile.alias
+      alias
     });
   } catch (err) {
     console.error('[CHALLENGE_JOIN] Unexpected error:', err);
