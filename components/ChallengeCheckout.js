@@ -63,6 +63,11 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
     let isCancelled = false;
     supabase.auth.getSession()
       .then(({ data: { session } }) => {
+        // Persist the Discord provider token — it survives the OAuth redirect
+        // even when a later getSession no longer exposes it.
+        if (session?.provider_token) {
+          try { sessionStorage.setItem('challenge_discord_token', session.provider_token); } catch {}
+        }
         if (!isCancelled && session) setStep(1);
       })
       .catch((e) => {
@@ -72,6 +77,9 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
+        if (session?.provider_token) {
+          try { sessionStorage.setItem('challenge_discord_token', session.provider_token); } catch {}
+        }
         if (event === 'SIGNED_IN' && session) setStep(1);
       }
     );
@@ -89,11 +97,12 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
     (async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const isDiscord =
-          session?.user?.user_metadata?.provider === 'discord' &&
-          !!session?.provider_token;
+        const isDiscord = session?.user?.user_metadata?.provider === 'discord';
+        const discordToken = (() => {
+          try { return sessionStorage.getItem('challenge_discord_token'); } catch { return null; }
+        })() || session?.provider_token;
 
-        if (!isDiscord) {
+        if (!isDiscord || !discordToken) {
           // Email/Google users join manually via the invite button.
           if (!isCancelled) setDiscordState('manual');
           return;
@@ -105,7 +114,7 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${session.access_token}`
           },
-          body: JSON.stringify({ providerToken: session.provider_token })
+          body: JSON.stringify({ providerToken: discordToken })
         });
         const json = await res.json().catch(() => ({}));
         if (isCancelled) return;
