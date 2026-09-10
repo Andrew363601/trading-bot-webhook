@@ -218,8 +218,6 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
     if (onEntered) onEntered();
   };
 
-  if (!step) return null;
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
