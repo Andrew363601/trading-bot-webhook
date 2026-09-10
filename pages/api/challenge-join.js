@@ -5,6 +5,7 @@
 // intent='active': API/free path — immediate entry + RETAIL grant if no paid sub.
 
 import { withTenantAuth } from '../../lib/auth-middleware';
+import { syncToBrevo } from '../../lib/brevo';
 
 const CHALLENGE_START = '2026-09-11T00:00:00Z';
 const CHALLENGE_DAYS = 30;
@@ -129,6 +130,24 @@ export default withTenantAuth(async function handler(req, res) {
           .eq('id', tenantId);
       }
     }
+
+    // 5.5 Brevo tag at entry time. Fire-and-forget — Brevo failure must NOT fail the join.
+    //     tenant email lives in tenant_users (not on req.tenant) — look it up service-role.
+    (async () => {
+      try {
+        const { data: tu } = await supabase
+          .from('tenant_users')
+          .select('email')
+          .eq('tenant_id', tenantId)
+          .limit(1)
+          .maybeSingle();
+        if (tu?.email) {
+          await syncToBrevo(tu.email, tier, 'challenge');
+        }
+      } catch (e) {
+        console.warn('[CHALLENGE_JOIN] Brevo tag failed:', e?.message);
+      }
+    })();
 
     // 6. Return.
     return res.status(200).json({

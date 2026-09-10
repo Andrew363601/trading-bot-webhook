@@ -35,6 +35,13 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
   const [email, setEmail] = useState('');
   const [authMessage, setAuthMessage] = useState(null);
   const [authBusy, setAuthBusy] = useState(false);
+  const [discordState, setDiscordState] = useState('pending'); // pending | linked | failed
+  const [discordError, setDiscordError] = useState(null);
+
+  // Temporary mount diagnostics (Push I — popup-mount hardening rider).
+  useEffect(() => {
+    console.log('[ChallengeCheckout] mounted, step=', step);
+  }, [step]);
 
   // ── Pricing parity: same source as demo-index (site_content → 028 fallback) ──
   useEffect(() => {
@@ -44,6 +51,9 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
       const tiers = (content.pricing || FALLBACK_CONTENT.pricing)
         .filter((t) => TIER_MAP[t.name]);
       if (tiers.length) setPricing(tiers);
+    }).catch((e) => {
+      console.error('[ChallengeCheckout] pricing fetch failed:', e);
+      setError('Could not load pricing. Please try again.');
     });
     return () => { isCancelled = true; };
   }, [supabase]);
@@ -51,9 +61,14 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
   // ── Auth gate: session exists → step 1; else step 0 ──
   useEffect(() => {
     let isCancelled = false;
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!isCancelled && session) setStep(1);
-    });
+    supabase.auth.getSession()
+      .then(({ data: { session } }) => {
+        if (!isCancelled && session) setStep(1);
+      })
+      .catch((e) => {
+        console.error('[ChallengeCheckout] getSession failed:', e);
+        if (!isCancelled) setError('Could not check your session. Please try again.');
+      });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
@@ -65,6 +80,53 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
       subscription?.unsubscribe();
     };
   }, [supabase]);
+
+  // ── Step 3: Discord auto-join (Discord sign-ins only, once) ──
+  useEffect(() => {
+    if (step !== 3 || discordState !== 'pending') return;
+    let isCancelled = false;
+
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const isDiscord =
+          session?.user?.user_metadata?.provider === 'discord' &&
+          !!session?.provider_token;
+
+        if (!isDiscord) {
+          // Email/Google users join manually via the invite button.
+          if (!isCancelled) setDiscordState('manual');
+          return;
+        }
+
+        const res = await fetch('/api/discord-link', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`
+          },
+          body: JSON.stringify({ providerToken: session.provider_token })
+        });
+        const json = await res.json().catch(() => ({}));
+        if (isCancelled) return;
+
+        if (res.ok && json.ok) {
+          setDiscordState('linked');
+        } else {
+          setDiscordError(json.error || 'Discord auto-join failed.');
+          setDiscordState('failed');
+        }
+      } catch (e) {
+        console.error('[ChallengeCheckout] discord-link failed:', e);
+        if (!isCancelled) {
+          setDiscordError('Discord auto-join failed.');
+          setDiscordState('failed');
+        }
+      }
+    })();
+
+    return () => { isCancelled = true; };
+  }, [step, discordState, supabase]);
 
   // ── Step 0 actions ──
   const handleMagicLink = async (e) => {
@@ -330,12 +392,25 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
               Your {tier} challenge window is active. $0.00 was due today.
             </p>
             <div className="mt-6 flex flex-col gap-3">
-              <button
-                className="rounded-xl bg-[#5865F2] px-4 py-3 font-bold text-white transition hover:opacity-90"
-                onClick={() => window.open('https://discord.gg/your-invite', '_blank')}
-              >
-                Join Discord
-              </button>
+              {discordState === 'linked' ? (
+                <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-300">
+                  ✓ You&apos;re in the Discord server — tagged as Challenger
+                </div>
+              ) : (
+                <>
+                  <button
+                    className="rounded-xl bg-[#5865F2] px-4 py-3 font-bold text-white transition hover:opacity-90"
+                    onClick={() =>
+                      window.open(process.env.NEXT_PUBLIC_DISCORD_INVITE_URL, '_blank')
+                    }
+                  >
+                    Join Discord
+                  </button>
+                  {discordError && (
+                    <p className="text-xs text-red-400">{discordError}</p>
+                  )}
+                </>
+              )}
               <Link
                 href="/#dashboard"
                 className="rounded-xl border border-white/15 px-4 py-3 font-bold text-white transition hover:bg-white/10"
