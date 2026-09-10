@@ -134,31 +134,38 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
     setAuthBusy(true);
     setAuthMessage(null);
     setError(null);
-    sessionStorage.setItem(CHALLENGE_RESUME_KEY, '1');
-    const { error: otpError } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: `${location.origin}/leaderboard` }
-    });
-    if (otpError) {
-      setError(otpError.message);
-      sessionStorage.removeItem(CHALLENGE_RESUME_KEY);
-    } else {
-      setAuthMessage('Check your email for the magic login link!');
+    try {
+      sessionStorage.setItem(CHALLENGE_RESUME_KEY, '1');
+      const { error: otpError } = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: `${location.origin}/leaderboard` }
+      });
+      if (otpError) {
+        setError(otpError.message);
+        sessionStorage.removeItem(CHALLENGE_RESUME_KEY);
+      } else {
+        setAuthMessage('Check your email for the magic login link!');
+      }
+    } finally {
+      setAuthBusy(false);
     }
-    setAuthBusy(false);
   };
 
   const handleOAuth = async (provider) => {
     setAuthBusy(true);
     setError(null);
-    sessionStorage.setItem(CHALLENGE_RESUME_KEY, '1');
-    const { error: oauthError } = await supabase.auth.signInWithOAuth({
-      provider,
-      options: { redirectTo: `${location.origin}/leaderboard` }
-    });
-    if (oauthError) {
-      setError(oauthError.message);
-      sessionStorage.removeItem(CHALLENGE_RESUME_KEY);
+    try {
+      sessionStorage.setItem(CHALLENGE_RESUME_KEY, '1');
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider,
+        options: { redirectTo: `${location.origin}/leaderboard` }
+      });
+      if (oauthError) {
+        setError(oauthError.message);
+        sessionStorage.removeItem(CHALLENGE_RESUME_KEY);
+      }
+    } finally {
+      // OAuth success redirects away; failure must not freeze the buttons.
       setAuthBusy(false);
     }
   };
@@ -194,7 +201,7 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
       const csRes = await fetch('/api/create-checkout-session', {
         method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify({ tier: selectedTier, uiMode: 'embedded' })
+        body: JSON.stringify({ tenantId: session.user.id, email: session.user.email, tier: selectedTier, uiMode: 'embedded' })
       });
       const csJson = await csRes.json();
       if (!csRes.ok || !csJson.clientSecret) {

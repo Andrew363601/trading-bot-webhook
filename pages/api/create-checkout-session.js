@@ -13,6 +13,13 @@ export default async function handler(req, res) {
     const { tier, email, tenantId, uiMode } = req.body;
     const isEmbedded = uiMode === 'embedded';
 
+    // Identity guard: onboarding-fallback below must only fire for genuinely
+    // fresh signups — never for undefined identity (prevents "undefined
+    // Portfolio" tenants and slug collisions).
+    if (!tenantId || !email) {
+        return res.status(401).json({ error: 'Sign-in required before checkout.' });
+    }
+
     // Define price IDs for your Stripe products (Sandbox IDs)
     const priceIds = {
         'RETAIL': process.env.STRIPE_PRICE_RETAIL,
