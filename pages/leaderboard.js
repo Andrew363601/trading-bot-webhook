@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
+import Link from 'next/link';
 import SiteNav from '../components/SiteNav';
 import { useSession } from '@supabase/auth-helpers-react';
 import { Trophy, ShieldAlert, Award, Crown, Medal, Flag, ScrollText, Rocket, LineChart, Zap } from 'lucide-react';
@@ -258,13 +259,13 @@ export default function Leaderboard() {
             </div>
             <div className="flex-shrink-0">
               {!session ? (
-                <a href="/auth" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold transition-all shadow-lg shadow-indigo-600/30">
+                <Link href="/auth" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold transition-all shadow-lg shadow-indigo-600/30">
                   Sign up to enter
-                </a>
+                </Link>
               ) : challengeState.entered ? (
                 <span className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/40 text-emerald-300 text-sm font-bold">
                   <Trophy className="w-4 h-4" />
-                  You're in{challengeState.daysRemaining != null ? ` — ${challengeState.daysRemaining} days remaining` : ''}
+                  You&apos;re in{challengeState.daysRemaining != null ? ` — ${challengeState.daysRemaining} days remaining` : ''}
                 </span>
               ) : (
                 <button
@@ -322,9 +323,9 @@ export default function Leaderboard() {
               </span>
             </div>
             <p className="text-[11px] text-slate-400 mb-3">Everything you need to enter the 100K Simulation Challenge and climb the board.</p>
-            <a href="/auth" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all">
+            <Link href="/auth" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all">
               Start free
-            </a>
+            </Link>
           </div>
           <div className="rounded-2xl border border-white/5 bg-slate-900/40 p-5 backdrop-blur-sm">
             <div className="flex items-center justify-between mb-2">
@@ -334,9 +335,9 @@ export default function Leaderboard() {
               </span>
             </div>
             <p className="text-[11px] text-slate-400 mb-3">Live execution, higher limits, priority infrastructure.</p>
-            <a href="/demo-index#pricing" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all">
+            <Link href="/demo-index#pricing" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all">
               See PRO
-            </a>
+            </Link>
           </div>
         </div>
 
