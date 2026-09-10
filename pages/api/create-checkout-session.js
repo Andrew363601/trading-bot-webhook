@@ -107,16 +107,41 @@ export default async function handler(req, res) {
             }, { onConflict: 'tenant_id' });
         }
 
-        // 3. Create Checkout Session
+        // 3. 100K Challenge coupon guard: active challenge entry + buying PRO
+        //    → 100% off first 30 days (coupon IS their free window, so no 7d trial).
+        const isChallengeBuyer = tier === 'PRO' && await (async () => {
+            const nowIso = new Date().toISOString();
+            const { data: entry } = await supabase
+                .from('challenge_entries')
+                .select('id')
+                .eq('tenant_id', realTenantId)
+                .eq('status', 'active')
+                .lte('window_start', nowIso)
+                .gte('window_end', nowIso)
+                .maybeSingle();
+            return !!entry;
+        })();
+
+        // 4. Create Checkout Session
         const session = await stripe.checkout.sessions.create({
             customer: customerId,
             payment_method_types: ['card'],
             line_items: [{ price: priceId, quantity: 1 }],
             mode: 'subscription',
-            subscription_data: {
-                trial_period_days: 7,
-                metadata: { tenantId: realTenantId, tier }
-            },
+            ...(isChallengeBuyer
+                ? {
+                    discounts: [{ promotion_code: process.env.CHALLENGE_PROMO_CODE }],
+                    subscription_data: {
+                        trial_period_days: 0,
+                        metadata: { tenantId: realTenantId, tier }
+                    }
+                }
+                : {
+                    subscription_data: {
+                        trial_period_days: 7,
+                        metadata: { tenantId: realTenantId, tier }
+                    }
+                }),
             success_url: `${siteUrl}/auth?paid=true`,
             cancel_url: `${siteUrl}/plans`,
             metadata: { tenantId: realTenantId, tier }

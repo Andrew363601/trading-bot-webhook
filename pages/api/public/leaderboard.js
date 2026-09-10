@@ -26,6 +26,90 @@ function checkRateLimit(ip) {
 
 const WINDOWS = { '1D': 1, '7D': 7, '30D': 30 };
 
+// ── 100K Simulation Challenge scoring ──
+// Balance = 100000 + sum(pnl within window). Paper trades only.
+// Dormant = zero trade_logs rows in trailing 7 days → excluded from top list
+// (still counted in total_entries). Stateless — a new trade un-dormants instantly.
+async function computeChallenge() {
+  const { data: entries, error: entryErr } = await supabase
+    .from('challenge_entries')
+    .select('tenant_id, alias, window_start, window_end, status')
+    .eq('status', 'active');
+
+  if (entryErr) {
+    console.error('[LEADERBOARD_API] Challenge entries error:', entryErr);
+    return null;
+  }
+  if (!entries || entries.length === 0) return null;
+
+  const windowStart = entries[0].window_start;
+  const windowEnd = entries[0].window_end;
+
+  // Trades within the challenge window (paper, closed only)
+  const { data: cTrades, error: cTradeErr } = await supabase
+    .from('trade_logs')
+    .select('tenant_id, pnl, created_at')
+    .not('exit_price', 'is', null)
+    .eq('execution_mode', 'PAPER')
+    .gte('created_at', windowStart)
+    .lt('created_at', windowEnd);
+
+  if (cTradeErr) {
+    console.error('[LEADERBOARD_API] Challenge trades error:', cTradeErr);
+    return null;
+  }
+
+  // Trailing-7-day activity (for dormancy gate)
+  const since7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: recent, error: recentErr } = await supabase
+    .from('trade_logs')
+    .select('tenant_id')
+    .gte('created_at', since7d);
+
+  if (recentErr) {
+    console.error('[LEADERBOARD_API] Dormancy query error:', recentErr);
+    return null;
+  }
+  const activeTenants = new Set((recent || []).map(r => r.tenant_id));
+
+  // Aggregate per tenant
+  const perTenant = new Map();
+  (cTrades || []).forEach(t => {
+    if (!perTenant.has(t.tenant_id)) {
+      perTenant.set(t.tenant_id, { pnl: 0, trades: 0, wins: 0, grossProfit: 0, grossLoss: 0 });
+    }
+    const s = perTenant.get(t.tenant_id);
+    const pnl = Number(t.pnl) || 0;
+    s.pnl += pnl;
+    s.trades += 1;
+    if (pnl > 0) { s.wins += 1; s.grossProfit += pnl; }
+    else if (pnl < 0) { s.grossLoss += Math.abs(pnl); }
+  });
+
+  const top = [];
+  entries.forEach(e => {
+    if (!activeTenants.has(e.tenant_id)) return; // dormant → hidden
+    const s = perTenant.get(e.tenant_id) || { pnl: 0, trades: 0, wins: 0, grossProfit: 0, grossLoss: 0 };
+    top.push({
+      alias: e.alias,
+      balance: Number((100000 + s.pnl).toFixed(2)),
+      pnl: Number(s.pnl.toFixed(2)),
+      trades: s.trades,
+      win_rate: s.trades > 0 ? Number((s.wins / s.trades).toFixed(4)) : 0,
+      profit_factor: s.grossLoss > 0 ? Number((s.grossProfit / s.grossLoss).toFixed(2)) : null
+    });
+  });
+
+  top.sort((a, b) => b.balance - a.balance);
+
+  return {
+    window_start: windowStart,
+    window_end: windowEnd,
+    total_entries: entries.length,
+    top: top.slice(0, 50)
+  };
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method Not Allowed' });
@@ -187,12 +271,16 @@ export default async function handler(req, res) {
         .map(g => ({ alias: g.stat.alias, trades: g.stat.trades }))
     };
 
+    // 100K Simulation Challenge section (additive — phase-1 keys unchanged)
+    const challenge = await computeChallenge();
+
     return res.status(200).json({
       generatedAt: new Date().toISOString(),
       window: windowKey,
       mode,
       rows: top50,
-      records
+      records,
+      challenge
     });
   } catch (err) {
     console.error('[LEADERBOARD_API] Unexpected error:', err);

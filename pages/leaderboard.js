@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import SiteNav from '../components/SiteNav';
-import { Trophy, ShieldAlert, Award, Crown, Medal } from 'lucide-react';
+import { useSession } from '@supabase/auth-helpers-react';
+import { Trophy, ShieldAlert, Award, Crown, Medal, Flag, ScrollText, Rocket, LineChart, Zap } from 'lucide-react';
 
 const WINDOW_OPTIONS = ['1D', '7D', '30D'];
 const WINDOW_LABELS = { '1D': 'Today', '7D': 'Week', '30D': 'Month' };
@@ -17,12 +18,34 @@ const PODIUM = {
 const fmtPnl = (v) => (v >= 0 ? `+$${v.toFixed(2)}` : `-$${Math.abs(v).toFixed(2)}`);
 const pnlColor = (v) => (v >= 0 ? 'text-emerald-400' : 'text-rose-400');
 
+const CHALLENGE_RULES = [
+  '30-day fixed window — no extensions, no restarts',
+  '$100,000 simulated paper start for every entrant',
+  'Max 10x leverage on any position',
+  'Max 25% of equity per position',
+  'Minimum 5 trades to qualify for prizes',
+  'One entry per person — aliases only on the public board',
+  'Paper resets are locked for the duration of the window',
+  'No mid-trade parameter swaps to dodge a drawdown',
+  '7 days without a trade = benched (hidden until you trade again)',
+  'Alias-only public display — no account details exposed',
+  'Prizes: 1st = 6 months PRO + permanent Champion role · 2nd/3rd = 3 months PRO'
+];
+
+const CHALLENGE_STEPS = [
+  { icon: Rocket, title: 'Pick a plan', body: 'The free paper tier (RETAIL) is enough to compete. No card required.' },
+  { title: 'Deploy a strategy', body: 'Get an agent running before the window opens so you start trading at the bell.', icon: Zap },
+  { icon: LineChart, title: 'Trade the window', body: 'The board tracks your $100k simulated balance live for 30 days.' }
+];
+
 export default function Leaderboard() {
   const [windowKey, setWindowKey] = useState('30D');
   const [mode, setMode] = useState('LIVE');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const session = useSession();
+  const [challengeState, setChallengeState] = useState({ entered: false, daysRemaining: null, joining: false, joined: false });
 
   const PodiumIcon = ({ name }) => name === 'crown'
     ? <Crown className="w-3 h-3" />
@@ -164,6 +187,53 @@ export default function Leaderboard() {
     };
   }, [windowKey, mode]);
 
+  // Challenge status (personal, only when authed)
+  useEffect(() => {
+    let isCancelled = false;
+    const fetchChallengeStatus = async () => {
+      if (!session?.access_token) return;
+      try {
+        const res = await fetch('/api/challenge-status', {
+          headers: { Authorization: `Bearer ${session.access_token}` }
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!isCancelled && json.entered) {
+          setChallengeState(s => ({ ...s, entered: true, daysRemaining: json.days_remaining }));
+        }
+      } catch { /* non-blocking */ }
+    };
+    fetchChallengeStatus();
+    return () => { isCancelled = true; };
+  }, [session?.access_token]);
+
+  const joinChallenge = async () => {
+    if (!session?.access_token) return;
+    setChallengeState(s => ({ ...s, joining: true }));
+    try {
+      const res = await fetch('/api/challenge-join', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({})
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setChallengeState(s => ({ ...s, entered: true, joined: true, joining: false }));
+      } else if (res.status === 409) {
+        setChallengeState(s => ({ ...s, entered: true, joining: false }));
+      } else {
+        alert(json.error || 'Could not join the challenge.');
+        setChallengeState(s => ({ ...s, joining: false }));
+      }
+    } catch {
+      alert('Could not join the challenge. Try again.');
+      setChallengeState(s => ({ ...s, joining: false }));
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 font-sans selection:bg-indigo-500 selection:text-white">
       <Head>
@@ -174,6 +244,102 @@ export default function Leaderboard() {
       <SiteNav active="leaderboard" />
 
       <main className="max-w-6xl mx-auto px-4 pt-28 pb-10">
+        {/* ── 100K Challenge Banner ── */}
+        <div className="relative overflow-hidden rounded-2xl border border-amber-400/30 bg-gradient-to-r from-amber-400/[0.08] via-indigo-500/[0.05] to-slate-900/40 p-6 backdrop-blur-sm mb-6">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div>
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-black uppercase tracking-widest bg-amber-400/10 border-amber-400/40 text-amber-300 mb-2">
+                <Flag className="w-3 h-3" /> 30 Days · $100,000 Simulated Start
+              </span>
+              <h2 className="text-xl font-black tracking-tight text-white uppercase">The 100K Simulation Challenge</h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Starts Friday, Sep 11 · Paper-trade a simulated $100k for 30 days. Top balance wins.
+              </p>
+            </div>
+            <div className="flex-shrink-0">
+              {!session ? (
+                <a href="/auth" className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold transition-all shadow-lg shadow-indigo-600/30">
+                  Sign up to enter
+                </a>
+              ) : challengeState.entered ? (
+                <span className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/40 text-emerald-300 text-sm font-bold">
+                  <Trophy className="w-4 h-4" />
+                  You're in{challengeState.daysRemaining != null ? ` — ${challengeState.daysRemaining} days remaining` : ''}
+                </span>
+              ) : (
+                <button
+                  onClick={joinChallenge}
+                  disabled={challengeState.joining}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-60 text-slate-950 text-sm font-black uppercase tracking-wide transition-all shadow-lg shadow-amber-500/30"
+                >
+                  <Flag className="w-4 h-4" />
+                  {challengeState.joining ? 'Entering…' : 'Enter the Challenge'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ── Rules Card ── */}
+        <div className="rounded-2xl border border-white/5 bg-slate-900/40 p-5 backdrop-blur-sm mb-6">
+          <div className="flex items-center gap-2 mb-3">
+            <ScrollText className="w-4 h-4 text-amber-400" />
+            <h3 className="text-sm font-black uppercase tracking-widest text-white">Challenge Rules</h3>
+          </div>
+          <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5">
+            {CHALLENGE_RULES.map((rule, i) => (
+              <li key={i} className="flex items-start gap-2 text-[11px] text-slate-300">
+                <span className="mt-0.5 flex-shrink-0 inline-flex items-center justify-center w-4 h-4 rounded bg-slate-800 text-[8px] font-bold text-slate-400">{i + 1}</span>
+                {rule}
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* ── 3-Step How It Works ── */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          {CHALLENGE_STEPS.map((step, i) => (
+            <div key={i} className="rounded-2xl border border-white/5 bg-slate-900/40 p-4 backdrop-blur-sm">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 flex items-center justify-center">
+                  <step.icon className="w-4 h-4" />
+                </div>
+                <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">Step {i + 1}</span>
+              </div>
+              <div className="text-sm font-bold text-white mb-1">{step.title}</div>
+              <p className="text-[11px] text-slate-400">{step.body}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* ── 2-Card Pricing Strip ── */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-10">
+          <div className="rounded-2xl border border-indigo-500/30 bg-indigo-500/[0.06] p-5 backdrop-blur-sm">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-black uppercase tracking-widest text-indigo-300">FREE · Paper</span>
+              <span className="px-2 py-0.5 rounded-md bg-amber-400/10 border border-amber-400/40 text-amber-300 text-[9px] font-black uppercase tracking-widest">
+                Compete in the challenge
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-3">Everything you need to enter the 100K Simulation Challenge and climb the board.</p>
+            <a href="/auth" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all">
+              Start free
+            </a>
+          </div>
+          <div className="rounded-2xl border border-white/5 bg-slate-900/40 p-5 backdrop-blur-sm">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-black uppercase tracking-widest text-slate-300">PRO</span>
+              <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/40 text-emerald-300 text-[9px] font-black uppercase tracking-widest">
+                First 30 days free with challenge entry
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 mb-3">Live execution, higher limits, priority infrastructure.</p>
+            <a href="/demo-index#pricing" className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold transition-all">
+              See PRO
+            </a>
+          </div>
+        </div>
+
         {/* Header Title */}
         <div className="mb-8">
           <div className="flex items-center gap-3 mb-2">
@@ -365,6 +531,60 @@ export default function Leaderboard() {
             </table>
           </div>
         </div>
+
+        {/* ── 100K Challenge Standings (below the live board) ── */}
+        {data?.challenge && (
+          <div className="mt-10">
+            <div className="flex items-center gap-2 mb-1">
+              <Flag className="w-4 h-4 text-amber-400" />
+              <h2 className="text-sm font-black uppercase tracking-widest text-white">100K Challenge Standings</h2>
+            </div>
+            <p className="text-[10px] text-slate-500 mb-4">
+              {data.challenge.total_entries} entrants · 7 days without a trade = benched (hidden until you trade again)
+            </p>
+            <div className="rounded-2xl border border-amber-400/20 bg-slate-900/40 overflow-hidden backdrop-blur-sm">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-white/5 bg-white/[0.02] text-[10px] font-black uppercase tracking-wider text-slate-400">
+                      <th className="py-3 px-4">Rank</th>
+                      <th className="py-3 px-4">Alias</th>
+                      <th className="py-3 px-4 text-right">Balance</th>
+                      <th className="py-3 px-4 text-right">PnL</th>
+                      <th className="py-3 px-4 text-right">Trades</th>
+                      <th className="py-3 px-4 text-right">Win Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 text-xs">
+                    {(data.challenge.top || []).length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-10 text-center text-slate-500">
+                          <Award className="w-6 h-6 mx-auto mb-2 opacity-30" />
+                          <p className="text-xs">No active challenge traders yet — be the first.</p>
+                        </td>
+                      </tr>
+                    ) : (data.challenge.top || []).map((row, idx) => (
+                      <tr key={`${row.alias}-${idx}`} className="hover:bg-white/[0.02] transition-colors">
+                        <td className="py-3 px-4 font-mono font-bold text-slate-400">{idx + 1}</td>
+                        <td className="py-3 px-4 font-semibold text-slate-200">{row.alias}</td>
+                        <td className="py-3 px-4 text-right font-mono font-bold text-white">
+                          ${Number(row.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono">
+                          <span className={pnlColor(Number(row.pnl))}>{fmtPnl(Number(row.pnl))}</span>
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-slate-300">{row.trades}</td>
+                        <td className="py-3 px-4 text-right font-mono text-slate-300">
+                          {row.win_rate != null ? `${(row.win_rate * 100).toFixed(1)}%` : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Footer Note */}
         <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px] text-slate-500 border-t border-white/5 pt-4">
