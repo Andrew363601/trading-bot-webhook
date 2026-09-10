@@ -278,6 +278,8 @@ function DashboardContent() {
           default: displayValue,
           type: typeof value === 'number' ? 'number' : 'text',
           label: key.replace(/_/g, ' ').toUpperCase(),
+          // Push F: per-key numeric ranges for editor inputs.
+          ...(key === 'veto_cooldown_minutes' && { min: 1, max: 1440, step: 1 }),
           ...(key.includes('leverage') && { min: 1, max: 10 }),
           ...(key.includes('quantity') && { min: 0.001, max: 100 }),
           ...(key.includes('stop_loss_pct') && { min: 0.1, max: 20 }),
@@ -285,7 +287,34 @@ function DashboardContent() {
         };
       }
     }
+    // Push F: always expose veto_cooldown_minutes in the editor, even when the
+    // stored params lack it (empty = clear override → TF-scaled default).
+    if (!('veto_cooldown_minutes' in normalized)) {
+      normalized.veto_cooldown_minutes = {
+        default: '',
+        type: 'number',
+        label: 'VETO COOLDOWN (MIN)',
+        min: 1, max: 1440, step: 1,
+      };
+    }
     return normalized;
+  }, []);
+
+  // Push F: effective veto cooldown = explicit override, else 3 × trigger TF
+  // minutes clamped 5–720 (mirrors workers/sniper.js). Shown on the strategy card.
+  const computeEffectiveVetoCooldown = useCallback((params) => {
+    const tfMinutes = {
+      ONE_MINUTE: 1, FIVE_MINUTE: 5, FIFTEEN_MINUTE: 15, THIRTY_MINUTE: 30,
+      ONE_HOUR: 60, TWO_HOUR: 120, FOUR_HOUR: 240, SIX_HOUR: 360, ONE_DAY: 1440,
+    };
+    const override = params?.veto_cooldown_minutes;
+    if (override !== undefined && override !== null && override !== '') {
+      const n = parseInt(override, 10);
+      if (!isNaN(n)) return n;
+    }
+    const triggerTf = params?.trigger_tf;
+    const mins = tfMinutes[String(triggerTf || '').toUpperCase()] || 60;
+    return Math.min(Math.max(3 * mins, 5), 720);
   }, []);
 
   const flattenParametersForSave = useCallback((params) => {
@@ -889,6 +918,19 @@ function DashboardContent() {
       if (tfErrors.length > 0) {
         alert(`❌ Invalid timeframe config:\n${tfErrors.join('\n')}`);
         return;
+      }
+      // Push F: client-side veto_cooldown_minutes validation (editor saves directly
+      // to Supabase, bypassing strategy-config-update.js). Integer 1–1440 or cleared.
+      const rawVeto = flatParams.veto_cooldown_minutes;
+      if (rawVeto !== undefined && rawVeto !== null && rawVeto !== '') {
+        const v = Number(rawVeto);
+        if (!Number.isInteger(v) || v < 1 || v > 1440) {
+          alert('❌ Veto Cooldown must be an integer between 1 and 1440 minutes (or empty to use the TF-scaled default).');
+          return;
+        }
+        flatParams.veto_cooldown_minutes = v;
+      } else {
+        delete flatParams.veto_cooldown_minutes; // cleared → TF-scaled default
       }
       const { error } = await supabase
         .from('strategy_config')
@@ -2144,6 +2186,8 @@ function DashboardContent() {
                 // Description from metadata (fallback if not loaded yet)
                 const meta = strategyMetadata.find(m => m.id === strat.strategy);
                 const description = meta?.description || "Strategic execution layer focused on volatility and volume nodes.";
+                // Push F: effective veto cooldown shown on the card (override or TF-scaled default).
+                const effectiveVetoCooldown = computeEffectiveVetoCooldown(strat.parameters);
 
                 return (
                   <div className="relative group" {...swipeHandlers}>
@@ -2203,6 +2247,12 @@ function DashboardContent() {
                             {winRate}%
                           </span>
                         </div>
+                      </div>
+
+                      {/* Push F: effective veto cooldown (override or 3×trigger TF, clamped 5–720) */}
+                      <div className="flex items-center justify-between bg-white/[0.02] border border-white/5 rounded-xl px-3 py-1.5">
+                        <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Veto Cooldown</span>
+                        <span className="text-[10px] font-mono font-black text-slate-300">{effectiveVetoCooldown} min</span>
                       </div>
 
                       {currentAssetStrategies.length > 1 && (
@@ -2484,6 +2534,26 @@ function DashboardContent() {
                           <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest block mb-1">
                             {value.label || key}
                           </label>
+                          {/* Push F: veto cooldown — empty input clears the override
+                              (worker falls back to TF-scaled default 3×trigger, 5–720). */}
+                          {key === 'veto_cooldown_minutes' ? (
+                            <input
+                              type="number"
+                              min={value.min}
+                              max={value.max}
+                              step={value.step}
+                              placeholder="default (TF-scaled)"
+                              value={editingParameters[key].default ?? ''}
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                setEditingParameters(prev => ({
+                                  ...prev,
+                                  [key]: { ...prev[key], default: raw === '' ? '' : parseInt(raw, 10) }
+                                }));
+                              }}
+                              className="w-full bg-slate-800 border border-white/5 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
+                            />
+                          ) : (
                           <input
                             type={value.type}
                             value={editingParameters[key].default}
@@ -2493,6 +2563,7 @@ function DashboardContent() {
                             }))}
                             className="w-full bg-slate-800 border border-white/5 rounded-lg px-3 py-2 text-white text-[9px] outline-none focus:ring-1 focus:ring-indigo-500/50"
                           />
+                          )}
                         </div>
                       );
                     })}

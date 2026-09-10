@@ -43,8 +43,6 @@ async function logToolCall({ tool, args, result, duration, status, error }) {
 const COINGLASS_PARAMS = {
   coinglass_oi_momentum_v4: ['symbol', 'n_minutes', 'interval'],
   coinglass_funding_rate_reversion_v4: ['symbol', 'k_minutes', 'interval'],
-  coinglass_aggregated_orderbook_depth_v4: ['symbol', 'interval'],
-  coinglass_orderbook_depth_imbalance_v4: ['symbol', 'interval'],
   coinglass_etf_net_flow_momentum_v4: ['asset', 'k_days'],
   coinglass_exchange_balance_reserve_v4: ['symbol'],
   coinglass_exchange_balance_trend_v4: ['symbol', 'k_days'],
@@ -149,16 +147,6 @@ const TOOLS = {
         description: "What are the largest accounts doing? — Smart Money Account Positioning. Use MACRO_TF interval.",
         parameters: { symbol: "string" },
         tier: 1, timeframe: "macro"
-    },
-    coinglass_orderbook_depth_imbalance_v4: {
-        description: "Is there passive support/resistance in the book? — Bid/Ask Depth Imbalance. Use TRIGGER_TF interval.",
-        parameters: { symbol: "string" },
-        tier: 5, timeframe: "trigger"
-    },
-    coinglass_aggregated_orderbook_depth_v4: {
-        description: "Full depth picture across exchanges — Aggregated Orderbook Depth. Use TRIGGER_TF interval (floored to 30m).",
-        parameters: { symbol: "string", interval: "string (optional, >= 30m)" },
-        tier: 5, timeframe: "trigger"
     },
     coinglass_pair_liquidation_velocity_v4: {
         description: "Is liquidation pressure accelerating? — Liquidation Burst Velocity. Use TRIGGER_TF interval.",

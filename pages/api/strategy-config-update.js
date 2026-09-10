@@ -32,6 +32,25 @@ function validateTfParams(parameters) {
   return errors;
 }
 
+// Push F: veto_cooldown_minutes — optional integer override (minutes), 1–1440.
+// Empty string / null / undefined = clear the override (worker falls back to the
+// TF-scaled default). Non-numeric or out-of-range values are rejected with 400.
+// NOTE: this field is PROTECTED in genetic-optimizer.js — never optimizer-mutable.
+function validateVetoCooldown(parameters) {
+  if (parameters.veto_cooldown_minutes === undefined) return [];
+  const raw = parameters.veto_cooldown_minutes;
+  if (raw === null || raw === '') {
+    parameters.veto_cooldown_minutes = null; // explicit clear
+    return [];
+  }
+  const num = Number(raw);
+  if (!Number.isInteger(num) || num < 1 || num > 1440) {
+    return ['veto_cooldown_minutes must be an integer between 1 and 1440 (minutes), or empty to clear'];
+  }
+  parameters.veto_cooldown_minutes = num;
+  return [];
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method Not Allowed' });
@@ -50,6 +69,15 @@ export default async function handler(req, res) {
       error: 'Invalid timeframe configuration',
       details: tfErrors,
       allowed: TF_ALLOWLIST,
+    });
+  }
+
+  // Push F: reject invalid veto_cooldown_minutes before any write.
+  const vetoErrors = validateVetoCooldown(parameters);
+  if (vetoErrors.length > 0) {
+    return res.status(400).json({
+      error: 'Invalid veto_cooldown_minutes',
+      details: vetoErrors,
     });
   }
 

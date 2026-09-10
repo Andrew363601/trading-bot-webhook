@@ -76,8 +76,7 @@ From Stage 1, form your initial thesis. Score it 0-100 in your head. If thesis �
 *   `coinglass_top_account_long_short_v4` — What are the largest accounts doing?
 
 **If thesis confidence is moderate (40-60) but not veto-worthy:**
-*   `coinglass_orderbook_depth_imbalance_v4` — Is there passive support/resistance in the book?
-*   `coinglass_aggregated_orderbook_depth_v4` — Full depth picture across exchanges.
+*(Orderbook depth tools removed 2026-09-09 — empty data on STARTUP plan at all param combos.)*
 
 #### STAGE 3: DEEP DIVE (call when thesis is fragile, considering reversal, or high-risk setup)
 
