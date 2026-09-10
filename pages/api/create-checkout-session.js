@@ -144,7 +144,6 @@ export default async function handler(req, res) {
                 ? {
                     discounts: [{ promotion_code: process.env.CHALLENGE_PROMO_CODE }],
                     subscription_data: {
-                        trial_period_days: 0,
                         metadata: { tenantId: realTenantId, tier }
                     }
                 }
