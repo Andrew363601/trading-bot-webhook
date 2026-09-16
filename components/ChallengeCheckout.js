@@ -37,6 +37,7 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
   const [authBusy, setAuthBusy] = useState(false);
   const [discordState, setDiscordState] = useState('pending'); // pending | linked | failed
   const [discordError, setDiscordError] = useState(null);
+  const [alreadyEntered, setAlreadyEntered] = useState(false);
 
   // Temporary mount diagnostics (Push I — popup-mount hardening rider).
   useEffect(() => {
@@ -201,6 +202,16 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
         body: JSON.stringify({ intent: 'pending' })
       });
       const joinJson = await joinRes.json();
+      if (joinRes.status === 409) {
+        // 🟢 PUSH N: existing active entry → next-steps, never a dead end.
+        // Step 3's Discord effect auto-fires: stored provider token →
+        // /api/discord-link (idempotent) → linked badge or manual join button.
+        setTier(selectedTier);
+        setAlreadyEntered(true);
+        setStep(3);
+        if (onEntered) onEntered();
+        return;
+      }
       if (!joinRes.ok) {
         setError(joinJson.error || 'Could not start the challenge entry.');
         setBusy(false);
@@ -398,12 +409,14 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
 
         {step === 3 && (
           <div className="text-center">
-            <div className="text-4xl">🏆</div>
+            <div className="text-4xl">{alreadyEntered ? '✅' : '🏆'}</div>
             <h2 className="mt-2 text-xl font-black uppercase tracking-tight text-white">
-              You&apos;re in — 30 days free
+              {alreadyEntered ? 'Already in the challenge' : "You're in — 30 days free"}
             </h2>
             <p className="mt-1 text-sm text-gray-400">
-              Your {tier} challenge window is active. $0.00 was due today.
+              {alreadyEntered
+                ? 'Your entry is active — next steps: connect Discord for your Challenger tag, then deploy a strategy.'
+                : `Your ${tier} challenge window is active. $0.00 was due today.`}
             </p>
             <div className="mt-6 flex flex-col gap-3">
               {discordState === 'linked' ? (
