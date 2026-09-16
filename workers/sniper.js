@@ -743,8 +743,44 @@ export async function startSniper(tenantId) {
                                             console.log(`[SNIPER-TRAP] Scored memory fetch failed (non-fatal): ${e.message}`);
                                         }
 
+                                        // 🟢 PUSH R: trap springs bypass the cortex — attach enrichment
+                                        // here so trap trades carry archetype/model/conviction like
+                                        // every other entry. Non-fatal: a trap must never fail to
+                                        // execute because enrichment hiccups.
+                                        let trapArch = null, trapModel = null;
+                                        try {
+                                            const { data: lastScan } = await supabase
+                                                .from('scan_results').select('telemetry')
+                                                .eq('asset', config.asset)
+                                                .order('created_at', { ascending: false }).limit(1);
+                                            const lt = typeof lastScan?.[0]?.telemetry === 'string'
+                                                ? JSON.parse(lastScan[0].telemetry) : (lastScan?.[0]?.telemetry || {});
+                                            const springSnapshot = {
+                                                current_price: currentPrice, price: currentPrice,
+                                                multi_timeframe_cvd: {
+                                                    '6H_Macro_Tide': parseFloat(lt.macro_cvd) || 0,
+                                                    '5M_Micro_Ripple': parseFloat(lt.cvd) || 0
+                                                },
+                                                volatility_atr: { '5M': null, Trigger: null },
+                                                bids: parseFloat(lt.bids) || 0, asks: parseFloat(lt.asks) || 0,
+                                                regime: lt.macro_regime_oracle || null
+                                            };
+                                            const microChange = await getMicrostructureChange(config.asset, springSnapshot);
+                                            const arch = await classifyArchetype(tenantId, config.asset, springSnapshot, lt.macro_regime_oracle || null, microChange);
+                                            trapArch = arch?.archetype || null;
+                                            trapModel = await getModelPrediction(
+                                                tenantId, config.asset, lt.macro_regime_oracle || null, config.strategy,
+                                                `${params?.macro_tf || 'ANY'}/${params?.trigger_tf || 'ANY'}`, springSnapshot
+                                            ).catch(() => null);
+                                        } catch (e) { console.log('[SNIPER-TRAP] enrichment failed (non-fatal):', e.message); }
+
                                         // Augment trapPayload with memory IDs
                                         trapPayload._influencing_memory_ids = trapMemoryIds;
+                                        // 🟢 PUSH R: attach archetype/model enrichment (mirrors hermes-brain Phase 3D)
+                                        trapPayload._microstructure_archetype = trapArch;
+                                        trapPayload._model_predicted_win_prob = trapModel?.winProbability ?? null;
+                                        trapPayload._model_predicted_pnl = trapModel?.expectedPnl ?? null;
+                                        trapPayload._conviction_score = null;
 
                                         // Execute synchronously to prevent race conditions
                                         try {
@@ -847,6 +883,9 @@ export async function startSniper(tenantId) {
 
                 decision.telemetry = { 
                     ...decision.telemetry, 
+                    // 🟢 PUSH R: price in telemetry — revives L5 divergence + volatility
+                    // for ALL paths (detector reads t.price from scan_results telemetry).
+                    price: currentPrice.toFixed(2),
                     macro_poc: canonProfile.macro_poc.toFixed(2), upper_macro_node: canonProfile.upper_macro_node ? canonProfile.upper_macro_node.toFixed(2) : microstructure.indicators.upper_macro_node, lower_macro_node: canonProfile.lower_macro_node ? canonProfile.lower_macro_node.toFixed(2) : microstructure.indicators.lower_macro_node,
                     macro_cvd: canonCvd6h.toFixed(2), cvd: microstructure.indicators.current_cvd, 
                     sp500: microstructure.crossAsset?.sp500 || "N/A", 
