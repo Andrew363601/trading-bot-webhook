@@ -280,7 +280,7 @@ export default function Leaderboard() {
               </span>
               <h2 className="text-xl font-black tracking-tight text-white uppercase">The 100K Simulation Challenge</h2>
               <p className="text-xs text-slate-400 mt-1">
-                Starts Friday, Sep 11 · Paper-trade a simulated $100k for 30 days. Top balance wins.
+                Live now · Free entry ends Sunday, Sep 20 · Paper-trade a simulated $100k for 30 days. Top balance wins.
               </p>
             </div>
             <div className="flex-shrink-0">
@@ -385,6 +385,61 @@ export default function Leaderboard() {
             </Link>
           </div>
         </div>
+
+        {/* ── 100K Challenge Standings (challenge block → engine board below) ── */}
+        {data?.challenge && (
+          <div className="mt-10">
+            <div className="flex items-center gap-2 mb-1">
+              <Flag className="w-4 h-4 text-amber-400" />
+              <h2 className="text-sm font-black uppercase tracking-widest text-white">100K Challenge Standings</h2>
+            </div>
+            <p className="text-[10px] text-slate-500 mb-4">
+              {data.challenge.total_entries} entrants · 7 days without a trade = benched (hidden until you trade again)
+            </p>
+            <p className="text-xs text-slate-400 mt-2">First movers get remembered — free entry ends Sunday, Sep 20.</p>
+            <div className="rounded-2xl border border-amber-400/20 bg-slate-900/40 overflow-hidden backdrop-blur-sm">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-white/5 bg-white/[0.02] text-[10px] font-black uppercase tracking-wider text-slate-400">
+                      <th className="py-3 px-4">Rank</th>
+                      <th className="py-3 px-4">Alias</th>
+                      <th className="py-3 px-4 text-right">Balance</th>
+                      <th className="py-3 px-4 text-right">PnL</th>
+                      <th className="py-3 px-4 text-right">Trades</th>
+                      <th className="py-3 px-4 text-right">Win Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5 text-xs">
+                    {(data.challenge.top || []).length === 0 ? (
+                      <tr>
+                        <td colSpan={6} className="py-10 text-center text-slate-500">
+                          <Award className="w-6 h-6 mx-auto mb-2 opacity-30" />
+                          <p className="text-xs">No active challenge traders yet — be the first.</p>
+                        </td>
+                      </tr>
+                    ) : (data.challenge.top || []).map((row, idx) => (
+                      <tr key={`${row.alias}-${idx}`} className="hover:bg-white/[0.02] transition-colors">
+                        <td className="py-3 px-4 font-mono font-bold text-slate-400">{idx + 1}</td>
+                        <td className="py-3 px-4 font-semibold text-slate-200">{row.alias}</td>
+                        <td className="py-3 px-4 text-right font-mono font-bold text-white">
+                          ${Number(row.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono">
+                          <span className={pnlColor(Number(row.pnl))}>{fmtPnl(Number(row.pnl))}</span>
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono text-slate-300">{row.trades}</td>
+                        <td className="py-3 px-4 text-right font-mono text-slate-300">
+                          {row.win_rate != null ? `${(row.win_rate * 100).toFixed(1)}%` : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Header Title */}
         <div className="mb-8">
@@ -577,60 +632,6 @@ export default function Leaderboard() {
             </table>
           </div>
         </div>
-
-        {/* ── 100K Challenge Standings (below the live board) ── */}
-        {data?.challenge && (
-          <div className="mt-10">
-            <div className="flex items-center gap-2 mb-1">
-              <Flag className="w-4 h-4 text-amber-400" />
-              <h2 className="text-sm font-black uppercase tracking-widest text-white">100K Challenge Standings</h2>
-            </div>
-            <p className="text-[10px] text-slate-500 mb-4">
-              {data.challenge.total_entries} entrants · 7 days without a trade = benched (hidden until you trade again)
-            </p>
-            <div className="rounded-2xl border border-amber-400/20 bg-slate-900/40 overflow-hidden backdrop-blur-sm">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-white/5 bg-white/[0.02] text-[10px] font-black uppercase tracking-wider text-slate-400">
-                      <th className="py-3 px-4">Rank</th>
-                      <th className="py-3 px-4">Alias</th>
-                      <th className="py-3 px-4 text-right">Balance</th>
-                      <th className="py-3 px-4 text-right">PnL</th>
-                      <th className="py-3 px-4 text-right">Trades</th>
-                      <th className="py-3 px-4 text-right">Win Rate</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-white/5 text-xs">
-                    {(data.challenge.top || []).length === 0 ? (
-                      <tr>
-                        <td colSpan={6} className="py-10 text-center text-slate-500">
-                          <Award className="w-6 h-6 mx-auto mb-2 opacity-30" />
-                          <p className="text-xs">No active challenge traders yet — be the first.</p>
-                        </td>
-                      </tr>
-                    ) : (data.challenge.top || []).map((row, idx) => (
-                      <tr key={`${row.alias}-${idx}`} className="hover:bg-white/[0.02] transition-colors">
-                        <td className="py-3 px-4 font-mono font-bold text-slate-400">{idx + 1}</td>
-                        <td className="py-3 px-4 font-semibold text-slate-200">{row.alias}</td>
-                        <td className="py-3 px-4 text-right font-mono font-bold text-white">
-                          ${Number(row.balance).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                        </td>
-                        <td className="py-3 px-4 text-right font-mono">
-                          <span className={pnlColor(Number(row.pnl))}>{fmtPnl(Number(row.pnl))}</span>
-                        </td>
-                        <td className="py-3 px-4 text-right font-mono text-slate-300">{row.trades}</td>
-                        <td className="py-3 px-4 text-right font-mono text-slate-300">
-                          {row.win_rate != null ? `${(row.win_rate * 100).toFixed(1)}%` : '—'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Footer Note */}
         <div className="mt-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px] text-slate-500 border-t border-white/5 pt-4">
