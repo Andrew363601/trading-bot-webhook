@@ -915,9 +915,9 @@ export async function startSniper(tenantId) {
                             console.warn(`[SNIPER-${tenantId}] Pre-scan creation failed:`, sErr.message);
                         }
 
-                        const currentRegime = config.parameters?.regime 
-                            || microstructure?.macro_regime 
-                            || null;
+                        // 🟢 PUSH K: memories carry the canon (Phase 0.11.1C) label — match against
+                        // the same canon label, not the config-TF microstructure classifier.
+                        const currentRegime = currentRegimeCanon || null;
 
                         const scoredResult = await getScoredMemories(
                             tenantId, config.asset, currentRegime, normalizedSignal,
