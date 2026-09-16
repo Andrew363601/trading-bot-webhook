@@ -7,7 +7,8 @@
 import { withTenantAuth } from '../../lib/auth-middleware';
 import { syncToBrevo } from '../../lib/brevo';
 
-const CHALLENGE_START = '2026-09-11T00:00:00Z';
+const CHALLENGE_START = '2026-09-16T00:00:00Z';   // relaunched live 2026-09-16
+const ENTRY_CUTOFF = '2026-09-21T00:00:00Z';      // free-entry coupon ends Sun Sep 20 23:59 UTC
 const CHALLENGE_DAYS = 30;
 
 function sanitizeAlias(email) {
@@ -70,6 +71,12 @@ export default withTenantAuth(async function handler(req, res) {
         });
       }
       return res.status(409).json({ error: 'Already entered' });
+    }
+
+    // 🟢 PUSH O: entry closes with the coupon — prevents broken checkouts on an
+    // expired promo (create-checkout would 400 on a dead promotion_code).
+    if (new Date() >= new Date(ENTRY_CUTOFF)) {
+      return res.status(403).json({ error: 'Entry closed for this challenge.' });
     }
 
     // 3. Fixed window. If now < window_start, status='active' anyway (entry held, scoring starts Friday).
