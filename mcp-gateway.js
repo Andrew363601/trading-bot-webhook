@@ -88,7 +88,7 @@ const TOOLS = {
         }
     },
     get_atr_levels: {
-        description: "Calculate ATR-based Stop Loss and Take Profit levels with 50% ATR front-run protection. Candles are fetched server-side at the given timeframes.",
+        description: "Calculate ATR-based Stop Loss and Take Profit levels with 50% ATR front-run protection. Candles are fetched server-side at the given timeframes. Levels are scaled by the MACRO timeframe ATR (auto-adjusting; basis field MACRO_ATR).",
         parameters: {
             symbol: "string (e.g., ETH-PERP-INTX)",
             triggerTimeframe: "Coinbase granularity, e.g. FIVE_MINUTE",

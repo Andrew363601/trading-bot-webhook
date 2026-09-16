@@ -229,6 +229,28 @@ function computeVolumeProfile(macroCandles, currentPrice) {
     };
 }
 
+// 🟢 PUSH M — PAIR REGIME (scale-free): the config's OWN macro-TF structure read.
+// Same 4-state shape as canon, but scale-free: directional dominance = net tide / gross
+// flow over the window (random walk ≈ 0.11 over 50 candles; 0.25 ≈ 2x random = real tide).
+// No absolute CVD constants — honest at any macro TF (15m, 1h, 6h...).
+function classifyPairRegime({ price, poc, atrMacro, macroCandles, bidAskRatio }) {
+    const atrDist = poc > 0 ? Math.abs(price - poc) / Math.max(atrMacro, 0.01) : 0;
+    let net = 0, gross = 0;
+    const slice = (macroCandles || []).slice(-50);
+    for (let i = 0; i < slice.length; i++) {
+        const c = slice[i]; const range = c.high - c.low;
+        let openPrice = c.open;
+        if (isNaN(openPrice) || openPrice === undefined) { openPrice = i > 0 ? slice[i-1].close : c.close; }
+        if (range > 0) { const f = c.volume * ((c.close - openPrice) / range); net += f; gross += Math.abs(f); }
+    }
+    const dominance = gross > 0 ? Math.abs(net) / gross : 0;
+    const dir = net > 0 ? 1 : -1;
+    if (atrDist > 1.5 && dominance > 0.25) return 'TREND';
+    if (atrDist < 1.0 && dir > 0 && dominance > 0.15 && (bidAskRatio || 0) > 1.2) return 'ACCUMULATION';
+    if (atrDist < 1.0 && dir < 0 && dominance > 0.15 && (bidAskRatio || 0) < 0.8) return 'DISTRIBUTION';
+    return 'CHOP';
+}
+
 // 🟢 CANON REGIME CLASSIFIER (Phase 0.11 — Hazard 2+3 fix)
 // Regime label must be TF-INVARIANT: always computed from FIXED timeframes —
 //   POC from 6H candles, ATR from fixed 5M candles, CVD from the 6H tide.
@@ -834,7 +856,18 @@ export async function startSniper(tenantId) {
                     open_tp: openTrade?.tp_price || "NONE",
                     open_sl: openTrade?.sl_price || "NONE",
                     open_pnl: openTrade ? (openTrade.pnl || 0) : 0,
-                    macro_regime_oracle: canonRegime || "EVALUATING", oracle_reasoning: "Awaiting signal..."
+                    macro_regime_oracle: canonRegime || "EVALUATING", oracle_reasoning: "Awaiting signal...",
+                    // 🟢 PUSH M: pair-scale regime — the strategy's OWN macro-TF structure read
+                    regime_pair: (macroTf && macroCandles && macroCandles.length >= 30)
+                        ? classifyPairRegime({
+                            price: currentPrice,
+                            poc: computeVolumeProfile(macroCandles, currentPrice).macro_poc,
+                            atrMacro: computeAtr(macroCandles, 14),
+                            macroCandles,
+                            bidAskRatio: canonBidAskRatio
+                          })
+                        : null,
+                    regime_pair_tf: (macroTf && macroCandles && macroCandles.length >= 30) ? macroTf : null
                 };
 
                 // ── NEXUS EMPIRICAL PRIOR PIPELINE (Phase D) ──

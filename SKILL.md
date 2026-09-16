@@ -200,7 +200,13 @@ If any single tier flags an invalid structural state or hits a hard VETO limit, 
 * **Tier 3 Intercepts:** VETO immediately if the Options Max Pain gravitational pull is pinning the asset [9], if funding rates enter extreme standard deviation bands ($Z_{FR} \ge 3.5$), or if systemic leverage becomes dangerously skewed toward futures ($Z_{\Lambda\_Ratio} \le -2.2$).
 * **Tier 4 Intercepts:** VETO immediately if price makes local highs but Spot CVD Divergence breaks down ($\le -2.0$), identifying an artificial, futures-driven trap lacking spot accumulation.
 * **Tier 5 Intercepts:** VETO immediately if the 24-hour Large Limit Order Cancellation Rate exceeds 80%, declaring the order book deeply compromised by institutional spoofing bots.
-* **Crypto Volatility Normalization:** Crypto requires wider breathing room. Call `get_atr_levels` with {symbol, triggerTimeframe, macroTimeframe} — candles are fetched server-side; pass sweepLow/targetPrice/side in options. Apply 1.5x - 2.0x Macro-TF ATR for your Stop Loss (SL) — get_atr_levels returns macro-scaled levels automatically; up to 3.0x macro-ATR only if structure demands it. To prevent being whipsawed by localized noise and stop-hunts. Target TP at the next major HVN or 50% ATR front-run of the Macro POC. ROI ÷ Risk must ALWAYS be > 1.5 EVEN WHEN APPLYING A WIDER ATR, NO EXCEPTIONS.
+* **Crypto Volatility Normalization:** Crypto requires wider breathing room. Call `get_atr_levels` with {symbol, triggerTimeframe, macroTimeframe} — candles are fetched server-side; pass sweepLow/targetPrice/side in options. Apply 1.5x - 2.0x Macro-TF ATR for your Stop Loss (SL) — get_atr_levels returns macro-scaled levels automatically; up to 3.0x macro-ATR only if structure demands it — this prevents being whipsawed by localized noise and stop-hunts. Target TP at the next major HVN or 50% ATR front-run of the Macro POC. ROI ÷ Risk must ALWAYS be > 1.5 EVEN WHEN APPLYING A WIDER ATR, NO EXCEPTIONS.
+* **DUAL REGIME READ (telemetry):** `macro_regime_oracle` is the TF-INVARIANT canon label
+  (fixed 6H POC / 5M ATR / 6H tide) — shared market state across all strategies.
+  `regime_pair` is YOUR config's macro-TF structure read (`regime_pair_tf` names the TF it
+  describes). Use `regime_pair` to judge whether the setup suits the structure your trade
+  lives on; use the canon label for cross-market context and memory relevance. When they
+  disagree, state WHY in your thesis.
   * **WALL GEOMETRY (order book, from telemetry only):** Your SL must sit BEHIND
   (beyond) the largest bid wall between entry and the invalidation zone — a stop
   in front of a wall gets tagged by the wick the wall defends against. Your TP
