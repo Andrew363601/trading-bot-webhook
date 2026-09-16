@@ -1408,6 +1408,24 @@ output HOLD for an unfilled trap.`;
 app.post('/api/autopsy', async (req, res) => {
     const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis, trade_log_id, strategy_id } = req.body;
     const strategyId = strategy_id || null;
+    // 🟢 PUSH Q: one autopsy lesson per trade. Both the execute-trade close path
+    // and the watchdog's bracket/heartbeat paths can POST for the same trade
+    // within seconds — the second must be a no-op, not a second memory.
+    if (trade_log_id) {
+      try {
+        const { data: existingMem } = await supabase
+          .from('hermes_core_memory')
+          .select('id')
+          .eq('trade_log_id', trade_log_id)
+          .limit(1);
+        if (existingMem && existingMem.length > 0) {
+          console.log(`[AUTOPSKIP] trade ${trade_log_id} already has a core memory (id ${existingMem[0].id}) — reflection skipped`);
+          return res.status(200).json({ ok: true, skipped: true, reason: 'memory already exists for this trade' });
+        }
+      } catch (dedupErr) {
+        console.warn('[AUTOPSY] dedup check failed (proceeding):', dedupErr.message);
+      }
+    }
     console.log(`[AGENT CORTEX] Initiating Autopsy for ${asset}. PnL: $${pnl} (${execution_mode || 'UNKNOWN'})`);
     
     res.status(200).json({ status: "Autopsy initiated." });
