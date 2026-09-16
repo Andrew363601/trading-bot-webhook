@@ -73,7 +73,7 @@ export default function Leaderboard() {
 
     return (
       <div className="mb-8">
-        <h2 className="text-sm font-black uppercase tracking-widest text-white mb-1">Top Performers</h2>
+        <h2 className="text-lg font-black tracking-tight text-white uppercase mb-1">Top Performers</h2>
         <p className="text-[10px] text-slate-500 mb-4">Podium for the selected window &amp; mode</p>
 
         {/* Champion card */}
@@ -278,7 +278,7 @@ export default function Leaderboard() {
               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-black uppercase tracking-widest bg-amber-400/10 border-amber-400/40 text-amber-300 mb-2">
                 <Flag className="w-3 h-3" /> 30 Days · $100,000 Simulated Start
               </span>
-              <h2 className="text-xl font-black tracking-tight text-white uppercase">The 100K Simulation Challenge</h2>
+              <h2 className="text-2xl font-black tracking-tight text-white uppercase">The 100K Simulation Challenge</h2>
               <p className="text-xs text-slate-400 mt-1">
                 Live now · Free entry ends Sunday, Sep 20 · Paper-trade a simulated $100k for 30 days. Top balance wins.
               </p>
@@ -321,7 +321,7 @@ export default function Leaderboard() {
         <div className="rounded-2xl border border-white/5 bg-slate-900/40 p-5 backdrop-blur-sm mb-6">
           <div className="flex items-center gap-2 mb-3">
             <ScrollText className="w-4 h-4 text-amber-400" />
-            <h3 className="text-sm font-black uppercase tracking-widest text-white">Challenge Rules</h3>
+            <h3 className="text-base font-black tracking-tight text-white uppercase">Challenge Rules</h3>
           </div>
           <ul className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5">
             {CHALLENGE_RULES.map((rule, i) => (
@@ -391,7 +391,7 @@ export default function Leaderboard() {
           <div className="mt-10">
             <div className="flex items-center gap-2 mb-1">
               <Flag className="w-4 h-4 text-amber-400" />
-              <h2 className="text-sm font-black uppercase tracking-widest text-white">100K Challenge Standings</h2>
+              <h2 className="text-lg font-black tracking-tight text-white uppercase">100K Challenge Standings</h2>
             </div>
             <p className="text-[10px] text-slate-500 mb-4">
               {data.challenge.total_entries} entrants · 7 days without a trade = benched (hidden until you trade again)
@@ -442,7 +442,7 @@ export default function Leaderboard() {
         )}
 
         {/* Header Title */}
-        <div className="mb-8">
+        <div className="mt-12 mb-8">
           <div className="flex items-center gap-3 mb-2">
             <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
               <Trophy className="w-6 h-6" />
@@ -495,38 +495,6 @@ export default function Leaderboard() {
 
         {/* Top-3 Podium — dedicated section above the table */}
         {!loading && !error && <PodiumSection rows={(data?.rows || []).slice(0, 3)} />}
-
-        {/* Category Records — above the table */}
-        <div className="mb-6">
-          <h2 className="text-sm font-black uppercase tracking-widest text-white mb-1">Category Records</h2>
-          <p className="text-[10px] text-slate-500 mb-4">Standout single-metric leaders</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <RecordCard
-              title="Largest Win"
-              entries={(data?.records?.largestWin || []).map(e => ({ ...e, color: 'text-emerald-400' }))}
-              valueHeader="VALUE"
-              renderValue={e => fmtPnl(e.value)}
-            />
-            <RecordCard
-              title="Largest Loss"
-              entries={(data?.records?.largestLoss || []).map(e => ({ ...e, color: 'text-rose-400' }))}
-              valueHeader="VALUE"
-              renderValue={e => fmtPnl(e.value)}
-            />
-            <RecordCard
-              title="Most Trading Days"
-              entries={data?.records?.mostDays || []}
-              valueHeader="DAYS"
-              renderValue={e => `${e.days} days`}
-            />
-            <RecordCard
-              title="Highest Volume"
-              entries={data?.records?.highestVolume || []}
-              valueHeader="TRADES"
-              renderValue={e => `${e.trades} trades`}
-            />
-          </div>
-        </div>
 
         {/* Leaderboard Table Container */}
         <div className="rounded-2xl border border-white/5 bg-slate-900/40 overflow-hidden backdrop-blur-sm">
@@ -630,6 +598,38 @@ export default function Leaderboard() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        {/* Category Records — below the table */}
+        <div className="mb-6">
+          <h2 className="text-lg font-black tracking-tight text-white uppercase mb-1">Category Records</h2>
+          <p className="text-[10px] text-slate-500 mb-4">Standout single-metric leaders</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <RecordCard
+              title="Largest Win"
+              entries={(data?.records?.largestWin || []).map(e => ({ ...e, color: 'text-emerald-400' }))}
+              valueHeader="VALUE"
+              renderValue={e => fmtPnl(e.value)}
+            />
+            <RecordCard
+              title="Largest Loss"
+              entries={(data?.records?.largestLoss || []).map(e => ({ ...e, color: 'text-rose-400' }))}
+              valueHeader="VALUE"
+              renderValue={e => fmtPnl(e.value)}
+            />
+            <RecordCard
+              title="Most Trading Days"
+              entries={data?.records?.mostDays || []}
+              valueHeader="DAYS"
+              renderValue={e => `${e.days} days`}
+            />
+            <RecordCard
+              title="Highest Volume"
+              entries={data?.records?.highestVolume || []}
+              valueHeader="TRADES"
+              renderValue={e => `${e.trades} trades`}
+            />
           </div>
         </div>
 
