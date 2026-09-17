@@ -1547,7 +1547,7 @@ app.post('/api/autopsy', async (req, res) => {
 
         console.log(`[AUTOPSY COMPLETE] ${asset} | Rule: ${autopsyJson.lesson_learned}`);
 
-        await supabase.from('hermes_core_memory').insert([{
+        const { error: insErr } = await supabase.from('hermes_core_memory').insert([{
             tenant_id: tenant_id,
             asset: asset,
             win_loss: winLoss,
@@ -1572,6 +1572,18 @@ app.post('/api/autopsy', async (req, res) => {
             macro_tf: macro_tf || 'ANY',
             trigger_tf: trigger_tf || 'ANY'
         }]);
+
+        // 🟢 PUSH U: race-guard. The AUTOPSKIP pre-check closes most duplicates,
+        // but a double-POST within the same instant can still slip through —
+        // migration 044's partial unique index is the final authority. supabase-js
+        // does NOT throw on insert failure, so we must inspect `error` directly.
+        if (insErr) {
+            if (insErr.code === '23505' || String(insErr.message || '').includes('uniq_core_memory_trade_log')) {
+                console.log(`[AUTOPSKIP] race double-insert blocked by unique index (trade ${trade_log_id})`);
+                return; // response already sent — do NOT res.json() again
+            }
+            throw insErr;
+        }
 
     } catch (error) {
         console.error(`[AUTOPSY FATAL]:`, error.message);
