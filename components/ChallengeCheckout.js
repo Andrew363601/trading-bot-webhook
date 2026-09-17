@@ -247,14 +247,14 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+      className="fixed inset-0 z-50 flex items-start sm:items-center justify-center overflow-y-auto bg-black/80 p-3 pt-4 sm:p-4"
       role="dialog"
       aria-modal="true"
     >
-      <div className="relative w-full max-w-lg rounded-2xl border border-white/10 bg-[#0b0e14] p-6 shadow-2xl">
+      <div className="relative w-full max-w-lg my-4 sm:my-0 rounded-2xl border border-white/10 bg-[#0b0e14] p-6 shadow-2xl">
         <button
           onClick={onClose}
-          className="absolute right-4 top-4 text-gray-400 hover:text-white"
+          className="absolute right-3 top-3 text-gray-400 hover:text-white"
           aria-label="Close"
         >
           ✕

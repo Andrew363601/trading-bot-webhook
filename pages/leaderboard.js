@@ -214,52 +214,33 @@ export default function Leaderboard() {
     setCheckoutOpen(true);
   }, [session?.access_token]);
 
-  // Challenge status (personal, only when authed)
+  // 🟢 PUSH V: pending entrants get their next-steps moment — auto-open the
+  // popup once the status fetch reports an unpaid entry.
   useEffect(() => {
-    let isCancelled = false;
-    const fetchChallengeStatus = async () => {
-      if (!session?.access_token) return;
-      try {
-        const res = await fetch('/api/challenge-status', {
-          headers: { Authorization: `Bearer ${session.access_token}` }
-        });
-        if (!res.ok) return;
-        const json = await res.json();
-        if (!isCancelled && json.entered) {
-          setChallengeState(s => ({ ...s, entered: true, status: json.status || 'active', daysRemaining: json.days_remaining }));
-        }
-      } catch { /* non-blocking */ }
-    };
-    fetchChallengeStatus();
-    return () => { isCancelled = true; };
-  }, [session?.access_token]);
-
-  const joinChallenge = async () => {
-    if (!session?.access_token) return;
-    setChallengeState(s => ({ ...s, joining: true }));
-    try {
-      const res = await fetch('/api/challenge-join', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({ intent: 'active' })
-      });
-      const json = await res.json().catch(() => ({}));
-      if (res.ok) {
-        setChallengeState(s => ({ ...s, entered: true, status: json.status || 'active', joined: true, joining: false }));
-      } else if (res.status === 409) {
-        setChallengeState(s => ({ ...s, entered: true, joining: false }));
-      } else {
-        alert(json.error || 'Could not join the challenge.');
-        setChallengeState(s => ({ ...s, joining: false }));
-      }
-    } catch {
-      alert('Could not join the challenge. Try again.');
-      setChallengeState(s => ({ ...s, joining: false }));
+    if (session?.access_token && challengeState.status === 'pending_payment' && !checkoutOpen) {
+      setCheckoutOpen(true);
     }
+  }, [session?.access_token, challengeState.status, checkoutOpen]);
+
+  // Challenge status (personal, only when authed) — hoisted so the popup close
+  // handler can refresh immediately (banner flips to "Complete checkout").
+  const refreshChallengeStatus = async () => {
+    if (!session?.access_token) return;
+    try {
+      const res = await fetch('/api/challenge-status', {
+        headers: { Authorization: `Bearer ${session.access_token}` }
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      if (json.entered) {
+        setChallengeState(s => ({ ...s, entered: true, status: json.status || 'active', daysRemaining: json.days_remaining }));
+      }
+    } catch { /* non-blocking */ }
   };
+
+  useEffect(() => {
+    refreshChallengeStatus();
+  }, [session?.access_token]);
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-100 font-sans selection:bg-indigo-500 selection:text-white">
@@ -399,7 +380,7 @@ export default function Leaderboard() {
             <p className="text-xs text-slate-400 mt-2">First movers get remembered — free entry ends Sunday, Sep 20.</p>
             <div className="rounded-2xl border border-amber-400/20 bg-slate-900/40 overflow-hidden backdrop-blur-sm">
               <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
+                <table className="w-full min-w-[560px] text-left border-collapse">
                   <thead>
                     <tr className="border-b border-white/5 bg-white/[0.02] text-[10px] font-black uppercase tracking-wider text-slate-400">
                       <th className="py-3 px-4">Rank</th>
@@ -455,14 +436,14 @@ export default function Leaderboard() {
         </div>
 
         {/* Filters Controls */}
-        <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl bg-slate-900/60 border border-white/5 backdrop-blur-sm mb-6">
+        <div className="flex items-center justify-between gap-2 p-2.5 sm:gap-4 sm:p-4 rounded-2xl bg-slate-900/60 border border-white/5 backdrop-blur-sm mb-6">
           {/* Window Tabs */}
           <div className="flex items-center gap-1.5 bg-black/40 p-1 rounded-xl border border-white/5">
             {WINDOW_OPTIONS.map((w) => (
               <button
                 key={w}
                 onClick={() => setWindowKey(w)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                className={`px-2 py-1 text-[10px] sm:px-3 sm:py-1.5 sm:text-xs rounded-lg font-bold transition-all ${
                   windowKey === w
                     ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30'
                     : 'text-slate-400 hover:text-white hover:bg-white/5'
@@ -479,7 +460,7 @@ export default function Leaderboard() {
               <button
                 key={m}
                 onClick={() => setMode(m)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                className={`px-2 py-1 text-[10px] sm:px-3 sm:py-1.5 sm:text-xs rounded-lg font-bold transition-all ${
                   mode === m
                     ? m === 'LIVE' 
                       ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30'
@@ -497,9 +478,9 @@ export default function Leaderboard() {
         {!loading && !error && <PodiumSection rows={(data?.rows || []).slice(0, 3)} />}
 
         {/* Leaderboard Table Container */}
-        <div className="rounded-2xl border border-white/5 bg-slate-900/40 overflow-hidden backdrop-blur-sm">
+        <div className="rounded-2xl border border-white/5 bg-slate-900/40 overflow-x-auto backdrop-blur-sm">
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full min-w-[640px] text-left border-collapse">
               <thead>
                 <tr className="border-b border-white/5 bg-white/[0.02] text-[10px] font-black uppercase tracking-wider text-slate-400">
                   <th className="py-3.5 px-4">Rank</th>
@@ -644,7 +625,7 @@ export default function Leaderboard() {
 
       {checkoutOpen && (
         <ChallengeCheckout
-          onClose={() => setCheckoutOpen(false)}
+          onClose={() => { setCheckoutOpen(false); refreshChallengeStatus(); }}
           onEntered={() => setChallengeState(s => ({ ...s, entered: true, status: 'active' }))}
         />
       )}
