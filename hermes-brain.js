@@ -1426,6 +1426,27 @@ app.post('/api/autopsy', async (req, res) => {
         console.warn('[AUTOPSY] dedup check failed (proceeding):', dedupErr.message);
       }
     }
+    // 🟢 PUSH T-v2: deterministic scratch classification BEFORE the reflection
+    // call. A scratch is a negligible-PnL close with no structural stop hit —
+    // it must not be used as evidence for exit rules. Notional mirrors the
+    // codebase PnL formula ((exit − entry) × qty) — no leverage term, so the
+    // 0.5% threshold stays in comparable units.
+    let scratch = false;
+    if (trade_log_id) {
+      try {
+        const { data: tr } = await supabase.from('trade_logs')
+          .select('entry_price,exit_price,sl_price,qty')
+          .eq('id', trade_log_id).maybeSingle();
+        if (tr) {
+          const notional = Math.abs(parseFloat(tr.entry_price) * parseFloat(tr.qty || 1));
+          const pnlAbs = Math.abs(parseFloat(pnl) || 0);
+          const stopHit = tr.sl_price != null && tr.exit_price != null &&
+            Math.abs(parseFloat(tr.exit_price) - parseFloat(tr.sl_price)) <= parseFloat(tr.entry_price) * 0.0005;
+          scratch = pnlAbs < notional * 0.005 && !stopHit;
+          if (scratch) console.log(`[AUTOPSY] trade ${trade_log_id} classified SCRATCH-CLASS (pnl $${pnlAbs.toFixed(2)} vs notional $${notional.toFixed(2)}, stopHit=${stopHit})`);
+        }
+      } catch (e) { console.warn('[AUTOPSY] scratch check failed (proceeding):', e.message); }
+    }
     console.log(`[AGENT CORTEX] Initiating Autopsy for ${asset}. PnL: $${pnl} (${execution_mode || 'UNKNOWN'})`);
     
     res.status(200).json({ status: "Autopsy initiated." });
@@ -1493,6 +1514,14 @@ app.post('/api/autopsy', async (req, res) => {
         }
         `;
 
+        // 🟢 PUSH T-v2: scope the reflection for scratch-class trades. Single
+        // injection point — both the openrouter and gemini branches consume
+        // this same prompt string below.
+        const scopeNote = scratch
+          ? '\n\nSCRATCH-CLASS TRADE: negligible PnL with no structural stop hit. Write OBSERVATIONS, entry-gates and geometry lessons ONLY. Do NOT encode market-close triggers, exit mandates, or hold-license restrictions — a scratch is not evidence for an exit rule. Close triggers may only be written from structural losses (stop/tripwire with real damage).'
+          : '';
+        const fullPrompt = autopsyPrompt + scopeNote;
+
         const activeModel = await getActiveModel(supabase);
         let llmUrl, llmHeaders, llmBody;
 
@@ -1507,7 +1536,7 @@ app.post('/api/autopsy', async (req, res) => {
                 model: activeModel.model,
                 messages: [
                     { role: 'system', content: "You are an AI post-mortem trading analyzer. Output ONLY raw, valid JSON." },
-                    { role: 'user', content: autopsyPrompt }
+                    { role: 'user', content: fullPrompt }
                 ],
                 response_format: { type: 'json_object' }
             };
@@ -1516,7 +1545,7 @@ app.post('/api/autopsy', async (req, res) => {
             llmHeaders = { 'Content-Type': 'application/json' };
             llmBody = {
                 systemInstruction: { parts: [{ text: "You are an AI post-mortem trading analyzer. Output ONLY raw, valid JSON." }] },
-                contents: [{ role: "user", parts: [{ text: autopsyPrompt }] }],
+                contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
                 generationConfig: { responseMimeType: "application/json" }
             };
         }
@@ -1552,7 +1581,9 @@ app.post('/api/autopsy', async (req, res) => {
             asset: asset,
             win_loss: winLoss,
             tools_used: autopsyJson.tools_used || "None",
-            lesson_learned: autopsyJson.lesson_learned,
+            // 🟢 PUSH T-v2: visible authority tag wherever this lesson is
+            // recalled — scratch-class lessons are observations, not exit rules.
+            lesson_learned: (scratch ? '[SCRATCH-CLASS — observation only] ' : '') + autopsyJson.lesson_learned,
             working_thesis: working_thesis || null,
             thesis_accurate: autopsyJson.thesis_accurate ?? null,
             thesis_summary: autopsyJson.thesis_summary || null,

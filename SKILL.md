@@ -132,6 +132,8 @@ Core memory lessons from past trades are shown at the top of every signal.
 If a lesson says "stop was too tight in CHOP," you must widen sl_percent.
 If a lesson says "TP got swept before filling," you must tighten tp_percent.
 The system writes these values to the strategy config before the trade opens.
+Lessons prefixed [SCRATCH-CLASS] are observations from negligible-PnL closes. Use them
+for entry review and geometry. They carry NO authority over exit timing or hold decisions.
 
 #### RISK-ANCHORED DERIVATION (compute these, do not guess):
 - tripwire_percent: must equal at least 0.5 × sl_percent × leverage — the tripwire may
