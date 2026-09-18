@@ -188,6 +188,22 @@ if TENANT_FILTER:
     trades = [t for t in trades if t.get('tenant_id') == TENANT_FILTER]
 print(f'Closed trades with snapshots: {len(trades)}')
 
+# ── PUSH AA: veto-ledger samples (far-side only) ──
+shadow = sb_get('shadow_portfolio',
+                'id,tenant_id,asset,scan_id,signal_direction,veto_regime,veto_price,verdict,'
+                'saved_amount,missed_amount,fill_basis,macro_tf,trigger_tf',
+                filters="&verdict=in.(SAVED,MISSED)&fill_basis=eq.far_side", limit=2000)
+if TENANT_FILTER:
+    shadow = [s for s in shadow if s.get('tenant_id') == TENANT_FILTER]
+scan_ids = list({str(s['scan_id']) for s in shadow if s.get('scan_id')})
+scan_map = {}
+for i in range(0, len(scan_ids), 100):
+    chunk = scan_ids[i:i+100]
+    sid_filter = '&id=in.(' + ','.join(chunk) + ')'
+    for srow in sb_get('scan_results', 'id,strategy,telemetry', filters=sid_filter, limit=100):
+        scan_map[srow['id']] = srow
+print(f'Veto samples: {len(shadow)} (scans matched: {len(scan_map)})')
+
 # ─────────────────────────────────────────────────────────────
 # STEP 2: Build dataset
 # ─────────────────────────────────────────────────────────────
@@ -195,7 +211,8 @@ print(f'Closed trades with snapshots: {len(trades)}')
 X, y, pnls = [], [], []
 feature_names = None
 tenant_of = []
-buckets = defaultdict(list)   # (tenant_id, asset, regime, strategy, tf_pair) -> [(feat, label, pnl)]
+buckets = defaultdict(list)   # (tenant_id, asset, regime, strategy, tf_pair) -> [(feat, label, pnl, weight)]
+# PUSH AA: real trades keep weight 1.0; veto counterfactuals ride at 0.5
 
 for t in trades:
     feat, regime, strategy, tf_pair = extract_features(t.get('market_snapshot_at_entry'), t)
@@ -214,9 +231,46 @@ for t in trades:
     tenant_of.append(tenant)
     if feature_names is None:
         feature_names = list(feat.keys())
-    buckets[(tenant, asset, regime, strategy, tf_pair)].append((feat, label, pnl))
+    buckets[(tenant, asset, regime, strategy, tf_pair)].append((feat, label, pnl, 1.0))
 
 print(f'Dataset: {len(X)} samples x {len(feature_names) if feature_names else 0} features')
+
+# ── PUSH AA: synthesize veto samples into the SAME buckets (weighted 0.5) ──
+veto_buckets = defaultdict(list)   # same key shape -> (feat, label, pnl)
+for s in shadow:
+    sc = scan_map.get(s.get('scan_id'))
+    if not sc:
+        continue
+    telemetry = sc.get('telemetry')
+    pseudo = {
+        'id': f"veto_{s['id']}", 'strategy_id': sc.get('strategy'),
+        'regime_at_entry': s.get('veto_regime'),
+        'side': s.get('signal_direction'),
+        'entry_price': s.get('veto_price'),
+        'macro_tf': s.get('macro_tf') or 'ANY',
+        'trigger_tf': s.get('trigger_tf') or 'ANY',
+        'pnl': s['missed_amount'] if s['verdict'] == 'MISSED' else -s['saved_amount'],
+        'win': 1 if s['verdict'] == 'MISSED' else 0,
+    }
+    pnl = max(-10000.0, min(10000.0, float(pseudo['pnl'])))
+    label = pseudo['win']
+    try:
+        feat, regime, strategy, tf_pair = extract_features(telemetry, pseudo)
+    except Exception as e:
+        print(f'  Veto feature extraction failed for veto #{s.get("id")}: {e}')
+        continue
+    if feat is None:
+        continue
+    asset = s.get('asset') or 'UNKNOWN'
+    veto_buckets[(s.get('tenant_id'), asset, regime, strategy, tf_pair)].append((feat, label, pnl))
+
+# veto samples ride along wherever REAL samples already qualify — never create a model alone.
+# Merging into buckets FIRST means any_pool / global_pool / global_exact_pool (all built from
+# buckets below) inherit the same qualify-then-attach rule automatically.
+for key, vsamples in veto_buckets.items():
+    if key in buckets and len([x for x in buckets[key] if len(x) < 4 or x[3] >= 1.0]) >= MIN_TENANT_SAMPLES:
+        buckets[key].extend((f, l, p, 0.5) for f, l, p in vsamples)
+print(f'Veto buckets merged: {sum(len(v) for v in veto_buckets.values())} samples across {len(veto_buckets)} keys')
 
 # Aggregated (asset, regime) pool across strategies/tfs for ANY-row fallbacks
 any_pool = defaultdict(list)
@@ -244,12 +298,19 @@ def _sb_delete(table, filters):
 
 
 def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb_mod, feat_names):
-    """Train one model (or compute empirical stats) and stage an upsert row."""
-    n = len(samples)
-    wins = sum(1 for _, l, _ in samples if l == 1)
-    wr = wins / n
-    pnls_arr = [p for _, _, p in samples]
-    avg_pnl = sum(pnls_arr) / n
+    """Train one model (or compute empirical stats) and stage an upsert row.
+    PUSH AA: samples are 4-tuples (feat, label, pnl, weight) — real=1.0, veto=0.5.
+    ALL headline metrics are computed from REAL samples only; counterfactuals
+    only influence the XGB fit (via sample_weight) and veto_* accounting."""
+    real_samples = [s for s in samples if len(s) < 4 or s[3] >= 1.0]
+    veto_samples = [s for s in samples if len(s) >= 4 and s[3] < 1.0]
+    n_real = len(real_samples)
+    veto_n = len(veto_samples)
+    n = n_real  # legacy var: headline stats + sample_count stay real-only
+    wins = sum(1 for _, l, _ in real_samples if l == 1)
+    wr = wins / n if n else 0.0
+    pnls_arr = [p for _, _, p in real_samples]
+    avg_pnl = (sum(pnls_arr) / n) if n else 0.0
 
     pos_pnls = [p for p in pnls_arr if p > 0]
     neg_pnls = [p for p in pnls_arr if p < 0]
@@ -257,31 +318,39 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
     avg_loss_pnl = (sum(neg_pnls) / len(neg_pnls)) if neg_pnls else None
     capture_ratio = (sum(pos_pnls) / abs(sum(neg_pnls))) if neg_pnls else None
 
+    # PUSH AA: veto counterfactual accounting (never touches headline stats)
+    veto_wins = sum(1 for _, l, _ in veto_samples if l == 1)
+
     metrics = {
         'sample_count': n,
         'win_rate': wr,
         'avg_pnl': avg_pnl,
         'avg_win_pnl': avg_win_pnl,
         'avg_loss_pnl': avg_loss_pnl,
-        'capture_ratio': capture_ratio
+        'capture_ratio': capture_ratio,
+        'veto_sample_count': veto_n,
+        'veto_win_rate': (veto_wins / veto_n) if veto_n else None,
+        'sample_sources': {'trades': n_real, 'vetoes': veto_n}
     }
     feature_importance = {}
     model_params = {'tf_pair': tf_pair}
     expected_mean, expected_std = avg_pnl, 0.0
     accuracy = wr  # baseline: majority-class predictor
 
-    if xgb_mod is not None and feat_names and n >= MIN_TENANT_SAMPLES:
+    if xgb_mod is not None and feat_names and n_real >= MIN_TENANT_SAMPLES:
         try:
             import numpy as np
-            feats = np.array([list(f.values()) for f, _, _ in samples])
-            labels = np.array([l for _, l, _ in samples])
-            pnl_arr = np.array([p for _, _, p in samples])
+            # 🟢 PUSH AA: fit on the FULL weighted set (real + veto), metrics on real only
+            feats = np.array([list(f.values()) for f, _, _, *_ in samples])
+            labels = np.array([l for _, l, *_ in samples])
+            weights = np.array([s[3] if len(s) >= 4 else 1.0 for s in samples])
+            pnl_arr = np.array([p for _, _, p, *_ in samples])
             model = xgb_mod.XGBClassifier(
                 n_estimators=50, max_depth=3, learning_rate=0.1,
                 subsample=0.8, colsample_bytree=0.8, eval_metric='logloss',
                 n_jobs=2
             )
-            model.fit(feats, labels)
+            model.fit(feats, labels, sample_weight=weights)
             imp = {feat_names[i]: float(model.feature_importances_[i]) for i in range(len(feat_names))}
             feature_importance = dict(sorted(imp.items(), key=lambda kv: -kv[1])[:8])
             preds = model.predict(feats)
@@ -312,9 +381,10 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
 
 
 def summarize(samples):
-    n = len(samples)
-    wins = sum(1 for _, l, _ in samples if l == 1)
-    avg_pnl = sum(p for _, _, p in samples) / n
+    real = [s for s in samples if len(s) < 4 or s[3] >= 1.0]
+    n = len(real)
+    wins = sum(1 for _, l, _ in real if l == 1)
+    avg_pnl = sum(p for _, _, p in real) / n if n else 0.0
     # Optimal TP/SL in ATR terms (from stored tp/sl vs entry + snapshot atr)
     return {'n': n, 'win_rate': wins / n if n else 0, 'avg_pnl': avg_pnl}
 
@@ -391,8 +461,6 @@ for (tenant, asset, regime, strategy, tf_pair), samples in sorted(buckets.items(
     if len(samples) < 10:
         continue
     s = summarize(samples)
-    for _, _, _ in samples:
-        pass
     tf_report[(asset, tf_pair)]['n'] += s['n']
     tf_report[(asset, tf_pair)]['wins'] += int(s['win_rate'] * s['n'])
     tf_report[(asset, tf_pair)]['pnl'] += s['avg_pnl'] * s['n']

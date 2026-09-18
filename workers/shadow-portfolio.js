@@ -373,6 +373,19 @@ async function processUnlabeledVetos() {
         }
       }
 
+      // 🟢 PUSH AA: stamp the strategy's TF pair at veto time (point-in-time)
+      let macroTf = 'ANY', triggerTf = 'ANY';
+      try {
+        const { data: cfg } = await supabase.from('strategy_config')
+          .select('parameters')
+          .eq('tenant_id', scan.tenant_id)
+          .ilike('strategy', scan.strategy)
+          .maybeSingle();
+        const p = cfg?.parameters || {};
+        macroTf = p.macro_tf || 'ANY';
+        triggerTf = p.trigger_tf || 'ANY';
+      } catch (e) { /* fallback ANY/ANY */ }
+
       // 4. INSERT shadow_portfolio record
       const { error: insertError } = await supabase
         .from('shadow_portfolio')
@@ -397,7 +410,10 @@ async function processUnlabeledVetos() {
           counterfactual_high: cHigh !== null ? parseFloat(cHigh.toFixed(2)) : null,
           counterfactual_direction: cDirection,
           // 🟢 shadow-v2: which price basis produced the amounts (far_side | mid_legacy | null=Path A)
-          fill_basis: fillBasis
+          fill_basis: fillBasis,
+          // 🟢 PUSH AA: point-in-time TF pair
+          macro_tf: macroTf,
+          trigger_tf: triggerTf
         }]);
 
       if (insertError) {

@@ -5,3 +5,6 @@
 -- HIGH/LOW exit math. The bound upgrades automatically as new scans populate
 -- best_bid/best_ask in scan_results telemetry.
 ALTER TABLE shadow_portfolio ADD COLUMN IF NOT EXISTS fill_basis TEXT;
+-- 🟢 PUSH AA: point-in-time TF pair stamped at veto time (for trainer ingestion)
+ALTER TABLE shadow_portfolio ADD COLUMN IF NOT EXISTS macro_tf TEXT;
+ALTER TABLE shadow_portfolio ADD COLUMN IF NOT EXISTS trigger_tf TEXT;
