@@ -329,6 +329,10 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
         // Hoisted to function scope so the regime classifier below can read them
         // even when the Coinbase order book fetch is skipped (no apiKey/secret).
         let totalBidSize = 0; let totalAskSize = 0;
+        // 🟢 shadow-v2: top-of-book capture — Coinbase returns levels price-sorted,
+        // so bids[0]/asks[0] ARE the best quotes (parsed walls below are size-sorted,
+        // largest_bid_walls[0] is a wall, NOT the best price). null when book unavailable.
+        let bestBid = null; let bestAsk = null;
 
         if (apiKey && secret) {
             try {
@@ -337,7 +341,10 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                 if (bookResp.ok) {
                     const bookJson = await bookResp.json();
                     const bids = bookJson.pricebook?.bids || []; const asks = bookJson.pricebook?.asks || [];
-                    
+                    // 🟢 shadow-v2: far-side fill basis — top-of-book for veto counterfactuals
+                    if (bids.length > 0 && parseFloat(bids[0].price) > 0) bestBid = parseFloat(bids[0].price);
+                    if (asks.length > 0 && parseFloat(asks[0].price) > 0) bestAsk = parseFloat(asks[0].price);
+
                     // 🟢 THE UPGRADE: Deep X-Ray Vision (Top 3 Walls)
                     const parsedBids = bids.map(b => ({ price: parseFloat(b.price), size: parseFloat(b.size || 0) })).sort((a, b) => b.size - a.size);
                     const parsedAsks = asks.map(a => ({ price: parseFloat(a.price), size: parseFloat(a.size || 0) })).sort((a, b) => b.size - a.size);
@@ -891,6 +898,9 @@ export async function startSniper(tenantId) {
                     sp500: microstructure.crossAsset?.sp500 || "N/A", 
                     dxy: microstructure.crossAsset?.dxy || "N/A",     
                     bids: microstructure.orderBook.bids_50_levels || 0, asks: microstructure.orderBook.asks_50_levels || 0, premium: microstructure.derivativesData.basis_premium_percent || 0,
+                    // 🟢 shadow-v2: observable top-of-book bound for shadow-portfolio far-side repricing
+                    best_bid: bestBid ? bestBid.toFixed(2) : null,
+                    best_ask: bestAsk ? bestAsk.toFixed(2) : null,
                     open_position: openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : (config.trap_side ? `TRAP ${config.trap_side} @ $${config.trap_price}` : "NONE"),
                     open_tp: openTrade?.tp_price || "NONE",
                     open_sl: openTrade?.sl_price || "NONE",

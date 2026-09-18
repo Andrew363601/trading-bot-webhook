@@ -288,6 +288,8 @@ async function processUnlabeledVetos() {
       let actualMovePct = null, durationMinutes = null;
       let tradeLogId = null, tradeSide = null, tradePnl = null;
       let cLow = null, cHigh = null, cDirection = null;
+      // 🟢 shadow-v2: price basis used for Path B amounts ('far_side' | 'mid_legacy'); null for Path A
+      let fillBasis = null;
 
       if (matchingTrade && matchingTrade.entry_price) {
         tradeLogId = matchingTrade.id;
@@ -313,15 +315,43 @@ async function processUnlabeledVetos() {
           cHigh = candles.high;
           const priceChange = ((candles.lastClose - candles.firstClose) / candles.firstClose) * 100;
 
+          // 🟢 shadow-v2: far-side entry bound (QuanTradin's rule — pessimistic or nothing).
+          // BUY veto → we'd have paid best_ask; SELL veto → we'd have sold at best_bid.
+          // Read from the paired signal scan's telemetry (written by sniper.js PUSH shadow-v2).
+          let farEntry = vetoPrice;
+          fillBasis = 'mid_legacy';
+          let lt = signal?.telemetry || {};
+          if (typeof lt === 'string') { try { lt = JSON.parse(lt); } catch (e) { lt = {}; } }
+          const bestAsk = parseFloat(lt.best_ask) || null;
+          const bestBid = parseFloat(lt.best_bid) || null;
+          if (signalDirection === 'BUY' && bestAsk) { farEntry = bestAsk; fillBasis = 'far_side'; }
+          if (signalDirection === 'SELL' && bestBid) { farEntry = bestBid; fillBasis = 'far_side'; }
+
+          // Fee: tenant taker rate × 2 (round trip), in price points.
+          // hermes-brain.js pattern — 0.0008 fallback, never 0.
+          let feeRate = 0.0008;
+          try {
+            const { data: agentSettings } = await supabase
+              .from('tenant_settings')
+              .select('agent_taker_fee_rate')
+              .eq('tenant_id', scan.tenant_id)
+              .single();
+            if (agentSettings?.agent_taker_fee_rate) feeRate = parseFloat(agentSettings.agent_taker_fee_rate) || 0.0008;
+          } catch (e) {}
+          const feePoints = feeRate * farEntry * 2;
+
+          // Exit = horizon close (6th candle's close — observable, no top-tick promises).
+          const exitPrice = candles.lastClose;
+
           if (signalDirection === 'BUY') {
             if (priceChange > 0.5) {
               cDirection = 'WENT_WITH';
               verdict = 'MISSED';
-              missedAmount = Math.abs(candles.high - vetoPrice);
+              missedAmount = Math.abs(exitPrice - farEntry) + feePoints;
             } else if (priceChange < -0.5) {
               cDirection = 'WENT_AGAINST';
               verdict = 'SAVED';
-              savedAmount = Math.abs(vetoPrice - candles.low);
+              savedAmount = Math.abs(farEntry - exitPrice) + feePoints;
             } else {
               cDirection = 'FLAT';
               verdict = 'NEUTRAL';
@@ -330,11 +360,11 @@ async function processUnlabeledVetos() {
             if (priceChange < -0.5) {
               cDirection = 'WENT_WITH';
               verdict = 'MISSED';
-              missedAmount = Math.abs(candles.low - vetoPrice);
+              missedAmount = Math.abs(exitPrice - farEntry) + feePoints;
             } else if (priceChange > 0.5) {
               cDirection = 'WENT_AGAINST';
               verdict = 'SAVED';
-              savedAmount = Math.abs(candles.high - vetoPrice);
+              savedAmount = Math.abs(farEntry - exitPrice) + feePoints;
             } else {
               cDirection = 'FLAT';
               verdict = 'NEUTRAL';
@@ -365,7 +395,9 @@ async function processUnlabeledVetos() {
           duration_minutes: durationMinutes,
           counterfactual_low: cLow !== null ? parseFloat(cLow.toFixed(2)) : null,
           counterfactual_high: cHigh !== null ? parseFloat(cHigh.toFixed(2)) : null,
-          counterfactual_direction: cDirection
+          counterfactual_direction: cDirection,
+          // 🟢 shadow-v2: which price basis produced the amounts (far_side | mid_legacy | null=Path A)
+          fill_basis: fillBasis
         }]);
 
       if (insertError) {
