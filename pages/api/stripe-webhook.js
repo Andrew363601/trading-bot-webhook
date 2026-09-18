@@ -77,6 +77,19 @@ async function syncToBrevo(email, tier, action) {
           }
         })
       });
+    } else if (action === 'challenge_entered') {
+      // PUSH Y: 100K checkout completed — move contact: pending list out, active list in.
+      await fetch('https://api.brevo.com/v3/contacts', {
+        method: 'POST',
+        headers: { 'api-key': BREVO_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          updateEnabled: true,
+          listIds: [14], // active challenge list (matches API-created lists)
+          unlinkListIds: [13], // pending challenge list
+          attributes: { CHALLENGE_STATUS: 'entered' }
+        })
+      });
     } else if (action === 'convert') {
       // Trial → Paid: update Brevo attributes
       await fetch('https://api.brevo.com/v3/contacts', {
@@ -225,6 +238,11 @@ export default async function handler(req, res) {
                             .update({ status: 'active' })
                             .eq('id', pendingEntry.id);
                         console.log(`[STRIPE_WEBHOOK] Challenge entry activated for ${csTenantId}.`);
+                        // PUSH Y: Brevo status flip — pending list out, active list in.
+                        const challengeEmail = session.customer_details?.email || session.customer_email;
+                        if (challengeEmail) {
+                            await syncToBrevo(challengeEmail, csTier, 'challenge_entered');
+                        }
                     }
                 }
             }
