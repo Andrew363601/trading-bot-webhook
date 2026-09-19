@@ -423,16 +423,24 @@ function PerformanceLogContent() {
     if (!timeline?.cumulative) return [];
     // PUSH AF2 — MODEL attribution view: Approved (emerald $) vs Flagged (rose $)
     if (modelView) {
-      // AH2 — when the bucket has 0 approved/flagged rows, do NOT blank the
-      // chart: render the previous series and let the "0 trades match this
-      // bucket" note chip (driven by totals counts) explain the empty state.
+      // AJ1 — honest empty state: when the refetched bucket has 0 approved AND
+      // 0 flagged rows, CLEAR the cached series and return [] so no stale lines
+      // linger. The "0 trades match this bucket" note chip explains the empty
+      // state. While modelViewLoading is true, keep rendering the previous
+      // series (no empty flash mid-refetch).
       const model = [
         { key: 'modelApproved', color: '#10b981', data: timeline.cumulative.modelApproved || [] },
         { key: 'modelFlagged', color: '#f43f5e', data: timeline.cumulative.modelFlagged || [] },
       ];
       let series = calGranularity === 'WEEK' ? model.map(s => ({ ...s, data: weeklyCumulative(s.data) })) : model.filter(s => s.data.length > 0);
       if (series.length === 0) {
-        if (lastModelSeriesRef.current) return lastModelSeriesRef.current;
+        if (modelViewLoading) {
+          // Mid-refetch: keep the previous series on screen (no empty flash).
+          if (lastModelSeriesRef.current) return lastModelSeriesRef.current;
+          return [];
+        }
+        // Refetch complete and bucket is genuinely empty — clear the cache.
+        lastModelSeriesRef.current = null;
         return [];
       }
       lastModelSeriesRef.current = series;
@@ -454,9 +462,19 @@ function PerformanceLogContent() {
     const live = { key: 'live', color: '#3b82f6', data: timeline.cumulative.live || [] };
     const paper = { key: 'paper', color: '#a78bfa', data: timeline.cumulative.paper || [] };
     let series = modeFilter === 'LIVE' ? [live] : modeFilter === 'PAPER' ? [paper] : [live, paper];
+    // AJ2 — ALL-mode comparison overlay: add the shadow NET series (% of veto
+    // price, orange dashed) as a THIRD line. Units clash ($ vs %) → two-axis:
+    // live/paper $ on the LEFT scale, shadow % on the RIGHT scale. This is the
+    // agent-alpha comparison: what the books did WITH vetoes vs the
+    // counterfactual WITHOUT them.
+    if (modeFilter === 'ALL') {
+      series = series.map(s => ({ ...s, priceScaleId: 'left' }));
+      const shadowNet = { key: 'shadowNetPct', color: '#f97316', data: timeline.cumulative.shadowNetPct || [], lineWidth: 2, dashed: true, priceScaleId: 'right', label: 'SHADOW NET (% of veto price)' };
+      series = [...series, shadowNet];
+    }
     if (calGranularity === 'WEEK') series = series.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
     return series.filter(s => s.data.length > 0);
-  }, [timeline, modeFilter, showVetos, modelView, calGranularity]);
+  }, [timeline, modeFilter, showVetos, modelView, modelViewLoading, calGranularity]);
 
   // PUSH AC — vetoes grouped by LOCAL date (toLocalDateStr, same convention as the
   // calendar), desc. When a calendar day is selected, only that day's rows show.
@@ -916,7 +934,8 @@ function PerformanceLogContent() {
       });
       series.setData(s.data);
     }
-    // AG2 — enable the left price scale when a config-$ series is present
+    // AG2/AJ2 — enable the left price scale when any series targets it
+    // (config-$ in shadow mode; live/paper $ in ALL-mode overlay)
     if (timelineSeries.some(s => s.priceScaleId === 'left')) {
       chart.applyOptions({ leftPriceScale: { visible: true, borderColor: 'rgba(255,255,255,0.1)' } });
     }
@@ -1253,7 +1272,7 @@ function PerformanceLogContent() {
                 ? (modelViewLoading ? 'loading model bucket…' : 'model attribution ($ — real trades)')
                 : showVetos
                   ? 'shadow curve (% of veto price — measured)'
-                  : modeFilter === 'LIVE' ? 'live only' : modeFilter === 'PAPER' ? 'paper only' : 'live + paper'}
+                  : modeFilter === 'LIVE' ? 'live only' : modeFilter === 'PAPER' ? 'paper only' : 'live + paper $ (left) · shadow net % (right)'}
             </div>
           </div>
 
