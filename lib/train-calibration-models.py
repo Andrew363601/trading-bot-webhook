@@ -383,8 +383,10 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
 def summarize(samples):
     real = [s for s in samples if len(s) < 4 or s[3] >= 1.0]
     n = len(real)
-    wins = sum(1 for _, l, _ in real if l == 1)
-    avg_pnl = sum(p for _, _, p in real) / n if n else 0.0
+    # HOTFIX (TRAINER 2) — index access instead of strict 3-tuple unpack
+    # (shape-agnostic; samples may carry extra fields).
+    wins = sum(1 for s in real if s[1] == 1)
+    avg_pnl = sum(s[2] for s in real) / n if n else 0.0
     # Optimal TP/SL in ATR terms (from stored tp/sl vs entry + snapshot atr)
     return {'n': n, 'win_rate': wins / n if n else 0, 'avg_pnl': avg_pnl}
 
