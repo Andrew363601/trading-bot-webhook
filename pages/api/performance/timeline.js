@@ -21,8 +21,21 @@ function emptyBucket() {
     live_pnl: 0, live_count: 0,
     paper_pnl: 0, paper_count: 0,
     shadow_saved: 0, shadow_missed: 0, shadow_net: 0,
+    // PUSH AF1 — shadow in % of veto price (signed sums, computed at read time — no migration)
+    shadow_saved_pct: 0, shadow_missed_pct: 0, shadow_net_pct: 0,
     veto_saved_count: 0, veto_missed_count: 0, veto_neutral_count: 0,
   };
+}
+
+// PUSH AF1 — signed % of veto price for one ledger row, computed at read time.
+// SAVED → +(saved_amount / veto_price) * 100 · MISSED → -(missed_amount / veto_price) * 100.
+// null when veto_price is null (or zero — division guard).
+function movePctOfRow(v) {
+  const vp = parseFloat(v.veto_price);
+  if (!vp || isNaN(vp) || vp === 0) return null;
+  if (v.verdict === 'SAVED') return ((parseFloat(v.saved_amount) || 0) / vp) * 100;
+  if (v.verdict === 'MISSED') return -((parseFloat(v.missed_amount) || 0) / vp) * 100;
+  return null;
 }
 
 export default async function handler(req, res) {
@@ -45,8 +58,19 @@ export default async function handler(req, res) {
   if (days > 90) days = 90;
   const since = new Date(Date.now() - days * DAY_MS).toISOString();
 
+  // PUSH AF2 — optional attribution bucket filters: ?asset=&strategy=&tf=&regime=
+  // When present, the model query is filtered to the bucket and n_approved/n_flagged
+  // are included in the response. trade_logs has no asset/tf columns (trainer mirrors
+  // this: asset→symbol, tf→'ANY/ANY'), so tf is accepted but not filterable here.
+  const bucketFilters = {};
+  if (req.query.asset && req.query.asset !== 'ALL') bucketFilters.asset = String(req.query.asset);
+  if (req.query.strategy && req.query.strategy !== 'ALL') bucketFilters.strategy = String(req.query.strategy);
+  if (req.query.tf && req.query.tf !== 'ALL') bucketFilters.tf = String(req.query.tf);
+  if (req.query.regime && req.query.regime !== 'ALL') bucketFilters.regime = String(req.query.regime);
+  const hasBucketFilters = Object.keys(bucketFilters).length > 0;
+
   try {
-    const [tradesRes, shadowRes, toolCallsRes] = await Promise.all([
+    const [tradesRes, shadowRes, toolCallsRes, modelTradesRes] = await Promise.all([
       // A) Closed trades (exit_price present ⇒ closed)
       supabase
         .from('trade_logs')
@@ -71,11 +95,31 @@ export default async function handler(req, res) {
         .eq('tenant_id', tenantId)
         .gte('created_at', since)
         .limit(5000),
+      // PUSH AF2 — model attribution: model-scored closed trades. SELECT mirrors
+      // lib/train-calibration-models.py's trade_logs pull so attribution keys match
+      // training buckets exactly (asset→symbol fallback; no tf columns on trade_logs).
+      (() => {
+        let q = supabase
+          .from('trade_logs')
+          .select('id, tenant_id, symbol, strategy_id, regime_at_entry, pnl, side, entry_price, exit_price, market_snapshot_at_entry, tp_price, sl_price, exit_time, created_at, model_predicted_win_prob')
+          .eq('tenant_id', tenantId)
+          .not('model_predicted_win_prob', 'is', null)
+          .not('exit_price', 'is', null)
+          .not('market_snapshot_at_entry', 'is', null)
+          .gte('exit_time', since)
+          .order('exit_time', { ascending: true })
+          .limit(10000);
+        if (bucketFilters.asset) q = q.eq('symbol', bucketFilters.asset);
+        if (bucketFilters.strategy) q = q.eq('strategy_id', bucketFilters.strategy);
+        if (bucketFilters.regime) q = q.eq('regime_at_entry', bucketFilters.regime);
+        return q;
+      })(),
     ]);
 
     const trades = tradesRes.data || [];
     const vetoes = shadowRes.data || [];
     const toolCalls = toolCallsRes.data || [];
+    const modelTrades = modelTradesRes.data || []; // PUSH AF2
 
     // C) scan_results telemetry for veto reasons — chunked .in() by 50.
     // Degrade silently: on any error, vetoes still return with reason: null.
@@ -165,6 +209,29 @@ export default async function handler(req, res) {
       } else {
         buckets[key].veto_neutral_count += 1;
       }
+      // PUSH AF1 — signed % of veto price (read-time, no migration)
+      const movePct = movePctOfRow(v);
+      if (movePct !== null) {
+        if (verdict === 'SAVED') buckets[key].shadow_saved_pct += movePct;
+        else if (verdict === 'MISSED') buckets[key].shadow_missed_pct += movePct;
+      }
+    }
+
+    // PUSH AF2 — model attribution buckets: approved (prob >= 0.5) vs flagged (< 0.5), $ PnL
+    const modelBuckets = {}; // date -> { approved_pnl, approved_count, flagged_pnl, flagged_count }
+    for (const t of modelTrades) {
+      const key = utcDateKey(t.exit_time);
+      if (!key) continue;
+      if (!modelBuckets[key]) modelBuckets[key] = { approved_pnl: 0, approved_count: 0, flagged_pnl: 0, flagged_count: 0 };
+      const pnl = parseFloat(t.pnl) || 0;
+      const prob = parseFloat(t.model_predicted_win_prob) || 0;
+      if (prob >= 0.5) {
+        modelBuckets[key].approved_pnl += pnl;
+        modelBuckets[key].approved_count += 1;
+      } else {
+        modelBuckets[key].flagged_pnl += pnl;
+        modelBuckets[key].flagged_count += 1;
+      }
     }
 
     const dayKeys = Object.keys(buckets).sort();
@@ -175,11 +242,25 @@ export default async function handler(req, res) {
       buckets[k].shadow_saved = round2(buckets[k].shadow_saved);
       buckets[k].shadow_missed = round2(buckets[k].shadow_missed);
       buckets[k].shadow_net = round2(buckets[k].shadow_net);
+      // PUSH AF1 — signed pct sums (SAVED positive, MISSED negative)
+      buckets[k].shadow_saved_pct = round2(buckets[k].shadow_saved_pct);
+      buckets[k].shadow_missed_pct = round2(buckets[k].shadow_missed_pct);
+      buckets[k].shadow_net_pct = round2(buckets[k].shadow_saved_pct + buckets[k].shadow_missed_pct);
+    }
+    for (const k of Object.keys(modelBuckets)) {
+      modelBuckets[k].approved_pnl = round2(modelBuckets[k].approved_pnl);
+      modelBuckets[k].flagged_pnl = round2(modelBuckets[k].flagged_pnl);
     }
 
     // ── Cumulative series (running sums; only days where the series exists) ──
     const cumLive = [], cumPaper = [], cumShadow = [];
+    // PUSH AF1 — cumulative shadow in % of veto price (running sums, % unit)
+    const cumShadowSavedPct = [], cumShadowMissedPct = [], cumShadowNetPct = [];
+    // PUSH AF2 — cumulative model attribution ($, real trades)
+    const cumModelApproved = [], cumModelFlagged = [];
     let runLive = 0, runPaper = 0, runShadow = 0;
+    let runSavedPct = 0, runMissedPct = 0, runNetPct = 0;
+    let runModelApproved = 0, runModelFlagged = 0;
     for (const k of dayKeys) {
       const b = buckets[k];
       if (b.live_count > 0) { runLive = round2(runLive + b.live_pnl); cumLive.push({ time: k, value: runLive }); }
@@ -187,6 +268,20 @@ export default async function handler(req, res) {
       if (b.veto_saved_count > 0 || b.veto_missed_count > 0 || b.veto_neutral_count > 0) {
         runShadow = round2(runShadow + b.shadow_net);
         cumShadow.push({ time: k, value: runShadow });
+        // PUSH AF1 — % unit running sums on the same veto-active days
+        runSavedPct = round2(runSavedPct + b.shadow_saved_pct);
+        runMissedPct = round2(runMissedPct + b.shadow_missed_pct);
+        runNetPct = round2(runSavedPct + runMissedPct);
+        cumShadowSavedPct.push({ time: k, value: runSavedPct });
+        cumShadowMissedPct.push({ time: k, value: runMissedPct });
+        cumShadowNetPct.push({ time: k, value: runNetPct });
+      }
+      const m = modelBuckets[k];
+      if (m && (m.approved_count > 0 || m.flagged_count > 0)) {
+        runModelApproved = round2(runModelApproved + m.approved_pnl);
+        runModelFlagged = round2(runModelFlagged + m.flagged_pnl);
+        cumModelApproved.push({ time: k, value: runModelApproved });
+        cumModelFlagged.push({ time: k, value: runModelFlagged });
       }
     }
 
@@ -201,7 +296,16 @@ export default async function handler(req, res) {
       shadow_saved: round2(daily.reduce((s, d) => s + d.shadow_saved, 0)),
       shadow_missed: round2(daily.reduce((s, d) => s + d.shadow_missed, 0)),
       shadow_net: round2(runShadow),
+      // PUSH AF1 — totals in % of veto price (signed sums over the window)
+      shadow_saved_pct: round2(runSavedPct),
+      shadow_missed_pct: round2(runMissedPct),
+      shadow_net_pct: round2(runSavedPct + runMissedPct),
       veto_total: daily.reduce((s, d) => s + d.veto_saved_count + d.veto_missed_count + d.veto_neutral_count, 0),
+      // PUSH AF2 — model attribution totals ($, real trades)
+      model_approved_pnl: round2(runModelApproved),
+      model_approved_count: Object.values(modelBuckets).reduce((s, m) => s + m.approved_count, 0),
+      model_flagged_pnl: round2(runModelFlagged),
+      model_flagged_count: Object.values(modelBuckets).reduce((s, m) => s + m.flagged_count, 0),
     };
 
     // ── Vetoes ledger: most recent 200, desc ──
@@ -217,6 +321,8 @@ export default async function handler(req, res) {
         saved_amount: v.saved_amount,
         missed_amount: v.missed_amount,
         veto_price: v.veto_price,
+        // PUSH AF1 — signed % of veto price, computed at read time (null when veto_price null)
+        move_pct: movePctOfRow(v),
         veto_regime: v.veto_regime,
         fill_basis: v.fill_basis,
         macro_tf: v.macro_tf,
@@ -234,9 +340,27 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       days: daily,
-      cumulative: { live: cumLive, paper: cumPaper, shadow: cumShadow },
+      cumulative: {
+        live: cumLive,
+        paper: cumPaper,
+        shadow: cumShadow,
+        // PUSH AF1 — shadow cumulative in % of veto price
+        shadowSavedPct: cumShadowSavedPct,
+        shadowMissedPct: cumShadowMissedPct,
+        shadowNetPct: cumShadowNetPct,
+        // PUSH AF2 — model attribution cumulative ($)
+        modelApproved: cumModelApproved,
+        modelFlagged: cumModelFlagged,
+      },
       totals,
       vetoes: vetoLedger,
+      // PUSH AF2 — per-day model buckets + n counts when a bucket filter is applied
+      modelDays: Object.keys(modelBuckets).sort().map(k => ({ date: k, ...modelBuckets[k] })),
+      ...(hasBucketFilters ? {
+        bucket: bucketFilters,
+        n_approved: totals.model_approved_count,
+        n_flagged: totals.model_flagged_count,
+      } : {}),
     });
   } catch (err) {
     console.error('[performance/timeline] error:', err.message || err);

@@ -242,6 +242,10 @@ function PerformanceLogContent() {
 
   // PUSH AC — Performance Timeline state (⏱️ Performance Timeline + 🛡️ Shadow Ledger)
   const [timeline, setTimeline] = useState(null);
+  // PUSH AF2 — MODEL attribution view: mutually exclusive with SHADOW (showVetos).
+  // null = off; { asset, strategy, tf, regime } = viewing a model bucket from Engine Intelligence.
+  const [modelView, setModelView] = useState(null);
+  const [modelViewLoading, setModelViewLoading] = useState(false);
   // PUSH AC — PnL calendar granularity: DAY | WEEK (re-aggregates both charts)
   const [calGranularity, setCalGranularity] = useState('DAY');
   const [expandedReason, setExpandedReason] = useState({}); // keyed by scan_id (and sp-<id> for old shadow rows)
@@ -306,13 +310,22 @@ function PerformanceLogContent() {
     return () => { isCancelled = true; };
   }, [session?.access_token]);
 
-  // PUSH AB — Fetch Performance Timeline (30d daily PnL + Veto Ledger)
+  // PUSH AB — Fetch Performance Timeline (30d daily PnL + Veto Ledger).
+  // PUSH AF2 — when modelView is set, refetch with the bucket params for attribution.
   useEffect(() => {
     if (!session?.access_token) return;
     let isCancelled = false;
     const fetchTimeline = async () => {
+      if (modelView) setModelViewLoading(true);
       try {
-        const res = await fetch('/api/performance/timeline?days=30', {
+        const params = new URLSearchParams({ days: '30' });
+        if (modelView) {
+          if (modelView.asset) params.set('asset', modelView.asset);
+          if (modelView.strategy) params.set('strategy', modelView.strategy);
+          if (modelView.tf) params.set('tf', modelView.tf);
+          if (modelView.regime) params.set('regime', modelView.regime);
+        }
+        const res = await fetch(`/api/performance/timeline?${params.toString()}`, {
           headers: { 'Authorization': `Bearer ${session.access_token}` }
         });
         if (res.ok) {
@@ -322,11 +335,13 @@ function PerformanceLogContent() {
       } catch (err) {
         console.error('[PERFORMANCE] Failed to load performance timeline:', err);
         // On failure render nothing for the new sections — page must never break.
+      } finally {
+        if (!isCancelled) setModelViewLoading(false);
       }
     };
     fetchTimeline();
     return () => { isCancelled = true; };
-  }, [session?.access_token]);
+  }, [session?.access_token, modelView]);
 
   // Helper: format a Date as a local YYYY-MM-DD (avoids UTC off-by-one issues).
   // Declared BEFORE every memo that calls it (TDZ — plain const, not hoisted).
@@ -342,17 +357,32 @@ function PerformanceLogContent() {
   // trade series with the shadow pts series. WEEK granularity re-buckets into ISO weeks.
   const timelineSeries = useMemo(() => {
     if (!timeline?.cumulative) return [];
+    // PUSH AF2 — MODEL attribution view: Approved (emerald $) vs Flagged (rose $)
+    if (modelView) {
+      const model = [
+        { key: 'modelApproved', color: '#10b981', data: timeline.cumulative.modelApproved || [] },
+        { key: 'modelFlagged', color: '#f43f5e', data: timeline.cumulative.modelFlagged || [] },
+      ];
+      if (calGranularity === 'WEEK') return model.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
+      return model.filter(s => s.data.length > 0);
+    }
     if (showVetos) {
-      const shadow = [{ key: 'shadow', color: '#f97316', data: timeline.cumulative.shadow || [] }];
+      // PUSH AF1 — SHADOW renders THREE lines in % of veto price (measured):
+      // SAVED (emerald), MISSED (rose), NET (orange, bold).
+      const shadow = [
+        { key: 'shadowSavedPct', color: '#10b981', data: timeline.cumulative.shadowSavedPct || [] },
+        { key: 'shadowMissedPct', color: '#f43f5e', data: timeline.cumulative.shadowMissedPct || [] },
+        { key: 'shadowNetPct', color: '#f97316', data: timeline.cumulative.shadowNetPct || [], lineWidth: 3 },
+      ];
       if (calGranularity === 'WEEK') return shadow.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
-      return shadow;
+      return shadow.filter(s => s.data.length > 0);
     }
     const live = { key: 'live', color: '#3b82f6', data: timeline.cumulative.live || [] };
     const paper = { key: 'paper', color: '#a78bfa', data: timeline.cumulative.paper || [] };
     let series = modeFilter === 'LIVE' ? [live] : modeFilter === 'PAPER' ? [paper] : [live, paper];
     if (calGranularity === 'WEEK') series = series.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
     return series.filter(s => s.data.length > 0);
-  }, [timeline, modeFilter, showVetos, calGranularity]);
+  }, [timeline, modeFilter, showVetos, modelView, calGranularity]);
 
   // PUSH AC — vetoes grouped by LOCAL date (toLocalDateStr, same convention as the
   // calendar), desc. When a calendar day is selected, only that day's rows show.
@@ -804,7 +834,7 @@ function PerformanceLogContent() {
     for (const s of timelineSeries) {
       const series = chart.addSeries(LineSeries, {
         color: s.color,
-        lineWidth: 2,
+        lineWidth: s.lineWidth || 2, // PUSH AF1 — NET line is bold (3)
         priceLineVisible: false,
         lastValueVisible: true,
       });
@@ -969,10 +999,20 @@ function PerformanceLogContent() {
             <h3 className="text-[9px] md:text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
               <Clock size={14}/> Performance Timeline
               {showVetos && <span className="px-2 py-0.5 rounded-full text-[8px] bg-orange-500/20 text-orange-300">SHADOW</span>}
+              {modelView && (
+                <span className="px-2 py-0.5 rounded-full text-[8px] bg-emerald-500/20 text-emerald-300 flex items-center gap-1">
+                  MODEL {modelView.asset || 'ALL'}
+                  <button onClick={() => setModelView(null)} className="hover:text-white">✕</button>
+                </span>
+              )}
             </h3>
             {/* PUSH AC — timeline obeys the existing LIVE/PAPER controls; SHADOW badge shows in shadow mode */}
             <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
-              {showVetos ? 'shadow curve (pts)' : modeFilter === 'LIVE' ? 'live only' : modeFilter === 'PAPER' ? 'paper only' : 'live + paper'}
+              {modelView
+                ? (modelViewLoading ? 'loading model bucket…' : 'model attribution ($ — real trades)')
+                : showVetos
+                  ? 'shadow curve (% of veto price — measured)'
+                  : modeFilter === 'LIVE' ? 'live only' : modeFilter === 'PAPER' ? 'paper only' : 'live + paper'}
             </div>
           </div>
 
@@ -980,18 +1020,28 @@ function PerformanceLogContent() {
             <div ref={timelineContainerRef} className="w-full relative min-h-[220px]" style={{ height: '300px' }} />
           ) : (
             <div className="flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest" style={{ height: '300px' }}>
-              No timeline data in window
+              {modelView ? 'no model-scored trades in window' : 'No timeline data in window'}
             </div>
           )}
 
-          {/* Totals strip — shadow amounts are price POINTS, never $ */}
+          {/* Totals strip — shadow amounts are price POINTS, never $.
+              PUSH AF1 — SHADOW section shows % of veto price (measured); PUSH AF2 — MODEL section shows $ attribution. */}
           <div className="mt-4 pt-3 border-t border-white/5 flex flex-wrap items-center gap-x-5 gap-y-2 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono">
             <span className="text-blue-400">LIVE ${Number(timeline.totals?.live_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.live_count ?? 0})</span></span>
             <span className="text-violet-400">PAPER ${Number(timeline.totals?.paper_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.paper_count ?? 0})</span></span>
-            <span className="text-orange-400">
-              SHADOW {Number(timeline.totals?.shadow_net || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_net || 0)).toFixed(2)} pts
-              <span className="text-slate-500"> ({timeline.totals?.shadow_saved ?? 0} saved / {timeline.totals?.shadow_missed ?? 0} missed over {timeline.totals?.veto_total ?? 0})</span>
-            </span>
+            {modelView ? (
+              <span className="text-emerald-400">
+                MODEL approved ${Number(timeline.totals?.model_approved_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.model_approved_count ?? 0})</span>
+                <span className="text-rose-400"> · flagged ${Number(timeline.totals?.model_flagged_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.model_flagged_count ?? 0})</span></span>
+              </span>
+            ) : (
+              <span className="text-orange-400">
+                SHADOW {Number(timeline.totals?.shadow_net_pct || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_net_pct || 0)).toFixed(2)}% net
+                <span className="text-emerald-400"> · saved {Number(timeline.totals?.shadow_saved_pct || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_saved_pct || 0)).toFixed(2)}%</span>
+                <span className="text-rose-400"> · missed −{Math.abs(Number(timeline.totals?.shadow_missed_pct || 0)).toFixed(2)}%</span>
+                <span className="text-slate-500"> (% of veto price — measured, over {timeline.totals?.veto_total ?? 0} vetoes)</span>
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -1123,10 +1173,24 @@ function PerformanceLogContent() {
                         <tr key={idx} className="hover:bg-white/[0.02]">
                           <td className="py-2 text-white font-bold">{p.asset} <span className="text-slate-500 font-normal">({p.regime})</span></td>
                           <td className="py-2 text-slate-400">{p.strategy}</td>
-                          <td className="py-2 text-center">{p.n}</td>
+                          <td className="py-2 text-center">
+                            {p.n}
+                            {/* PUSH AF2 — low n warning chip */}
+                            {p.n < 20 && <span className="ml-1 px-1 rounded text-[7px] bg-amber-500/20 text-amber-300" title="low sample count">low n</span>}
+                          </td>
                           <td className="py-2 text-right text-emerald-400 font-bold">{p.win_rate !== null ? `${(p.win_rate * 100).toFixed(0)}%` : '--'}</td>
                           <td className="py-2 text-right">{p.expected_pnl_mean !== null ? `$${p.expected_pnl_mean.toFixed(2)}` : '--'}</td>
-                          <td className="py-2 text-right">{p.capture_ratio !== null ? `${(p.capture_ratio * 100).toFixed(0)}%` : '--'}</td>
+                          <td className="py-2 text-right flex items-center justify-end gap-1">
+                            {p.capture_ratio !== null ? `${(p.capture_ratio * 100).toFixed(0)}%` : '--'}
+                            {/* PUSH AF2 — view PnL: switches timeline to MODEL attribution for this bucket */}
+                            <button
+                              onClick={() => setModelView({ asset: p.asset, strategy: p.strategy, tf: null, regime: p.regime })}
+                              className="px-1.5 py-0.5 rounded text-[7px] font-black uppercase tracking-wider bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/20"
+                              title="View PnL attribution for this model bucket"
+                            >
+                              view PnL
+                            </button>
+                          </td>
                         </tr>
                       ))
                     )}
