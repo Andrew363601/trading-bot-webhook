@@ -328,6 +328,15 @@ function PerformanceLogContent() {
     return () => { isCancelled = true; };
   }, [session?.access_token]);
 
+  // Helper: format a Date as a local YYYY-MM-DD (avoids UTC off-by-one issues).
+  // Declared BEFORE every memo that calls it (TDZ — plain const, not hoisted).
+  const toLocalDateStr = (d) => {
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const dy = String(d.getDate()).padStart(2, '0');
+    return `${yr}-${mo}-${dy}`;
+  };
+
   // PUSH AC — cumulative series for the timeline chart. Obeys the EXISTING controls:
   // modeFilter picks LIVE/PAPER (ALL = both); showVetos (SHADOW mode) replaces the
   // trade series with the shadow pts series. WEEK granularity re-buckets into ISO weeks.
@@ -398,14 +407,6 @@ function PerformanceLogContent() {
       .sort((a, b) => (a < b ? 1 : -1))
       .map(date => ({ date, rows: groups[date].sort((a, b) => new Date(b.veto_time || b.created_at) - new Date(a.veto_time || a.created_at)) }));
   }, [showVetos, shadowRecords, selectedDate]);
-
-  // Helper: format a Date as a local YYYY-MM-DD (avoids UTC off-by-one issues).
-  const toLocalDateStr = (d) => {
-    const yr = d.getFullYear();
-    const mo = String(d.getMonth() + 1).padStart(2, '0');
-    const dy = String(d.getDate()).padStart(2, '0');
-    return `${yr}-${mo}-${dy}`;
-  };
 
   // Build a full month grid: leading blanks for the first weekday, then each day
   // of the visible month. `null` entries render as empty cells.
