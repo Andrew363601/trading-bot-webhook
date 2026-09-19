@@ -111,9 +111,10 @@ export default async function handler(req, res) {
           .gte('exit_time', since)
           .order('exit_time', { ascending: true })
           .limit(10000);
-        if (bucketFilters.asset) q = q.eq('symbol', bucketFilters.asset);
-        if (bucketFilters.strategy) q = q.eq('strategy_id', bucketFilters.strategy);
-        if (bucketFilters.regime) q = q.eq('regime_at_entry', bucketFilters.regime);
+        // AH2 — bucket filtering moved to JS below. SQL .eq() on regime_at_entry
+        // misses NULL-regime rows, but the trainer buckets those as 'CHOP'
+        // (lib/train-calibration-models.py ~L162), so a regime=CHOP request must
+        // include them. JS-side derivation mirrors the trainer EXACTLY.
         return q;
       })(),
     ]);
@@ -121,7 +122,22 @@ export default async function handler(req, res) {
     const trades = tradesRes.data || [];
     const vetoes = shadowRes.data || [];
     const toolCalls = toolCallsRes.data || [];
-    const modelTrades = modelTradesRes.data || []; // PUSH AF2
+    // PUSH AF2 / AH2 — JS-side bucket filter mirroring the trainer's key
+    // derivation (lib/train-calibration-models.py ~L162):
+    //   regime = regime_at_entry if in VALID_REGIMES else 'CHOP' (NULL → CHOP)
+    //   asset  = symbol
+    //   strategy = strategy_id
+    const VALID_REGIMES = ['TREND', 'CHOP', 'ACCUMULATION', 'DISTRIBUTION'];
+    const trainerRegime = (row) => {
+      const r = row.regime_at_entry;
+      return r && VALID_REGIMES.includes(r) ? r : 'CHOP';
+    };
+    const modelTrades = (modelTradesRes.data || []).filter(t => {
+      if (bucketFilters.asset && t.symbol !== bucketFilters.asset) return false;
+      if (bucketFilters.strategy && t.strategy_id !== bucketFilters.strategy) return false;
+      if (bucketFilters.regime && trainerRegime(t) !== bucketFilters.regime) return false;
+      return true;
+    }); // PUSH AF2
 
     // C) scan_results telemetry for veto reasons — chunked .in() by 50.
     // Degrade silently: on any error, vetoes still return with reason: null.

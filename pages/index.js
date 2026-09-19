@@ -177,6 +177,9 @@ function DashboardContent() {
   const [chartTimeframe, setChartTimeframe] = useState('1m');
   const [showMarkers, setShowMarkers] = useState(true);
   const [showPriceLines, setShowPriceLines] = useState(true);
+  // 🛡️ AH1 — shadow-portfolio chart markers. Independent toggle, default OFF.
+  const [showShadow, setShowShadow] = useState(false);
+  const [shadowPortfolio, setShadowPortfolio] = useState([]);
 
   const isLoadingOlderRef = useRef(false);
   const allChartDataRef = useRef([]);
@@ -1332,12 +1335,72 @@ function DashboardContent() {
               }
           });
 
+          // 🛡️ AH1 — shadow-portfolio markers (additive; existing trade markers untouched).
+          // Entry marker at veto_time, exit marker at sim_exit_time. Colors by verdict:
+          // SAVED emerald, MISSED rose, NEUTRAL slate. Exit shape/text by sim_exit_reason.
+          if (showShadow && shadowPortfolio.length > 0) {
+              const shadowRows = shadowPortfolio.filter(row =>
+                normalizeAssetSymbol(row.asset) === normalizeAssetSymbol(activeAsset)
+              );
+              const reasonLabel = {
+                  'TAKE_PROFIT': '🎯 TP', 'STOP_LOSS': '🛑 SL', 'TRAIL': '📉 TRAIL',
+                  'TRIPWIRE': '🛡️ TRIPWIRE', 'HORIZON': '⏳ HORIZON'
+              };
+              shadowRows.forEach(row => {
+                  if (!row.veto_time) return;
+                  const verdict = (row.verdict || 'NEUTRAL').toUpperCase();
+                  const vColor = verdict === 'SAVED' ? '#10b981' : verdict === 'MISSED' ? '#f43f5e' : '#64748b';
+                  const isLong = (row.signal_direction || '').toUpperCase().includes('LONG') || (row.signal_direction || '').toUpperCase() === 'BUY';
+                  const entryPos = isLong ? 'belowBar' : 'aboveBar';
+                  const exitPos = isLong ? 'aboveBar' : 'belowBar';
+                  const price = row.veto_price ? `$${parseFloat(row.veto_price).toFixed(2)}` : '';
+
+                  let rawTime = Math.floor(new Date(row.veto_time).getTime() / 1000);
+                  let snappedTime = candleTimesArray.reduce((prev, curr) =>
+                      Math.abs(curr - rawTime) < Math.abs(prev - rawTime) ? curr : prev
+                  );
+                  if (Math.abs(snappedTime - rawTime) <= granularity * 2) {
+                      while(usedTimes.has(snappedTime)) snappedTime++;
+                      usedTimes.add(snappedTime);
+                      markers.push({
+                          time: snappedTime,
+                          position: entryPos,
+                          color: vColor,
+                          shape: isLong ? 'arrowUp' : 'arrowDown',
+                          text: `🛡️ ${verdict} ${price}`
+                      });
+                  }
+
+                  if (row.sim_exit_time) {
+                      let rawExitTime = Math.floor(new Date(row.sim_exit_time).getTime() / 1000);
+                      let snappedExitTime = candleTimesArray.reduce((prev, curr) =>
+                          Math.abs(curr - rawExitTime) < Math.abs(prev - rawExitTime) ? curr : prev
+                      );
+                      if (Math.abs(snappedExitTime - rawExitTime) <= granularity * 2) {
+                          while(usedTimes.has(snappedExitTime)) snappedExitTime++;
+                          usedTimes.add(snappedExitTime);
+                          const reason = (row.sim_exit_reason || '').toUpperCase();
+                          const reasonKey = Object.keys(reasonLabel).find(k => reason.includes(k));
+                          const pnl = row.sim_pnl_usd != null ? parseFloat(row.sim_pnl_usd) : null;
+                          const pnlText = pnl != null ? ` ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}` : '';
+                          markers.push({
+                              time: snappedExitTime,
+                              position: exitPos,
+                              color: vColor,
+                              shape: reasonKey === 'TAKE_PROFIT' ? 'circle' : reasonKey === 'STOP_LOSS' ? 'square' : 'arrowDown',
+                              text: `${reasonLabel[reasonKey] || 'EXIT'}${pnlText}`
+                          });
+                      }
+                  }
+              });
+          }
+
           markers.sort((a,b) => a.time - b.time);
           seriesMarkersRef.current.setMarkers(markers);
 
       } catch (e) { console.error("Chart Markers Error:", e); }
 
-  }, [activeAsset, chartTimeframe, debouncedTradeLogs, normalizeAssetSymbol, openPositions, showMarkers]);
+  }, [activeAsset, chartTimeframe, debouncedTradeLogs, normalizeAssetSymbol, openPositions, showMarkers, showShadow, shadowPortfolio]);
 
   // TP/SL price lines effect (controlled by showPriceLines toggle)
   useEffect(() => {
@@ -1882,6 +1945,31 @@ function DashboardContent() {
                   title="Toggle TP/SL price lines on chart"
                 >
                   {showPriceLines ? '📊 TP/SL' : '📊 OFF'}
+                </button>
+                {/* 🛡️ AH1 — shadow-portfolio marker toggle. Fetches last 30d of
+                    shadow_portfolio on first activation (client-side, RLS-scoped). */}
+                <button
+                  onClick={async () => {
+                    const next = !showShadow;
+                    setShowShadow(next);
+                    if (next && shadowPortfolio.length === 0 && tenantId) {
+                      try {
+                        const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+                        const { data, error } = await supabase
+                          .from('shadow_portfolio')
+                          .select('veto_time, veto_price, signal_direction, verdict, sim_exit_price, sim_exit_time, sim_exit_reason, sim_pnl_usd, asset')
+                          .eq('tenant_id', tenantId)
+                          .gte('veto_time', since)
+                          .order('veto_time', { ascending: true });
+                        if (error) throw error;
+                        setShadowPortfolio(data || []);
+                      } catch (e) { console.error('Shadow portfolio fetch error:', e); }
+                    }
+                  }}
+                  className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase transition-all ${showShadow ? 'bg-rose-600/30 text-rose-400 border border-rose-500/30' : 'dark:bg-slate-800/50 bg-slate-200 dark:text-slate-500 text-slate-600 border dark:border-white/5 border-slate-300'}`}
+                  title="Toggle shadow-portfolio veto markers on chart"
+                >
+                  {showShadow ? '🛡️ SHADOW' : '🛡️ OFF'}
                 </button>
                 {/* Drawing tools + Coinglass indicator picker. Always available
                     alongside the timeframe / markers / TP-SL controls so users

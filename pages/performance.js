@@ -273,6 +273,11 @@ function PerformanceLogContent() {
   // 🟢 Shadow Portfolio: fetch VETO labels
   const [shadowRecords, setShadowRecords] = useState([]); // legacy raw rows (tab count now uses timeline.totals.veto_total)
   const [showVetos, setShowVetos] = useState(false); // PUSH AD — false = LOGS tab, true = 🛡️ SHADOW LEDGER tab (also drives timeline shadow curve)
+  // AH2 — LOGS / SHADOW LEDGER are now INDEPENDENT toggle chips (both can be
+  // active; default BOTH on). showVetos stays the source of truth for the
+  // timeline chart series; these chips only control list/ledger visibility.
+  const [showLogs, setShowLogs] = useState(true);
+  const [showShadowLedger, setShowShadowLedger] = useState(true);
   const [riskBlocks, setRiskBlocks] = useState([]);
   const [showRiskBlocks, setShowRiskBlocks] = useState(false);
   const [toolCallsMap, setToolCallsMap] = useState({});
@@ -313,6 +318,9 @@ function PerformanceLogContent() {
   // PUSH AB — dedicated refs for the timeline chart (never touch chartRef/chartContainerRef)
   const timelineContainerRef = useRef(null);
   const timelineChartRef = useRef(null);
+  // AH2 — MODEL view: remember the last non-empty model series so a 0-trade
+  // bucket does not silently blank the chart (explicit empty > silent vanish).
+  const lastModelSeriesRef = useRef(null);
 
   useEffect(() => {
       setIsMounted(true);
@@ -415,12 +423,20 @@ function PerformanceLogContent() {
     if (!timeline?.cumulative) return [];
     // PUSH AF2 — MODEL attribution view: Approved (emerald $) vs Flagged (rose $)
     if (modelView) {
+      // AH2 — when the bucket has 0 approved/flagged rows, do NOT blank the
+      // chart: render the previous series and let the "0 trades match this
+      // bucket" note chip (driven by totals counts) explain the empty state.
       const model = [
         { key: 'modelApproved', color: '#10b981', data: timeline.cumulative.modelApproved || [] },
         { key: 'modelFlagged', color: '#f43f5e', data: timeline.cumulative.modelFlagged || [] },
       ];
-      if (calGranularity === 'WEEK') return model.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
-      return model.filter(s => s.data.length > 0);
+      let series = calGranularity === 'WEEK' ? model.map(s => ({ ...s, data: weeklyCumulative(s.data) })) : model.filter(s => s.data.length > 0);
+      if (series.length === 0) {
+        if (lastModelSeriesRef.current) return lastModelSeriesRef.current;
+        return [];
+      }
+      lastModelSeriesRef.current = series;
+      return series;
     }
     if (showVetos) {
       // PUSH AF1 — SHADOW renders THREE lines in % of veto price (measured):
@@ -1056,66 +1072,6 @@ function PerformanceLogContent() {
         </div>
       </header>
 
-      {/* ⏱️ Performance Timeline (PUSH AB) */}
-      {timeline && (
-        <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-            <h3 className="text-[9px] md:text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
-              <Clock size={14}/> Performance Timeline
-              {showVetos && <span className="px-2 py-0.5 rounded-full text-[8px] bg-orange-500/20 text-orange-300">SHADOW</span>}
-              {modelView && (
-                <span className="px-2 py-0.5 rounded-full text-[8px] bg-emerald-500/20 text-emerald-300 flex items-center gap-1">
-                  MODEL {modelView.asset || 'ALL'}
-                  <button onClick={() => setModelView(null)} className="hover:text-white">✕</button>
-                </span>
-              )}
-            </h3>
-            {/* PUSH AC — timeline obeys the existing LIVE/PAPER controls; SHADOW badge shows in shadow mode */}
-            <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
-              {modelView
-                ? (modelViewLoading ? 'loading model bucket…' : 'model attribution ($ — real trades)')
-                : showVetos
-                  ? 'shadow curve (% of veto price — measured)'
-                  : modeFilter === 'LIVE' ? 'live only' : modeFilter === 'PAPER' ? 'paper only' : 'live + paper'}
-            </div>
-          </div>
-
-          {timelineSeries.length > 0 ? (
-            <div ref={timelineContainerRef} className="w-full relative min-h-[220px]" style={{ height: '300px' }} />
-          ) : (
-            <div className="flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest" style={{ height: '300px' }}>
-              {modelView ? 'no model-scored trades in window' : 'No timeline data in window'}
-            </div>
-          )}
-
-          {/* Totals strip — shadow amounts are price POINTS, never $.
-              PUSH AF1 — SHADOW section shows % of veto price (measured); PUSH AF2 — MODEL section shows $ attribution. */}
-          <div className="mt-4 pt-3 border-t border-white/5 flex flex-wrap items-center gap-x-5 gap-y-2 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono">
-            <span className="text-blue-400">LIVE ${Number(timeline.totals?.live_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.live_count ?? 0})</span></span>
-            <span className="text-violet-400">PAPER ${Number(timeline.totals?.paper_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.paper_count ?? 0})</span></span>
-            {modelView ? (
-              <span className="text-emerald-400">
-                MODEL approved ${Number(timeline.totals?.model_approved_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.model_approved_count ?? 0})</span>
-                <span className="text-rose-400"> · flagged ${Number(timeline.totals?.model_flagged_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.model_flagged_count ?? 0})</span></span>
-              </span>
-            ) : (
-              <span className="text-orange-400">
-                SHADOW {Number(timeline.totals?.shadow_net_pct || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_net_pct || 0)).toFixed(2)}% net
-                <span className="text-emerald-400"> · saved {Number(timeline.totals?.shadow_saved_pct || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_saved_pct || 0)).toFixed(2)}%</span>
-                <span className="text-rose-400"> · missed −{Math.abs(Number(timeline.totals?.shadow_missed_pct || 0)).toFixed(2)}%</span>
-                <span className="text-slate-500"> (% of veto price — measured, over {timeline.totals?.veto_total ?? 0} vetoes)</span>
-              </span>
-            )}
-            {!modelView && Number.isFinite(Number(timeline.totals?.shadow_net_usd)) && (
-              <span className="text-slate-400">
-                config-$ {Number(timeline.totals.shadow_net_usd) >= 0 ? '+' : '−'}${Math.abs(Number(timeline.totals.shadow_net_usd)).toFixed(2)} net
-                <span className="text-slate-600"> (config-true sim)</span>
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
       <div className="max-w-7xl w-full mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col min-h-[300px]">
               <h3 className="text-[9px] md:text-[10px] font-black uppercase text-slate-500 tracking-widest mb-4 flex items-center justify-between">
@@ -1272,6 +1228,71 @@ function PerformanceLogContent() {
         )}
       </div>
 
+      {/* ⏱️ Performance Timeline (PUSH AB) — AH2: relocated below Engine Intelligence */}
+      {timeline && (
+        <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <h3 className="text-[9px] md:text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
+              <Clock size={14}/> Performance Timeline
+              {showVetos && <span className="px-2 py-0.5 rounded-full text-[8px] bg-orange-500/20 text-orange-300">SHADOW</span>}
+              {modelView && (
+                <span className="px-2 py-0.5 rounded-full text-[8px] bg-emerald-500/20 text-emerald-300 flex items-center gap-1">
+                  MODEL {modelView.asset || 'ALL'}
+                  <button onClick={() => setModelView(null)} className="hover:text-white">✕</button>
+                </span>
+              )}
+              {/* AH2 — explicit empty-bucket note: 0 approved/flagged rows must not
+                  silently blank the chart; previous lines stay + this chip explains. */}
+              {modelView && !modelViewLoading && (timeline.totals?.model_approved_count ?? 0) === 0 && (timeline.totals?.model_flagged_count ?? 0) === 0 && (
+                <span className="px-2 py-0.5 rounded-full text-[8px] bg-amber-500/20 text-amber-300">0 trades match this bucket</span>
+              )}
+            </h3>
+            {/* PUSH AC — timeline obeys the existing LIVE/PAPER controls; SHADOW badge shows in shadow mode */}
+            <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
+              {modelView
+                ? (modelViewLoading ? 'loading model bucket…' : 'model attribution ($ — real trades)')
+                : showVetos
+                  ? 'shadow curve (% of veto price — measured)'
+                  : modeFilter === 'LIVE' ? 'live only' : modeFilter === 'PAPER' ? 'paper only' : 'live + paper'}
+            </div>
+          </div>
+
+          {timelineSeries.length > 0 ? (
+            <div ref={timelineContainerRef} className="w-full relative min-h-[220px]" style={{ height: '300px' }} />
+          ) : (
+            <div className="flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest" style={{ height: '300px' }}>
+              {modelView ? 'no model-scored trades in window' : 'No timeline data in window'}
+            </div>
+          )}
+
+          {/* Totals strip — shadow amounts are price POINTS, never $.
+              PUSH AF1 — SHADOW section shows % of veto price (measured); PUSH AF2 — MODEL section shows $ attribution. */}
+          <div className="mt-4 pt-3 border-t border-white/5 flex flex-wrap items-center gap-x-5 gap-y-2 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono">
+            <span className="text-blue-400">LIVE ${Number(timeline.totals?.live_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.live_count ?? 0})</span></span>
+            <span className="text-violet-400">PAPER ${Number(timeline.totals?.paper_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.paper_count ?? 0})</span></span>
+            {modelView ? (
+              <span className="text-emerald-400">
+                MODEL approved ${Number(timeline.totals?.model_approved_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.model_approved_count ?? 0})</span>
+                <span className="text-rose-400"> · flagged ${Number(timeline.totals?.model_flagged_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.model_flagged_count ?? 0})</span></span>
+              </span>
+            ) : (
+              <span className="text-orange-400">
+                SHADOW {Number(timeline.totals?.shadow_net_pct || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_net_pct || 0)).toFixed(2)}% net
+                <span className="text-emerald-400"> · saved {Number(timeline.totals?.shadow_saved_pct || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_saved_pct || 0)).toFixed(2)}%</span>
+                <span className="text-rose-400"> · missed −{Math.abs(Number(timeline.totals?.shadow_missed_pct || 0)).toFixed(2)}%</span>
+                <span className="text-slate-500"> (% of veto price — measured, over {timeline.totals?.veto_total ?? 0} vetoes)</span>
+              </span>
+            )}
+            {!modelView && Number.isFinite(Number(timeline.totals?.shadow_net_usd)) && (
+              <span className="text-slate-400">
+                config-$ {Number(timeline.totals.shadow_net_usd) >= 0 ? '+' : '−'}${Math.abs(Number(timeline.totals.shadow_net_usd)).toFixed(2)} net
+                <span className="text-slate-600"> (config-true sim)</span>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl overflow-x-auto">
         <div className="flex items-center justify-between mb-4">
             <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
@@ -1415,23 +1436,24 @@ function PerformanceLogContent() {
              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pl-2">
                  <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2"><Clock size={14}/> Execution Logs</h3>
                  <div className="flex flex-wrap gap-1.5 sm:gap-2 items-center">
-                     {/* PUSH AD — segmented tab control: LOGS vs 🛡️ SHADOW LEDGER.
-                         Same showVetos state underneath (timeline chart keeps obeying it). */}
+                     {/* AH2 — LOGS / SHADOW LEDGER are INDEPENDENT toggle chips
+                         (both can be active; default BOTH on). showVetos stays
+                         the source of truth for the timeline chart series. */}
                      <div className="flex items-center gap-1">
                          <button
-                            onClick={() => setShowVetos(false)}
+                            onClick={() => setShowLogs(prev => !prev)}
                             className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
-                                !showVetos ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
+                                showLogs ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
                             }`}
                          >Execution Logs</button>
                          <button
-                            onClick={() => setShowVetos(true)}
+                            onClick={() => setShowShadowLedger(prev => !prev)}
                             className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
-                                showVetos ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
+                                showShadowLedger ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
                             }`}
                          >🛡️ SHADOW LEDGER ({timeline?.totals?.veto_total ?? 0})</button>
                      </div>
-                     {!showVetos && ['ALL', 'WIN', 'LOSS', 'LONG', 'SHORT'].map(f => (
+                     {!showLogs && ['ALL', 'WIN', 'LOSS', 'LONG', 'SHORT'].map(f => (
                          <button
                             key={f}
                             onClick={() => setLogFilter(f)}
@@ -1470,8 +1492,9 @@ function PerformanceLogContent() {
                  </div>
              </div>
              
-             {/* Trade log rows only on the LOGS tab; SHADOW LEDGER tab renders the ledger below instead. */}
-             {!showVetos && displayLogs.map((pipeline, i) => {
+             {/* Trade log rows when the LOGS chip is on; the SHADOW LEDGER block
+                 renders below when its chip is on (both on = stacked). */}
+             {showLogs && displayLogs.map((pipeline, i) => {
                 const t = pipeline.trade;
                 if (!t) return null;
                 const pnl = parseFloat(t.pnl || 0);
@@ -1731,10 +1754,11 @@ function PerformanceLogContent() {
                 );
              })}
              
-             {/* 🛡️ SHADOW LEDGER tab (PUSH AD) — full-data ledger from timeline.vetoes
-                 (reason/memories/tools), day-grouped + filtered by the calendar
-                 selection, with pts nets per day. Amounts = price POINTS, never $. */}
-             {showVetos && vetoGroups.map(group => (
+             {/* 🛡️ SHADOW LEDGER block (PUSH AD, AH2 chip) — full-data ledger from
+                 timeline.vetoes (reason/memories/tools), day-grouped + filtered by
+                 the calendar selection, with pts nets per day. Amounts = price
+                 POINTS, never $. */}
+             {showShadowLedger && vetoGroups.map(group => (
                <div key={group.date} className="flex flex-col gap-2">
                  {/* Day header — amounts are price POINTS, never $ */}
                  <div className="flex flex-wrap items-center gap-3 py-2 border-b border-white/5 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono">
@@ -1778,8 +1802,8 @@ function PerformanceLogContent() {
                </div>
              ))}
 
-             {displayLogs.length === 0 && !showVetos && !showRiskBlocks && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
-             {showVetos && vetoGroups.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No SHADOW records found for this tenant.</div>}
+             {displayLogs.length === 0 && !showLogs && !showRiskBlocks && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
+             {showShadowLedger && vetoGroups.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No SHADOW records found for this tenant.</div>}
              {displayLogs.length === 0 && showRiskBlocks && riskBlocks.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No Risk Block records found for this tenant.</div>}
           </div>
         </div>
