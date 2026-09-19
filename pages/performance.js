@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 // 🟢 THE FIX: Explicitly import AreaSeries for V5 compatibility
-import { createChart, AreaSeries, LineSeries } from 'lightweight-charts';
+import { createChart, AreaSeries, LineSeries, LineStyle } from 'lightweight-charts';
 import { 
   BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers, Activity, ChevronDown, ChevronUp, Crosshair, ShieldAlert
 } from 'lucide-react';
@@ -40,6 +40,15 @@ function weeklyCumulative(daily) {
 
 // PUSH AC — short-form TF label (timeframe_4H → 4h)
 const shortTf = (tf) => (tf ? String(tf).replace('timeframe_', '').replace('1H', '1h').replace('4H', '4h').replace('1D', '1d') : null);
+
+// AG2 — exit-reason chip styling (TP/SL/TRAIL/TRIPWIRE/HORIZON; slate default for unknown)
+const exitReasonChip = {
+  TP: 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300',
+  SL: 'bg-rose-500/10 border-rose-500/30 text-rose-300',
+  TRAIL: 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300',
+  TRIPWIRE: 'bg-amber-500/10 border-amber-500/30 text-amber-300',
+  HORIZON: 'bg-slate-800 border-white/10 text-slate-400',
+};
 
 // PUSH AC — shared Shadow Ledger card (used by the Veto Ledger section AND the
 // SHADOW-mode log list). Mirrors the closed-trade card styling: header row,
@@ -170,6 +179,53 @@ function ShadowLedgerCard({ v, expandedKey, expandedMap, onToggle }) {
           No trade found — price moved <span className={v.counterfactual_direction === 'WENT_AGAINST' ? 'text-emerald-400' : 'text-red-400'}>{v.counterfactual_direction.replace('_', ' ')}</span> within 6h
         </div>
       )}
+
+      {/* AG2 — strategy-true sim: entry → exit line + exit-reason chip + bars + config-$ */}
+      {v.sim_exit_price !== null && v.sim_exit_price !== undefined && (() => {
+        const simKey = `${expandedKey}-sim`;
+        const simExpanded = !!expandedMap[simKey];
+        const exitChip = exitReasonChip[v.sim_exit_reason] || exitReasonChip.HORIZON;
+        const simUsd = parseFloat(v.sim_pnl_usd);
+        const entryP = basePrice;
+        const exitP = parseFloat(v.sim_exit_price);
+        const exitTimeStr = v.sim_exit_time ? new Date(v.sim_exit_time).toLocaleString() : '';
+        return (
+          <div className="mt-2 border-l-2 border-slate-500/30 pl-4 py-1">
+            <div className="flex flex-wrap items-center gap-2 text-[9px] md:text-[10px] font-mono">
+              <span className="text-slate-400">sim: {entryP != null ? Number(entryP).toFixed(2) : '?'} → <span className="text-white">{Number(exitP).toFixed(2)}</span></span>
+              {exitTimeStr && <span className="text-slate-600">@ {exitTimeStr}</span>}
+              <span className={`px-2 py-0.5 rounded-full font-black uppercase tracking-wider border ${exitChip}`}>{v.sim_exit_reason || 'HORIZON'}</span>
+              {v.sim_bars != null && <span className="text-slate-500">{v.sim_bars} bars</span>}
+              {Number.isFinite(simUsd) && (
+                <span className={`font-black ${simUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  config-$ {simUsd >= 0 ? '+' : '−'}${Math.abs(simUsd).toFixed(2)}
+                </span>
+              )}
+              {v.sim_params && (
+                <button
+                  onClick={() => onToggle(simKey)}
+                  className="text-[9px] font-black uppercase tracking-widest text-slate-400 hover:text-slate-200 flex items-center gap-1"
+                >
+                  {simExpanded ? <>rules <ChevronUp size={10}/></> : <>rules <ChevronDown size={10}/></>}
+                </button>
+              )}
+            </div>
+            {simExpanded && v.sim_params && (
+              <div className="mt-2 bg-black/30 rounded-lg p-3 border border-white/10">
+                <div className="text-[9px] font-black uppercase tracking-widest text-slate-400 mb-2">Sim Rules (config-true)</div>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[9px] font-mono text-slate-400">
+                  {Object.entries(v.sim_params).map(([k, val]) => (
+                    <div key={k} className="flex justify-between gap-2">
+                      <span className="text-slate-600">{k}</span>
+                      <span className="text-slate-300 truncate">{val === null || val === undefined ? '—' : String(val)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -373,6 +429,8 @@ function PerformanceLogContent() {
         { key: 'shadowSavedPct', color: '#10b981', data: timeline.cumulative.shadowSavedPct || [] },
         { key: 'shadowMissedPct', color: '#f43f5e', data: timeline.cumulative.shadowMissedPct || [] },
         { key: 'shadowNetPct', color: '#f97316', data: timeline.cumulative.shadowNetPct || [], lineWidth: 3 },
+        // AG2 — 4th series: config-true $ (slate dashed, LEFT axis — $ vs % unit clash)
+        { key: 'shadowUsd', color: '#94a3b8', data: timeline.cumulative.shadowUsd || [], dashed: true, priceScaleId: 'left', label: 'config-true $' },
       ];
       if (calGranularity === 'WEEK') return shadow.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
       return shadow.filter(s => s.data.length > 0);
@@ -835,10 +893,16 @@ function PerformanceLogContent() {
       const series = chart.addSeries(LineSeries, {
         color: s.color,
         lineWidth: s.lineWidth || 2, // PUSH AF1 — NET line is bold (3)
+        lineStyle: s.dashed ? LineStyle.Dashed : LineStyle.Solid, // AG2 — config-$ dashed
+        priceScaleId: s.priceScaleId || 'right', // AG2 — config-$ on left scale ($ vs %)
         priceLineVisible: false,
         lastValueVisible: true,
       });
       series.setData(s.data);
+    }
+    // AG2 — enable the left price scale when a config-$ series is present
+    if (timelineSeries.some(s => s.priceScaleId === 'left')) {
+      chart.applyOptions({ leftPriceScale: { visible: true, borderColor: 'rgba(255,255,255,0.1)' } });
     }
     chart.timeScale().fitContent();
     timelineChartRef.current = chart;
@@ -1040,6 +1104,12 @@ function PerformanceLogContent() {
                 <span className="text-emerald-400"> · saved {Number(timeline.totals?.shadow_saved_pct || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_saved_pct || 0)).toFixed(2)}%</span>
                 <span className="text-rose-400"> · missed −{Math.abs(Number(timeline.totals?.shadow_missed_pct || 0)).toFixed(2)}%</span>
                 <span className="text-slate-500"> (% of veto price — measured, over {timeline.totals?.veto_total ?? 0} vetoes)</span>
+              </span>
+            )}
+            {!modelView && Number.isFinite(Number(timeline.totals?.shadow_net_usd)) && (
+              <span className="text-slate-400">
+                config-$ {Number(timeline.totals.shadow_net_usd) >= 0 ? '+' : '−'}${Math.abs(Number(timeline.totals.shadow_net_usd)).toFixed(2)} net
+                <span className="text-slate-600"> (config-true sim)</span>
               </span>
             )}
           </div>

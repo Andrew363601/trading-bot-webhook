@@ -1406,11 +1406,14 @@ output HOLD for an unfilled trap.`;
 
 // 🟢 THE EVOLUTION ENDPOINT (Agentic Reflection Loop)
 app.post('/api/autopsy', async (req, res) => {
-    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis, trade_log_id, strategy_id } = req.body;
+    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis, trade_log_id, strategy_id, scope, shadow_id, verdict, sim_exit_reason, sim_pnl_usd, sim_params, cited_memories } = req.body;
     const strategyId = strategy_id || null;
+    const isShadow = scope === 'shadow';
     // 🟢 PUSH Q: one autopsy lesson per trade. Both the execute-trade close path
     // and the watchdog's bracket/heartbeat paths can POST for the same trade
     // within seconds — the second must be a no-op, not a second memory.
+    // AG3: shadow autopsies ALWAYS pass trade_log_id: null (worker enforces) so
+    // they never collide with the real trade's dedup (044 uniq index / AUTOPSKIP).
     if (trade_log_id) {
       try {
         const { data: existingMem } = await supabase
@@ -1483,8 +1486,23 @@ app.post('/api/autopsy', async (req, res) => {
 
         const winLoss = parseFloat(pnl) >= 0 ? "WIN" : "LOSS";
 
+        // AG3 — SHADOW-CLASS reflection: counterfactual observation only. The
+        // T-v2 rule is extended verbatim; regime-scoped void clauses required.
+        const shadowPrefix = isShadow ? `
+        --- SHADOW-CLASS AUTOPSY (COUNTERFACTUAL) ---
+        This is a SHADOW observation: a signal the agent VETOED, simulated with
+        the strategy's own config (strategy-true sim). No trade was taken.
+        Signal: ${asset} ${verdict ? `| sim verdict: ${verdict}` : ''}
+        Entry (far-side): $${entry_price} | Sim Exit: $${exit_price} | Sim PnL (pts): ${pnl}
+        Sim Exit Reason: ${sim_exit_reason || 'HORIZON'} | Config-$ PnL: ${sim_pnl_usd ?? 'n/a'}
+        Sim Rules: ${sim_params ? JSON.stringify(sim_params).substring(0, 600) : 'n/a'}
+        Cited Memories (what the agent relied on when vetoing):
+        ${cited_memories ? JSON.stringify(cited_memories).substring(0, 800) : 'none recorded'}
+        ` : '';
+
         const autopsyPrompt = `
         You are the Hermes Quantitative Reflection Engine.
+        ${shadowPrefix}
         A trade just closed for ${asset}.
         Entry: $${entry_price} | Exit: $${exit_price} | PnL: $${pnl} (${winLoss})
         Exit Trigger: ${trigger}
@@ -1517,7 +1535,9 @@ app.post('/api/autopsy', async (req, res) => {
         // 🟢 PUSH T-v2: scope the reflection for scratch-class trades. Single
         // injection point — both the openrouter and gemini branches consume
         // this same prompt string below.
-        const scopeNote = scratch
+        const scopeNote = isShadow
+          ? '\n\n[SHADOW-CLASS — counterfactual observation only. NEVER write close-trigger lessons. Grade entry-gate quality. Regime-scoped void clauses required.]'
+          : scratch
           ? '\n\nSCRATCH-CLASS TRADE: negligible PnL with no structural stop hit. Write OBSERVATIONS, entry-gates and geometry lessons ONLY. Do NOT encode market-close triggers, exit mandates, or hold-license restrictions — a scratch is not evidence for an exit rule. Close triggers may only be written from structural losses (stop/tripwire with real damage).'
           : '';
         const fullPrompt = autopsyPrompt + scopeNote;
@@ -1583,7 +1603,8 @@ app.post('/api/autopsy', async (req, res) => {
             tools_used: autopsyJson.tools_used || "None",
             // 🟢 PUSH T-v2: visible authority tag wherever this lesson is
             // recalled — scratch-class lessons are observations, not exit rules.
-            lesson_learned: (scratch ? '[SCRATCH-CLASS — observation only] ' : '') + autopsyJson.lesson_learned,
+            // AG3: shadow lessons get the [SHADOW-CLASS] tag (same mechanism).
+            lesson_learned: (isShadow ? '[SHADOW-CLASS — counterfactual observation only] ' : (scratch ? '[SCRATCH-CLASS — observation only] ' : '')) + autopsyJson.lesson_learned,
             working_thesis: working_thesis || null,
             thesis_accurate: autopsyJson.thesis_accurate ?? null,
             thesis_summary: autopsyJson.thesis_summary || null,
@@ -1614,6 +1635,21 @@ app.post('/api/autopsy', async (req, res) => {
                 return; // response already sent — do NOT res.json() again
             }
             throw insErr;
+        }
+
+        // AG3: stamp autopsied_at ONLY after the memory insert succeeded — the
+        // endpoint responds 200 before the LLM call, so the worker cannot trust
+        // the HTTP status alone. shadow_id is echoed by the worker's POST.
+        if (isShadow && shadow_id) {
+            try {
+                const { error: stampErr } = await supabase
+                    .from('shadow_portfolio')
+                    .update({ autopsied_at: new Date().toISOString() })
+                    .eq('id', shadow_id);
+                if (stampErr) console.error(`[AUTOPSY] autopsied_at stamp failed for shadow ${shadow_id}:`, stampErr.message);
+            } catch (e) {
+                console.error(`[AUTOPSY] autopsied_at stamp error for shadow ${shadow_id}:`, e.message);
+            }
         }
 
     } catch (error) {

@@ -112,11 +112,227 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
     const firstClose = parseFloat(candles[candles.length - 1].close); // OLDEST candle
     const lastClose = parseFloat(candles[0].close); // NEWEST candle
 
-    return { high, low, firstClose, lastClose };
+    // AG1 sim engine: normalized chronological series oldest→newest
+    // ({ time, open, high, low, close }) for the SL/TP/trail walk.
+    const series = candles
+      .map(c => ({
+        time: new Date(c.start).getTime(),
+        open: parseFloat(c.open),
+        high: parseFloat(c.high),
+        low: parseFloat(c.low),
+        close: parseFloat(c.close)
+      }))
+      .filter(c => Number.isFinite(c.close) && Number.isFinite(c.high) && Number.isFinite(c.low))
+      .sort((a, b) => a.time - b.time);
+
+    return { high, low, firstClose, lastClose, series };
   } catch (e) {
     console.error(`[SHADOW] Candle fetch failed for ${symbol}:`, e.message);
     return null;
   }
+}
+
+/**
+ * AG1: Loads strategy_config parameters for (tenant, strategy) — point-in-time
+ * config used to drive the strategy-true sim. Canonical param names are
+ * tp_percent / sl_percent (take_profit_pct / stop_loss_pct are UI labels only).
+ */
+async function fetchStrategySimParams(tenantId, strategy) {
+  try {
+    const { data: cfg } = await supabase
+      .from('strategy_config')
+      .select('parameters')
+      .eq('tenant_id', tenantId)
+      .ilike('strategy', strategy)
+      .maybeSingle();
+    const p = cfg?.parameters || {};
+    const num = (v) => (v === undefined || v === null || v === '' || isNaN(parseFloat(v))) ? null : parseFloat(v);
+    return {
+      tp: num(p.tp_percent) ?? num(p.take_profit_pct) ?? num(p.take_profit_percentage) ?? num(p.target_profit_percentage),
+      sl: num(p.sl_percent) ?? num(p.stop_loss_pct) ?? num(p.stop_loss_percentage),
+      tripwire: num(p.tripwire_percent),
+      trailStep: num(p.trail_step_percent),
+      trailActivation: num(p.trail_activation_percent) ?? num(p.tripwire_percent),
+      leverage: num(p.leverage) ?? 1,
+      // qty is NOT a strategy_config param (lives on trade_logs). Convention:
+      // parameters.qty if the tenant set it, else $1,000 notional default —
+      // makes sim_pnl_usd a "config-$ per $1k" metric, signed, comparable.
+      qty: num(p.qty) ?? null,
+      qtySource: num(p.qty) != null ? 'config_qty' : 'default_1k'
+    };
+  } catch (e) {
+    return { tp: null, sl: null, tripwire: null, trailStep: null, trailActivation: null, leverage: 1, qty: null, qtySource: 'default_1k' };
+  }
+}
+
+/**
+ * AG1: ATR-14 from the sim candle series (Wilder's smoothing on true range).
+ * Fallback SL/TP geometry when strategy_config fields are missing.
+ */
+function computeATR14(series) {
+  if (!series || series.length < 2) return null;
+  const trs = [];
+  for (let i = 1; i < series.length; i++) {
+    const prevClose = series[i - 1].close;
+    const tr = Math.max(
+      series[i].high - series[i].low,
+      Math.abs(series[i].high - prevClose),
+      Math.abs(series[i].low - prevClose)
+    );
+    trs.push(tr);
+  }
+  if (trs.length === 0) return null;
+  let atr = trs.slice(0, Math.min(14, trs.length)).reduce((a, b) => a + b, 0) / Math.min(14, trs.length);
+  for (let i = 14; i < trs.length; i++) {
+    atr = ((atr * 13) + trs[i]) / 14;
+  }
+  return atr;
+}
+
+/**
+ * AG1: Strategy-true shadow simulation — walks the 5m candle series mirroring
+ * workers/watchdog.js ROE/tripwire/step-trail math EXACTLY (watchdog L393-560).
+ * Watchdog parity notes:
+ *   - ROE = rawPriceMove × leverage (rawPriceMove = side-adjusted price fraction).
+ *   - SL wins intrabar ties (pessimistic: check SL before TP within a candle).
+ *   - Tripwire: when ROE ≥ tripwire_percent, SL moves to break-even (entry ×1.001/0.999).
+ *   - Step-trail: fires when ROE ≥ trailActivation (default = tripwire);
+ *     per-step SL = currentPrice × (1 ∓ trailStep / leverage) — the /leverage
+ *     conversion is watchdog's ROE→price-step mapping and MUST be replicated.
+ *     Only ratchets (never loosens). No exchange-band clamp here (candles are
+ *     already exchange data; clamp exists in watchdog for live WS noise).
+ * Fallback SL/TP = macro-ATR geometry (1.5× / 2.0× ATR) when config missing —
+ * the source actually used is recorded in sim_params.
+ *
+ * Returns null when the sim cannot resolve yet (horizon not reached / no data).
+ */
+function runShadowSim({ direction, entryPrice, series, simParams, atr, nowMs }) {
+  if (!series || series.length === 0 || !entryPrice || !Number.isFinite(entryPrice)) return null;
+
+  const leverage = simParams.leverage || 1;
+  const isBuy = direction === 'BUY';
+  const side = isBuy ? 'BUY' : 'SELL';
+
+  // --- Resolve SL/TP price levels + record their source ---
+  let slSource = null, tpSource = null;
+  let slDist = null, tpDist = null; // price distance from entry (absolute)
+
+  if (simParams.sl) {
+    // sl_percent is an ROE fraction → price distance = ROE × entry / leverage
+    slDist = (simParams.sl * entryPrice) / leverage;
+    slSource = 'config_sl_percent';
+  } else if (atr) {
+    slDist = 1.5 * atr;
+    slSource = 'atr_1.5x';
+  }
+  if (simParams.tp) {
+    tpDist = (simParams.tp * entryPrice) / leverage;
+    tpSource = 'config_tp_percent';
+  } else if (atr) {
+    tpDist = 2.0 * atr;
+    tpSource = 'atr_2.0x';
+  }
+  if (!slDist && !tpDist) {
+    // Nothing to exit on — degrade to horizon-only sim.
+    slSource = 'none';
+    tpSource = 'none';
+  }
+
+  let stopPrice = slDist != null ? (isBuy ? entryPrice - slDist : entryPrice + slDist) : null;
+  let takePrice = tpDist != null ? (isBuy ? entryPrice + tpDist : entryPrice - tpDist) : null;
+
+  const tripwire = simParams.tripwire || 0;
+  const trailStep = simParams.trailStep || 0;
+  const trailActivation = simParams.trailActivation ?? simParams.tripwire ?? 0;
+  let tripped = false, trailing = false;
+  let bars = 0, exitPrice = null, exitReason = null, exitTime = null;
+
+  const HORIZON_MS = 24 * 3600 * 1000;
+
+  for (const c of series) {
+    bars++;
+    exitTime = new Date(c.time).toISOString();
+
+    const rawMove = isBuy ? (c.close - entryPrice) / entryPrice : (entryPrice - c.close) / entryPrice;
+    const roe = rawMove * leverage;
+
+    // Tripwire (watchdog L404-415): ROE ≥ tripwire_percent → SL to break-even
+    if (!tripped && tripwire > 0 && roe >= tripwire) {
+      tripped = true;
+      stopPrice = isBuy ? entryPrice * 1.001 : entryPrice * 0.999;
+    }
+    // Step-trail (watchdog L543+): activation → ratchet SL by trailStep/leverage steps
+    if (trailStep > 0 && roe >= trailActivation) {
+      trailing = true;
+      const stepDist = (trailStep / leverage) * c.close; // watchdog: currentPrice × (1 ∓ trailStep/leverage)
+      const candidateStop = isBuy ? c.close - stepDist : c.close + stepDist;
+      // ratchet only — never loosen
+      if (stopPrice == null) stopPrice = candidateStop;
+      else if (isBuy) stopPrice = Math.max(stopPrice, candidateStop);
+      else stopPrice = Math.min(stopPrice, candidateStop);
+    }
+
+    // Pessimistic intrabar order: SL first (SL wins ties), then TP
+    const hitSL = stopPrice != null && (isBuy ? c.low <= stopPrice : c.high >= stopPrice);
+    const hitTP = takePrice != null && (isBuy ? c.high >= takePrice : c.low <= takePrice);
+
+    if (hitSL) {
+      exitPrice = stopPrice;
+      exitReason = tripped || trailing ? 'TRAIL' : 'SL';
+      break;
+    }
+    if (hitTP) {
+      exitPrice = takePrice;
+      exitReason = 'TP';
+      break;
+    }
+
+    // 24h horizon: resolve on the last candle at/before the horizon
+    if (c.time >= simParams.startMs + HORIZON_MS - 5 * 60 * 1000) {
+      exitPrice = c.close;
+      exitReason = 'HORIZON';
+      break;
+    }
+  }
+
+  // Unresolved: horizon not reached yet — skip this row until a later tick.
+  if (!exitPrice) {
+    const lastCandle = series[series.length - 1];
+    if (simParams.startMs + HORIZON_MS > nowMs) return null; // still inside 24h window
+    exitPrice = lastCandle.close;
+    exitReason = 'HORIZON';
+    exitTime = new Date(lastCandle.time).toISOString();
+  }
+
+  if (exitReason === 'TRIPWIRE') exitReason = 'TRIPWIRE'; // explicit (BE-stop via tripwire path tagged TRAIL above)
+
+  // Signed move from entry, per unit. Tripwire BE-stop via the SL path is TRAIL;
+  // pure config/ATR stop is SL. (Tripwire itself never exits — it re-positions SL.)
+  const signedPts = isBuy
+    ? exitPrice - entryPrice
+    : entryPrice - exitPrice;
+
+  const simParamsRecord = {
+    direction: side,
+    leverage,
+    sl: simParams.sl, tp: simParams.tp,
+    tripwire_percent: simParams.tripwire,
+    trail_step_percent: simParams.trailStep,
+    trail_activation_percent: simParams.trailActivation,
+    sl_source: slSource,
+    tp_source: tpSource,
+    atr_14: atr != null ? parseFloat(atr.toFixed(6)) : null,
+    qty_source: simParams.qtySource
+  };
+
+  return {
+    exitPrice,
+    exitReason,
+    exitTime,
+    bars,
+    signedPts,
+    simParams: simParamsRecord
+  };
 }
 
 /**
@@ -237,9 +453,9 @@ async function processUnlabeledVetos() {
       .select('id, tenant_id, asset, strategy, telemetry, status, created_at')
       .eq('status', 'VETO')
       .gte('created_at', cutoff)
-      // 🕕 EVALUATION AGE GATE: only label vetos whose 6h counterfactual window
-      // has fully elapsed — labeling earlier locks a meaningless NEUTRAL verdict.
-      .lt('created_at', new Date(Date.now() - 6 * 3600 * 1000).toISOString())
+      // � EVALUATION AGE GATE (AG1): 24h sim horizon must fully elapse before
+      // labeling — unresolved rows are skipped and retried on later ticks.
+      .lt('created_at', new Date(Date.now() - 24 * 3600 * 1000).toISOString())
       .order('created_at', { ascending: true });
 
     if (error) { console.error('[SHADOW] Query failed:', error.message); return; }
@@ -304,6 +520,9 @@ async function processUnlabeledVetos() {
       let cLow = null, cHigh = null, cDirection = null;
       // 🟢 shadow-v2: price basis used for Path B amounts ('far_side' | 'mid_legacy'); null for Path A
       let fillBasis = null;
+      // AG1: strategy-true sim outputs (Path B only)
+      let simExitPrice = null, simExitTime = null, simExitReason = null;
+      let simPnlPts = null, simPnlUsd = null, simBars = null, simParamsJson = null;
 
       if (matchingTrade && matchingTrade.entry_price) {
         tradeLogId = matchingTrade.id;
@@ -337,16 +556,17 @@ async function processUnlabeledVetos() {
         if (verdict === 'SAVED') savedAmount = Math.abs(tradeExit - priceForCalc) + feePoints;
         else if (verdict === 'MISSED') missedAmount = Math.abs(tradeExit - priceForCalc) + feePoints;
       } else {
-        // No trade followed — use counterfactual candle data
-        const candles = await fetchCounterfactualCandles(asset, vetoTime, 6, scan.tenant_id);
-        if (candles && vetoPrice) {
-          cLow = candles.low;
-          cHigh = candles.high;
-          const priceChange = ((candles.lastClose - candles.firstClose) / candles.firstClose) * 100;
+        // No trade followed — AG1 strategy-true shadow simulation (Path B replacement).
+        // 24h horizon via sim engine; row is SKIPPED (not inserted) until the sim
+        // resolves (exit hit) or the horizon is reached — fetch what exists each tick.
+        const startMs = new Date(vetoTime).getTime();
+        const candleData = await fetchCounterfactualCandles(asset, vetoTime, 24, scan.tenant_id);
+        if (candleData && candleData.series && vetoPrice) {
+          cLow = candleData.low;
+          cHigh = candleData.high;
 
           // 🟢 shadow-v2: far-side entry bound (QuanTradin's rule — pessimistic or nothing).
           // BUY veto → we'd have paid best_ask; SELL veto → we'd have sold at best_bid.
-          // Read from the paired signal scan's telemetry (written by sniper.js PUSH shadow-v2).
           let farEntry = vetoPrice;
           fillBasis = 'mid_legacy';
           let lt = signal?.telemetry || {};
@@ -356,8 +576,23 @@ async function processUnlabeledVetos() {
           if (signalDirection === 'BUY' && bestAsk) { farEntry = bestAsk; fillBasis = 'far_side'; }
           if (signalDirection === 'SELL' && bestBid) { farEntry = bestBid; fillBasis = 'far_side'; }
 
-          // Fee: tenant taker rate × 2 (round trip), in price points.
-          // hermes-brain.js pattern — 0.0008 fallback, never 0.
+          const simParams = await fetchStrategySimParams(scan.tenant_id, scan.strategy);
+          const atr = computeATR14(candleData.series);
+          const sim = runShadowSim({
+            direction: signalDirection,
+            entryPrice: farEntry,
+            series: candleData.series,
+            simParams: { ...simParams, startMs },
+            atr,
+            nowMs: Date.now()
+          });
+
+          if (!sim) {
+            // Unresolved — skip until a later 5-min tick (24h horizon not reached).
+            continue;
+          }
+
+          // Fee: tenant taker rate × 2 (round trip), in price points, on entry.
           let feeRate = 0.0008;
           try {
             const { data: agentSettings } = await supabase
@@ -369,36 +604,21 @@ async function processUnlabeledVetos() {
           } catch (e) {}
           const feePoints = feeRate * farEntry * 2;
 
-          // Exit = horizon close (6th candle's close — observable, no top-tick promises).
-          const exitPrice = candles.lastClose;
+          simExitPrice = sim.exitPrice;
+          simExitTime = sim.exitTime;
+          simExitReason = sim.exitReason;
+          simBars = sim.bars;
+          simPnlPts = sim.signedPts - feePoints; // per-unit, minus round-trip fees
+          simParamsJson = sim.simParams;
 
-          if (signalDirection === 'BUY') {
-            if (priceChange > 0.5) {
-              cDirection = 'WENT_WITH';
-              verdict = 'MISSED';
-              missedAmount = Math.abs(exitPrice - farEntry) + feePoints;
-            } else if (priceChange < -0.5) {
-              cDirection = 'WENT_AGAINST';
-              verdict = 'SAVED';
-              savedAmount = Math.abs(farEntry - exitPrice) + feePoints;
-            } else {
-              cDirection = 'FLAT';
-              verdict = 'NEUTRAL';
-            }
-          } else {
-            if (priceChange < -0.5) {
-              cDirection = 'WENT_WITH';
-              verdict = 'MISSED';
-              missedAmount = Math.abs(exitPrice - farEntry) + feePoints;
-            } else if (priceChange > 0.5) {
-              cDirection = 'WENT_AGAINST';
-              verdict = 'SAVED';
-              savedAmount = Math.abs(farEntry - exitPrice) + feePoints;
-            } else {
-              cDirection = 'FLAT';
-              verdict = 'NEUTRAL';
-            }
-          }
+          const qty = simParams.qty != null ? simParams.qty : 1000; // $1k notional default
+          simPnlUsd = simPnlPts * qty;
+
+          // saved/missed = |sim_pnl_pts| + fees into the SAME legacy columns.
+          const magnitude = Math.abs(sim.signedPts) + feePoints;
+          if (sim.signedPts > 0) { verdict = 'MISSED'; missedAmount = magnitude; }
+          else if (sim.signedPts < 0) { verdict = 'SAVED'; savedAmount = magnitude; }
+          else { verdict = 'NEUTRAL'; }
         }
       }
 
@@ -442,7 +662,16 @@ async function processUnlabeledVetos() {
           fill_basis: fillBasis,
           // 🟢 PUSH AA: point-in-time TF pair
           macro_tf: macroTf,
-          trigger_tf: triggerTf
+          trigger_tf: triggerTf,
+          // AG1: strategy-true sim outputs (Path B only; null for Path A + legacy rows)
+          sim_exit_price: simExitPrice !== null ? parseFloat(simExitPrice.toFixed(2)) : null,
+          sim_exit_time: simExitTime,
+          sim_exit_reason: simExitReason,
+          sim_bars: simBars,
+          sim_pnl_pts: simPnlPts !== null ? parseFloat(simPnlPts.toFixed(6)) : null,
+          sim_pnl_usd: simPnlUsd !== null ? parseFloat(simPnlUsd.toFixed(2)) : null,
+          sim_params: simParamsJson,
+          autopsied_at: null
         }]);
 
       if (insertError) {
@@ -459,6 +688,104 @@ async function processUnlabeledVetos() {
   }
 }
 
+/**
+ * AG3: 6h shadow autopsy feed — batches shadow rows labeled in the window with
+ * autopsied_at IS NULL, POSTs them to /api/autopsy with scope:'shadow', and
+ * stamps autopsied_at on success. DEAD CODE until hermes-brain.js (Render) is
+ * redeployed with the scope:'shadow' branch — POSTs will 404 silently and rows
+ * remain un-autopsied (safe retry semantics).
+ */
+let autopsyActive = false;
+
+function getAutopsyUrl() {
+  return process.env.HERMES_BRAIN_URL
+    ? `${process.env.HERMES_BRAIN_URL.replace(/\/$/, '')}/api/autopsy`
+    : 'http://localhost:8000/api/autopsy';
+}
+
+async function processShadowAutopsies() {
+  if (autopsyActive) return;
+  autopsyActive = true;
+
+  try {
+    // Rows labeled in the last 7 days, not yet autopsied.
+    const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+    const { data: rows, error } = await supabase
+      .from('shadow_portfolio')
+      .select('id, tenant_id, scan_id, asset, signal_direction, verdict, veto_regime, macro_tf, trigger_tf, sim_exit_price, sim_exit_reason, sim_pnl_pts, sim_pnl_usd, sim_params, veto_price, veto_time')
+      .is('autopsied_at', null)
+      .gte('veto_time', cutoff)
+      .order('id', { ascending: true })
+      .limit(50);
+
+    if (error) { console.error('[SHADOW-AUTOPSY] Query failed:', error.message); return; }
+    if (!rows || rows.length === 0) return;
+
+    console.log(`[SHADOW-AUTOPSY] Feeding ${rows.length} shadow row(s) to /api/autopsy...`);
+
+    for (const row of rows) {
+      // Cited memories live in the paired scan's telemetry (sniper.js PUSH).
+      let citedMemories = null;
+      try {
+        const { data: scan } = await supabase
+          .from('scan_results')
+          .select('telemetry')
+          .eq('id', row.scan_id)
+          .maybeSingle();
+        let t = scan?.telemetry || {};
+        if (typeof t === 'string') { try { t = JSON.parse(t); } catch (e) { t = {}; } }
+        citedMemories = t.cited_memories || null;
+      } catch (e) {}
+
+      try {
+        const resp = await fetch(getAutopsyUrl(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scope: 'shadow',
+            shadow_id: row.id,
+            // trade_log_id: null ALWAYS — shadow autopsies must never collide with
+            // the real trade's autopsy dedup (044 uniq index / AUTOPSKIP).
+            trade_log_id: null,
+            tenant_id: row.tenant_id,
+            asset: row.asset,
+            signal_direction: row.signal_direction,
+            entry_price: row.veto_price,
+            exit_price: row.sim_exit_price,
+            pnl: row.sim_pnl_pts,
+            verdict: row.verdict,
+            regime_at_close: row.veto_regime,
+            macro_tf: row.macro_tf,
+            trigger_tf: row.trigger_tf,
+            sim_exit_reason: row.sim_exit_reason,
+            sim_pnl_usd: row.sim_pnl_usd,
+            sim_params: row.sim_params,
+            cited_memories: citedMemories,
+            market_snapshot: null,
+            rolling_ledger: null
+          })
+        });
+        if (!resp.ok) {
+          console.error(`[SHADOW-AUTOPSY] POST failed for shadow ${row.id}: HTTP ${resp.status}`);
+          continue; // retry on next 6h tick
+        }
+        const { error: upErr } = await supabase
+          .from('shadow_portfolio')
+          .update({ autopsied_at: new Date().toISOString() })
+          .eq('id', row.id);
+        if (upErr) console.error(`[SHADOW-AUTOPSY] Stamp failed for shadow ${row.id}:`, upErr.message);
+        else console.log(`[SHADOW-AUTOPSY] ✅ shadow ${row.id} (${row.asset} ${row.verdict}) autopsied.`);
+      } catch (e) {
+        console.error(`[SHADOW-AUTOPSY] POST error for shadow ${row.id}:`, e.message);
+      }
+    }
+  } catch (e) {
+    console.error('[SHADOW-AUTOPSY] Fatal:', e.message);
+  } finally {
+    autopsyActive = false;
+  }
+}
+
 export function startShadowPortfolio() {
   console.log('[SHADOW] v2 Shadow Portfolio worker starting (corrected signal direction)...');
 
@@ -468,5 +795,11 @@ export function startShadowPortfolio() {
     processUnlabeledVetos();
   }, 5 * 60 * 1000);
 
-  console.log('[SHADOW] v2 worker active (5 min interval).');
+  // AG3: 6h shadow autopsy feed (dead until brain service redeploy — safe to run now).
+  processShadowAutopsies();
+  setInterval(() => {
+    processShadowAutopsies();
+  }, 6 * 3600 * 1000);
+
+  console.log('[SHADOW] v2 worker active (5 min interval, 6h autopsy feed).');
 }

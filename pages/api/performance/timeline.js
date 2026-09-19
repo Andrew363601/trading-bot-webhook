@@ -23,6 +23,8 @@ function emptyBucket() {
     shadow_saved: 0, shadow_missed: 0, shadow_net: 0,
     // PUSH AF1 — shadow in % of veto price (signed sums, computed at read time — no migration)
     shadow_saved_pct: 0, shadow_missed_pct: 0, shadow_net_pct: 0,
+    // AG2 — config-true $ (strategy-true sim, signed, from sim_pnl_usd)
+    shadow_net_usd: 0,
     veto_saved_count: 0, veto_missed_count: 0, veto_neutral_count: 0,
   };
 }
@@ -83,7 +85,7 @@ export default async function handler(req, res) {
       // B) Shadow portfolio rows (one veto per row)
       supabase
         .from('shadow_portfolio')
-        .select('scan_id, asset, signal_direction, verdict, saved_amount, missed_amount, veto_price, veto_regime, fill_basis, macro_tf, trigger_tf, veto_time')
+        .select('scan_id, asset, signal_direction, verdict, saved_amount, missed_amount, veto_price, veto_regime, fill_basis, macro_tf, trigger_tf, veto_time, sim_exit_price, sim_exit_time, sim_exit_reason, sim_bars, sim_pnl_pts, sim_pnl_usd, sim_params')
         .eq('tenant_id', tenantId)
         .gte('veto_time', since)
         .order('veto_time', { ascending: true })
@@ -215,6 +217,8 @@ export default async function handler(req, res) {
         if (verdict === 'SAVED') buckets[key].shadow_saved_pct += movePct;
         else if (verdict === 'MISSED') buckets[key].shadow_missed_pct += movePct;
       }
+      // AG2 — config-true $ (signed sim_pnl_usd; null-safe for legacy rows)
+      buckets[key].shadow_net_usd += parseFloat(v.sim_pnl_usd) || 0;
     }
 
     // PUSH AF2 — model attribution buckets: approved (prob >= 0.5) vs flagged (< 0.5), $ PnL
@@ -246,6 +250,8 @@ export default async function handler(req, res) {
       buckets[k].shadow_saved_pct = round2(buckets[k].shadow_saved_pct);
       buckets[k].shadow_missed_pct = round2(buckets[k].shadow_missed_pct);
       buckets[k].shadow_net_pct = round2(buckets[k].shadow_saved_pct + buckets[k].shadow_missed_pct);
+      // AG2 — config-true $ per day
+      buckets[k].shadow_net_usd = round2(buckets[k].shadow_net_usd);
     }
     for (const k of Object.keys(modelBuckets)) {
       modelBuckets[k].approved_pnl = round2(modelBuckets[k].approved_pnl);
@@ -256,10 +262,13 @@ export default async function handler(req, res) {
     const cumLive = [], cumPaper = [], cumShadow = [];
     // PUSH AF1 — cumulative shadow in % of veto price (running sums, % unit)
     const cumShadowSavedPct = [], cumShadowMissedPct = [], cumShadowNetPct = [];
+    // AG2 — cumulative config-true $ (strategy-true sim, signed)
+    const cumShadowUsd = [];
     // PUSH AF2 — cumulative model attribution ($, real trades)
     const cumModelApproved = [], cumModelFlagged = [];
     let runLive = 0, runPaper = 0, runShadow = 0;
     let runSavedPct = 0, runMissedPct = 0, runNetPct = 0;
+    let runShadowUsd = 0;
     let runModelApproved = 0, runModelFlagged = 0;
     for (const k of dayKeys) {
       const b = buckets[k];
@@ -275,6 +284,9 @@ export default async function handler(req, res) {
         cumShadowSavedPct.push({ time: k, value: runSavedPct });
         cumShadowMissedPct.push({ time: k, value: runMissedPct });
         cumShadowNetPct.push({ time: k, value: runNetPct });
+        // AG2 — config-true $ running sum on the same veto-active days
+        runShadowUsd = round2(runShadowUsd + b.shadow_net_usd);
+        cumShadowUsd.push({ time: k, value: runShadowUsd });
       }
       const m = modelBuckets[k];
       if (m && (m.approved_count > 0 || m.flagged_count > 0)) {
@@ -300,6 +312,8 @@ export default async function handler(req, res) {
       shadow_saved_pct: round2(runSavedPct),
       shadow_missed_pct: round2(runMissedPct),
       shadow_net_pct: round2(runSavedPct + runMissedPct),
+      // AG2 — config-true $ total (signed)
+      shadow_net_usd: round2(runShadowUsd),
       veto_total: daily.reduce((s, d) => s + d.veto_saved_count + d.veto_missed_count + d.veto_neutral_count, 0),
       // PUSH AF2 — model attribution totals ($, real trades)
       model_approved_pnl: round2(runModelApproved),
@@ -328,6 +342,14 @@ export default async function handler(req, res) {
         macro_tf: v.macro_tf,
         trigger_tf: v.trigger_tf,
         veto_time: v.veto_time,
+        // AG2 — strategy-true sim outputs (null for Path A + legacy rows)
+        sim_exit_price: v.sim_exit_price,
+        sim_exit_time: v.sim_exit_time,
+        sim_exit_reason: v.sim_exit_reason,
+        sim_bars: v.sim_bars,
+        sim_pnl_pts: v.sim_pnl_pts,
+        sim_pnl_usd: v.sim_pnl_usd,
+        sim_params: v.sim_params,
         reason: rawReason ? rawReason.slice(0, 400) : null,
         tools: toolsByScanId[v.scan_id] || [],
         // 🟢 PUSH AE: telemetry-first — cited memories stamped by sniper at scan time.
@@ -348,6 +370,8 @@ export default async function handler(req, res) {
         shadowSavedPct: cumShadowSavedPct,
         shadowMissedPct: cumShadowMissedPct,
         shadowNetPct: cumShadowNetPct,
+        // AG2 — config-true $ cumulative (strategy-true sim, signed)
+        shadowUsd: cumShadowUsd,
         // PUSH AF2 — model attribution cumulative ($)
         modelApproved: cumModelApproved,
         modelFlagged: cumModelFlagged,
