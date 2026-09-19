@@ -1011,6 +1011,17 @@ export async function startSniper(tenantId) {
                         const memoryString = scoredResult.text || "No core memory available for this asset.";
                         const memoryIds = scoredResult.ids || [];
 
+                        // 🟢 PUSH AE: stamp cited memories into scan telemetry — the exact
+                        // memories the scorer injected into the Hermes prompt, so the
+                        // performance timeline can show citations without agent_tool_calls.
+                        // Strictly additive; omitted entirely when nothing scored.
+                        if (scoredMemories.length > 0) {
+                            decision.telemetry.cited_memories = scoredMemories.slice(0, 3).map(m => ({
+                                id: m.id,
+                                excerpt: String(m.lesson_learned || m.working_thesis || '').slice(0, 200),
+                            }));
+                        }
+
                         let shadowLine = '';
                         try {
                             const { data: shadowStats } = await supabase

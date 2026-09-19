@@ -224,7 +224,11 @@ export default async function handler(req, res) {
         veto_time: v.veto_time,
         reason: rawReason ? rawReason.slice(0, 400) : null,
         tools: toolsByScanId[v.scan_id] || [],
-        memories: memoriesByScanId[v.scan_id] || [],
+        // 🟢 PUSH AE: telemetry-first — cited memories stamped by sniper at scan time.
+        // agent_tool_calls fallback stays for old rows written before the stamp.
+        memories: (telemetry && Array.isArray(telemetry.cited_memories) && telemetry.cited_memories.length > 0)
+          ? telemetry.cited_memories
+          : memoriesByScanId[v.scan_id] || [],
       };
     });
 
