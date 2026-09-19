@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 // 🟢 THE FIX: Explicitly import AreaSeries for V5 compatibility
-import { createChart, AreaSeries } from 'lightweight-charts';
+import { createChart, AreaSeries, LineSeries } from 'lightweight-charts';
 import { 
-  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers, Activity, ChevronDown, ChevronUp, Crosshair
+  BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers, Activity, ChevronDown, ChevronUp, Crosshair, ShieldAlert
 } from 'lucide-react';
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { createServerSupabaseClient } from '@supabase/auth-helpers-nextjs';
@@ -66,8 +66,17 @@ function PerformanceLogContent() {
   const [engineIntel, setEngineIntel] = useState(null);
   const [engineIntelLoading, setEngineIntelLoading] = useState(true);
 
+  // PUSH AB — Performance Timeline state (⏱️ Performance Timeline + 🛡️ Veto Ledger)
+  const [timeline, setTimeline] = useState(null);
+  const [timelineMode, setTimelineMode] = useState('ALL'); // ALL | LIVE | PAPER | SHADOW
+  const [expandedReason, setExpandedReason] = useState({}); // keyed by scan_id
+
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
+
+  // PUSH AB — dedicated refs for the timeline chart (never touch chartRef/chartContainerRef)
+  const timelineContainerRef = useRef(null);
+  const timelineChartRef = useRef(null);
 
   useEffect(() => {
       setIsMounted(true);
@@ -120,6 +129,69 @@ function PerformanceLogContent() {
     fetchEngineIntel();
     return () => { isCancelled = true; };
   }, [session?.access_token]);
+
+  // PUSH AB — Fetch Performance Timeline (30d daily PnL + Veto Ledger)
+  useEffect(() => {
+    if (!session?.access_token) return;
+    let isCancelled = false;
+    const fetchTimeline = async () => {
+      try {
+        const res = await fetch('/api/performance/timeline?days=30', {
+          headers: { 'Authorization': `Bearer ${session.access_token}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (!isCancelled) setTimeline(json);
+        }
+      } catch (err) {
+        console.error('[PERFORMANCE] Failed to load performance timeline:', err);
+        // On failure render nothing for the new sections — page must never break.
+      }
+    };
+    fetchTimeline();
+    return () => { isCancelled = true; };
+  }, [session?.access_token]);
+
+  // PUSH AB — cumulative series for the timeline chart, filtered by chip mode
+  const timelineSeries = useMemo(() => {
+    if (!timeline?.cumulative) return [];
+    const seriesMap = {
+      LIVE: [{ key: 'live', color: '#3b82f6', data: timeline.cumulative.live || [] }],
+      PAPER: [{ key: 'paper', color: '#a78bfa', data: timeline.cumulative.paper || [] }],
+      SHADOW: [{ key: 'shadow', color: '#f97316', data: timeline.cumulative.shadow || [] }],
+      ALL: [
+        { key: 'live', color: '#3b82f6', data: timeline.cumulative.live || [] },
+        { key: 'paper', color: '#a78bfa', data: timeline.cumulative.paper || [] },
+        { key: 'shadow', color: '#f97316', data: timeline.cumulative.shadow || [] },
+      ],
+    };
+    return (seriesMap[timelineMode] || seriesMap.ALL).filter(s => s.data.length > 0);
+  }, [timeline, timelineMode]);
+
+  // PUSH AB — vetoes grouped by UTC date, desc
+  const vetoGroups = useMemo(() => {
+    if (!timeline?.vetoes?.length) return [];
+    const groups = {};
+    for (const v of timeline.vetoes) {
+      const key = (v.veto_time || '').slice(0, 10);
+      if (!key) continue;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(v);
+    }
+    return Object.keys(groups)
+      .sort((a, b) => (a < b ? 1 : -1))
+      .map(date => {
+        const rows = groups[date];
+        const net = rows.reduce((s, v) => s + (v.verdict === 'SAVED' ? (parseFloat(v.saved_amount) || 0) : v.verdict === 'MISSED' ? -(parseFloat(v.missed_amount) || 0) : 0), 0);
+        return {
+          date,
+          rows,
+          net: Math.round(net * 100) / 100,
+          saved: rows.filter(v => v.verdict === 'SAVED').length,
+          missed: rows.filter(v => v.verdict === 'MISSED').length,
+        };
+      });
+  }, [timeline]);
 
   // Helper: format a Date as a local YYYY-MM-DD (avoids UTC off-by-one issues).
   const toLocalDateStr = (d) => {
@@ -516,6 +588,56 @@ function PerformanceLogContent() {
     };
   }, [chartData, isMounted]);
 
+  // PUSH AB — build the timeline chart (own container; same dark options as the equity chart)
+  useEffect(() => {
+    if (!isMounted || !timelineContainerRef.current || timelineSeries.length === 0) return;
+
+    if (timelineChartRef.current) {
+      try { timelineChartRef.current.remove(); } catch (e) {}
+      timelineChartRef.current = null;
+    }
+
+    const chart = createChart(timelineContainerRef.current, {
+      width: timelineContainerRef.current.clientWidth || 800,
+      height: timelineContainerRef.current.clientHeight || 260,
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+      grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+      timeScale: { timeVisible: false, borderColor: 'rgba(255,255,255,0.1)' },
+      rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
+    });
+
+    for (const s of timelineSeries) {
+      const series = chart.addSeries(LineSeries, {
+        color: s.color,
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+      });
+      series.setData(s.data);
+    }
+    chart.timeScale().fitContent();
+    timelineChartRef.current = chart;
+
+    const handleResize = () => {
+      if (timelineContainerRef.current && timelineChartRef.current) {
+        timelineChartRef.current.applyOptions({
+          width: timelineContainerRef.current.clientWidth || 800,
+          height: timelineContainerRef.current.clientHeight || 260,
+        });
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (timelineChartRef.current) {
+        try { timelineChartRef.current.remove(); } catch (e) {}
+        timelineChartRef.current = null;
+      }
+    };
+  }, [timelineSeries, isMounted]);
+
   const displayLogs = useMemo(() => {
       const reversed = [...globalFilteredTrades].reverse(); 
       return reversed.filter(t => {
@@ -652,6 +774,156 @@ function PerformanceLogContent() {
             </div>
         </div>
       </header>
+
+      {/* ⏱️ Performance Timeline (PUSH AB) */}
+      {timeline && (
+        <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <h3 className="text-[9px] md:text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
+              <Clock size={14}/> Performance Timeline
+            </h3>
+            <div className="flex items-center gap-1">
+              {['ALL', 'LIVE', 'PAPER', 'SHADOW'].map(m => {
+                const active = timelineMode === m;
+                const palette = {
+                  ALL: active ? 'bg-slate-700/40 border-white/20 text-white' : 'border-white/5 text-slate-500 hover:bg-white/5',
+                  LIVE: active ? 'bg-blue-500/20 border-blue-500/50 text-blue-300' : 'border-white/5 text-slate-500 hover:bg-white/5',
+                  PAPER: active ? 'bg-violet-500/20 border-violet-500/50 text-violet-300' : 'border-white/5 text-slate-500 hover:bg-white/5',
+                  SHADOW: active ? 'bg-orange-500/20 border-orange-500/50 text-orange-300' : 'border-white/5 text-slate-500 hover:bg-white/5',
+                };
+                return (
+                  <button
+                    key={m}
+                    onClick={() => setTimelineMode(m)}
+                    className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border transition-all ${palette[m]}`}
+                  >
+                    {m}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {timelineSeries.length > 0 ? (
+            <div ref={timelineContainerRef} className="w-full relative min-h-[220px]" style={{ height: '260px' }} />
+          ) : (
+            <div className="flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest" style={{ height: '260px' }}>
+              No timeline data in window
+            </div>
+          )}
+
+          {/* Totals strip */}
+          <div className="mt-4 pt-3 border-t border-white/5 flex flex-wrap items-center gap-x-5 gap-y-2 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono">
+            <span className="text-blue-400">LIVE ${Number(timeline.totals?.live_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.live_count ?? 0})</span></span>
+            <span className="text-violet-400">PAPER ${Number(timeline.totals?.paper_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.paper_count ?? 0})</span></span>
+            <span className="text-orange-400">
+              SHADOW {Number(timeline.totals?.shadow_net || 0) >= 0 ? '+' : '-'}${Math.abs(Number(timeline.totals?.shadow_net || 0)).toFixed(2)}
+              <span className="text-slate-500"> ({timeline.totals?.shadow_saved ?? 0} saved / {timeline.totals?.shadow_missed ?? 0} missed over {timeline.totals?.veto_total ?? 0} vetoes)</span>
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* 🛡️ Veto Ledger (PUSH AB) */}
+      {timeline && vetoGroups.length > 0 && (
+        <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col gap-5">
+          <h3 className="text-xs md:text-sm font-black uppercase text-white tracking-widest flex items-center gap-2">
+            <ShieldAlert className="w-5 h-5 text-orange-400" /> 🛡️ Veto Ledger
+          </h3>
+
+          {vetoGroups.map(group => (
+            <div key={group.date} className="flex flex-col gap-2">
+              {/* Day header */}
+              <div className="flex flex-wrap items-center gap-3 py-2 border-b border-white/5 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono">
+                <span className="text-slate-400">{group.date}</span>
+                <span className={group.net >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                  {group.net >= 0 ? '+' : '-'}${Math.abs(group.net).toFixed(2)} net
+                </span>
+                <span className="text-slate-600">({group.saved} saved / {group.missed} missed)</span>
+              </div>
+
+              {group.rows.map(v => {
+                const verdictChip =
+                  v.verdict === 'SAVED' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                  : v.verdict === 'MISSED' ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+                  : 'bg-slate-800 border-white/10 text-slate-400';
+                const isBuy = v.signal_direction === 'BUY';
+                const amount =
+                  v.verdict === 'SAVED' ? `+$${Number(v.saved_amount || 0).toFixed(2)}`
+                  : v.verdict === 'MISSED' ? `-$${Number(v.missed_amount || 0).toFixed(2)}`
+                  : '$0.00';
+                const shortTf = (tf) => (tf ? String(tf).replace('timeframe_', '').replace('1H', '1h').replace('4H', '4h').replace('1D', '1d') : null);
+                const macroShort = shortTf(v.macro_tf);
+                const triggerShort = shortTf(v.trigger_tf);
+                const reasonText = v.reason ? String(v.reason).slice(0, 140) : null;
+                const isExpanded = !!expandedReason[v.scan_id];
+
+                return (
+                  <div key={v.scan_id ?? v.veto_time} className="bg-black/20 border border-white/5 rounded-xl p-3">
+                    <div className="flex flex-wrap items-center gap-2 text-[9px] md:text-[10px] font-mono">
+                      {/* Verdict chip */}
+                      <span className={`px-2 py-0.5 rounded-full font-black uppercase tracking-wider border ${verdictChip}`}>{v.verdict || 'NEUTRAL'}</span>
+                      {/* Amount chip */}
+                      <span className={`px-2 py-0.5 rounded-full font-bold border ${
+                        v.verdict === 'MISSED' ? 'bg-rose-500/5 border-rose-500/20 text-rose-300'
+                        : v.verdict === 'SAVED' ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-300'
+                        : 'bg-slate-800/50 border-white/5 text-slate-500'
+                      }`}>{amount}</span>
+                      {/* Asset · direction · price */}
+                      <span className="text-white font-black uppercase tracking-wider">{v.asset || '—'}</span>
+                      {isBuy ? (
+                        <span className="text-emerald-400 font-bold">BUY ▲</span>
+                      ) : (
+                        <span className="text-rose-400 font-bold">SELL ▼</span>
+                      )}
+                      <span className="text-slate-400">@ {v.veto_price !== null && v.veto_price !== undefined ? Number(v.veto_price) : '—'}</span>
+                      {/* Regime */}
+                      {v.veto_regime && <span className="text-slate-500 uppercase tracking-wider">{v.veto_regime}</span>}
+                      {/* TF pair */}
+                      {(macroShort || triggerShort) && (
+                        <span className="text-slate-500">
+                          TF {macroShort || '?'}{triggerShort ? `/${triggerShort}` : ''}
+                        </span>
+                      )}
+                      {/* Fill basis chip */}
+                      {v.fill_basis === 'far_side' && (
+                        <span className="px-2 py-0.5 rounded-full font-black uppercase tracking-wider bg-indigo-500/10 border border-indigo-500/30 text-indigo-300">far_side</span>
+                      )}
+                      {v.fill_basis === 'mid_legacy' && (
+                        <span className="px-2 py-0.5 rounded-full font-black uppercase tracking-wider bg-amber-500/10 border border-amber-500/30 text-amber-300">legacy</span>
+                      )}
+                    </div>
+
+                    {/* Reason (expandable) */}
+                    {reasonText && (
+                      <div className="mt-2">
+                        <button
+                          onClick={() => setExpandedReason(prev => ({ ...prev, [v.scan_id]: !prev[v.scan_id] }))}
+                          className={`text-[10px] font-mono text-slate-400 text-left ${isExpanded ? '' : 'line-clamp-2'} leading-relaxed`}
+                        >
+                          {reasonText}{String(v.reason).length > 140 ? '…' : ''}
+                        </button>
+                        {isExpanded && v.reason && String(v.reason).length > 140 && (
+                          <p className="text-[10px] font-mono text-slate-400 leading-relaxed mt-1">{String(v.reason).slice(140, 400)}</p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Tool chips */}
+                    {(v.tools || []).length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {v.tools.map(t => (
+                          <span key={t} className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-slate-800/60 border border-white/10 text-slate-400">{t}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="max-w-7xl w-full mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col min-h-[300px]">
