@@ -900,8 +900,9 @@ export async function startSniper(tenantId) {
                     dxy: microstructure.crossAsset?.dxy || "N/A",     
                     bids: microstructure.orderBook.bids_50_levels || 0, asks: microstructure.orderBook.asks_50_levels || 0, premium: microstructure.derivativesData.basis_premium_percent || 0,
                     // 🟢 shadow-v2: observable top-of-book bound for shadow-portfolio far-side repricing
-                    best_bid: microstructure.best_bid ? microstructure.best_bid.toFixed(2) : null,
-                    best_ask: microstructure.best_ask ? microstructure.best_ask.toFixed(2) : null,
+                    // (already toFixed(2) strings from fetchMicrostructure — never re-format)
+                    best_bid: microstructure.best_bid || null,
+                    best_ask: microstructure.best_ask || null,
                     open_position: openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : (config.trap_side ? `TRAP ${config.trap_side} @ $${config.trap_price}` : "NONE"),
                     open_tp: openTrade?.tp_price || "NONE",
                     open_sl: openTrade?.sl_price || "NONE",
