@@ -8,6 +8,172 @@ import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { createServerSupabaseClient } from '@supabase/auth-helpers-nextjs';
 import { getTierInfo, getStageColor } from '../lib/tier-mapping';
 
+// PUSH AC — local YYYY-MM-DD at module scope (component has its own copy for
+// back-compat; helpers here run outside the component tree).
+function localDateStr(d) {
+  const yr = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dy = String(d.getDate()).padStart(2, '0');
+  return `${yr}-${mo}-${dy}`;
+}
+
+// PUSH AC — ISO-week start (Monday) for the calendar WEEK granularity.
+function isoWeekStart(d) {
+  const dt = new Date(d);
+  const day = (dt.getDay() + 6) % 7; // 0 = Monday
+  return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() - day);
+}
+
+// PUSH AC — collapse a daily cumulative series into ISO-week buckets.
+// Cumulative across weeks: the last day's value in each week wins.
+function weeklyCumulative(daily) {
+  const byWeek = new Map();
+  for (const pt of daily || []) {
+    if (!pt?.time) continue;
+    const wsKey = localDateStr(isoWeekStart(new Date(`${pt.time}T00:00:00`)));
+    byWeek.set(wsKey, pt.value); // later days overwrite — last value = week-end cumulative
+  }
+  return [...byWeek.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([k, value]) => ({ time: k, value }));
+}
+
+// PUSH AC — short-form TF label (timeframe_4H → 4h)
+const shortTf = (tf) => (tf ? String(tf).replace('timeframe_', '').replace('1H', '1h').replace('4H', '4h').replace('1D', '1d') : null);
+
+// PUSH AC — shared Shadow Ledger card (used by the Veto Ledger section AND the
+// SHADOW-mode log list). Mirrors the closed-trade card styling: header row,
+// chips, expandable reason, indigo CORE MEMORIES block, tool chips.
+function ShadowLedgerCard({ v, expandedKey, expandedMap, onToggle }) {
+  const verdict = v.verdict || 'NEUTRAL';
+  const isBuy = v.signal_direction === 'BUY';
+  const savedAmt = parseFloat(v.saved_amount) || 0;
+  const missedAmt = parseFloat(v.missed_amount) || 0;
+  const rawAmount = verdict === 'SAVED' ? savedAmt : verdict === 'MISSED' ? missedAmt : 0;
+  // amounts = price points per 1 unit (NOT dollars) — unified across both paths
+  const amountLabel =
+    verdict === 'SAVED' ? `+${savedAmt.toFixed(2)} pts`
+    : verdict === 'MISSED' ? `−${missedAmt.toFixed(2)} pts`
+    : '0.00 pts';
+  const basePrice = v.veto_price !== null && v.veto_price !== undefined ? parseFloat(v.veto_price) : null;
+  const pctOfPrice = basePrice ? (rawAmount / basePrice) * 100 : null;
+  const isExpanded = !!expandedMap[expandedKey];
+  const memories = v.memories || [];
+  const macroShort = shortTf(v.macro_tf);
+  const triggerShort = shortTf(v.trigger_tf);
+  const timeStr = v.veto_time ? new Date(v.veto_time).toLocaleTimeString() : (v.created_at ? new Date(v.created_at).toLocaleTimeString() : '');
+  const verdictChip =
+    verdict === 'SAVED' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+    : verdict === 'MISSED' ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
+    : 'bg-slate-800 border-white/10 text-slate-400';
+
+  return (
+    <div className="p-4 rounded-2xl border bg-slate-900/60 border-white/5 transition-all duration-300">
+      {/* Header: time · asset · direction · verdict — mirrors closed-trade cards */}
+      <div className="flex flex-wrap justify-between items-center mb-3 border-b border-white/5 pb-3 gap-2">
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-[10px] text-slate-500 font-mono">{timeStr}</span>
+          <span className="text-sm font-bold text-white">{v.asset || '—'}</span>
+          {isBuy ? (
+            <span className="text-[11px] font-black text-emerald-400">BUY ▲</span>
+          ) : (
+            <span className="text-[11px] font-black text-rose-400">SELL ▼</span>
+          )}
+          <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest border ${verdictChip}`}>{verdict}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className={`font-black font-mono text-sm ${verdict === 'SAVED' ? 'text-emerald-400' : verdict === 'MISSED' ? 'text-rose-400' : 'text-slate-400'}`}>
+            {amountLabel}{pctOfPrice ? ` (${pctOfPrice.toFixed(1)}%)` : ''}
+          </span>
+        </div>
+      </div>
+
+      {/* Chips: regime · TF pair · fill basis */}
+      <div className="flex flex-wrap items-center gap-2 text-[9px] md:text-[10px] font-mono mb-1">
+        {v.veto_regime && <span className="text-slate-500 uppercase tracking-wider">{v.veto_regime}</span>}
+        {(macroShort || triggerShort) && (
+          <span className="text-slate-500">TF {macroShort || '?'}{triggerShort ? `/${triggerShort}` : ''}</span>
+        )}
+        {v.fill_basis === 'far_side' && (
+          <span className="px-2 py-0.5 rounded-full font-black uppercase tracking-wider bg-indigo-500/10 border border-indigo-500/30 text-indigo-300">far side</span>
+        )}
+        {v.fill_basis === 'mid_legacy' && (
+          <span className="px-2 py-0.5 rounded-full font-black uppercase tracking-wider bg-amber-500/10 border border-amber-500/30 text-amber-300">legacy</span>
+        )}
+        {v.veto_price !== null && v.veto_price !== undefined && (
+          <span className="text-slate-600">@ {Number(v.veto_price)}</span>
+        )}
+      </div>
+
+      {/* Reason (oracle_reasoning) — expandable, same pattern as expandedThesis */}
+      {v.reason && (
+        <div className="border-l-2 border-amber-500/30 pl-4 py-1 mt-2">
+          <div className="flex items-center justify-between mb-1">
+            <h4 className="text-[9px] font-black uppercase tracking-widest text-amber-400 flex items-center gap-2">Oracle Reasoning</h4>
+            {String(v.reason).length > 140 && (
+              <button
+                onClick={() => onToggle(expandedKey)}
+                className="text-[9px] font-black uppercase tracking-widest text-amber-300 hover:text-amber-200 flex items-center gap-1"
+              >
+                {isExpanded ? <>Collapse <ChevronUp size={10}/></> : <>Expand <ChevronDown size={10}/></>}
+              </button>
+            )}
+          </div>
+          <p className={`text-[11px] text-slate-400 italic whitespace-pre-wrap ${isExpanded ? '' : 'line-clamp-3'}`}>
+            {String(v.reason)}
+          </p>
+        </div>
+      )}
+
+      {/* CORE MEMORIES — styled like the per-trade Core Memory (Influenced) block (indigo) */}
+      {memories.length > 0 && (() => {
+        const memKey = `${expandedKey}-memories`;
+        const memExpanded = !!expandedMap[memKey];
+        return (
+          <div className="border-l-2 border-indigo-500/30 pl-4 py-1 mt-2">
+            <div className="flex items-center justify-between mb-1">
+              <h4 className="text-[9px] font-black uppercase tracking-widest text-indigo-400 flex items-center gap-2">
+                🧠 Core Memories
+              </h4>
+              <button
+                onClick={() => onToggle(memKey)}
+                className="text-[9px] font-black uppercase tracking-widest text-indigo-300 hover:text-indigo-200 flex items-center gap-1"
+              >
+                {memExpanded ? <>Collapse <ChevronUp size={10}/></> : <>View {memories.length} <ChevronDown size={10}/></>}
+              </button>
+            </div>
+            {memExpanded && (
+              <div className="space-y-2 mt-2">
+                {memories.map((m, mi) => (
+                  <div key={mi} className="bg-black/30 rounded-lg p-3 border border-indigo-500/10">
+                    <p className="text-[11px] text-slate-400 italic leading-relaxed line-clamp-3">{m.excerpt}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Tool chips (non-memory tools only — API already excludes memory tools) */}
+      {(v.tools || []).length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5 pl-2">
+          {v.tools.map(t => (
+            <span key={t} className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-slate-800/60 border border-white/10 text-slate-400">{t}</span>
+          ))}
+        </div>
+      )}
+
+      {/* Counterfactual note (old shadow_portfolio rows only) */}
+      {v.counterfactual_direction && (
+        <div className="mt-2 text-[9px] text-slate-500 font-mono pl-2">
+          No trade found — price moved <span className={v.counterfactual_direction === 'WENT_AGAINST' ? 'text-emerald-400' : 'text-red-400'}>{v.counterfactual_direction.replace('_', ' ')}</span> within 6h
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PerformanceLog({ initialSession }) {
   const session = useSession() || initialSession;
   
@@ -66,10 +232,12 @@ function PerformanceLogContent() {
   const [engineIntel, setEngineIntel] = useState(null);
   const [engineIntelLoading, setEngineIntelLoading] = useState(true);
 
-  // PUSH AB — Performance Timeline state (⏱️ Performance Timeline + 🛡️ Veto Ledger)
+  // PUSH AC — Performance Timeline state (⏱️ Performance Timeline + 🛡️ Shadow Ledger)
   const [timeline, setTimeline] = useState(null);
-  const [timelineMode, setTimelineMode] = useState('ALL'); // ALL | LIVE | PAPER | SHADOW
-  const [expandedReason, setExpandedReason] = useState({}); // keyed by scan_id
+  // PUSH AC — PnL calendar granularity: DAY | WEEK (re-aggregates both charts)
+  const [calGranularity, setCalGranularity] = useState('DAY');
+  const [expandedReason, setExpandedReason] = useState({}); // keyed by scan_id (and sp-<id> for old shadow rows)
+  const toggleReason = useCallback((key) => setExpandedReason(prev => ({ ...prev, [key]: !prev[key] })), []);
 
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -152,36 +320,44 @@ function PerformanceLogContent() {
     return () => { isCancelled = true; };
   }, [session?.access_token]);
 
-  // PUSH AB — cumulative series for the timeline chart, filtered by chip mode
+  // PUSH AC — cumulative series for the timeline chart. Obeys the EXISTING controls:
+  // modeFilter picks LIVE/PAPER (ALL = both); showVetos (SHADOW mode) replaces the
+  // trade series with the shadow pts series. WEEK granularity re-buckets into ISO weeks.
   const timelineSeries = useMemo(() => {
     if (!timeline?.cumulative) return [];
-    const seriesMap = {
-      LIVE: [{ key: 'live', color: '#3b82f6', data: timeline.cumulative.live || [] }],
-      PAPER: [{ key: 'paper', color: '#a78bfa', data: timeline.cumulative.paper || [] }],
-      SHADOW: [{ key: 'shadow', color: '#f97316', data: timeline.cumulative.shadow || [] }],
-      ALL: [
-        { key: 'live', color: '#3b82f6', data: timeline.cumulative.live || [] },
-        { key: 'paper', color: '#a78bfa', data: timeline.cumulative.paper || [] },
-        { key: 'shadow', color: '#f97316', data: timeline.cumulative.shadow || [] },
-      ],
-    };
-    return (seriesMap[timelineMode] || seriesMap.ALL).filter(s => s.data.length > 0);
-  }, [timeline, timelineMode]);
+    if (showVetos) {
+      const shadow = [{ key: 'shadow', color: '#f97316', data: timeline.cumulative.shadow || [] }];
+      if (calGranularity === 'WEEK') return shadow.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
+      return shadow;
+    }
+    const live = { key: 'live', color: '#3b82f6', data: timeline.cumulative.live || [] };
+    const paper = { key: 'paper', color: '#a78bfa', data: timeline.cumulative.paper || [] };
+    let series = modeFilter === 'LIVE' ? [live] : modeFilter === 'PAPER' ? [paper] : [live, paper];
+    if (calGranularity === 'WEEK') series = series.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
+    return series.filter(s => s.data.length > 0);
+  }, [timeline, modeFilter, showVetos, calGranularity]);
 
-  // PUSH AB — vetoes grouped by UTC date, desc
+  // PUSH AC — vetoes grouped by LOCAL date (toLocalDateStr, same convention as the
+  // calendar), desc. When a calendar day is selected, only that day's rows show.
   const vetoGroups = useMemo(() => {
     if (!timeline?.vetoes?.length) return [];
+    const filtered = timeline.vetoes.filter(v => {
+      if (!selectedDate) return true;
+      const t = v.veto_time ? new Date(v.veto_time) : null;
+      return t && !isNaN(t.getTime()) && toLocalDateStr(t) === selectedDate;
+    });
     const groups = {};
-    for (const v of timeline.vetoes) {
-      const key = (v.veto_time || '').slice(0, 10);
-      if (!key) continue;
+    for (const v of filtered) {
+      const t = v.veto_time ? new Date(v.veto_time) : null;
+      if (!t || isNaN(t.getTime())) continue;
+      const key = toLocalDateStr(t);
       if (!groups[key]) groups[key] = [];
       groups[key].push(v);
     }
     return Object.keys(groups)
       .sort((a, b) => (a < b ? 1 : -1))
       .map(date => {
-        const rows = groups[date];
+        const rows = groups[date].sort((a, b) => new Date(b.veto_time) - new Date(a.veto_time));
         const net = rows.reduce((s, v) => s + (v.verdict === 'SAVED' ? (parseFloat(v.saved_amount) || 0) : v.verdict === 'MISSED' ? -(parseFloat(v.missed_amount) || 0) : 0), 0);
         return {
           date,
@@ -191,7 +367,29 @@ function PerformanceLogContent() {
           missed: rows.filter(v => v.verdict === 'MISSED').length,
         };
       });
-  }, [timeline]);
+  }, [timeline, selectedDate]);
+
+  // PUSH AC — SHADOW-mode log list (old shadow_portfolio rows), day-grouped.
+  // With a calendar day selected: only rows from that local day. Otherwise: last 30d.
+  const shadowGroups = useMemo(() => {
+    if (!showVetos) return [];
+    const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+    const rows = shadowRecords.filter(s => {
+      const t = new Date(s.veto_time || s.created_at);
+      if (isNaN(t.getTime())) return false;
+      if (selectedDate) return toLocalDateStr(t) === selectedDate;
+      return t.getTime() >= cutoff;
+    });
+    const groups = {};
+    for (const s of rows) {
+      const key = toLocalDateStr(new Date(s.veto_time || s.created_at));
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(s);
+    }
+    return Object.keys(groups)
+      .sort((a, b) => (a < b ? 1 : -1))
+      .map(date => ({ date, rows: groups[date].sort((a, b) => new Date(b.veto_time || b.created_at) - new Date(a.veto_time || a.created_at)) }));
+  }, [showVetos, shadowRecords, selectedDate]);
 
   // Helper: format a Date as a local YYYY-MM-DD (avoids UTC off-by-one issues).
   const toLocalDateStr = (d) => {
@@ -522,8 +720,22 @@ function PerformanceLogContent() {
           cumulativePnl += pnlNum;
           data.push({ time: safeTime, value: parseFloat(cumulativePnl.toFixed(2)) });
       });
+
+      // PUSH AC — WEEK granularity: group trades by exit ISO-week (label = week
+      // start date); per-trade points collapse to the week's closing cumulative.
+      if (calGranularity === 'WEEK') {
+        const byWeek = new Map();
+        for (const pt of data) {
+          const d = new Date(pt.time * 1000);
+          const wsKey = localDateStr(isoWeekStart(d));
+          byWeek.set(wsKey, pt.value);
+        }
+        return [...byWeek.entries()]
+          .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+          .map(([k, value]) => ({ time: Math.floor(new Date(`${k}T00:00:00`).getTime() / 1000), value }));
+      }
       return data;
-  }, [globalFilteredTrades]);
+  }, [globalFilteredTrades, calGranularity]);
 
   const dailyStats = useMemo(() => {
       const stats = {};
@@ -599,10 +811,15 @@ function PerformanceLogContent() {
 
     const chart = createChart(timelineContainerRef.current, {
       width: timelineContainerRef.current.clientWidth || 800,
-      height: timelineContainerRef.current.clientHeight || 260,
+      height: timelineContainerRef.current.clientHeight || 300,
       layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
       grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
-      timeScale: { timeVisible: false, borderColor: 'rgba(255,255,255,0.1)' },
+      timeScale: {
+        timeVisible: false,
+        borderColor: 'rgba(255,255,255,0.1)',
+        // PUSH AC — WEEK granularity: tick labels show the ISO-week start date.
+        tickMarkFormatter: timelineTimeFormatter,
+      },
       rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
     });
 
@@ -636,7 +853,7 @@ function PerformanceLogContent() {
         timelineChartRef.current = null;
       }
     };
-  }, [timelineSeries, isMounted]);
+  }, [timelineSeries, isMounted, timelineTimeFormatter, calGranularity]);
 
   const displayLogs = useMemo(() => {
       const reversed = [...globalFilteredTrades].reverse(); 
@@ -662,6 +879,15 @@ function PerformanceLogContent() {
           };
       });
   }, [globalFilteredTrades, selectedDate, logFilter]);
+
+  // PUSH AC — timeline day-key formatter. WEEK granularity → ISO-week start label.
+  const timelineTimeFormatter = useCallback((time) => {
+    if (calGranularity === 'WEEK') {
+      const ws = isoWeekStart(new Date(`${time}T00:00:00`));
+      return toLocalDateStr(ws);
+    }
+    return time;
+  }, [calGranularity]);
 
   const generateInsights = () => {
       if (globalFilteredTrades.length < 5) return "Accumulating telemetry. Minimum 5 trades required to generate reliable optimization insights.";
@@ -761,7 +987,7 @@ function PerformanceLogContent() {
                     showVetos ? 'bg-orange-500/20 border-orange-500/50 text-orange-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
                   }`}
                 >
-                  🛡️ VETOs ({shadowRecords.length})
+                  🛡️ SHADOW ({shadowRecords.length})
                 </button>
                 <button
                   onClick={() => setShowRiskBlocks(!showRiskBlocks)}
@@ -781,145 +1007,62 @@ function PerformanceLogContent() {
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <h3 className="text-[9px] md:text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
               <Clock size={14}/> Performance Timeline
+              {showVetos && <span className="px-2 py-0.5 rounded-full text-[8px] bg-orange-500/20 text-orange-300">SHADOW</span>}
             </h3>
-            <div className="flex items-center gap-1">
-              {['ALL', 'LIVE', 'PAPER', 'SHADOW'].map(m => {
-                const active = timelineMode === m;
-                const palette = {
-                  ALL: active ? 'bg-slate-700/40 border-white/20 text-white' : 'border-white/5 text-slate-500 hover:bg-white/5',
-                  LIVE: active ? 'bg-blue-500/20 border-blue-500/50 text-blue-300' : 'border-white/5 text-slate-500 hover:bg-white/5',
-                  PAPER: active ? 'bg-violet-500/20 border-violet-500/50 text-violet-300' : 'border-white/5 text-slate-500 hover:bg-white/5',
-                  SHADOW: active ? 'bg-orange-500/20 border-orange-500/50 text-orange-300' : 'border-white/5 text-slate-500 hover:bg-white/5',
-                };
-                return (
-                  <button
-                    key={m}
-                    onClick={() => setTimelineMode(m)}
-                    className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border transition-all ${palette[m]}`}
-                  >
-                    {m}
-                  </button>
-                );
-              })}
+            {/* PUSH AC — timeline obeys the existing LIVE/PAPER controls; SHADOW badge shows in shadow mode */}
+            <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-slate-500">
+              {showVetos ? 'shadow curve (pts)' : modeFilter === 'LIVE' ? 'live only' : modeFilter === 'PAPER' ? 'paper only' : 'live + paper'}
             </div>
           </div>
 
           {timelineSeries.length > 0 ? (
-            <div ref={timelineContainerRef} className="w-full relative min-h-[220px]" style={{ height: '260px' }} />
+            <div ref={timelineContainerRef} className="w-full relative min-h-[220px]" style={{ height: '300px' }} />
           ) : (
-            <div className="flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest" style={{ height: '260px' }}>
+            <div className="flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest" style={{ height: '300px' }}>
               No timeline data in window
             </div>
           )}
 
-          {/* Totals strip */}
+          {/* Totals strip — shadow amounts are price POINTS, never $ */}
           <div className="mt-4 pt-3 border-t border-white/5 flex flex-wrap items-center gap-x-5 gap-y-2 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono">
             <span className="text-blue-400">LIVE ${Number(timeline.totals?.live_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.live_count ?? 0})</span></span>
             <span className="text-violet-400">PAPER ${Number(timeline.totals?.paper_pnl || 0).toFixed(2)} <span className="text-slate-600">({timeline.totals?.paper_count ?? 0})</span></span>
             <span className="text-orange-400">
-              SHADOW {Number(timeline.totals?.shadow_net || 0) >= 0 ? '+' : '-'}${Math.abs(Number(timeline.totals?.shadow_net || 0)).toFixed(2)}
-              <span className="text-slate-500"> ({timeline.totals?.shadow_saved ?? 0} saved / {timeline.totals?.shadow_missed ?? 0} missed over {timeline.totals?.veto_total ?? 0} vetoes)</span>
+              SHADOW {Number(timeline.totals?.shadow_net || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_net || 0)).toFixed(2)} pts
+              <span className="text-slate-500"> ({timeline.totals?.shadow_saved ?? 0} saved / {timeline.totals?.shadow_missed ?? 0} missed over {timeline.totals?.veto_total ?? 0})</span>
             </span>
           </div>
         </div>
       )}
 
-      {/* 🛡️ Veto Ledger (PUSH AB) */}
+      {/* 🛡️ Shadow Ledger (PUSH AC) — timeline.vetoes, day-filtered */}
       {timeline && vetoGroups.length > 0 && (
         <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col gap-5">
           <h3 className="text-xs md:text-sm font-black uppercase text-white tracking-widest flex items-center gap-2">
-            <ShieldAlert className="w-5 h-5 text-orange-400" /> 🛡️ Veto Ledger
+            <ShieldAlert className="w-5 h-5 text-orange-400" /> 🛡️ Shadow Ledger
+            {selectedDate && <span className="text-[9px] text-orange-300">{selectedDate}</span>}
           </h3>
 
           {vetoGroups.map(group => (
             <div key={group.date} className="flex flex-col gap-2">
-              {/* Day header */}
+              {/* Day header — amounts are price POINTS, never $ */}
               <div className="flex flex-wrap items-center gap-3 py-2 border-b border-white/5 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono">
                 <span className="text-slate-400">{group.date}</span>
                 <span className={group.net >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                  {group.net >= 0 ? '+' : '-'}${Math.abs(group.net).toFixed(2)} net
+                  {group.net >= 0 ? '+' : '−'}{Math.abs(group.net).toFixed(2)} pts net
                 </span>
                 <span className="text-slate-600">({group.saved} saved / {group.missed} missed)</span>
               </div>
 
-              {group.rows.map(v => {
-                const verdictChip =
-                  v.verdict === 'SAVED' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                  : v.verdict === 'MISSED' ? 'bg-rose-500/10 border-rose-500/30 text-rose-400'
-                  : 'bg-slate-800 border-white/10 text-slate-400';
-                const isBuy = v.signal_direction === 'BUY';
-                const amount =
-                  v.verdict === 'SAVED' ? `+$${Number(v.saved_amount || 0).toFixed(2)}`
-                  : v.verdict === 'MISSED' ? `-$${Number(v.missed_amount || 0).toFixed(2)}`
-                  : '$0.00';
-                const shortTf = (tf) => (tf ? String(tf).replace('timeframe_', '').replace('1H', '1h').replace('4H', '4h').replace('1D', '1d') : null);
-                const macroShort = shortTf(v.macro_tf);
-                const triggerShort = shortTf(v.trigger_tf);
-                const reasonText = v.reason ? String(v.reason).slice(0, 140) : null;
-                const isExpanded = !!expandedReason[v.scan_id];
-
-                return (
-                  <div key={v.scan_id ?? v.veto_time} className="bg-black/20 border border-white/5 rounded-xl p-3">
-                    <div className="flex flex-wrap items-center gap-2 text-[9px] md:text-[10px] font-mono">
-                      {/* Verdict chip */}
-                      <span className={`px-2 py-0.5 rounded-full font-black uppercase tracking-wider border ${verdictChip}`}>{v.verdict || 'NEUTRAL'}</span>
-                      {/* Amount chip */}
-                      <span className={`px-2 py-0.5 rounded-full font-bold border ${
-                        v.verdict === 'MISSED' ? 'bg-rose-500/5 border-rose-500/20 text-rose-300'
-                        : v.verdict === 'SAVED' ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-300'
-                        : 'bg-slate-800/50 border-white/5 text-slate-500'
-                      }`}>{amount}</span>
-                      {/* Asset · direction · price */}
-                      <span className="text-white font-black uppercase tracking-wider">{v.asset || '—'}</span>
-                      {isBuy ? (
-                        <span className="text-emerald-400 font-bold">BUY ▲</span>
-                      ) : (
-                        <span className="text-rose-400 font-bold">SELL ▼</span>
-                      )}
-                      <span className="text-slate-400">@ {v.veto_price !== null && v.veto_price !== undefined ? Number(v.veto_price) : '—'}</span>
-                      {/* Regime */}
-                      {v.veto_regime && <span className="text-slate-500 uppercase tracking-wider">{v.veto_regime}</span>}
-                      {/* TF pair */}
-                      {(macroShort || triggerShort) && (
-                        <span className="text-slate-500">
-                          TF {macroShort || '?'}{triggerShort ? `/${triggerShort}` : ''}
-                        </span>
-                      )}
-                      {/* Fill basis chip */}
-                      {v.fill_basis === 'far_side' && (
-                        <span className="px-2 py-0.5 rounded-full font-black uppercase tracking-wider bg-indigo-500/10 border border-indigo-500/30 text-indigo-300">far_side</span>
-                      )}
-                      {v.fill_basis === 'mid_legacy' && (
-                        <span className="px-2 py-0.5 rounded-full font-black uppercase tracking-wider bg-amber-500/10 border border-amber-500/30 text-amber-300">legacy</span>
-                      )}
-                    </div>
-
-                    {/* Reason (expandable) */}
-                    {reasonText && (
-                      <div className="mt-2">
-                        <button
-                          onClick={() => setExpandedReason(prev => ({ ...prev, [v.scan_id]: !prev[v.scan_id] }))}
-                          className={`text-[10px] font-mono text-slate-400 text-left ${isExpanded ? '' : 'line-clamp-2'} leading-relaxed`}
-                        >
-                          {reasonText}{String(v.reason).length > 140 ? '…' : ''}
-                        </button>
-                        {isExpanded && v.reason && String(v.reason).length > 140 && (
-                          <p className="text-[10px] font-mono text-slate-400 leading-relaxed mt-1">{String(v.reason).slice(140, 400)}</p>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Tool chips */}
-                    {(v.tools || []).length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {v.tools.map(t => (
-                          <span key={t} className="px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-wider bg-slate-800/60 border border-white/10 text-slate-400">{t}</span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              {group.rows.map(v => (
+                <ShadowLedgerCard
+                  key={v.scan_id ?? v.veto_time}
+                  v={v}
+                  expandedKey={String(v.scan_id ?? v.veto_time)}
+                  expandedMap={expandedReason}
+                  onToggle={toggleReason}
+                />
+              ))}
             </div>
           ))}
         </div>
@@ -1076,6 +1219,18 @@ function PerformanceLogContent() {
                 )}
             </h3>
             <div className="flex items-center gap-2">
+                {/* PUSH AC — DAY | WEEK granularity: re-aggregates equity curve + timeline */}
+                <div className="flex items-center gap-1 mr-1">
+                    {['DAY', 'WEEK'].map(g => (
+                        <button
+                            key={g}
+                            onClick={() => setCalGranularity(g)}
+                            className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
+                                calGranularity === g ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
+                            }`}
+                        >{g}</button>
+                    ))}
+                </div>
                 <button
                     onClick={() => setCalendarMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
                     className="px-2 py-1 rounded-lg border border-white/10 text-slate-400 hover:bg-white/5 text-xs"
@@ -1497,39 +1652,38 @@ function PerformanceLogContent() {
                 );
              })}
              
-             {showVetos && shadowRecords.map((s, i) => (
-               <div key={i} className={`p-4 rounded-2xl border transition-all duration-300 bg-slate-900/60 ${
-                 s.verdict === 'SAVED' ? 'border-emerald-500/20' : s.verdict === 'MISSED' ? 'border-red-500/20' : 'border-slate-500/20'
-               }`}>
-                 <div className="flex justify-between items-center mb-2">
-                   <div className="flex items-center gap-3">
-                     <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-widest bg-orange-500/10 text-orange-400">VETO</span>
-                     <span className="text-sm font-bold text-white">{s.asset}</span>
-                     <span className="text-[10px] text-slate-500 font-mono">@ ${s.veto_price}</span>
-                   </div>
-                   <div className="flex items-center gap-3">
-                     <span className={`font-black font-mono text-sm ${
-                       s.verdict === 'SAVED' ? 'text-emerald-400' : s.verdict === 'MISSED' ? 'text-red-400' : 'text-slate-400'
-                     }`}>
-                       {s.verdict === 'SAVED' ? '✅ SAVED' : s.verdict === 'MISSED' ? '❌ MISSED' : '➖ NEUTRAL'}
-                     </span>
-                     {s.conviction_score !== null && (
-                       <span className="text-[10px] text-slate-400 font-mono">Conviction: {s.conviction_score}</span>
-                     )}
-                   </div>
+             {/* 🛡️ SHADOW mode log list (PUSH AC) — old shadow_portfolio rows,
+                 day-grouped + filtered by the calendar selection, styled like
+                 the Shadow Ledger cards (amounts = price points, never $). */}
+             {showVetos && shadowGroups.map(group => (
+               <div key={group.date} className="flex flex-col gap-2">
+                 <div className="flex flex-wrap items-center gap-3 py-2 border-b border-white/5 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono pl-2">
+                   <span className="text-slate-400">{group.date}</span>
+                   <span className="text-slate-600">({group.rows.length})</span>
                  </div>
-                 <div className="flex gap-4 text-[10px] text-slate-400 font-mono pl-2">
-                   {s.saved_amount > 0 && <span className="text-emerald-400">Saved: ${parseFloat(s.saved_amount).toFixed(2)}</span>}
-                   {s.missed_amount > 0 && <span className="text-red-400">Missed: ${parseFloat(s.missed_amount).toFixed(2)}</span>}
-                   {s.duration_minutes !== null && <span>Duration: {s.duration_minutes}m</span>}
-                   {s.actual_move_pct !== null && <span>Price Δ: {s.actual_move_pct > 0 ? '+' : ''}{s.actual_move_pct}%</span>}
-                   {s.veto_regime && <span className="text-slate-500 uppercase">{s.veto_regime}</span>}
-                 </div>
-                 {s.counterfactual_direction && (
-                   <div className="mt-2 text-[9px] text-slate-500 font-mono pl-2">
-                     No trade found — price moved <span className={s.counterfactual_direction === 'WENT_AGAINST' ? 'text-emerald-400' : 'text-red-400'}>{s.counterfactual_direction.replace('_', ' ')}</span> within 6h
-                   </div>
-                 )}
+                 {group.rows.map(s => (
+                   <ShadowLedgerCard
+                     key={s.id}
+                     v={{
+                       scan_id: s.scan_id,
+                       asset: s.asset,
+                       signal_direction: s.signal_direction,
+                       verdict: s.verdict,
+                       saved_amount: s.saved_amount,
+                       missed_amount: s.missed_amount,
+                       veto_price: s.veto_price,
+                       veto_regime: s.veto_regime,
+                       fill_basis: s.fill_basis,
+                       macro_tf: s.macro_tf,
+                       trigger_tf: s.trigger_tf,
+                       veto_time: s.veto_time || s.created_at,
+                       counterfactual_direction: s.counterfactual_direction,
+                     }}
+                     expandedKey={`sp-${s.id}`}
+                     expandedMap={expandedReason}
+                     onToggle={toggleReason}
+                   />
+                 ))}
                </div>
              ))}
 
@@ -1555,7 +1709,7 @@ function PerformanceLogContent() {
              ))}
 
              {displayLogs.length === 0 && !showVetos && !showRiskBlocks && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
-             {displayLogs.length === 0 && showVetos && shadowRecords.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No VETO records found for this tenant.</div>}
+             {displayLogs.length === 0 && showVetos && shadowRecords.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No SHADOW records found for this tenant.</div>}
              {displayLogs.length === 0 && showRiskBlocks && riskBlocks.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No Risk Block records found for this tenant.</div>}
           </div>
         </div>

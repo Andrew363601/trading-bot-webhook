@@ -181,32 +181,34 @@ function extractConvictionScore(telemetry, oracleReasoning) {
  * trade: the trade_logs row that followed
  * vetoPrice: price at veto time
  */
-function determineVerdict(signalDirection, trade, vetoPrice) {
-  const tradeIsBuy = (trade.side === 'BUY' || trade.side === 'LONG');
-  const tradePnl = parseFloat(trade.pnl || 0);
-  const tradeMadeMoney = tradePnl > 0;
+  // Amounts (saved/missed) are computed by the CALLER in price points per 1 unit —
+  // unified with the counterfactual path below. This function decides the verdict only.
+  function determineVerdict(signalDirection, trade, vetoPrice) {
+    const tradeIsBuy = (trade.side === 'BUY' || trade.side === 'LONG');
+    const tradePnl = parseFloat(trade.pnl || 0);
+    const tradeMadeMoney = tradePnl > 0;
 
-  if (signalDirection === 'BUY') {
-    if (tradeIsBuy) {
-      // VETO was against a BUY signal, trader bought anyway
-      if (tradeMadeMoney) return { verdict: 'MISSED', saved: 0, missed: Math.abs(tradePnl) };
-      else return { verdict: 'SAVED', saved: Math.abs(tradePnl), missed: 0 };
+    if (signalDirection === 'BUY') {
+      if (tradeIsBuy) {
+        // VETO was against a BUY signal, trader bought anyway
+        if (tradeMadeMoney) return { verdict: 'MISSED' };
+        else return { verdict: 'SAVED' };
+      } else {
+        // VETO was against BUY, trader shorted instead (contrarian)
+        if (tradeMadeMoney) return { verdict: 'SAVED' };
+        else return { verdict: 'MISSED' };
+      }
     } else {
-      // VETO was against BUY, trader shorted instead (contrarian)
-      if (tradeMadeMoney) return { verdict: 'SAVED', saved: Math.abs(tradePnl), missed: 0 };
-      else return { verdict: 'MISSED', saved: 0, missed: Math.abs(tradePnl) };
-    }
-  } else {
-    // signalDirection is SELL
-    if (!tradeIsBuy) {
-      if (tradeMadeMoney) return { verdict: 'MISSED', saved: 0, missed: Math.abs(tradePnl) };
-      else return { verdict: 'SAVED', saved: Math.abs(tradePnl), missed: 0 };
-    } else {
-      if (tradeMadeMoney) return { verdict: 'SAVED', saved: Math.abs(tradePnl), missed: 0 };
-      else return { verdict: 'MISSED', saved: 0, missed: Math.abs(tradePnl) };
+      // signalDirection is SELL
+      if (!tradeIsBuy) {
+        if (tradeMadeMoney) return { verdict: 'MISSED' };
+        else return { verdict: 'SAVED' };
+      } else {
+        if (tradeMadeMoney) return { verdict: 'SAVED' };
+        else return { verdict: 'MISSED' };
+      }
     }
   }
-}
 
 let active = false;
 
@@ -303,10 +305,25 @@ async function processUnlabeledVetos() {
           (new Date(matchingTrade.created_at).getTime() - new Date(vetoTime).getTime()) / 60000
         );
 
+        // Fee: tenant taker rate × 2 (round trip), in price points.
+        // hermes-brain.js pattern — 0.0008 fallback, never 0.
+        let feeRate = 0.0008;
+        try {
+          const { data: agentSettings } = await supabase
+            .from('tenant_settings')
+            .select('agent_taker_fee_rate')
+            .eq('tenant_id', scan.tenant_id)
+            .single();
+          if (agentSettings?.agent_taker_fee_rate) feeRate = parseFloat(agentSettings.agent_taker_fee_rate) || 0.0008;
+        } catch (e) {}
+        const feePoints = feeRate * priceForCalc * 2;
+
         const result = determineVerdict(signalDirection, matchingTrade, priceForCalc);
         verdict = result.verdict;
-        savedAmount = result.saved;
-        missedAmount = result.missed;
+        // amounts = price points per 1 unit (NOT dollars) — unified with counterfactual path
+        const tradeExit = parseFloat(matchingTrade.exit_price) || priceForCalc;
+        if (verdict === 'SAVED') savedAmount = Math.abs(tradeExit - priceForCalc) + feePoints;
+        else if (verdict === 'MISSED') missedAmount = Math.abs(tradeExit - priceForCalc) + feePoints;
       } else {
         // No trade followed — use counterfactual candle data
         const candles = await fetchCounterfactualCandles(asset, vetoTime, 6, scan.tenant_id);
@@ -419,7 +436,7 @@ async function processUnlabeledVetos() {
       if (insertError) {
         console.error(`[SHADOW] Insert failed for scan ${scan.id}:`, insertError.message);
       } else {
-        const amount = savedAmount > 0 ? `SAVED $${savedAmount.toFixed(2)}` : missedAmount > 0 ? `MISSED $${missedAmount.toFixed(2)}` : 'NEUTRAL';
+        const amount = savedAmount > 0 ? `SAVED ${savedAmount.toFixed(2)} pts` : missedAmount > 0 ? `MISSED ${missedAmount.toFixed(2)} pts` : 'NEUTRAL';
         console.log(`[SHADOW] ✅ ${asset} VETO ${scan.id} @ ${vetoTime}: ${signalDirection} → ${verdict} (${amount})`);
       }
     }

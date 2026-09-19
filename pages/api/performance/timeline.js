@@ -67,7 +67,7 @@ export default async function handler(req, res) {
       // D) Tool calls over the window (matched to vetoes by scan_id later)
       supabase
         .from('agent_tool_calls')
-        .select('scan_id, tool_name')
+        .select('scan_id, tool_name, response_summary')
         .eq('tenant_id', tenantId)
         .gte('created_at', since)
         .limit(5000),
@@ -107,10 +107,22 @@ export default async function handler(req, res) {
       }
     }
 
-    // tool_name index by scan_id (unique, insertion order)
+    // tool_name index by scan_id (unique, insertion order) — NON-memory tools only
     const toolsByScanId = {};
+    const memoriesByScanId = {};
+    const memorySeen = {};
     for (const tc of toolCalls) {
       if (tc.scan_id === null || tc.scan_id === undefined) continue;
+      const isMemory = (tc.tool_name || '').toLowerCase().includes('memory');
+      if (isMemory) {
+        if (!memoriesByScanId[tc.scan_id]) { memoriesByScanId[tc.scan_id] = []; memorySeen[tc.scan_id] = new Set(); }
+        const excerpt = (tc.response_summary || '').slice(0, 300);
+        if (excerpt && !memorySeen[tc.scan_id].has(excerpt) && memoriesByScanId[tc.scan_id].length < 3) {
+          memorySeen[tc.scan_id].add(excerpt);
+          memoriesByScanId[tc.scan_id].push({ excerpt });
+        }
+        continue;
+      }
       if (!toolsByScanId[tc.scan_id]) toolsByScanId[tc.scan_id] = [];
       if (!toolsByScanId[tc.scan_id].includes(tc.tool_name)) {
         toolsByScanId[tc.scan_id].push(tc.tool_name);
@@ -212,6 +224,7 @@ export default async function handler(req, res) {
         veto_time: v.veto_time,
         reason: rawReason ? rawReason.slice(0, 400) : null,
         tools: toolsByScanId[v.scan_id] || [],
+        memories: memoriesByScanId[v.scan_id] || [],
       };
     });
 
