@@ -215,8 +215,8 @@ function PerformanceLogContent() {
   const [logFilter, setLogFilter] = useState('ALL');
 
   // 🟢 Shadow Portfolio: fetch VETO labels
-  const [shadowRecords, setShadowRecords] = useState([]);
-  const [showVetos, setShowVetos] = useState(false);
+  const [shadowRecords, setShadowRecords] = useState([]); // legacy raw rows (tab count now uses timeline.totals.veto_total)
+  const [showVetos, setShowVetos] = useState(false); // PUSH AD — false = LOGS tab, true = 🛡️ SHADOW LEDGER tab (also drives timeline shadow curve)
   const [riskBlocks, setRiskBlocks] = useState([]);
   const [showRiskBlocks, setShowRiskBlocks] = useState(false);
   const [toolCallsMap, setToolCallsMap] = useState({});
@@ -386,28 +386,6 @@ function PerformanceLogContent() {
       });
   }, [timeline, selectedDate]);
 
-  // PUSH AC — SHADOW-mode log list (old shadow_portfolio rows), day-grouped.
-  // With a calendar day selected: only rows from that local day. Otherwise: last 30d.
-  const shadowGroups = useMemo(() => {
-    if (!showVetos) return [];
-    const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
-    const rows = shadowRecords.filter(s => {
-      const t = new Date(s.veto_time || s.created_at);
-      if (isNaN(t.getTime())) return false;
-      if (selectedDate) return toLocalDateStr(t) === selectedDate;
-      return t.getTime() >= cutoff;
-    });
-    const groups = {};
-    for (const s of rows) {
-      const key = toLocalDateStr(new Date(s.veto_time || s.created_at));
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(s);
-    }
-    return Object.keys(groups)
-      .sort((a, b) => (a < b ? 1 : -1))
-      .map(date => ({ date, rows: groups[date].sort((a, b) => new Date(b.veto_time || b.created_at) - new Date(a.veto_time || a.created_at)) }));
-  }, [showVetos, shadowRecords, selectedDate]);
-
   // Build a full month grid: leading blanks for the first weekday, then each day
   // of the visible month. `null` entries render as empty cells.
   const calendarCells = useMemo(() => {
@@ -500,20 +478,7 @@ function PerformanceLogContent() {
     };
     fetchRiskBlocks();
   }, [tenantId, supabase]);
-
-  useEffect(() => {
-    if (!supabase || !tenantId) return;
-    const fetchShadowPortfolio = async () => {
-      const { data } = await supabase
-        .from('shadow_portfolio')
-        .select('*')
-        .eq('tenant_id', tenantId)
-        .order('created_at', { ascending: false })
-        .limit(200);
-      if (data) setShadowRecords(data);
-    };
-    fetchShadowPortfolio();
-  }, [tenantId, supabase]);
+  // 🆕 Fetch linked core memories for displayed trades
   // � Fetch linked core memories for displayed trades
   useEffect(() => {
     if (!supabase || !allValidTrades.length || !tenantId) return;
@@ -986,14 +951,6 @@ function PerformanceLogContent() {
                     </button>
                 ))}
                 <button
-                  onClick={() => setShowVetos(!showVetos)}
-                  className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
-                    showVetos ? 'bg-orange-500/20 border-orange-500/50 text-orange-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
-                  }`}
-                >
-                  🛡️ SHADOW ({shadowRecords.length})
-                </button>
-                <button
                   onClick={() => setShowRiskBlocks(!showRiskBlocks)}
                   className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
                     showRiskBlocks ? 'bg-red-500/20 border-red-500/50 text-red-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
@@ -1036,39 +993,6 @@ function PerformanceLogContent() {
               <span className="text-slate-500"> ({timeline.totals?.shadow_saved ?? 0} saved / {timeline.totals?.shadow_missed ?? 0} missed over {timeline.totals?.veto_total ?? 0})</span>
             </span>
           </div>
-        </div>
-      )}
-
-      {/* 🛡️ Shadow Ledger (PUSH AC) — timeline.vetoes, day-filtered */}
-      {timeline && vetoGroups.length > 0 && (
-        <div className="max-w-7xl w-full mx-auto bg-slate-900/40 border border-white/10 rounded-3xl p-4 md:p-6 shadow-2xl flex flex-col gap-5">
-          <h3 className="text-xs md:text-sm font-black uppercase text-white tracking-widest flex items-center gap-2">
-            <ShieldAlert className="w-5 h-5 text-orange-400" /> 🛡️ Shadow Ledger
-            {selectedDate && <span className="text-[9px] text-orange-300">{selectedDate}</span>}
-          </h3>
-
-          {vetoGroups.map(group => (
-            <div key={group.date} className="flex flex-col gap-2">
-              {/* Day header — amounts are price POINTS, never $ */}
-              <div className="flex flex-wrap items-center gap-3 py-2 border-b border-white/5 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono">
-                <span className="text-slate-400">{group.date}</span>
-                <span className={group.net >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                  {group.net >= 0 ? '+' : '−'}{Math.abs(group.net).toFixed(2)} pts net
-                </span>
-                <span className="text-slate-600">({group.saved} saved / {group.missed} missed)</span>
-              </div>
-
-              {group.rows.map(v => (
-                <ShadowLedgerCard
-                  key={v.scan_id ?? v.veto_time}
-                  v={v}
-                  expandedKey={String(v.scan_id ?? v.veto_time)}
-                  expandedMap={expandedReason}
-                  onToggle={toggleReason}
-                />
-              ))}
-            </div>
-          ))}
         </div>
       )}
 
@@ -1357,7 +1281,23 @@ function PerformanceLogContent() {
              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pl-2">
                  <h3 className="text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2"><Clock size={14}/> Execution Logs</h3>
                  <div className="flex flex-wrap gap-1.5 sm:gap-2 items-center">
-                     {['ALL', 'WIN', 'LOSS', 'LONG', 'SHORT'].map(f => (
+                     {/* PUSH AD — segmented tab control: LOGS vs 🛡️ SHADOW LEDGER.
+                         Same showVetos state underneath (timeline chart keeps obeying it). */}
+                     <div className="flex items-center gap-1">
+                         <button
+                            onClick={() => setShowVetos(false)}
+                            className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
+                                !showVetos ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
+                            }`}
+                         >Execution Logs</button>
+                         <button
+                            onClick={() => setShowVetos(true)}
+                            className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
+                                showVetos ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
+                            }`}
+                         >🛡️ SHADOW LEDGER ({timeline?.totals?.veto_total ?? 0})</button>
+                     </div>
+                     {!showVetos && ['ALL', 'WIN', 'LOSS', 'LONG', 'SHORT'].map(f => (
                          <button
                             key={f}
                             onClick={() => setLogFilter(f)}
@@ -1396,7 +1336,8 @@ function PerformanceLogContent() {
                  </div>
              </div>
              
-             {displayLogs.map((pipeline, i) => {
+             {/* Trade log rows only on the LOGS tab; SHADOW LEDGER tab renders the ledger below instead. */}
+             {!showVetos && displayLogs.map((pipeline, i) => {
                 const t = pipeline.trade;
                 if (!t) return null;
                 const pnl = parseFloat(t.pnl || 0);
@@ -1656,34 +1597,25 @@ function PerformanceLogContent() {
                 );
              })}
              
-             {/* 🛡️ SHADOW mode log list (PUSH AC) — old shadow_portfolio rows,
-                 day-grouped + filtered by the calendar selection, styled like
-                 the Shadow Ledger cards (amounts = price points, never $). */}
-             {showVetos && shadowGroups.map(group => (
+             {/* 🛡️ SHADOW LEDGER tab (PUSH AD) — full-data ledger from timeline.vetoes
+                 (reason/memories/tools), day-grouped + filtered by the calendar
+                 selection, with pts nets per day. Amounts = price POINTS, never $. */}
+             {showVetos && vetoGroups.map(group => (
                <div key={group.date} className="flex flex-col gap-2">
-                 <div className="flex flex-wrap items-center gap-3 py-2 border-b border-white/5 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono pl-2">
+                 {/* Day header — amounts are price POINTS, never $ */}
+                 <div className="flex flex-wrap items-center gap-3 py-2 border-b border-white/5 text-[9px] md:text-[10px] font-black uppercase tracking-widest font-mono">
                    <span className="text-slate-400">{group.date}</span>
-                   <span className="text-slate-600">({group.rows.length})</span>
+                   <span className={group.net >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                     {group.net >= 0 ? '+' : '−'}{Math.abs(group.net).toFixed(2)} pts net
+                   </span>
+                   <span className="text-slate-600">({group.saved} saved / {group.missed} missed)</span>
                  </div>
-                 {group.rows.map(s => (
+
+                 {group.rows.map(v => (
                    <ShadowLedgerCard
-                     key={s.id}
-                     v={{
-                       scan_id: s.scan_id,
-                       asset: s.asset,
-                       signal_direction: s.signal_direction,
-                       verdict: s.verdict,
-                       saved_amount: s.saved_amount,
-                       missed_amount: s.missed_amount,
-                       veto_price: s.veto_price,
-                       veto_regime: s.veto_regime,
-                       fill_basis: s.fill_basis,
-                       macro_tf: s.macro_tf,
-                       trigger_tf: s.trigger_tf,
-                       veto_time: s.veto_time || s.created_at,
-                       counterfactual_direction: s.counterfactual_direction,
-                     }}
-                     expandedKey={`sp-${s.id}`}
+                     key={v.scan_id ?? v.veto_time}
+                     v={v}
+                     expandedKey={String(v.scan_id ?? v.veto_time)}
                      expandedMap={expandedReason}
                      onToggle={toggleReason}
                    />
@@ -1713,7 +1645,7 @@ function PerformanceLogContent() {
              ))}
 
              {displayLogs.length === 0 && !showVetos && !showRiskBlocks && <div className="text-[10px] font-mono text-slate-600 pl-2">No executed trades match these filters.</div>}
-             {displayLogs.length === 0 && showVetos && shadowRecords.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No SHADOW records found for this tenant.</div>}
+             {showVetos && vetoGroups.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No SHADOW records found for this tenant.</div>}
              {displayLogs.length === 0 && showRiskBlocks && riskBlocks.length === 0 && <div className="text-[10px] font-mono text-slate-600 pl-2">No Risk Block records found for this tenant.</div>}
           </div>
         </div>
