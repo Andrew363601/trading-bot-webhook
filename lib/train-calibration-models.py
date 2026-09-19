@@ -307,9 +307,9 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
     n_real = len(real_samples)
     veto_n = len(veto_samples)
     n = n_real  # legacy var: headline stats + sample_count stay real-only
-    wins = sum(1 for _, l, _ in real_samples if l == 1)
+    wins = sum(1 for s in real_samples if s[1] == 1)
     wr = wins / n if n else 0.0
-    pnls_arr = [p for _, _, p in real_samples]
+    pnls_arr = [s[2] for s in real_samples]
     avg_pnl = (sum(pnls_arr) / n) if n else 0.0
 
     pos_pnls = [p for p in pnls_arr if p > 0]
@@ -319,7 +319,7 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
     capture_ratio = (sum(pos_pnls) / abs(sum(neg_pnls))) if neg_pnls else None
 
     # PUSH AA: veto counterfactual accounting (never touches headline stats)
-    veto_wins = sum(1 for _, l, _ in veto_samples if l == 1)
+    veto_wins = sum(1 for s in veto_samples if s[1] == 1)
 
     metrics = {
         'sample_count': n,
