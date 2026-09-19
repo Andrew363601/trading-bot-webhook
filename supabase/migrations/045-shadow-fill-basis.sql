@@ -5,3 +5,10 @@
 -- HIGH/LOW exit math. The bound upgrades automatically as new scans populate
 -- best_bid/best_ask in scan_results telemetry.
 ALTER TABLE shadow_portfolio ADD COLUMN IF NOT EXISTS fill_basis TEXT;
+
+-- PUSH AA: point-in-time TF pair stamped at veto time (shadow-portfolio.js).
+-- AH3: these columns are ALREADY APPLIED in production — re-added here so
+-- fresh-DB rebuilds get them. Never edit an applied migration; additive
+-- fix-forward only.
+ALTER TABLE shadow_portfolio ADD COLUMN IF NOT EXISTS macro_tf TEXT;
+ALTER TABLE shadow_portfolio ADD COLUMN IF NOT EXISTS trigger_tf TEXT;

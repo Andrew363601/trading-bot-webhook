@@ -268,6 +268,12 @@ function PerformanceLogContent() {
   const [strategyFilter, setStrategyFilter] = useState('ALL');
   const [modeFilter, setModeFilter] = useState('ALL'); // ALL | LIVE | PAPER
   const [selectedDate, setSelectedDate] = useState(null);
+  // AH3 — explicit-day flag: the auto-selected "today" drives the trade log,
+  // but the Shadow Ledger defaults to NO day filter (last 30d) because with
+  // the 24h sim horizon, today's shadow rows only appear as sims resolve.
+  // The calendar day-filter applies to the ledger ONLY when the user
+  // explicitly clicks a day.
+  const [explicitDaySelected, setExplicitDaySelected] = useState(false);
   const [logFilter, setLogFilter] = useState('ALL');
 
   // 🟢 Shadow Portfolio: fetch VETO labels
@@ -477,11 +483,13 @@ function PerformanceLogContent() {
   }, [timeline, modeFilter, showVetos, modelView, modelViewLoading, calGranularity]);
 
   // PUSH AC — vetoes grouped by LOCAL date (toLocalDateStr, same convention as the
-  // calendar), desc. When a calendar day is selected, only that day's rows show.
+  // calendar), desc. AH3 — the ledger defaults to NO day filter (last 30d);
+  // the calendar day-filter applies only when the user explicitly clicks a day
+  // (explicitDaySelected). The auto-selected "today" drives the trade log only.
   const vetoGroups = useMemo(() => {
     if (!timeline?.vetoes?.length) return [];
     const filtered = timeline.vetoes.filter(v => {
-      if (!selectedDate) return true;
+      if (!explicitDaySelected || !selectedDate) return true;
       const t = v.veto_time ? new Date(v.veto_time) : null;
       return t && !isNaN(t.getTime()) && toLocalDateStr(t) === selectedDate;
     });
@@ -506,7 +514,7 @@ function PerformanceLogContent() {
           missed: rows.filter(v => v.verdict === 'MISSED').length,
         };
       });
-  }, [timeline, selectedDate]);
+  }, [timeline, selectedDate, explicitDaySelected]);
 
   // Build a full month grid: leading blanks for the first weekday, then each day
   // of the visible month. `null` entries render as empty cells.
@@ -574,6 +582,8 @@ function PerformanceLogContent() {
 
       setAllValidTrades(valid);
       setOpenPositions(liveTrades || []);
+      // AH3 — auto-select today for the trade log, but NOT as an explicit
+      // ledger filter (explicitDaySelected stays false → ledger shows last 30d).
       setSelectedDate(toLocalDateStr(new Date()));
     } catch (err) {
       console.error("Performance Fetch Error:", err);
@@ -1368,7 +1378,7 @@ function PerformanceLogContent() {
                 return (
                     <button 
                         key={day} 
-                        onClick={() => setSelectedDate(day)}
+                        onClick={() => { setSelectedDate(day); setExplicitDaySelected(true); }}
                         className={`h-16 md:h-20 rounded-xl p-1.5 md:p-2 flex flex-col justify-between items-start transition-all border ${
                             isSelected ? 'bg-slate-800 border-indigo-500 shadow-[0_0_15px_-3px_rgba(99,102,241,0.4)]' : 
                             hasTrades ? 'bg-slate-900 border-white/5 hover:bg-slate-800' : 'bg-black/20 border-transparent opacity-60 hover:bg-white/5'
