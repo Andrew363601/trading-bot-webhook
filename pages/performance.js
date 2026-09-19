@@ -213,6 +213,14 @@ function PerformanceLogContent() {
   const [modeFilter, setModeFilter] = useState('ALL'); // ALL | LIVE | PAPER
   const [selectedDate, setSelectedDate] = useState(null);
   const [logFilter, setLogFilter] = useState('ALL');
+
+  // 🟢 Shadow Portfolio: fetch VETO labels
+  const [shadowRecords, setShadowRecords] = useState([]);
+  const [showVetos, setShowVetos] = useState(false);
+  const [riskBlocks, setRiskBlocks] = useState([]);
+  const [showRiskBlocks, setShowRiskBlocks] = useState(false);
+  const [toolCallsMap, setToolCallsMap] = useState({});
+
   // Per-row toggle for the (often very long) oracle rationale. Keyed by trade.id.
   const [expandedThesis, setExpandedThesis] = useState({});
   // 🟢 Tracks expanded core memories per trade
@@ -476,12 +484,6 @@ function PerformanceLogContent() {
   useEffect(() => { 
       if (isMounted) fetchPerformance(); 
   }, [fetchPerformance, isMounted]);
-  // 🟢 Shadow Portfolio: fetch VETO labels
-  const [shadowRecords, setShadowRecords] = useState([]);
-  const [showVetos, setShowVetos] = useState(false);
-  const [riskBlocks, setRiskBlocks] = useState([]);
-  const [showRiskBlocks, setShowRiskBlocks] = useState(false);
-  const [toolCallsMap, setToolCallsMap] = useState({});
 
   // 🆕 Fetch risk veto blocks
   useEffect(() => {
