@@ -405,9 +405,10 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
                 upper_macro_node: upper_macro_node ? upper_macro_node.toFixed(2) : "None", lower_macro_node: lower_macro_node ? lower_macro_node.toFixed(2) : "None"
             }, 
             crossAsset: { sp500, dxy }, 
+            best_bid: bestBid ? bestBid.toFixed(2) : null, best_ask: bestAsk ? bestAsk.toFixed(2) : null,
             orderBook: orderBookData, derivativesData: { spot_price: spotPrice.toFixed(2), futures_price: currentPrice.toFixed(2), basis_premium_percent: basisPremium.toFixed(4) } 
         };
-    } catch (e) { return { indicators: {}, crossAsset: {}, orderBook: {}, derivativesData: {} }; }
+    } catch (e) { return { indicators: {}, crossAsset: {}, orderBook: {}, derivativesData: {}, best_bid: null, best_ask: null }; }
 }
 
 // ── CORE MEMORY SCORING HELPERS ──
@@ -899,8 +900,8 @@ export async function startSniper(tenantId) {
                     dxy: microstructure.crossAsset?.dxy || "N/A",     
                     bids: microstructure.orderBook.bids_50_levels || 0, asks: microstructure.orderBook.asks_50_levels || 0, premium: microstructure.derivativesData.basis_premium_percent || 0,
                     // 🟢 shadow-v2: observable top-of-book bound for shadow-portfolio far-side repricing
-                    best_bid: bestBid ? bestBid.toFixed(2) : null,
-                    best_ask: bestAsk ? bestAsk.toFixed(2) : null,
+                    best_bid: microstructure.best_bid ? microstructure.best_bid.toFixed(2) : null,
+                    best_ask: microstructure.best_ask ? microstructure.best_ask.toFixed(2) : null,
                     open_position: openTrade ? `${openTrade.side} @ $${openTrade.entry_price}` : (config.trap_side ? `TRAP ${config.trap_side} @ $${config.trap_price}` : "NONE"),
                     open_tp: openTrade?.tp_price || "NONE",
                     open_sl: openTrade?.sl_price || "NONE",
