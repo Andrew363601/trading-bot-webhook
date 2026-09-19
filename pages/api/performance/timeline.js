@@ -2,7 +2,7 @@
 // PUSH AB — Performance Timeline: daily PnL (Live/Paper/Shadow) + Veto Ledger.
 // Auth exactly like pages/api/engine-intel.js.
 
-import { verifyTenantContext } from '../../lib/auth-middleware';
+import { verifyTenantContext } from '../../../lib/auth-middleware';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
