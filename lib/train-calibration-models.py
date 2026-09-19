@@ -26,7 +26,7 @@ write. Case-split buckets fragment silently.
 
 import os, json, math, urllib.request, urllib.parse
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 SUPABASE_URL = os.environ['NEXT_PUBLIC_SUPABASE_URL']
 SUPABASE_KEY = os.environ['SUPABASE_SERVICE_ROLE_KEY']
@@ -484,7 +484,13 @@ for asset, pairs in sorted(by_asset.items()):
 # ─────────────────────────────────────────────────────────────
 
 print('\n=== Regime transitions (global) ===')
-scans = sb_get('scan_results', 'asset,telemetry,created_at', order='created_at.asc', limit=2000)
+# 🟢 regime-fix: recent-window only — created_at.asc+limit grabbed the OLDEST 2,000
+# scans (10k+ rows in table), anchoring the matrix to stale early-September data.
+window_start = (datetime.now(timezone.utc) - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S')
+scans = sb_get('scan_results', 'asset,telemetry,created_at',
+               filters=f'&created_at=gte.{window_start}', order='created_at.asc', limit=2000)
+if scans:
+    print(f'Transition window: {len(scans)} scans, {scans[0]["created_at"]} → {scans[-1]["created_at"]}')
 asset_series = defaultdict(list)
 seen = set()
 for s in scans:
