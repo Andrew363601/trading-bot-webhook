@@ -16,6 +16,18 @@
 
 import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
+
+class ResilientWebSocket extends WebSocket {
+  constructor(...args) {
+    super(...args);
+    // Transport errors must never kill the worker. Supabase realtime owns
+    // reconnection; this listener only prevents the unhandled-'error' crash.
+    this.on('error', (err) => {
+      console.error('[WS-GUARD] realtime transport error (reconnect owned by supabase):', err.code || err.message);
+    });
+  }
+}
+
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { retrieveAPIKey } from '../lib/secrets-manager.js';
@@ -23,7 +35,7 @@ import { retrieveAPIKey } from '../lib/secrets-manager.js';
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
-  { global: { WebSocket: WebSocket }, realtime: { transport: WebSocket } }
+  { global: { WebSocket: ResilientWebSocket }, realtime: { transport: ResilientWebSocket } }
 );
 
 // Cache tenant keys to avoid repeated vault queries
