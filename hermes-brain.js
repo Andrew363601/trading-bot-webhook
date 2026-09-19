@@ -390,6 +390,7 @@ app.post('/api/wake', async (req, res) => {
         // 🟢 SELF-ADJUSTMENT CONTEXT: Inject current strategy parameters so
         // the AI knows the current values before deciding to UPDATE_PARAMS.
         let currentParamsText = '';
+        let stratParams = null; // AG3: hoisted for the veto-open shadow ticket text
         try {
             const { data: stratConfig } = await supabase
                 .from('strategy_config')
@@ -398,6 +399,7 @@ app.post('/api/wake', async (req, res) => {
                 .eq('asset', asset)
                 .eq('strategy', strategy_id)
                 .single();
+            stratParams = stratConfig?.parameters || null;
             if (stratConfig?.parameters) {
                 currentParamsText = `\n\n--- CURRENT STRATEGY PARAMETERS ---\n${JSON.stringify(stratConfig.parameters, null, 2)}\n\nThese are the current values. If you use UPDATE_PARAMS, you only need to include the keys you want to change. Everything else stays as-is.\n`;
             }
@@ -976,7 +978,18 @@ output HOLD for an unfilled trap.`;
 
         alertDescription += `\n\n**Working Thesis:**\n_${decisionJson.working_thesis || 'No thesis provided'}_`;
 
-        // 🟢 THE EVOLUTION: Mute 'APPROVED' notifications (keep onlySprung/Ghost/Veto/Close/Adjustments)
+        // �️ AG3: Shadow ticket opened — tracking counterfactual. Additive text
+        // only; values come from the strategy_config params the sim will use.
+        if (isVeto) {
+            const p = stratParams || {};
+            const fmtPct = (v) => (v != null ? `${(parseFloat(v) * 100).toFixed(2)}%` : '—');
+            const ticketEntry = decisionJson.price || (candles?.length ? candles[candles.length - 1]?.close : null);
+            const ticketTp = decisionJson.tp_price || (p.tp_percent != null && ticketEntry ? (ticketEntry * (1 + (decisionJson.side === 'SHORT' ? -1 : 1) * parseFloat(p.tp_percent))).toFixed(2) : null);
+            const ticketSl = decisionJson.sl_price || (p.sl_percent != null && ticketEntry ? (ticketEntry * (1 - (decisionJson.side === 'SHORT' ? -1 : 1) * parseFloat(p.sl_percent))).toFixed(2) : null);
+            alertDescription += `\n\n🛡️ **Shadow ticket opened — tracking counterfactual:** entry $${ticketEntry ?? '—'} (far side), TP $${ticketTp ?? '—'} · SL $${ticketSl ?? '—'} · tripwire ${fmtPct(p.tripwire_percent)} · trail step ${fmtPct(p.trail_step_percent)} (config) — graded at exit.`;
+        }
+
+        // �🟢 THE EVOLUTION: Mute 'APPROVED' notifications (keep onlySprung/Ghost/Veto/Close/Adjustments)
         if (decisionJson.action !== "APPROVE" && decisionJson.action !== "ADJUST_TP_SL" && decisionJson.action !== "UPDATE_TRIPWIRE") {
             await sendDiscordAlert(tenant_id, {
                 title: alertTitle,
@@ -1001,6 +1014,10 @@ output HOLD for an unfilled trap.`;
 
             try {
                 const telemetryPayload = {
+                    // AG1: spread incoming sniper telemetry FIRST so sniper stamps
+                    // (cited_memories, orderbook snapshot) survive; brain-computed
+                    // fields below stay authoritative on top.
+                    ...(payload.telemetry || {}),
                     status_overlay: `AGENT ${decisionJson.action}`,
                     oracle_reasoning: decisionJson.working_thesis,
                     cvd: marketState?.multi_timeframe_cvd?.["5M_Micro_Ripple"] || 0,

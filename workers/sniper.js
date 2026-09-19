@@ -1090,7 +1090,10 @@ export async function startSniper(tenantId) {
                             modelPrediction: modelPrediction,
                             regimeTransition: regimeTransition,
                             microstructureChange: microstructureChange,
-                            archetypeResult: archetypeResult
+                            archetypeResult: archetypeResult,
+                            // AG1: carry sniper-side telemetry (cited_memories, orderbook snapshot)
+                            // so the brain can merge it into the saved scan_results row.
+                            telemetry: decision.telemetry
                         });
                         await logAgentActivity(tenantId, "Sniper", config.asset, `Hermes notified about ${normalizedSignal} signal for ${config.asset}. Awaiting decision.`, "HERMES_NOTIFIED");
 

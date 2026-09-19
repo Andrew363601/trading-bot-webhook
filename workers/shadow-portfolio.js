@@ -38,6 +38,83 @@ const supabase = createClient(
   { global: { WebSocket: ResilientWebSocket }, realtime: { transport: ResilientWebSocket } }
 );
 
+// AG2: Discord resolution notification — pattern copied from workers/watchdog.js.
+// Silently skips tenants with no webhook configured.
+async function sendDiscordAlert(tenant_id, { title, description, color, fields = [], imageUrl = null }) {
+    const { data: settings, error: settingsError } = await supabase
+        .from('tenant_settings')
+        .select('notification_webhook_url')
+        .eq('tenant_id', tenant_id)
+        .single();
+
+    if (settingsError) {
+        console.error("[SHADOW DISCORD ERROR]: Failed to fetch webhook URL for tenant:", settingsError.message);
+        return;
+    }
+    const webhookUrl = settings?.notification_webhook_url;
+
+    if (!webhookUrl) {
+        // Silent skip — no webhook configured for this tenant.
+        return;
+    }
+    try {
+        const embed = { title, color, timestamp: new Date().toISOString() };
+        // Discord embed description hard limit = 4096 chars. Truncation guard
+        // copied from watchdog.js to avoid silent 400 rejections.
+        let desc = description || '';
+        if (desc.length > 3800) {
+            desc = desc.slice(0, 2000) + '\n\n…[truncated]…\n\n' + desc.slice(-1600);
+        }
+        embed.description = desc;
+        if (fields.length > 0) embed.fields = fields.filter(f => String(f.value ?? '').length <= 1024);
+        if (imageUrl) embed.image = { url: imageUrl };
+        const resp = await fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ embeds: [embed] }) });
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => '');
+            console.error(`[SHADOW DISCORD ERROR]: webhook returned ${resp.status}: ${body.slice(0, 200)}`);
+        }
+    } catch (e) { console.error("[SHADOW DISCORD] Alert Failed:", e.message); }
+}
+
+// AG2: fire a resolution embed when a sim resolves SAVED or MISSED (NEUTRAL skipped).
+async function notifyShadowResolution(row) {
+    try {
+        if (row.verdict !== 'SAVED' && row.verdict !== 'MISSED') return;
+        // Exit reason labels match runShadowSim's actual outputs (TP/SL/TRAIL/HORIZON/TRIPWIRE).
+        const exitReasonMap = {
+            'TP': '🎯 Take Profit', 'SL': '🛑 Stop Loss', 'TRAIL': '📉 Trailing SL',
+            'TRIPWIRE': '⚡ Tripwire', 'HORIZON': '⏳ 24h Horizon'
+        };
+        const exitReason = row.sim_exit_reason
+            ? (exitReasonMap[row.sim_exit_reason] || row.sim_exit_reason)
+            : (row.verdict === 'SAVED' ? '✅ Veto was correct (price moved against signal)' : '❌ Veto was wrong (price moved with signal)');
+        const pts = row.sim_pnl_pts != null ? row.sim_pnl_pts.toFixed(2) : (row.saved_amount > 0 ? row.saved_amount.toFixed(2) : row.missed_amount.toFixed(2));
+        const entry = row.veto_price != null ? `$${row.veto_price.toFixed(2)}` : '—';
+        const exit = row.sim_exit_price != null ? `$${row.sim_exit_price.toFixed(2)}` : '—';
+        const pct = row.actual_move_pct != null ? `${row.actual_move_pct > 0 ? '+' : ''}${row.actual_move_pct.toFixed(2)}%` : '—';
+        const qtyUsd = row.sim_params?.qty != null ? `$${row.sim_params.qty}` : '$1,000 (default notional)';
+        const bars = row.sim_bars != null ? `${row.sim_bars}` : '—';
+        const color = row.verdict === 'SAVED' ? 3066993 : 15158332; // green / red
+        await sendDiscordAlert(row.tenant_id, {
+            title: `🛡️ Shadow trade closed — ${row.verdict}`,
+            description: `Counterfactual simulation resolved for a vetoed ${row.asset} signal.`,
+            color,
+            fields: [
+                { name: 'Asset', value: String(row.asset), inline: true },
+                { name: 'Direction', value: String(row.signal_direction || '—'), inline: true },
+                { name: 'Entry → Exit', value: `${entry} → ${exit}`, inline: true },
+                { name: 'Exit Reason', value: String(exitReason), inline: true },
+                { name: 'PnL', value: `${pts} pts (${pct} of entry)`, inline: true },
+                { name: 'Config Qty', value: qtyUsd, inline: true },
+                { name: 'Bars Held', value: bars, inline: true },
+                { name: 'Regime', value: String(row.veto_regime || '—'), inline: true }
+            ]
+        });
+    } catch (e) {
+        console.error('[SHADOW DISCORD] notifyShadowResolution failed:', e.message);
+    }
+}
+
 // Cache tenant keys to avoid repeated vault queries
 const tenantKeyCache = new Map();
 
@@ -679,6 +756,23 @@ async function processUnlabeledVetos() {
       } else {
         const amount = savedAmount > 0 ? `SAVED ${savedAmount.toFixed(2)} pts` : missedAmount > 0 ? `MISSED ${missedAmount.toFixed(2)} pts` : 'NEUTRAL';
         console.log(`[SHADOW] ✅ ${asset} VETO ${scan.id} @ ${vetoTime}: ${signalDirection} → ${verdict} (${amount})`);
+        // AG2: Discord resolution notification (SAVED/MISSED only; NEUTRAL skipped).
+        await notifyShadowResolution({
+          tenant_id: scan.tenant_id,
+          verdict,
+          asset,
+          signal_direction: signalDirection,
+          veto_price: vetoPrice,
+          veto_regime: vetoRegime,
+          sim_exit_price: simExitPrice,
+          sim_exit_reason: simExitReason,
+          sim_pnl_pts: simPnlPts,
+          sim_bars: simBars,
+          sim_params: simParamsJson,
+          saved_amount: savedAmount,
+          missed_amount: missedAmount,
+          actual_move_pct: actualMovePct
+        });
       }
     }
   } catch (e) {
