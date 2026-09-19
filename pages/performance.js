@@ -800,6 +800,16 @@ function PerformanceLogContent() {
     };
   }, [chartData, isMounted]);
 
+  // PUSH AC — timeline day-key formatter. WEEK granularity → ISO-week start label.
+  // Declared BEFORE the chart useEffect below (its dep array references this).
+  const timelineTimeFormatter = useCallback((time) => {
+    if (calGranularity === 'WEEK') {
+      const ws = isoWeekStart(new Date(`${time}T00:00:00`));
+      return toLocalDateStr(ws);
+    }
+    return time;
+  }, [calGranularity]);
+
   // PUSH AB — build the timeline chart (own container; same dark options as the equity chart)
   useEffect(() => {
     if (!isMounted || !timelineContainerRef.current || timelineSeries.length === 0) return;
@@ -879,15 +889,6 @@ function PerformanceLogContent() {
           };
       });
   }, [globalFilteredTrades, selectedDate, logFilter]);
-
-  // PUSH AC — timeline day-key formatter. WEEK granularity → ISO-week start label.
-  const timelineTimeFormatter = useCallback((time) => {
-    if (calGranularity === 'WEEK') {
-      const ws = isoWeekStart(new Date(`${time}T00:00:00`));
-      return toLocalDateStr(ws);
-    }
-    return time;
-  }, [calGranularity]);
 
   const generateInsights = () => {
       if (globalFilteredTrades.length < 5) return "Accumulating telemetry. Minimum 5 trades required to generate reliable optimization insights.";

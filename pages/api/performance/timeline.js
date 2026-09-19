@@ -116,7 +116,7 @@ export default async function handler(req, res) {
       const isMemory = (tc.tool_name || '').toLowerCase().includes('memory');
       if (isMemory) {
         if (!memoriesByScanId[tc.scan_id]) { memoriesByScanId[tc.scan_id] = []; memorySeen[tc.scan_id] = new Set(); }
-        const excerpt = (tc.response_summary || '').slice(0, 300);
+        const excerpt = String(tc.response_summary || '').slice(0, 300);
         if (excerpt && !memorySeen[tc.scan_id].has(excerpt) && memoriesByScanId[tc.scan_id].length < 3) {
           memorySeen[tc.scan_id].add(excerpt);
           memoriesByScanId[tc.scan_id].push({ excerpt });
