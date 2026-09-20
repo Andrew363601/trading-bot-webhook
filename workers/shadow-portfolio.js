@@ -517,6 +517,99 @@ function extractConvictionScore(telemetry, oracleReasoning) {
 
 let active = false;
 
+// 🟢 PUSH AL — admission check shared by PENDING inserts and resolution updates.
+// Same overlap block as the AK2 block below, but the candidate's window end is
+// passed in explicitly (provisional veto_time+24h for PENDING; real sim_exit_time
+// at resolution). Excludes the candidate's own row by id when updating.
+async function computeAdmitted({ tenantId, asset, vetoTime, windowEnd, excludeId = null }) {
+  try {
+    let q = supabase
+      .from('shadow_portfolio')
+      .select('id, veto_time, sim_exit_time')
+      .eq('tenant_id', tenantId)
+      .eq('asset', asset)
+      .lt('veto_time', windowEnd)
+      .gte('veto_time', new Date(new Date(vetoTime).getTime() - 24 * 3600 * 1000).toISOString());
+    if (excludeId) q = q.neq('id', excludeId);
+    const { data: overlapping } = await q;
+    const overlaps = (overlapping || []).some(o => {
+      const oEnd = o.sim_exit_time || new Date().toISOString(); // unresolved → provisional now
+      return new Date(o.veto_time) < new Date(windowEnd) && new Date(oEnd) > new Date(vetoTime);
+    });
+    return !overlaps;
+  } catch (e) {
+    console.error('[SHADOW] Admission check failed:', e.message);
+    return true; // fail-open: keep the row in the ledger
+  }
+}
+
+// 🟢 PUSH AL — insert the PENDING ticket the moment the worker first sees a veto
+// (verdict PENDING, sim fields null, sim_params stamped) so the chart shows a LIVE
+// ticket with TP/SL lines. Idempotent: skips when a row already exists for the scan.
+// Never throws — log + continue; the sweep must not die on an insert failure.
+async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, vetoRegime, simParams, macroTf, triggerTf, fillBasis }) {
+  try {
+    const { data: dup } = await supabase
+      .from('shadow_portfolio')
+      .select('id')
+      .eq('scan_id', scan.id)
+      .limit(1);
+    if (dup && dup.length > 0) return; // already exists (PENDING or resolved) — idempotent
+
+    // Provisional admission: window end = veto_time + 24h (the sim's max horizon).
+    const provisionalEnd = new Date(new Date(scan.created_at).getTime() + 24 * 3600 * 1000).toISOString();
+    const admitted = await computeAdmitted({
+      tenantId: scan.tenant_id,
+      asset,
+      vetoTime: scan.created_at,
+      windowEnd: provisionalEnd
+    });
+
+    const { error: pErr } = await supabase
+      .from('shadow_portfolio')
+      .insert([{
+        tenant_id: scan.tenant_id,
+        scan_id: scan.id,
+        asset,
+        signal_direction: signalDirection,
+        conviction_score: null,
+        veto_price: vetoPrice ? parseFloat(vetoPrice.toFixed(2)) : null,
+        veto_time: scan.created_at,
+        veto_regime: vetoRegime,
+        trade_log_id: null,
+        trade_side: null,
+        trade_pnl: null,
+        verdict: 'PENDING',
+        saved_amount: 0,
+        missed_amount: 0,
+        actual_move_pct: null,
+        duration_minutes: null,
+        counterfactual_low: null,
+        counterfactual_high: null,
+        counterfactual_direction: null,
+        fill_basis: fillBasis || null,
+        macro_tf: macroTf,
+        trigger_tf: triggerTf,
+        sim_exit_price: null,
+        sim_exit_time: null,
+        sim_exit_reason: null,
+        sim_bars: null,
+        sim_pnl_pts: null,
+        sim_pnl_usd: null,
+        sim_params: simParams || null,
+        admitted,
+        autopsied_at: null
+      }]);
+    if (pErr) {
+      console.error(`[SHADOW] PENDING insert failed for scan ${scan.id}:`, pErr.message);
+    } else {
+      console.log(`[SHADOW] PENDING ticket ${scan.id} ${asset} ${signalDirection || '—'}`);
+    }
+  } catch (e) {
+    console.error(`[SHADOW] PENDING insert error for scan ${scan.id}:`, e.message);
+  }
+}
+
 async function processUnlabeledVetos() {
   if (active) return;
   active = true;
@@ -530,24 +623,30 @@ async function processUnlabeledVetos() {
       .select('id, tenant_id, asset, strategy, telemetry, status, created_at')
       .eq('status', 'VETO')
       .gte('created_at', cutoff)
-      // 🟢 AK3 — MATURITY AGE GATE: 1h. The sim attempts each tick once the veto
-      // is reasonably mature; runShadowSim returns null while unresolved, so those
-      // rows keep skipping until the 24h horizon, then label as HORIZON. Exit-hit
-      // rows (TP/SL/TRAIL) label on first resolution — near-real-time.
-      .lt('created_at', new Date(Date.now() - 1 * 3600 * 1000).toISOString())
+      // 🟢 PUSH AL — maturity gate REMOVED. PENDING tickets must go LIVE on the
+      // first 5-min tick after the veto (chart shows LIVE + TP/SL lines from
+      // sim_params). runShadowSim returns null while unresolved, so young vetos
+      // just stay PENDING until the sim resolves or the 24h horizon is reached.
       .order('created_at', { ascending: true });
 
     if (error) { console.error('[SHADOW] Query failed:', error.message); return; }
     if (!vetos || vetos.length === 0) { return; }
 
-    // 2. Exclude already-labeled scans
+    // 2. Exclude already-labeled scans — 🟢 PUSH AL: a scan is excluded ONLY when
+    // its shadow row exists AND verdict != 'PENDING'. PENDING rows stay in the
+    // sweep so they can be UPDATED at resolution. Map scanId → pendingRow.
     const scanIds = vetos.map(v => v.id);
     const { data: existing } = await supabase
       .from('shadow_portfolio')
-      .select('scan_id')
+      .select('id, scan_id, verdict')
       .in('scan_id', scanIds);
 
-    const labeledIds = new Set((existing || []).map(e => e.scan_id));
+    const pendingByScanId = new Map();
+    const labeledIds = new Set();
+    for (const e of (existing || [])) {
+      if (e.verdict === 'PENDING') pendingByScanId.set(e.scan_id, e);
+      else labeledIds.add(e.scan_id);
+    }
     const unlabeled = vetos.filter(v => !labeledIds.has(v.id));
 
     if (unlabeled.length === 0) { return; }
@@ -636,26 +735,52 @@ async function processUnlabeledVetos() {
         else if (verdict === 'MISSED') missedAmount = Math.abs(tradeExit - priceForCalc) + feePoints;
       } else {
         // No trade followed — AG1 strategy-true shadow simulation (Path B replacement).
-        // 24h horizon via sim engine; row is SKIPPED (not inserted) until the sim
-        // resolves (exit hit) or the horizon is reached — fetch what exists each tick.
+        // 🟢 PUSH AL: the row is no longer SKIPPED until resolution — a PENDING ticket
+        // is inserted on first sight (LIVE on chart), then UPDATED when the sim
+        // resolves (exit hit) or the horizon is reached.
         const startMs = new Date(vetoTime).getTime();
+
+        // 🟢 PUSH AL — fillBasis computed EARLY (needs only signalDirection +
+        // best_bid/ask from the paired signal's telemetry) so the PENDING row can
+        // carry it before any candle fetch.
+        let farEntry = vetoPrice;
+        fillBasis = 'mid_legacy';
+        let lt = signal?.telemetry || {};
+        if (typeof lt === 'string') { try { lt = JSON.parse(lt); } catch (e) { lt = {}; } }
+        const bestAsk = parseFloat(lt.best_ask) || null;
+        const bestBid = parseFloat(lt.best_bid) || null;
+        if (signalDirection === 'BUY' && bestAsk) { farEntry = bestAsk; fillBasis = 'far_side'; }
+        if (signalDirection === 'SELL' && bestBid) { farEntry = bestBid; fillBasis = 'far_side'; }
+
+        const simParams = await fetchStrategySimParams(scan.tenant_id, scan.strategy);
+
+        // 🟢 PUSH AL — TF pair stamped early too, so the PENDING row carries it.
+        let macroTf = 'ANY', triggerTf = 'ANY';
+        try {
+          const { data: cfg } = await supabase.from('strategy_config')
+            .select('parameters')
+            .eq('tenant_id', scan.tenant_id)
+            .ilike('strategy', scan.strategy)
+            .maybeSingle();
+          const p = cfg?.parameters || {};
+          macroTf = p.macro_tf || 'ANY';
+          triggerTf = p.trigger_tf || 'ANY';
+        } catch (e) { /* fallback ANY/ANY */ }
+
+        // 🟢 PUSH AL — insert the PENDING ticket BEFORE the candle fetch so the
+        // chart goes LIVE immediately (even if the candle fetch fails this tick).
+        if (!pendingByScanId.has(scan.id)) {
+          await insertPendingTicket({
+            scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
+            simParams, macroTf, triggerTf, fillBasis
+          });
+        }
+
         const candleData = await fetchCounterfactualCandles(asset, vetoTime, 24, scan.tenant_id);
         if (candleData && candleData.series && vetoPrice) {
           cLow = candleData.low;
           cHigh = candleData.high;
 
-          // 🟢 shadow-v2: far-side entry bound (QuanTradin's rule — pessimistic or nothing).
-          // BUY veto → we'd have paid best_ask; SELL veto → we'd have sold at best_bid.
-          let farEntry = vetoPrice;
-          fillBasis = 'mid_legacy';
-          let lt = signal?.telemetry || {};
-          if (typeof lt === 'string') { try { lt = JSON.parse(lt); } catch (e) { lt = {}; } }
-          const bestAsk = parseFloat(lt.best_ask) || null;
-          const bestBid = parseFloat(lt.best_bid) || null;
-          if (signalDirection === 'BUY' && bestAsk) { farEntry = bestAsk; fillBasis = 'far_side'; }
-          if (signalDirection === 'SELL' && bestBid) { farEntry = bestBid; fillBasis = 'far_side'; }
-
-          const simParams = await fetchStrategySimParams(scan.tenant_id, scan.strategy);
           const atr = computeATR14(candleData.series);
           const sim = runShadowSim({
             direction: signalDirection,
@@ -667,7 +792,15 @@ async function processUnlabeledVetos() {
           });
 
           if (!sim) {
-            // Unresolved — skip until a later 5-min tick (24h horizon not reached).
+            // 🟢 PUSH AL — Unresolved (24h horizon not reached). If a PENDING row
+            // exists it stays PENDING (candle walk is stateless; re-runs next
+            // tick). If missing, insert it now (idempotent path).
+            if (!pendingByScanId.has(scan.id)) {
+              await insertPendingTicket({
+                scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
+                simParams, macroTf, triggerTf, fillBasis
+              });
+            }
             continue;
           }
 
@@ -701,45 +834,96 @@ async function processUnlabeledVetos() {
         }
       }
 
-      // 🟢 PUSH AA: stamp the strategy's TF pair at veto time (point-in-time)
-      let macroTf = 'ANY', triggerTf = 'ANY';
-      try {
-        const { data: cfg } = await supabase.from('strategy_config')
-          .select('parameters')
-          .eq('tenant_id', scan.tenant_id)
-          .ilike('strategy', scan.strategy)
-          .maybeSingle();
-        const p = cfg?.parameters || {};
-        macroTf = p.macro_tf || 'ANY';
-        triggerTf = p.trigger_tf || 'ANY';
-      } catch (e) { /* fallback ANY/ANY */ }
+      // 🟢 PUSH AA: stamp the strategy's TF pair at veto time (point-in-time).
+      // 🟢 PUSH AL — Path B already stamped macroTf/triggerTf early (for the PENDING
+      // row); only Path A needs the lookup here.
+      if (!macroTf) {
+        macroTf = 'ANY'; triggerTf = 'ANY';
+        try {
+          const { data: cfg } = await supabase.from('strategy_config')
+            .select('parameters')
+            .eq('tenant_id', scan.tenant_id)
+            .ilike('strategy', scan.strategy)
+            .maybeSingle();
+          const p = cfg?.parameters || {};
+          macroTf = p.macro_tf || 'ANY';
+          triggerTf = p.trigger_tf || 'ANY';
+        } catch (e) { /* fallback ANY/ANY */ }
+      }
 
       // 🟢 AK2: admission control — two-ledger truth. A row is ADMITTED only if no
       // OTHER shadow row for the same (tenant, asset) overlaps its
       // [veto_time, sim_exit_time] window. Unresolved priors count as overlapping
       // (their provisional exit is now). Config-$ series uses admitted rows only;
       // ledger + % stats + decision counts keep ALL rows.
-      let admitted = true;
-      try {
-        const windowEnd = simExitTime || new Date().toISOString();
-        const { data: overlapping } = await supabase
+      // 🟢 PUSH AL — shared helper; excludes the candidate's own PENDING row when
+      // updating it (its provisional window would otherwise overlap itself).
+      const pendingRow = pendingByScanId.get(scan.id) || null;
+      const admitted = await computeAdmitted({
+        tenantId: scan.tenant_id,
+        asset,
+        vetoTime,
+        windowEnd: simExitTime || new Date().toISOString(),
+        excludeId: pendingRow ? pendingRow.id : null
+      });
+
+      // 🟢 PUSH AL — resolution: if a PENDING row exists for this scan, UPDATE it
+      // (verdict, amounts, sim_* fields, fill_basis, trade fields, admitted
+      // re-computed with the REAL sim_exit_time). Else the existing INSERT path.
+      if (pendingRow) {
+        const { error: upErr } = await supabase
           .from('shadow_portfolio')
-          .select('id, veto_time, sim_exit_time')
-          .eq('tenant_id', scan.tenant_id)
-          .eq('asset', asset)
-          .lt('veto_time', windowEnd)
-          .gte('veto_time', new Date(new Date(vetoTime).getTime() - 24 * 3600 * 1000).toISOString());
-        const overlaps = (overlapping || []).some(o => {
-          const oEnd = o.sim_exit_time || new Date().toISOString(); // unresolved → provisional now
-          return new Date(o.veto_time) < new Date(windowEnd) && new Date(oEnd) > new Date(vetoTime);
-        });
-        admitted = !overlaps;
-      } catch (e) {
-        console.error(`[SHADOW] Admission check failed for scan ${scan.id}:`, e.message);
-        admitted = true; // fail-open: keep the row in the ledger
+          .update({
+            verdict,
+            saved_amount: parseFloat(savedAmount.toFixed(4)),
+            missed_amount: parseFloat(missedAmount.toFixed(4)),
+            actual_move_pct: actualMovePct !== null ? parseFloat(actualMovePct.toFixed(2)) : null,
+            duration_minutes: durationMinutes,
+            counterfactual_low: cLow !== null ? parseFloat(cLow.toFixed(2)) : null,
+            counterfactual_high: cHigh !== null ? parseFloat(cHigh.toFixed(2)) : null,
+            counterfactual_direction: cDirection,
+            fill_basis: fillBasis,
+            trade_log_id: tradeLogId,
+            trade_side: tradeSide,
+            trade_pnl: tradePnl ? parseFloat(tradePnl.toFixed(4)) : null,
+            conviction_score: convictionScore,
+            sim_exit_price: simExitPrice !== null ? parseFloat(simExitPrice.toFixed(2)) : null,
+            sim_exit_time: simExitTime,
+            sim_exit_reason: simExitReason,
+            sim_bars: simBars,
+            sim_pnl_pts: simPnlPts !== null ? parseFloat(simPnlPts.toFixed(6)) : null,
+            sim_pnl_usd: simPnlUsd !== null ? parseFloat(simPnlUsd.toFixed(2)) : null,
+            sim_params: simParamsJson,
+            admitted
+          })
+          .eq('id', pendingRow.id);
+        if (upErr) {
+          console.error(`[SHADOW] PENDING update failed for scan ${scan.id}:`, upErr.message);
+        } else {
+          const amount = savedAmount > 0 ? `SAVED ${savedAmount.toFixed(2)} pts` : missedAmount > 0 ? `MISSED ${missedAmount.toFixed(2)} pts` : 'NEUTRAL';
+          console.log(`[SHADOW] ✅ ${asset} VETO ${scan.id} @ ${vetoTime}: ${signalDirection} → ${verdict} (${amount}) [PENDING→resolved]`);
+          // AG2: Discord resolution notification (SAVED/MISSED only; NEUTRAL skipped).
+          await notifyShadowResolution({
+            tenant_id: scan.tenant_id,
+            verdict,
+            asset,
+            signal_direction: signalDirection,
+            veto_price: vetoPrice,
+            veto_regime: vetoRegime,
+            sim_exit_price: simExitPrice,
+            sim_exit_reason: simExitReason,
+            sim_pnl_pts: simPnlPts,
+            sim_bars: simBars,
+            sim_params: simParamsJson,
+            saved_amount: savedAmount,
+            missed_amount: missedAmount,
+            actual_move_pct: actualMovePct
+          });
+        }
+        continue;
       }
 
-      // 4. INSERT shadow_portfolio record
+      // 4. INSERT shadow_portfolio record (no PENDING row existed — first resolution)
       const { error: insertError } = await supabase
         .from('shadow_portfolio')
         .insert([{
@@ -845,6 +1029,8 @@ async function processShadowAutopsies() {
       .from('shadow_portfolio')
       .select('id, tenant_id, scan_id, asset, signal_direction, verdict, veto_regime, macro_tf, trigger_tf, sim_exit_price, sim_exit_reason, sim_pnl_pts, sim_pnl_usd, sim_params, veto_price, veto_time')
       .is('autopsied_at', null)
+      // 🟢 PUSH AL — ungraded (PENDING) tickets must NEVER be autopsied.
+      .neq('verdict', 'PENDING')
       .gte('veto_time', cutoff)
       .order('id', { ascending: true })
       .limit(50);

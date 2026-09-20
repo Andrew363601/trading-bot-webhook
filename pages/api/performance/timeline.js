@@ -120,7 +120,10 @@ export default async function handler(req, res) {
     ]);
 
     const trades = tradesRes.data || [];
-    const vetoes = shadowRes.data || [];
+    // 🟢 PUSH AL — PENDING shadow rows (LIVE tickets, no sim yet) carry no pnl.
+    // Filter them out BEFORE bucketing so SAVED/MISSED/NET series, decision
+    // counts, config-$ and n= chips never count them.
+    const vetoes = (shadowRes.data || []).filter(v => v.verdict !== 'PENDING');
     const toolCalls = toolCallsRes.data || [];
 
     // 🟢 AK2 — two-ledger truth. ADMITTED rows (admitted !== false; NULL = legacy
