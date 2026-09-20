@@ -698,6 +698,9 @@ async function processUnlabeledVetos() {
       let cLow = null, cHigh = null, cDirection = null;
       // 🟢 shadow-v2: price basis used for Path B amounts ('far_side' | 'mid_legacy'); null for Path A
       let fillBasis = null;
+      // 🟢 PUSH AL2 — TF pair hoisted to for-body scope (Path B stamps early for the
+      // PENDING row; Path A leaves null → AA stamp block below runs the lookup).
+      let macroTf = null, triggerTf = null;
       // AG1: strategy-true sim outputs (Path B only)
       let simExitPrice = null, simExitTime = null, simExitReason = null;
       let simPnlPts = null, simPnlUsd = null, simBars = null, simParamsJson = null;
@@ -755,7 +758,8 @@ async function processUnlabeledVetos() {
         const simParams = await fetchStrategySimParams(scan.tenant_id, scan.strategy);
 
         // 🟢 PUSH AL — TF pair stamped early too, so the PENDING row carries it.
-        let macroTf = 'ANY', triggerTf = 'ANY';
+        // 🟢 PUSH AL2 — plain assignments (no let): variables are for-body scoped.
+        macroTf = 'ANY'; triggerTf = 'ANY';
         try {
           const { data: cfg } = await supabase.from('strategy_config')
             .select('parameters')
