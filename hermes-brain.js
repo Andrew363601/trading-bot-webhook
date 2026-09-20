@@ -980,13 +980,19 @@ output HOLD for an unfilled trap.`;
 
         // �️ AG3: Shadow ticket opened — tracking counterfactual. Additive text
         // only; values come from the strategy_config params the sim will use.
+        // AI2b: wrapped in try/catch — a throw here must never kill the wake
+        // before the scan_results update below runs.
         if (isVeto) {
+          try {
             const p = stratParams || {};
             const fmtPct = (v) => (v != null ? `${(parseFloat(v) * 100).toFixed(2)}%` : '—');
             const ticketEntry = decisionJson.price || (candles?.length ? candles[candles.length - 1]?.close : null);
             const ticketTp = decisionJson.tp_price || (p.tp_percent != null && ticketEntry ? (ticketEntry * (1 + (decisionJson.side === 'SHORT' ? -1 : 1) * parseFloat(p.tp_percent))).toFixed(2) : null);
             const ticketSl = decisionJson.sl_price || (p.sl_percent != null && ticketEntry ? (ticketEntry * (1 - (decisionJson.side === 'SHORT' ? -1 : 1) * parseFloat(p.sl_percent))).toFixed(2) : null);
             alertDescription += `\n\n🛡️ **Shadow ticket opened — tracking counterfactual:** entry $${ticketEntry ?? '—'} (far side), TP $${ticketTp ?? '—'} · SL $${ticketSl ?? '—'} · tripwire ${fmtPct(p.tripwire_percent)} · trail step ${fmtPct(p.trail_step_percent)} (config) — graded at exit.`;
+          } catch (ticketErr) {
+            console.error('[VETO TICKET ERROR]', scan_id, asset, '|', ticketErr.message);
+          }
         }
 
         // �🟢 THE EVOLUTION: Mute 'APPROVED' notifications (keep onlySprung/Ghost/Veto/Close/Adjustments)
@@ -1036,18 +1042,27 @@ output HOLD for an unfilled trap.`;
                 // This prevents creating a duplicate orphan scan_results row that
                 // would cause tool calls to lose their parent pipeline entry.
                 if (scan_id) {
-                    await supabase.from('scan_results').update({
+                    // AI2b: capture the update result — silent failures here meant
+                    // vetos never landed in scan_results (shadow worker + trainer
+                    // both read from this table).
+                    const { error: scanUpdErr } = await supabase.from('scan_results').update({
                         status: finalStatus,
                         telemetry: telemetryPayload
                     }).eq('id', scan_id);
+                    if (scanUpdErr) console.error('[SCAN UPDATE FAILED]', scan_id, '->', finalStatus,
+                        '|', scanUpdErr.message, '|', JSON.stringify(scanUpdErr.details || scanUpdErr.hint || ''));
+                    else console.log('[SCAN UPDATED]', scan_id, '->', finalStatus);
                 } else {
-                    await supabase.from('scan_results').insert([{
+                    const { error: scanInsErr } = await supabase.from('scan_results').insert([{
                         tenant_id: tenant_id,
                         strategy: strategy_id || 'MANUAL',
                         asset: asset,
                         status: finalStatus,
                         telemetry: telemetryPayload
                     }]);
+                    if (scanInsErr) console.error('[SCAN INSERT FAILED]', asset, '->', finalStatus,
+                        '|', scanInsErr.message, '|', JSON.stringify(scanInsErr.details || scanInsErr.hint || ''));
+                    else console.log('[SCAN INSERTED]', asset, '->', finalStatus);
                 }
             } catch (error) {
                 console.error(`[SUPABASE ERROR] Failed to record scan_results for ${asset}:`, error.message);
