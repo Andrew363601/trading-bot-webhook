@@ -530,9 +530,11 @@ async function processUnlabeledVetos() {
       .select('id, tenant_id, asset, strategy, telemetry, status, created_at')
       .eq('status', 'VETO')
       .gte('created_at', cutoff)
-      // � EVALUATION AGE GATE (AG1): 24h sim horizon must fully elapse before
-      // labeling — unresolved rows are skipped and retried on later ticks.
-      .lt('created_at', new Date(Date.now() - 24 * 3600 * 1000).toISOString())
+      // 🟢 AK3 — MATURITY AGE GATE: 1h. The sim attempts each tick once the veto
+      // is reasonably mature; runShadowSim returns null while unresolved, so those
+      // rows keep skipping until the 24h horizon, then label as HORIZON. Exit-hit
+      // rows (TP/SL/TRAIL) label on first resolution — near-real-time.
+      .lt('created_at', new Date(Date.now() - 1 * 3600 * 1000).toISOString())
       .order('created_at', { ascending: true });
 
     if (error) { console.error('[SHADOW] Query failed:', error.message); return; }
