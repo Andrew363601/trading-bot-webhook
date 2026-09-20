@@ -1044,14 +1044,17 @@ output HOLD for an unfilled trap.`;
                 if (scan_id) {
                     // AI2b: capture the update result — silent failures here meant
                     // vetos never landed in scan_results (shadow worker + trainer
-                    // both read from this table).
-                    const { error: scanUpdErr } = await supabase.from('scan_results').update({
-                        status: finalStatus,
-                        telemetry: telemetryPayload
-                    }).eq('id', scan_id);
+                    // both read from this table). .select('id') also detects the
+                    // matched-0-rows case (wrong scan_id / RLS filter).
+                    const { data: updRows, error: scanUpdErr } = await supabase.from('scan_results')
+                        .update({ status: finalStatus, telemetry: telemetryPayload })
+                        .eq('id', scan_id)
+                        .select('id');
                     if (scanUpdErr) console.error('[SCAN UPDATE FAILED]', scan_id, '->', finalStatus,
                         '|', scanUpdErr.message, '|', JSON.stringify(scanUpdErr.details || scanUpdErr.hint || ''));
-                    else console.log('[SCAN UPDATED]', scan_id, '->', finalStatus);
+                    else if (!updRows || updRows.length === 0) console.error('[SCAN UPDATE MATCHED 0 ROWS]',
+                        'scan_id=', scan_id, '|', finalStatus, '|', asset);
+                    else console.log('[SCAN UPDATED]', updRows[0].id, '->', finalStatus);
                 } else {
                     const { error: scanInsErr } = await supabase.from('scan_results').insert([{
                         tenant_id: tenant_id,
