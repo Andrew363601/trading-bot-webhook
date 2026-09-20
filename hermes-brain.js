@@ -171,7 +171,7 @@ function deriveRegime(marketState) {
 
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
-    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id, calibrationPriors, modelPrediction, regimeTransition, microstructureChange, archetypeResult } = req.body;
+    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id, calibrationPriors, modelPrediction, regimeTransition, microstructureChange, archetypeResult, telemetry } = req.body;
     const wakeStartTime = new Date().toISOString();
     
     // Track Hermes API usage
@@ -1023,7 +1023,7 @@ output HOLD for an unfilled trap.`;
                     // AG1: spread incoming sniper telemetry FIRST so sniper stamps
                     // (cited_memories, orderbook snapshot) survive; brain-computed
                     // fields below stay authoritative on top.
-                    ...(payload.telemetry || {}),
+                    ...(telemetry || {}),
                     status_overlay: `AGENT ${decisionJson.action}`,
                     oracle_reasoning: decisionJson.working_thesis,
                     cvd: marketState?.multi_timeframe_cvd?.["5M_Micro_Ripple"] || 0,
