@@ -3,6 +3,20 @@ import { syncAllTenants, startTenantWatcher } from './lib/tenant-worker-manager.
 import { startMCPGateway } from './mcp-gateway.js';
 import { startShadowPortfolio } from './workers/shadow-portfolio.js';
 
+// 🛡️ AM1 — transport failures (ETIMEDOUT/ENETUNREACH on CF-fronted hosts) must
+// never kill the swarm. Contain + log (the log line names the failing host);
+// the next sweep tick retries naturally. Mirrors ENGINE 3's WS-guard philosophy.
+let am1Rejections = 0;
+process.on('unhandledRejection', (reason) => {
+    am1Rejections++;
+    console.error(`[SWARM] Unhandled rejection CONTAINED (#${am1Rejections}):`,
+        reason?.code || '', String(reason?.message || reason).slice(0, 300));
+});
+process.on('uncaughtException', (err) => {
+    console.error('[SWARM] Uncaught exception CONTAINED:',
+        err?.code || '', String(err?.message || err).slice(0, 300));
+});
+
 console.log("[NEXUS COMMANDER] Booting multi-tenant autonomous swarm...");
 
 // 🛡️ SECURITY CHECK: Validate MASTER_ENCRYPTION_KEY is present
