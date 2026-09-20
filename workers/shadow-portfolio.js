@@ -821,9 +821,17 @@ async function processUnlabeledVetos() {
 let autopsyActive = false;
 
 function getAutopsyUrl() {
-  return process.env.HERMES_BRAIN_URL
-    ? `${process.env.HERMES_BRAIN_URL.replace(/\/$/, '')}/api/autopsy`
-    : 'http://localhost:8000/api/autopsy';
+  // AI2c: watchdog-derived fallback chain (mirrors watchdog.js L148–152 verbatim).
+  // Keeps HERMES_BRAIN_URL priority if ever set; reuses the service's existing
+  // HERMES_WEBHOOK_URL as fallback so deploys without the brain URL still reach
+  // the autopsy endpoint instead of silently POSTing to localhost:8000.
+  if (process.env.HERMES_BRAIN_URL) {
+    return `${process.env.HERMES_BRAIN_URL.replace(/\/$/, '')}/api/autopsy`;
+  }
+  if (process.env.HERMES_WEBHOOK_URL) {
+    return `${process.env.HERMES_WEBHOOK_URL.replace(/\/api\/wake\/?$/, '').replace(/\/wake\/?$/, '')}/api/autopsy`;
+  }
+  return 'http://localhost:8000/api/autopsy';
 }
 
 async function processShadowAutopsies() {
