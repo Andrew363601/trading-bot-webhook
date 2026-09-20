@@ -1047,16 +1047,35 @@ async function processShadowAutopsies() {
     for (const row of rows) {
       // Cited memories live in the paired scan's telemetry (sniper.js PUSH).
       let citedMemories = null;
+      let skipLegacy = false;
       try {
         const { data: scan } = await supabase
           .from('scan_results')
           .select('telemetry')
           .eq('id', row.scan_id)
           .maybeSingle();
-        let t = scan?.telemetry || {};
-        if (typeof t === 'string') { try { t = JSON.parse(t); } catch (e) { t = {}; } }
-        citedMemories = t.cited_memories || null;
-      } catch (e) {}
+        if (!scan) {
+          skipLegacy = true; // orphan ticket — paired scan gone
+        } else {
+          let t = scan.telemetry || {};
+          if (typeof t === 'string') { try { t = JSON.parse(t); } catch (e) { t = {}; } }
+          citedMemories = t.cited_memories || null;
+          // AI3 filter: only rows with real signal content (cited memories from
+          // the AI wire) earn an autopsy. Legacy/pre-AI rows mint junk rules
+          // ("HTTP 429 → void") — skip + stamp so they never POST and never retry.
+          if (!Array.isArray(citedMemories) || citedMemories.length === 0) skipLegacy = true;
+        }
+      } catch (e) {
+        // transient lookup failure — leave unstamped, retry next tick
+      }
+
+      if (skipLegacy) {
+        await supabase.from('shadow_portfolio')
+          .update({ autopsied_at: new Date().toISOString() })
+          .eq('id', row.id);
+        console.log(`[SHADOW-AUTOPSY] SKIPPED_LEGACY ${row.id} (${row.asset}) — no cited_memories.`);
+        continue;
+      }
 
       try {
         const resp = await fetch(getAutopsyUrl(), {
