@@ -122,6 +122,12 @@ export default async function handler(req, res) {
     const trades = tradesRes.data || [];
     const vetoes = shadowRes.data || [];
     const toolCalls = toolCallsRes.data || [];
+
+    // 🟢 AK2 — two-ledger truth. ADMITTED rows (admitted !== false; NULL = legacy
+    // rows pre-migration-047, treated as admitted) feed the config-$ cumulative
+    // series + comparison totals. Ledger + SAVED/MISSED % stats + decision counts
+    // keep ALL rows. Trainer unchanged (ingests every veto at 0.5).
+    const admittedVetoes = vetoes.filter(v => v.admitted !== false);
     // PUSH AF2 / AH2 — JS-side bucket filter mirroring the trainer's key
     // derivation (lib/train-calibration-models.py ~L162):
     //   regime = regime_at_entry if in VALID_REGIMES else 'CHOP' (NULL → CHOP)
@@ -233,8 +239,8 @@ export default async function handler(req, res) {
         if (verdict === 'SAVED') buckets[key].shadow_saved_pct += movePct;
         else if (verdict === 'MISSED') buckets[key].shadow_missed_pct += movePct;
       }
-      // AG2 — config-true $ (signed sim_pnl_usd; null-safe for legacy rows)
-      buckets[key].shadow_net_usd += parseFloat(v.sim_pnl_usd) || 0;
+      // AG2/AK2 — config-true $ (signed sim_pnl_usd; ADMITTED rows only; null-safe for legacy rows)
+      if (v.admitted !== false) buckets[key].shadow_net_usd += parseFloat(v.sim_pnl_usd) || 0;
     }
 
     // PUSH AF2 — model attribution buckets: approved (prob >= 0.5) vs flagged (< 0.5), $ PnL
@@ -328,8 +334,12 @@ export default async function handler(req, res) {
       shadow_saved_pct: round2(runSavedPct),
       shadow_missed_pct: round2(runMissedPct),
       shadow_net_pct: round2(runSavedPct + runMissedPct),
-      // AG2 — config-true $ total (signed)
+      // AG2/AK2 — config-true $ total (signed, ADMITTED rows only)
       shadow_net_usd: round2(runShadowUsd),
+      // AK2 — comparison totals over ALL rows (ledger truth, not config-$ truth)
+      shadow_net_usd_all: round2(daily.reduce((s, d) => s + d.shadow_net_usd, 0) + vetoes.filter(v => v.admitted === false).reduce((s, v) => s + (parseFloat(v.sim_pnl_usd) || 0), 0)),
+      veto_admitted_count: vetoes.filter(v => v.admitted !== false).length,
+      veto_rejected_count: vetoes.filter(v => v.admitted === false).length,
       veto_total: daily.reduce((s, d) => s + d.veto_saved_count + d.veto_missed_count + d.veto_neutral_count, 0),
       // PUSH AF2 — model attribution totals ($, real trades)
       model_approved_pnl: round2(runModelApproved),

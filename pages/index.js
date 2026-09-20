@@ -180,6 +180,9 @@ function DashboardContent() {
   // 🛡️ AH1 — shadow-portfolio chart markers. Independent toggle, default OFF.
   const [showShadow, setShowShadow] = useState(false);
   const [shadowPortfolio, setShadowPortfolio] = useState([]);
+  // 🛡️ AK1 — LIVE shadow TP/SL price lines, tracked per shadow row id so they can
+  // be removed when the row resolves (sim_exit_time appears) or the toggle goes off.
+  const shadowLinesRef = useRef({});
 
   const isLoadingOlderRef = useRef(false);
   const allChartDataRef = useRef([]);
@@ -1342,9 +1345,11 @@ function DashboardContent() {
               const shadowRows = shadowPortfolio.filter(row =>
                 normalizeAssetSymbol(row.asset) === normalizeAssetSymbol(activeAsset)
               );
+              // 🛡️ AK1 — exact-match the worker's sim_exit_reason strings. The old
+              // includes() matching never matched 'SL' against 'STOP_LOSS'.
               const reasonLabel = {
-                  'TAKE_PROFIT': '🎯 TP', 'STOP_LOSS': '🛑 SL', 'TRAIL': '📉 TRAIL',
-                  'TRIPWIRE': '🛡️ TRIPWIRE', 'HORIZON': '⏳ HORIZON'
+                  'TP': '🎯 TP', 'SL': '🛑 SL', 'TRAIL': '📉 TRAIL', 'HORIZON': '⏳ HORIZON',
+                  'TAKE_PROFIT': '🎯 TP', 'STOP_LOSS': '🛑 SL', 'TRIPWIRE': '🛡️ TRIPWIRE'
               };
               shadowRows.forEach(row => {
                   if (!row.veto_time) return;
@@ -1354,6 +1359,9 @@ function DashboardContent() {
                   const entryPos = isLong ? 'belowBar' : 'aboveBar';
                   const exitPos = isLong ? 'aboveBar' : 'belowBar';
                   const price = row.veto_price ? `$${parseFloat(row.veto_price).toFixed(2)}` : '';
+                  // 🛡️ AK1 — LIVE sim (no sim_exit_time yet): label the entry marker LIVE.
+                  const isLiveSim = !row.sim_exit_time;
+                  const entryText = isLiveSim ? `🛡️ LIVE ${isLong ? 'LONG' : 'SHORT'} ${price}` : `🛡️ ${verdict} ${price}`;
 
                   let rawTime = Math.floor(new Date(row.veto_time).getTime() / 1000);
                   let snappedTime = candleTimesArray.reduce((prev, curr) =>
@@ -1367,7 +1375,7 @@ function DashboardContent() {
                           position: entryPos,
                           color: vColor,
                           shape: isLong ? 'arrowUp' : 'arrowDown',
-                          text: `🛡️ ${verdict} ${price}`
+                          text: entryText
                       });
                   }
 
@@ -1380,14 +1388,14 @@ function DashboardContent() {
                           while(usedTimes.has(snappedExitTime)) snappedExitTime++;
                           usedTimes.add(snappedExitTime);
                           const reason = (row.sim_exit_reason || '').toUpperCase();
-                          const reasonKey = Object.keys(reasonLabel).find(k => reason.includes(k));
+                          const reasonKey = reasonLabel[reason] ? reason : Object.keys(reasonLabel).find(k => reason.includes(k));
                           const pnl = row.sim_pnl_usd != null ? parseFloat(row.sim_pnl_usd) : null;
                           const pnlText = pnl != null ? ` ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}` : '';
                           markers.push({
                               time: snappedExitTime,
                               position: exitPos,
                               color: vColor,
-                              shape: reasonKey === 'TAKE_PROFIT' ? 'circle' : reasonKey === 'STOP_LOSS' ? 'square' : 'arrowDown',
+                              shape: reasonKey === 'TP' || reasonKey === 'TAKE_PROFIT' ? 'circle' : reasonKey === 'SL' || reasonKey === 'STOP_LOSS' ? 'square' : 'arrowDown',
                               text: `${reasonLabel[reasonKey] || 'EXIT'}${pnlText}`
                           });
                       }
@@ -1401,6 +1409,67 @@ function DashboardContent() {
       } catch (e) { console.error("Chart Markers Error:", e); }
 
   }, [activeAsset, chartTimeframe, debouncedTradeLogs, normalizeAssetSymbol, openPositions, showMarkers, showShadow, shadowPortfolio]);
+
+  // 🛡️ AK1 — refetch shadow rows whenever showShadow is ON: on toggle (onClick below)
+  // AND when the chart data rebuilds (asset/timeframe change resets allChartDataRef and
+  // re-runs this effect via its deps), so new vetos appear without re-toggling.
+  useEffect(() => {
+    if (!showShadow || !tenantId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+        const { data, error } = await supabase
+          .from('shadow_portfolio')
+          .select('veto_time, veto_price, signal_direction, verdict, sim_exit_price, sim_exit_time, sim_exit_reason, sim_pnl_usd, sim_params, asset')
+          .eq('tenant_id', tenantId)
+          .gte('veto_time', since)
+          .order('veto_time', { ascending: true });
+        if (error) throw error;
+        if (!cancelled) setShadowPortfolio(data || []);
+      } catch (e) { console.error('Shadow portfolio refetch error:', e); }
+    })();
+    return () => { cancelled = true; };
+  }, [showShadow, tenantId, activeAsset, chartTimeframe]);
+
+  // 🛡️ AK1 — LIVE shadow TP/SL price lines. For rows with NO sim_exit_time (still in
+  // sim), draw TP (emerald dashed) + SL (rose dashed) from sim_params and track the
+  // created lines keyed by row id; remove them when the row resolves or toggle goes off.
+  useEffect(() => {
+    if (!seriesRef.current) return;
+    // Remove every previously created shadow line.
+    Object.values(shadowLinesRef.current).flat().forEach(pl => {
+      try { seriesRef.current.removePriceLine(pl); } catch (e) { /* series swapped */ }
+    });
+    shadowLinesRef.current = {};
+
+    if (!showShadow) return;
+
+    try {
+      shadowPortfolio.forEach(row => {
+        if (row.sim_exit_time) return; // resolved — entry/exit markers only
+        if (normalizeAssetSymbol(row.asset) !== normalizeAssetSymbol(activeAsset)) return;
+        const params = row.sim_params;
+        if (!params) return;
+        const isLong = (row.signal_direction || '').toUpperCase().includes('LONG') || (row.signal_direction || '').toUpperCase() === 'BUY';
+        const veto = parseFloat(row.veto_price);
+        if (!veto || veto <= 0) return;
+
+        // sim_params stores either absolute tp/sl prices or percents relative to veto_price.
+        const tpAbs = params.tp_price != null ? parseFloat(params.tp_price) : (params.tp_pct != null ? veto * (1 + (isLong ? 1 : -1) * parseFloat(params.tp_pct) / 100) : null);
+        const slAbs = params.sl_price != null ? parseFloat(params.sl_price) : (params.sl_pct != null ? veto * (1 - (isLong ? 1 : -1) * parseFloat(params.sl_pct) / 100) : null);
+
+        const lines = [];
+        if (tpAbs) {
+          lines.push(seriesRef.current.createPriceLine({ price: tpAbs, color: '#10b981', lineWidth: 1, lineStyle: 2, title: 'TP' }));
+        }
+        if (slAbs) {
+          lines.push(seriesRef.current.createPriceLine({ price: slAbs, color: '#f43f5e', lineWidth: 1, lineStyle: 2, title: 'SL' }));
+        }
+        if (lines.length > 0) shadowLinesRef.current[row.id || row.scan_id] = lines;
+      });
+    } catch (e) { console.error('Shadow price lines error:', e); }
+  }, [showShadow, shadowPortfolio, activeAsset, normalizeAssetSymbol]);
 
   // TP/SL price lines effect (controlled by showPriceLines toggle)
   useEffect(() => {
@@ -1947,25 +2016,10 @@ function DashboardContent() {
                   {showPriceLines ? '📊 TP/SL' : '📊 OFF'}
                 </button>
                 {/* 🛡️ AH1 — shadow-portfolio marker toggle. Fetches last 30d of
-                    shadow_portfolio on first activation (client-side, RLS-scoped). */}
+                    shadow_portfolio on activation AND on chart-data rebuild
+                    (AK1 refetch effect), so new vetos appear without re-toggling. */}
                 <button
-                  onClick={async () => {
-                    const next = !showShadow;
-                    setShowShadow(next);
-                    if (next && shadowPortfolio.length === 0 && tenantId) {
-                      try {
-                        const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-                        const { data, error } = await supabase
-                          .from('shadow_portfolio')
-                          .select('veto_time, veto_price, signal_direction, verdict, sim_exit_price, sim_exit_time, sim_exit_reason, sim_pnl_usd, asset')
-                          .eq('tenant_id', tenantId)
-                          .gte('veto_time', since)
-                          .order('veto_time', { ascending: true });
-                        if (error) throw error;
-                        setShadowPortfolio(data || []);
-                      } catch (e) { console.error('Shadow portfolio fetch error:', e); }
-                    }
-                  }}
+                  onClick={() => setShowShadow(prev => !prev)}
                   className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase transition-all ${showShadow ? 'bg-rose-600/30 text-rose-400 border border-rose-500/30' : 'dark:bg-slate-800/50 bg-slate-200 dark:text-slate-500 text-slate-600 border dark:border-white/5 border-slate-300'}`}
                   title="Toggle shadow-portfolio veto markers on chart"
                 >

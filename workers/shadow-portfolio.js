@@ -712,6 +712,31 @@ async function processUnlabeledVetos() {
         triggerTf = p.trigger_tf || 'ANY';
       } catch (e) { /* fallback ANY/ANY */ }
 
+      // 🟢 AK2: admission control — two-ledger truth. A row is ADMITTED only if no
+      // OTHER shadow row for the same (tenant, asset) overlaps its
+      // [veto_time, sim_exit_time] window. Unresolved priors count as overlapping
+      // (their provisional exit is now). Config-$ series uses admitted rows only;
+      // ledger + % stats + decision counts keep ALL rows.
+      let admitted = true;
+      try {
+        const windowEnd = simExitTime || new Date().toISOString();
+        const { data: overlapping } = await supabase
+          .from('shadow_portfolio')
+          .select('id, veto_time, sim_exit_time')
+          .eq('tenant_id', scan.tenant_id)
+          .eq('asset', asset)
+          .lt('veto_time', windowEnd)
+          .gte('veto_time', new Date(new Date(vetoTime).getTime() - 24 * 3600 * 1000).toISOString());
+        const overlaps = (overlapping || []).some(o => {
+          const oEnd = o.sim_exit_time || new Date().toISOString(); // unresolved → provisional now
+          return new Date(o.veto_time) < new Date(windowEnd) && new Date(oEnd) > new Date(vetoTime);
+        });
+        admitted = !overlaps;
+      } catch (e) {
+        console.error(`[SHADOW] Admission check failed for scan ${scan.id}:`, e.message);
+        admitted = true; // fail-open: keep the row in the ledger
+      }
+
       // 4. INSERT shadow_portfolio record
       const { error: insertError } = await supabase
         .from('shadow_portfolio')
@@ -748,6 +773,8 @@ async function processUnlabeledVetos() {
           sim_pnl_pts: simPnlPts !== null ? parseFloat(simPnlPts.toFixed(6)) : null,
           sim_pnl_usd: simPnlUsd !== null ? parseFloat(simPnlUsd.toFixed(2)) : null,
           sim_params: simParamsJson,
+          // AK2: admission flag (no overlapping same-asset shadow position at label time)
+          admitted,
           autopsied_at: null
         }]);
 
