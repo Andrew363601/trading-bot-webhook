@@ -548,13 +548,30 @@ async function computeAdmitted({ tenantId, asset, vetoTime, windowEnd, excludeId
 // ticket with TP/SL lines. Idempotent: skips when a row already exists for the scan.
 // Never throws — log + continue; the sweep must not die on an insert failure.
 async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, vetoRegime, simParams, macroTf, triggerTf, fillBasis }) {
+  // 🟢 AM2 — veto_price can arrive as a STRING (signal.price from telemetry). Never
+  // call .toFixed on it directly; parse once, guard NaN, and stamp a clean number.
+  const priceNum = vetoPrice != null ? parseFloat(vetoPrice) : null;
   try {
     const { data: dup } = await supabase
       .from('shadow_portfolio')
       .select('id')
       .eq('scan_id', scan.id)
       .limit(1);
-    if (dup && dup.length > 0) return; // already exists (PENDING or resolved) — idempotent
+    if (dup && dup.length > 0) return null; // already exists (PENDING or resolved) — idempotent
+
+    // 🟢 AM2 — open-cap: one open (PENDING) ticket per (tenant, asset). The AK2
+    // `admitted` flag only gates config-$; this is the blocking layer.
+    const { data: openSibling } = await supabase
+      .from('shadow_portfolio')
+      .select('id')
+      .eq('tenant_id', scan.tenant_id)
+      .eq('asset', asset)
+      .eq('verdict', 'PENDING')
+      .limit(1);
+    if (openSibling && openSibling.length > 0) {
+      console.log(`[SHADOW] SKIPPED_OPEN_EXISTS ${scan.id} ${asset} — one open ticket per asset.`);
+      return false;
+    }
 
     // Provisional admission: window end = veto_time + 24h (the sim's max horizon).
     const provisionalEnd = new Date(new Date(scan.created_at).getTime() + 24 * 3600 * 1000).toISOString();
@@ -565,7 +582,7 @@ async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, ve
       windowEnd: provisionalEnd
     });
 
-    const { error: pErr } = await supabase
+    const { data: insData, error: pErr } = await supabase
       .from('shadow_portfolio')
       .insert([{
         tenant_id: scan.tenant_id,
@@ -573,7 +590,7 @@ async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, ve
         asset,
         signal_direction: signalDirection,
         conviction_score: null,
-        veto_price: vetoPrice ? parseFloat(vetoPrice.toFixed(2)) : null,
+        veto_price: priceNum != null && !isNaN(priceNum) ? parseFloat(priceNum.toFixed(2)) : null,
         veto_time: scan.created_at,
         veto_regime: vetoRegime,
         trade_log_id: null,
@@ -599,14 +616,17 @@ async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, ve
         sim_params: simParams || null,
         admitted,
         autopsied_at: null
-      }]);
+      }])
+      .select('id');
     if (pErr) {
       console.error(`[SHADOW] PENDING insert failed for scan ${scan.id}:`, pErr.message);
-    } else {
-      console.log(`[SHADOW] PENDING ticket ${scan.id} ${asset} ${signalDirection || '—'}`);
+      return null; // insert failed — caller must NOT treat this as a live ticket
     }
+    console.log(`[SHADOW] PENDING ticket ${scan.id} ${asset} ${signalDirection || '—'}`);
+    return insData && insData[0] ? insData[0] : null;
   } catch (e) {
     console.error(`[SHADOW] PENDING insert error for scan ${scan.id}:`, e.message);
+    return null;
   }
 }
 
@@ -743,6 +763,11 @@ async function processUnlabeledVetos() {
         // resolves (exit hit) or the horizon is reached.
         const startMs = new Date(vetoTime).getTime();
 
+        // 🟢 AM2 — freshness gate: only process vetos ≤2h old. Older fossils get no
+        // ticket, no sim, no ping — they simply age out of the 48h sweep window.
+        const vetoAgeMs = Date.now() - new Date(vetoTime).getTime();
+        const canProcess = vetoAgeMs <= 2 * 3600 * 1000; // fresh signals only
+
         // 🟢 PUSH AL — fillBasis computed EARLY (needs only signalDirection +
         // best_bid/ask from the paired signal's telemetry) so the PENDING row can
         // carry it before any candle fetch.
@@ -774,10 +799,13 @@ async function processUnlabeledVetos() {
         // 🟢 PUSH AL — insert the PENDING ticket BEFORE the candle fetch so the
         // chart goes LIVE immediately (even if the candle fetch fails this tick).
         if (!pendingByScanId.has(scan.id)) {
-          await insertPendingTicket({
+          if (!canProcess) continue; // fossil: no ticket, no sim, no ping — ages out
+          const insRow = await insertPendingTicket({
             scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
             simParams, macroTf, triggerTf, fillBasis
           });
+          if (insRow && insRow.id) pendingByScanId.set(scan.id, insRow); // same-tick resolution must find it
+          else if (insRow === false) continue; // open cap hit — skip entirely
         }
 
         const candleData = await fetchCounterfactualCandles(asset, vetoTime, 24, scan.tenant_id);
@@ -800,10 +828,13 @@ async function processUnlabeledVetos() {
             // exists it stays PENDING (candle walk is stateless; re-runs next
             // tick). If missing, insert it now (idempotent path).
             if (!pendingByScanId.has(scan.id)) {
-              await insertPendingTicket({
+              if (!canProcess) continue; // fossil — ages out
+              const insRow = await insertPendingTicket({
                 scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
                 simParams, macroTf, triggerTf, fillBasis
               });
+              if (insRow && insRow.id) pendingByScanId.set(scan.id, insRow);
+              else if (insRow === false) continue; // open cap hit — skip entirely
             }
             continue;
           }
@@ -936,7 +967,9 @@ async function processUnlabeledVetos() {
           asset,
           signal_direction: signalDirection,
           conviction_score: convictionScore,
-          veto_price: vetoPrice ? parseFloat(vetoPrice.toFixed(2)) : null,
+          // 🟢 AM2 — same string-price hardening as insertPendingTicket (this path
+          // runs when the PENDING insert failed and the sim resolves same-tick).
+          veto_price: (() => { const n = vetoPrice != null ? parseFloat(vetoPrice) : null; return n != null && !isNaN(n) ? parseFloat(n.toFixed(2)) : null; })(),
           veto_time: vetoTime,
           veto_regime: vetoRegime,
           trade_log_id: tradeLogId,
