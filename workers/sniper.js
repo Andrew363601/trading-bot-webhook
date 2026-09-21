@@ -446,12 +446,33 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
             if (settings) shareMemory = settings.share_memory !== false;
         } catch (e) { /* non-fatal — default to shared */ }
 
+        // 🟢 PUSH AM3: bucket context is now HARD FILTERS, not additive weights.
+        // Regime / strategy / TF move into the query; no cross-regime or
+        // cross-strategy leakage, ever. Empty filtered set → the honest
+        // 'No core memory available for this asset.' path below.
+        // Guards: 'ANY' (legacy backfill tag, migration 037) and falsy values
+        // mean "no filter" — never a literal match. strategy/TF are
+        // UPPER-normalized to match the stored keys (hermes-brain writes UPPER).
+        const stratFilter = strategyId && String(strategyId).toUpperCase() !== 'ANY'
+            ? String(strategyId).toUpperCase() : null;
+        const macroTfFilter = macroTf && String(macroTf).toUpperCase() !== 'ANY'
+            ? String(macroTf).toUpperCase() : null;
+        const triggerTfFilter = triggerTf && String(triggerTf).toUpperCase() !== 'ANY'
+            ? String(triggerTf).toUpperCase() : null;
+
         let query = supabase
             .from('hermes_core_memory')
             .select('id, tenant_id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at, working_thesis, thesis_accurate, strategy_id, macro_tf, trigger_tf')
             .eq('asset', asset)
             .order('created_at', { ascending: false })
             .limit(50);
+
+        // HARD regime filter — only when a canon regime label is available.
+        // (Trap path computes it at spring time — PUSH AM3 Option B.)
+        if (currentRegime) query = query.eq('regime_at_close', currentRegime);
+        if (stratFilter) query = query.eq('strategy_id', stratFilter);      // HARD
+        if (macroTfFilter) query = query.eq('macro_tf', macroTfFilter);     // HARD
+        if (triggerTfFilter) query = query.eq('trigger_tf', triggerTfFilter); // HARD
 
         if (!shareMemory) {
             query = query.eq('tenant_id', tenantId);
@@ -524,9 +545,9 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
                 thesisSim = wordOverlap(m.working_thesis.toLowerCase(), directionWords) * 50;
             }
 
-            // 3d) Regime match (0 or 100 points) — additive, flat bonus
-            // Same market conditions make a memory directly relevant
-            const regimeMatch = (currentRegime && m.regime_at_close === currentRegime) ? 100 : 0;
+            // 🟢 PUSH AM3: regime match removed — regime is now a HARD query
+            // filter above, not an additive bonus. Every row in the filtered set
+            // already matches the current regime.
 
             // 3e) Thesis accuracy bonus (0 or 40 points for correct, -15 for incorrect)
             // Accuracy is a standalone additive signal, not a multiplier
@@ -544,23 +565,12 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
             const ownBonus = (m.tenant_id === ownTenantId) ? 50 : 0;
             const isOwn = m.tenant_id === ownTenantId;
 
-            // 3j-new) Strategy match bonus (+30 own / +15 shared) — Phase 0.7.4/0.9.4.
-            // Ownership-gated: a shared same-strategy lesson is useful but must never
-            // outrank your own. Legacy 'ANY' memories get 0 (no penalty).
-            const stratBase = (m.strategy_id && strategyId && m.strategy_id !== 'ANY'
-                && m.strategy_id === String(strategyId).toUpperCase()) ? 30 : 0;
-            const strategyMatch = isOwn ? stratBase : Math.round(stratBase / 2);
-
-            // 3k-new) TF-pair match bonus (+25 own / +12 shared) — Phase 0.7.4/0.9.4
-            const tfBase = (m.macro_tf && m.trigger_tf && macroTf && triggerTf
-                && m.macro_tf !== 'ANY' && m.trigger_tf !== 'ANY'
-                && m.macro_tf === String(macroTf).toUpperCase()
-                && m.trigger_tf === String(triggerTf).toUpperCase()) ? 25 : 0;
-            const tfMatch = isOwn ? tfBase : Math.round(tfBase / 2);
+            // 🟢 PUSH AM3: strategy + TF-pair match bonuses removed — both are
+            // now HARD query filters above, not additive bonuses.
 
             // 3i) Total = fully additive, all factors weighted independently
-            const total = recency + pnlImpact + thesisSim + regimeMatch + thesisAccBonus
-                        + lossBonus + liveWt + ownBonus + shadowBonus + strategyMatch + tfMatch;
+            const total = recency + pnlImpact + thesisSim + thesisAccBonus
+                        + lossBonus + liveWt + ownBonus + shadowBonus;
 
             return { ...m, score: Math.round(total) };
         });
@@ -752,10 +762,32 @@ export async function startSniper(tenantId) {
 
                                         // 🟢 Fetch scored memories for trap payload
                                         // so influencing_memory_ids are stored in trade_logs.
+                                        // 🟢 PUSH AM3 (Option B): compute the canon regime at
+                                        // trap-spring time from FIXED timeframes (6H POC, 5M ATR,
+                                        // 6H CVD tide) — same classifier as the signal path — so
+                                        // the hard regime filter never degrades to IS NULL here.
+                                        let trapRegime = null;
+                                        try {
+                                            const [trap6H, trap5M] = await Promise.all([
+                                                fetchCoinbaseData(config.asset, 'SIX_HOUR', apiKeyName, apiSecret).catch(() => []),
+                                                fetchCoinbaseData(config.asset, 'FIVE_MINUTE', apiKeyName, apiSecret).catch(() => [])
+                                            ]);
+                                            if (trap6H && trap6H.length > 0 && trap5M && trap5M.length > 0) {
+                                                trapRegime = classifyCanonRegime({
+                                                    price: currentPrice,
+                                                    poc: computeVolumeProfile(trap6H, currentPrice).macro_poc,
+                                                    atr5m: computeAtr(trap5M, 14),
+                                                    cvd6h: computeCandleCvd(trap6H, 50),
+                                                    bidAskRatio: 0 // book not fetched on trap path — CHOP-safe thresholds
+                                                });
+                                            }
+                                        } catch (e) {
+                                            console.log(`[SNIPER-TRAP] Canon regime computation failed (non-fatal): ${e.message}`);
+                                        }
                                         let trapMemoryIds = [];
                                         try {
                                             const scoredResult = await getScoredMemories(
-                                                tenantId, config.asset, null, null,
+                                                tenantId, config.asset, trapRegime, null,
                                                 config.strategy, params.macro_tf, params.trigger_tf
                                             );
                                             if (scoredResult?.ids?.length > 0) trapMemoryIds = scoredResult.ids;
