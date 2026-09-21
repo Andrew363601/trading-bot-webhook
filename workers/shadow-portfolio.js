@@ -761,7 +761,13 @@ async function processUnlabeledVetos() {
       let simExitPrice = null, simExitTime = null, simExitReason = null;
       let simPnlPts = null, simPnlUsd = null, simBars = null, simParamsJson = null;
 
-      if (matchingTrade && matchingTrade.entry_price) {
+      // 🟢 AL4 — Path A gate: a live sim ticket (PENDING in this sweep's map, or
+      // inserted earlier) means the veto is sim-only — a real trade close must
+      // NOT re-grade it (real SLP trade hijacked 3 shadow rows mid-sim). PENDING
+      // scans fall through to Path B: map-hit skips re-insert, the sim continues
+      // to its own exit and updates the ticket once. Real-trade outcomes stay in
+      // trade_logs — the real book is a separate ledger.
+      if (matchingTrade && matchingTrade.entry_price && !pendingByScanId.has(scan.id)) {
         tradeLogId = matchingTrade.id;
         tradeSide = matchingTrade.side;
         tradePnl = matchingTrade.pnl;
