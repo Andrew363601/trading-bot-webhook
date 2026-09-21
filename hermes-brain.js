@@ -1040,7 +1040,15 @@ output HOLD for an unfilled trap.`;
                     upper_macro_node: marketState?.volume_profile?.upper_node || marketState?.result?.volume_profile?.upper_node || null,
                     lower_macro_node: marketState?.volume_profile?.lower_node || marketState?.result?.volume_profile?.lower_node || null,
                     macro_regime_oracle: deriveRegime(marketState),
-                    open_position: displayPosition
+                    open_position: displayPosition,
+                    // 🟢 PUSH AM4 — the agent's ADJUSTED parameters from this very
+                    // decision. The shadow sim replays these (not config defaults)
+                    // so the counterfactual actually tests the agent's parameter
+                    // skill. Null when the decision omitted them.
+                    decision_tp_price: decisionJson.tp_price ?? null,
+                    decision_sl_price: decisionJson.sl_price ?? null,
+                    decision_tripwire_percent: decisionJson.tripwire_percent ?? null,
+                    decision_trail_step_percent: decisionJson.trail_step_percent ?? null
                 };
 
                 // 🛡️ FIX: Use the pre-created scan_id from sniper if available.

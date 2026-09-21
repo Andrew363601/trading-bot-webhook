@@ -444,8 +444,11 @@ function runShadowSim({ direction, entryPrice, series, simParams, atr, nowMs }) 
     tripwire_percent: simParams.tripwire,
     trail_step_percent: simParams.trailStep,
     trail_activation_percent: simParams.trailActivation,
-    sl_source: slSource,
-    tp_source: tpSource,
+    // 🟢 PUSH AM4 — provenance: agent_adjusted beats config labels when the
+    // worker overrode the params from the veto telemetry.
+    sl_source: simParams.paramSource === 'agent_adjusted' ? 'agent_adjusted' : slSource,
+    tp_source: simParams.paramSource === 'agent_adjusted' ? 'agent_adjusted' : tpSource,
+    param_source: simParams.paramSource || 'config_default',
     atr_14: atr != null ? parseFloat(atr.toFixed(6)) : null,
     qty_source: simParams.qtySource
   };
@@ -595,7 +598,7 @@ async function computeAdmitted({ tenantId, asset, vetoTime, windowEnd, excludeId
 // (verdict PENDING, sim fields null, sim_params stamped) so the chart shows a LIVE
 // ticket with TP/SL lines. Idempotent: skips when a row already exists for the scan.
 // Never throws — log + continue; the sweep must not die on an insert failure.
-async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, vetoRegime, simParams, macroTf, triggerTf, fillBasis }) {
+async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, vetoRegime, simParams, macroTf, triggerTf, fillBasis, tpPrice, slPrice }) {
   // 🟢 AM2 — veto_price can arrive as a STRING (signal.price from telemetry). Never
   // call .toFixed on it directly; parse once, guard NaN, and stamp a clean number.
   const priceNum = vetoPrice != null ? parseFloat(vetoPrice) : null;
@@ -668,6 +671,12 @@ async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, ve
         sim_params: simParams
           ? {
               ...simParams,
+              // 🟢 PUSH AM4 — provenance + absolute agent levels. pages/index.js
+              // prefers tp_price/sl_price over tp_pct/sl_pct, so the chart draws
+              // the agent's EXACT levels when the agent adjusted them.
+              param_source: simParams.paramSource || 'config_default',
+              tp_price: tpPrice != null && Number.isFinite(parseFloat(tpPrice)) ? parseFloat(tpPrice) : null,
+              sl_price: slPrice != null && Number.isFinite(parseFloat(slPrice)) ? parseFloat(slPrice) : null,
               tp_pct: simParams.tp != null ? simParams.tp * 100 : null,
               sl_pct: simParams.sl != null ? simParams.sl * 100 : null
             }
@@ -853,6 +862,40 @@ async function processUnlabeledVetos() {
 
         const simParams = await fetchStrategySimParams(scan.tenant_id, scan.strategy, asset);
 
+        // 🟢 PUSH AM4 — replay the AGENT'S adjusted parameters, not config defaults.
+        // The veto telemetry carries decision_tp_price/sl_price/tripwire_percent/
+        // trail_step_percent (stamped by hermes-brain.js). Convert price distances
+        // to ROE fractions (× leverage) because runShadowSim consumes tp/sl as ROE
+        // fractions and divides by leverage internally. Sanity gate: 0 < f < 0.5.
+        let tp = simParams.tp, sl = simParams.sl;
+        let tripwire = simParams.tripwire, trailStep = simParams.trailStep;
+        let paramSource = 'config_default';
+        let agentTpPrice = null, agentSlPrice = null;
+        const lev = simParams.leverage || 1;
+        const dTp = parseFloat(telemetry.decision_tp_price);
+        const dSl = parseFloat(telemetry.decision_sl_price);
+        if (Number.isFinite(dTp) && farEntry) {
+          const f = Math.abs(dTp - farEntry) / farEntry;
+          if (f > 0 && f < 0.5) {
+            tp = f * lev; // ROE fraction — runShadowSim: tpDist = tp × entry / leverage
+            paramSource = 'agent_adjusted';
+            agentTpPrice = dTp;
+          }
+        }
+        if (Number.isFinite(dSl) && farEntry) {
+          const f = Math.abs(dSl - farEntry) / farEntry;
+          if (f > 0 && f < 0.5) {
+            sl = f * lev;
+            paramSource = 'agent_adjusted';
+            agentSlPrice = dSl;
+          }
+        }
+        const dTr = parseFloat(telemetry.decision_tripwire_percent);
+        if (Number.isFinite(dTr) && dTr > 0 && dTr < 1) { tripwire = dTr; paramSource = 'agent_adjusted'; }
+        const dTrl = parseFloat(telemetry.decision_trail_step_percent);
+        if (Number.isFinite(dTrl) && dTrl > 0 && dTrl < 0.5) { trailStep = dTrl; paramSource = 'agent_adjusted'; }
+        const mergedSimParams = { ...simParams, tp, sl, tripwire, trailStep, paramSource };
+
         // 🟢 PUSH AL — TF pair stamped early too, so the PENDING row carries it.
         // 🟢 PUSH AL2 — plain assignments (no let): variables are for-body scoped.
         macroTf = 'ANY'; triggerTf = 'ANY';
@@ -875,7 +918,8 @@ async function processUnlabeledVetos() {
         if (!pendingByScanId.has(scan.id)) {
           const insRow = await insertPendingTicket({
             scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
-            simParams, macroTf, triggerTf, fillBasis
+            simParams: mergedSimParams, macroTf, triggerTf, fillBasis,
+            tpPrice: agentTpPrice, slPrice: agentSlPrice
           });
           if (insRow && insRow.id) pendingByScanId.set(scan.id, insRow); // same-tick resolution must find it
           else if (insRow === false) continue; // open cap hit — skip entirely
@@ -891,7 +935,7 @@ async function processUnlabeledVetos() {
             direction: signalDirection,
             entryPrice: farEntry,
             series: candleData.series,
-            simParams: { ...simParams, startMs },
+            simParams: { ...mergedSimParams, startMs },
             atr,
             nowMs: Date.now()
           });
@@ -903,7 +947,8 @@ async function processUnlabeledVetos() {
             if (!pendingByScanId.has(scan.id)) {
               const insRow = await insertPendingTicket({
                 scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
-                simParams, macroTf, triggerTf, fillBasis
+                simParams: mergedSimParams, macroTf, triggerTf, fillBasis,
+                tpPrice: agentTpPrice, slPrice: agentSlPrice
               });
               if (insRow && insRow.id) pendingByScanId.set(scan.id, insRow);
               else if (insRow === false) continue; // open cap hit — skip entirely
