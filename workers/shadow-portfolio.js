@@ -210,19 +210,24 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
 }
 
 /**
- * AG1: Loads strategy_config parameters for (tenant, strategy) — point-in-time
- * config used to drive the strategy-true sim. Canonical param names are
- * tp_percent / sl_percent (take_profit_pct / stop_loss_pct are UI labels only).
+ * AG1: Loads strategy_config parameters for (tenant, strategy, ASSET) — point-in-time
+ * config used to drive the strategy-true sim. 🟢 AM2d: strategy_config is per-asset
+ * and multi-row (is_active toggles) — lookups MUST filter asset + is_active or
+ * PostgREST errors on N rows and every sim degrades to horizon-only.
+ * Canonical param names are tp_percent / sl_percent (take_profit_pct /
+ * stop_loss_pct are UI labels only).
  */
-async function fetchStrategySimParams(tenantId, strategy) {
+async function fetchStrategySimParams(tenantId, strategy, asset) {
   try {
     const { data: cfg } = await supabase
       .from('strategy_config')
       .select('parameters')
       .eq('tenant_id', tenantId)
       .ilike('strategy', strategy)
-      .maybeSingle();
-    const p = cfg?.parameters || {};
+      .eq('asset', asset)
+      .eq('is_active', true)
+      .limit(1);
+    const p = (Array.isArray(cfg) && cfg[0]?.parameters) || {};
     const num = (v) => (v === undefined || v === null || v === '' || isNaN(parseFloat(v))) ? null : parseFloat(v);
     return {
       tp: num(p.tp_percent) ?? num(p.take_profit_pct) ?? num(p.take_profit_percentage) ?? num(p.target_profit_percentage),
@@ -787,18 +792,21 @@ async function processUnlabeledVetos() {
         if (signalDirection === 'BUY' && bestAsk) { farEntry = bestAsk; fillBasis = 'far_side'; }
         if (signalDirection === 'SELL' && bestBid) { farEntry = bestBid; fillBasis = 'far_side'; }
 
-        const simParams = await fetchStrategySimParams(scan.tenant_id, scan.strategy);
+        const simParams = await fetchStrategySimParams(scan.tenant_id, scan.strategy, asset);
 
         // 🟢 PUSH AL — TF pair stamped early too, so the PENDING row carries it.
         // 🟢 PUSH AL2 — plain assignments (no let): variables are for-body scoped.
         macroTf = 'ANY'; triggerTf = 'ANY';
         try {
+          // 🟢 AM2d — per-asset + active config only (multi-row schema).
           const { data: cfg } = await supabase.from('strategy_config')
             .select('parameters')
             .eq('tenant_id', scan.tenant_id)
             .ilike('strategy', scan.strategy)
-            .maybeSingle();
-          const p = cfg?.parameters || {};
+            .eq('asset', asset)
+            .eq('is_active', true)
+            .limit(1);
+          const p = (Array.isArray(cfg) && cfg[0]?.parameters) || {};
           macroTf = p.macro_tf || 'ANY';
           triggerTf = p.trigger_tf || 'ANY';
         } catch (e) { /* fallback ANY/ANY */ }
@@ -880,12 +888,15 @@ async function processUnlabeledVetos() {
       if (!macroTf) {
         macroTf = 'ANY'; triggerTf = 'ANY';
         try {
+          // 🟢 AM2d — per-asset + active config only (multi-row schema).
           const { data: cfg } = await supabase.from('strategy_config')
             .select('parameters')
             .eq('tenant_id', scan.tenant_id)
             .ilike('strategy', scan.strategy)
-            .maybeSingle();
-          const p = cfg?.parameters || {};
+            .eq('asset', asset)
+            .eq('is_active', true)
+            .limit(1);
+          const p = (Array.isArray(cfg) && cfg[0]?.parameters) || {};
           macroTf = p.macro_tf || 'ANY';
           triggerTf = p.trigger_tf || 'ANY';
         } catch (e) { /* fallback ANY/ANY */ }

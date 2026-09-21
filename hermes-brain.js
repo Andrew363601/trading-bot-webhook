@@ -392,13 +392,18 @@ app.post('/api/wake', async (req, res) => {
         let currentParamsText = '';
         let stratParams = null; // AG3: hoisted for the veto-open shadow ticket text
         try {
-            const { data: stratConfig } = await supabase
+            // 🟢 AM2d — active config only: strategy_config is per-asset and
+            // multi-row (is_active toggles); .single() throws on N rows.
+            const { data: stratConfigRows } = await supabase
                 .from('strategy_config')
                 .select('parameters')
                 .eq('tenant_id', tenant_id)
                 .eq('asset', asset)
                 .eq('strategy', strategy_id)
-                .single();
+                .eq('is_active', true)
+                .order('is_active', { ascending: false })
+                .limit(1);
+            const stratConfig = (Array.isArray(stratConfigRows) && stratConfigRows[0]) || null;
             stratParams = stratConfig?.parameters || null;
             if (stratConfig?.parameters) {
                 currentParamsText = `\n\n--- CURRENT STRATEGY PARAMETERS ---\n${JSON.stringify(stratConfig.parameters, null, 2)}\n\nThese are the current values. If you use UPDATE_PARAMS, you only need to include the keys you want to change. Everything else stays as-is.\n`;
@@ -1231,17 +1236,19 @@ output HOLD for an unfilled trap.`;
                 newTrailStepPct = normalizePercent(newTrailStepPct, 'Trail step');
                 
                 if (newTripwirePct !== undefined || newTrailStepPct !== undefined) {
+                    // 🟢 AM2d — active config only (multi-row schema; is_active toggle).
                     const { data: strategyConfigs } = await supabase
                         .from('strategy_config')
                         .select('id, parameters')
                         .eq('tenant_id', tenant_id)
                         .eq('asset', asset)
                         .eq('strategy', strategy_id || 'MANUAL')
-                        .limit(1)
-                        .maybeSingle();
-                    
-                    if (strategyConfigs) {
-                        const currentParams = strategyConfigs.parameters || {};
+                        .order('is_active', { ascending: false })
+                        .limit(1);
+                    const strategyConfig = (Array.isArray(strategyConfigs) && strategyConfigs[0]) || null;
+
+                    if (strategyConfig) {
+                        const currentParams = strategyConfig.parameters || {};
                         const updatedParams = { ...currentParams };
                         
                         if (newTripwirePct !== undefined) {
@@ -1255,7 +1262,7 @@ output HOLD for an unfilled trap.`;
                         
                         await supabase.from('strategy_config')
                             .update({ parameters: updatedParams })
-                            .eq('id', strategyConfigs.id)
+                            .eq('id', strategyConfig.id)
                             .eq('tenant_id', tenant_id);
                     }
                 }
@@ -1285,13 +1292,16 @@ output HOLD for an unfilled trap.`;
                     return res.status(200).json({ status: "UPDATE_PARAMS_FAILED", reason: "No params provided" });
                 }
 
-                const { data: config } = await supabase
+                // 🟢 AM2d — resolve the ACTIVE config row (is_active preferred).
+                const { data: configRows } = await supabase
                     .from('strategy_config')
                     .select('id, parameters')
                     .eq('tenant_id', tenant_id)
                     .eq('asset', targetAsset)
                     .eq('strategy', targetStrategy)
-                    .single();
+                    .order('is_active', { ascending: false })
+                    .limit(1);
+                const config = (Array.isArray(configRows) && configRows[0]) || null;
 
                 if (!config) {
                     console.warn(`[SELF-ADJUST] Strategy config not found for ${targetAsset}/${targetStrategy}`);
