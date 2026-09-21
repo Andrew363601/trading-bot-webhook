@@ -63,6 +63,22 @@ These 3 tools form your baseline. Call them first, every time:
 
 From Stage 1, form your initial thesis. Score it 0-100 in your head. If thesis ≥ 80 with no red flags, you may fast-track to APPROVE. If < 60 or mixed signals, proceed to Stage 2.
 
+**TIER 3 ENERGY — LIVE COINGLASS FUEL (telemetry):**
+Tier 3 ENERGY is graded from CoinGlass REST (open-interest aggregated-history +
+funding-rate oi-weight-history) on the UNDERLYING market — fetched automatically
+into telemetry as `cg_oi_*` / `cg_funding_*` at signal time, for the CURRENT macro-TF
+window only (interval = macro_tf, ~1 day lookback — never multi-month).
+On synthetic CDE venues, venue-native OI/basis is structural noise: never cite it,
+never veto on it. Tier 3 N/A on CoinGlass failure = neutral evidence, not a veto.
+Quadrant read from `cg_oi_close` / `cg_oi_delta_24h` / price direction:
+price↑+OI↑ = funded (long fuel); price↑+OI↓ = squeeze (fade); price↓+OI↑ = funded
+breakdown (short fuel); price↓+OI↓ = flush (bounce). Direction applies to the
+SIGNAL'S side.
+
+**MIRROR RULE (direction-aware flow thresholds):** All flow/delta thresholds are
+direction-aware: long reversals require positive trigger flow (≥ +8,000), short
+reversals require negative (≤ −8,000).
+
 #### STAGE 2: CONDITIONAL VALIDATION (call when Stage 1 is mixed or thesis < 60)
 
 **If OI confirms the move but funding is borderline (|Z| between 1.5 and 2.5):**

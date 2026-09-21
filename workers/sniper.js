@@ -153,6 +153,46 @@ const getCVDSequence = (candles, sequenceLength = 5) => {
     return seq;
 };
 
+// 🟢 PUSH AM5: Tier 3 fuel — live CoinGlass OI + OI-weighted funding for the
+// UNDERLYING market. Replaces the frozen synthetic-venue OI gate with real
+// quadrant math. CoinGlass-only, current macro-TF window (~1 day lookback).
+// Non-fatal: any failure returns null → Tier 3 stays neutral evidence, not a veto.
+async function fetchCoinGlass(symbolSpot, macroTf) {
+    // Base-symbol resolution mirrors mcp-gateway.js CDE_TO_BASE normalization —
+    // synthetic CDE codes (BIP-20DEC30-CDE etc.) map to the underlying asset.
+    const CDE_TO_BASE = {
+        BIT: 'BTC', BIP: 'BTC', ETP: 'ETH',
+        SLP: 'SOL', DOP: 'DOGE',
+        LCP: 'LTC', AVP: 'AVAX',
+        LNP: 'LINK', XPP: 'XRP',
+    };
+    let base = String(symbolSpot || '').toUpperCase().trim()
+        .replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '')
+        .split('-')[0];
+    base = CDE_TO_BASE[base] || base;
+    const interval = ({ ONE_HOUR: '1h', THIRTY_MINUTE: '30m', FOUR_HOUR: '4h', FIFTEEN_MINUTE: '15m', FIVE_MINUTE: '5m' })[macroTf] || '1h';
+    try {
+        const H = { 'CG-API-KEY': process.env.COINGLASS_API_KEY, accept: 'application/json' };
+        const oi = await fetch(`https://open-api-v4.coinglass.com/api/futures/open-interest/aggregated-history?symbol=${base}&interval=${interval}`, { headers: H });
+        if (!oi.ok) { console.error(`[CG] OI ${base}: HTTP ${oi.status}`); return null; }
+        const oiSeries = (await oi.json())?.data || [];
+        const fr = await fetch(`https://open-api-v4.coinglass.com/api/futures/funding-rate/oi-weight-history?symbol=${base}&interval=${interval}&limit=3`, { headers: H });
+        const frSeries = fr.ok ? ((await fr.json())?.data || []) : [];
+        const oiNow = parseFloat(oiSeries[oiSeries.length - 1]?.close);
+        const oi24h = parseFloat(oiSeries[Math.max(0, oiSeries.length - 25)]?.close);
+        const frNow = parseFloat(frSeries[frSeries.length - 1]?.close);
+        if (!Number.isFinite(oiNow)) return null;
+        return {
+            cg_symbol: base,
+            cg_interval: interval,
+            cg_oi_close: oiNow,
+            cg_oi_delta_24h: Number.isFinite(oi24h) && oi24h ? (oiNow - oi24h) / oi24h : null,
+            cg_oi_series: oiSeries.slice(-24).map(c => ({ t: c.time, oi: parseFloat(c.close) })),
+            cg_funding_oi_weighted: Number.isFinite(frNow) ? frNow : null
+        };
+    } catch (e) { console.error('[CG] fetch failed:', e.message); return null; }
+}
+
 async function pingHermes(payload) {
     const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
     try {
@@ -965,6 +1005,20 @@ export async function startSniper(tenantId) {
                     regime_pair_tf: (macroTf && macroCandles && macroCandles.length >= 30) ? macroTf : null
                 };
 
+                // 🟢 PUSH AM5: live CoinGlass Tier 3 fuel — merge cg_* fields into telemetry.
+                // Non-fatal: on failure Tier 3 stays neutral evidence (no cg_* fields).
+                const cg = await fetchCoinGlass(config.asset, macroTf);
+                if (cg) decision.telemetry = { ...decision.telemetry, ...cg };
+
+                // 🟢 PUSH AM5: on synthetic CDE venues, venue-native OI/basis is structural
+                // noise (structurally 0 / frozen feed) — strip it so the agent never anchors
+                // to it. Tier 3 is graded from cg_* CoinGlass fields instead.
+                if (String(config.asset || '').toUpperCase().includes('-CDE')) {
+                    delete decision.telemetry.premium;
+                    delete decision.telemetry.basis_premium_percent;
+                    decision.telemetry.synthetic_venue = true;
+                }
+
                 // ── NEXUS EMPIRICAL PRIOR PIPELINE (Phase D) ──
                 // All 5 calls are non-fatal — priors enrich the agent's context
                 // but never block the signal path. Module-level caching keeps
@@ -1105,7 +1159,7 @@ export async function startSniper(tenantId) {
                             asset: config.asset,
                             scan_id: scanId,
                             mode: "ENTRY",
-                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}${shadowLine}\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Top 3 Walls):\nBIDS:\n${bidWallsText}\n\nASKS:\n${askWallsText}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.\n\n── ALPHA HARVESTING FRAME ──\nThis is a new signal arriving while no trade is open. Your thesis and outcome will be stored in core memory and scored for future signals. Write your working_thesis for future-self: market context, the specific alpha edge, and your exit conditions.`,
+                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}${shadowLine}\n\n── TIER 3 (ENERGY) — LIVE COINGLASS FUEL ──\nTier 3 is graded from cg_oi_close / cg_oi_delta_24h / cg_funding_oi_weighted in telemetry — real aggregated OI on the underlying (CoinGlass, current macro-TF window). Quadrant: price↑+OI↑ = funded (long fuel); price↑+OI↓ = squeeze (fade); price↓+OI↑ = funded breakdown (short fuel); price↓+OI↓ = flush (bounce). Direction applies to the SIGNAL'S side. On synthetic CDE venues, venue-native OI/basis is structural noise — never cite it, never veto on it. Tier 3 N/A on CoinGlass failure = neutral evidence, not a veto.\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Top 3 Walls):\nBIDS:\n${bidWallsText}\n\nASKS:\n${askWallsText}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.\n\n── ALPHA HARVESTING FRAME ──\nThis is a new signal arriving while no trade is open. Your thesis and outcome will be stored in core memory and scored for future signals. Write your working_thesis for future-self: market context, the specific alpha edge, and your exit conditions.`,
                             openTrade: openTrade || null,
                             previous_thesis: config.active_thesis || "No previous thesis recorded.",
                             candles: triggerCandles.slice(-50),
