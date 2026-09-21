@@ -117,6 +117,11 @@ async function notifyShadowResolution(row) {
 
 // Cache tenant keys to avoid repeated vault queries
 const tenantKeyCache = new Map();
+// 🟢 AM2f — small candle cache keyed `${spotSymbol}:${Math.floor(startMs/600)}`
+// (10-min buckets) with a 10-min TTL — cuts CDP rate-limit pressure when the
+// sweep re-fetches the same veto window tick after tick.
+const candleCache = new Map();
+const CANDLE_CACHE_TTL_MS = 10 * 60 * 1000;
 
 function generateCoinbaseToken(method, path, apiKey, apiSecret) {
     const privateKey = crypto.createPrivateKey({ key: apiSecret.replace(/\\n/g, '\n'), format: 'pem' });
@@ -168,18 +173,38 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
     }
 
     const spotSymbol = getSpotSymbol(symbol);
-    const start = Math.floor(new Date(startTime).getTime() / 1000);
-    const end = start + (hours * 3600);
-    const candlePath = `/api/v3/brokerage/products/${spotSymbol}/candles?start=${start}&end=${end}&granularity=FIVE_MINUTE`;
+    // 🟢 AM2f — CDP v3 candles expects ISO 8601 start/end (epoch seconds → 400,
+    // which the old silent `if (!resp.ok) return null` swallowed — sims never
+    // graded). Send ISO, keep granularity=FIVE_MINUTE.
+    const startMs = new Date(startTime).getTime();
+    const start = new Date(startMs).toISOString();
+    const end = new Date(startMs + hours * 3600 * 1000).toISOString();
+
+    // 🟢 AM2f — cache hit: same symbol + same 10-min bucket → reuse the series.
+    const cacheKey = `${spotSymbol}:${Math.floor(startMs / 600)}`;
+    const cached = candleCache.get(cacheKey);
+    if (cached && (Date.now() - cached.fetchedAt) < CANDLE_CACHE_TTL_MS) {
+      return cached.data;
+    }
+
+    const candlePath = `/api/v3/brokerage/products/${spotSymbol}/candles?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&granularity=FIVE_MINUTE`;
     const token = generateCoinbaseToken('GET', candlePath, apiKey, apiSecret);
 
     const resp = await fetch(`https://api.coinbase.com${candlePath}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
-    if (!resp.ok) return null;
+    // 🟢 AM2f — failure logging: never return null silently again.
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '');
+      console.error(`[SHADOW] Candle fetch ${spotSymbol}: HTTP ${resp.status} ${body.slice(0, 200)}`);
+      return null;
+    }
     const data = await resp.json();
     const candles = data?.candles;
-    if (!candles || !Array.isArray(candles) || candles.length === 0) return null;
+    if (!candles || !Array.isArray(candles) || candles.length === 0) {
+      console.error(`[SHADOW] Candle fetch ${spotSymbol}: 200 but empty candles`);
+      return null;
+    }
 
     let high = -Infinity, low = Infinity;
     const highs = candles.map(c => parseFloat(c.high));
@@ -205,7 +230,16 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
       .filter(c => Number.isFinite(c.time) && Number.isFinite(c.close) && Number.isFinite(c.high) && Number.isFinite(c.low))
       .sort((a, b) => a.time - b.time);
 
-    return { high, low, firstClose, lastClose, series };
+    const result = { high, low, firstClose, lastClose, series };
+    // 🟢 AM2f — cache only successful fetches; prune stale entries opportunistically.
+    candleCache.set(cacheKey, { data: result, fetchedAt: Date.now() });
+    if (candleCache.size > 100) {
+      const now = Date.now();
+      for (const [k, v] of candleCache) {
+        if ((now - v.fetchedAt) >= CANDLE_CACHE_TTL_MS) candleCache.delete(k);
+      }
+    }
+    return result;
   } catch (e) {
     console.error(`[SHADOW] Candle fetch failed for ${symbol}:`, e.message);
     return null;
