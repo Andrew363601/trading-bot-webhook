@@ -199,7 +199,10 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
         low: parseFloat(c.low),
         close: parseFloat(c.close)
       }))
-      .filter(c => Number.isFinite(c.close) && Number.isFinite(c.high) && Number.isFinite(c.low))
+      // 🟢 AM2e — time validity on the MAPPED object (c.time is epoch ms from
+      // c.start; raw Coinbase candles carry no c.time field). Poisoned/garbage
+      // timestamps would skew sim_exit_time and every downstream window.
+      .filter(c => Number.isFinite(c.time) && Number.isFinite(c.close) && Number.isFinite(c.high) && Number.isFinite(c.low))
       .sort((a, b) => a.time - b.time);
 
     return { high, low, firstClose, lastClose, series };
@@ -333,7 +336,11 @@ function runShadowSim({ direction, entryPrice, series, simParams, atr, nowMs }) 
 
   for (const c of series) {
     bars++;
-    exitTime = new Date(c.time).toISOString();
+    // 🟢 AM2e — exit time MUST be deterministic from the sim's own 5m timeline
+    // (veto start + bar index), never trusted from candle.time (exchange gaps/
+    // skew poison the sim_exit_time and downstream windows). bars is 1-based,
+    // so (bars - 1) is the 0-based candle index on the 5m grid.
+    exitTime = new Date(simParams.startMs + (bars - 1) * 5 * 60 * 1000).toISOString();
 
     const rawMove = isBuy ? (c.close - entryPrice) / entryPrice : (entryPrice - c.close) / entryPrice;
     const roe = rawMove * leverage;
@@ -383,7 +390,9 @@ function runShadowSim({ direction, entryPrice, series, simParams, atr, nowMs }) 
     if (simParams.startMs + HORIZON_MS > nowMs) return null; // still inside 24h window
     exitPrice = lastCandle.close;
     exitReason = 'HORIZON';
-    exitTime = new Date(lastCandle.time).toISOString();
+    // 🟢 AM2e — same deterministic timeline rule as the in-loop exit: the last
+    // candle walked is index (bars - 1) on the 5m grid from veto start.
+    exitTime = new Date(simParams.startMs + (bars - 1) * 5 * 60 * 1000).toISOString();
   }
 
   if (exitReason === 'TRIPWIRE') exitReason = 'TRIPWIRE'; // explicit (BE-stop via tripwire path tagged TRAIL above)
@@ -618,7 +627,17 @@ async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, ve
         sim_bars: null,
         sim_pnl_pts: null,
         sim_pnl_usd: null,
-        sim_params: simParams || null,
+        // 🟢 AM2e — percent mirrors for the chart: PENDING tickets draw TP/SL
+        // price lines from tp_pct/sl_pct (percent vs veto_price) in
+        // pages/index.js. runShadowSim keeps consuming the fraction tp/sl;
+        // spread-copy so the shared simParams object is never mutated.
+        sim_params: simParams
+          ? {
+              ...simParams,
+              tp_pct: simParams.tp != null ? simParams.tp * 100 : null,
+              sl_pct: simParams.sl != null ? simParams.sl * 100 : null
+            }
+          : null,
         admitted,
         autopsied_at: null
       }])
