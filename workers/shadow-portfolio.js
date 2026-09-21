@@ -176,9 +176,11 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
     // 🟢 AM2f — CDP v3 candles expects ISO 8601 start/end (epoch seconds → 400,
     // which the old silent `if (!resp.ok) return null` swallowed — sims never
     // graded). Send ISO, keep granularity=FIVE_MINUTE.
+    // 🟢 AM2g — dual-format: try ISO first; on !resp.ok retry with epoch seconds
+    // (settle ISO-vs-epoch-vs-auth in one tick). Both outcomes logged loudly.
     const startMs = new Date(startTime).getTime();
-    const start = new Date(startMs).toISOString();
-    const end = new Date(startMs + hours * 3600 * 1000).toISOString();
+    const endMs = startMs + hours * 3600 * 1000;
+    const iso = (ms) => new Date(ms).toISOString();
 
     // 🟢 AM2f — cache hit: same symbol + same 10-min bucket → reuse the series.
     const cacheKey = `${spotSymbol}:${Math.floor(startMs / 600)}`;
@@ -187,17 +189,25 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
       return cached.data;
     }
 
-    const candlePath = `/api/v3/brokerage/products/${spotSymbol}/candles?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&granularity=FIVE_MINUTE`;
-    const token = generateCoinbaseToken('GET', candlePath, apiKey, apiSecret);
+    const mkPath = (s, e) => `/api/v3/brokerage/products/${spotSymbol}/candles?start=${encodeURIComponent(s)}&end=${encodeURIComponent(e)}&granularity=FIVE_MINUTE`;
+    const isoPath = mkPath(iso(startMs), iso(endMs));
+    const epochPath = mkPath(Math.floor(startMs / 1000), Math.floor(endMs / 1000));
 
-    const resp = await fetch(`https://api.coinbase.com${candlePath}`, {
-      headers: { 'Authorization': `Bearer ${token}` }
+    let resp = await fetch(`https://api.coinbase.com${isoPath}`, {
+      headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', isoPath, apiKey, apiSecret)}` }
     });
-    // 🟢 AM2f — failure logging: never return null silently again.
+    const isoStatus = resp.status;
     if (!resp.ok) {
-      const body = await resp.text().catch(() => '');
-      console.error(`[SHADOW] Candle fetch ${spotSymbol}: HTTP ${resp.status} ${body.slice(0, 200)}`);
-      return null;
+      resp = await fetch(`https://api.coinbase.com${epochPath}`, {
+        headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', epochPath, apiKey, apiSecret)}` }
+      });
+      console.error(`[SHADOW] Candle fetch ${spotSymbol}: ISO→${isoStatus}, epoch→${resp.status}`);
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        console.error(`[SHADOW] Candle fetch ${spotSymbol} FAILED: ${resp.status} ${body.slice(0, 200)}`);
+        return null;
+      }
+      console.log(`[SHADOW] Candle fetch ${spotSymbol}: OK via epoch (ISO→${isoStatus})`);
     }
     const data = await resp.json();
     const candles = data?.candles;
@@ -983,6 +993,14 @@ async function processUnlabeledVetos() {
           if (sim.signedPts > 0) { verdict = 'MISSED'; missedAmount = magnitude; }
           else if (sim.signedPts < 0) { verdict = 'SAVED'; savedAmount = magnitude; }
           else { verdict = 'NEUTRAL'; }
+        }
+
+        // 🟢 AM2g — candle fetch failure must NEVER write a resolution. A transient
+        // Coinbase failure previously degraded to a junk NEUTRAL verdict (null
+        // sim_exit_reason poison). Degrade to 'stay PENDING' — retry next tick.
+        if (!candleData || !candleData.series || !vetoPrice) {
+          console.warn(`[SHADOW] ${asset} scan ${scan.id}: candle fetch failed — ticket stays PENDING for retry`);
+          continue; // NO NEUTRAL insert/update — retry next tick
         }
       }
 
