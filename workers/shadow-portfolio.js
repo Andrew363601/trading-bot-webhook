@@ -680,9 +680,14 @@ async function processUnlabeledVetos() {
       // 🟢 AM2b — freshness gate for the WHOLE scan. Fossils (no ticket yet) are
       // never graded (Path A or B), never inserted, never pinged — they age out.
       // Existing PENDING rows bypass: they must keep resolving.
+      // 🟢 AM2c — invalid dates must skip, not sail through (NaN age passes >).
       const vetoAgeMs = Date.now() - new Date(vetoTime).getTime();
-      if (vetoAgeMs > 2 * 3600 * 1000 && !pendingByScanId.has(scan.id)) continue;
+      if (!Number.isFinite(vetoAgeMs) || (vetoAgeMs > 2 * 3600 * 1000 && !pendingByScanId.has(scan.id))) continue;
 
+      // 🟢 AM2c — per-scan containment: one poisoned scan (invalid date throwing
+      // RangeError deeper in the loop) must not kill the whole sweep every tick.
+      // Mirrors the autopsy loop's per-row guard. Body indentation unchanged.
+      try {
       const telemetry = scan.telemetry || {};
       const oracleReasoning = telemetry.oracle_reasoning || '';
 
@@ -1023,6 +1028,10 @@ async function processUnlabeledVetos() {
           missed_amount: missedAmount,
           actual_move_pct: actualMovePct
         });
+      }
+      } catch (scanErr) {
+        console.error(`[SHADOW] Scan ${scan.id} (${scan.asset}) failed — skipped:`, scanErr.message);
+        continue;
       }
     }
   } catch (e) {
