@@ -676,6 +676,13 @@ async function processUnlabeledVetos() {
     for (const scan of unlabeled) {
       const asset = scan.asset;
       const vetoTime = scan.created_at;
+
+      // 🟢 AM2b — freshness gate for the WHOLE scan. Fossils (no ticket yet) are
+      // never graded (Path A or B), never inserted, never pinged — they age out.
+      // Existing PENDING rows bypass: they must keep resolving.
+      const vetoAgeMs = Date.now() - new Date(vetoTime).getTime();
+      if (vetoAgeMs > 2 * 3600 * 1000 && !pendingByScanId.has(scan.id)) continue;
+
       const telemetry = scan.telemetry || {};
       const oracleReasoning = telemetry.oracle_reasoning || '';
 
@@ -763,11 +770,6 @@ async function processUnlabeledVetos() {
         // resolves (exit hit) or the horizon is reached.
         const startMs = new Date(vetoTime).getTime();
 
-        // 🟢 AM2 — freshness gate: only process vetos ≤2h old. Older fossils get no
-        // ticket, no sim, no ping — they simply age out of the 48h sweep window.
-        const vetoAgeMs = Date.now() - new Date(vetoTime).getTime();
-        const canProcess = vetoAgeMs <= 2 * 3600 * 1000; // fresh signals only
-
         // 🟢 PUSH AL — fillBasis computed EARLY (needs only signalDirection +
         // best_bid/ask from the paired signal's telemetry) so the PENDING row can
         // carry it before any candle fetch.
@@ -799,7 +801,6 @@ async function processUnlabeledVetos() {
         // 🟢 PUSH AL — insert the PENDING ticket BEFORE the candle fetch so the
         // chart goes LIVE immediately (even if the candle fetch fails this tick).
         if (!pendingByScanId.has(scan.id)) {
-          if (!canProcess) continue; // fossil: no ticket, no sim, no ping — ages out
           const insRow = await insertPendingTicket({
             scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
             simParams, macroTf, triggerTf, fillBasis
@@ -828,7 +829,6 @@ async function processUnlabeledVetos() {
             // exists it stays PENDING (candle walk is stateless; re-runs next
             // tick). If missing, insert it now (idempotent path).
             if (!pendingByScanId.has(scan.id)) {
-              if (!canProcess) continue; // fossil — ages out
               const insRow = await insertPendingTicket({
                 scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
                 simParams, macroTf, triggerTf, fillBasis
