@@ -1040,6 +1040,24 @@ async function processUnlabeledVetos() {
         excludeId: pendingRow ? pendingRow.id : null
       });
 
+      // 🟢 AM2h — grade ONLY on a real sim resolution. A ticket whose sim never
+      // resolved (no exit reason) must stay PENDING, never be graded NEUTRAL —
+      // that's the empty-NEUTRAL poison. NEUTRAL with a real exit (HORIZON etc.)
+      // is still allowed. Path A (real-trade grading) sets tradeLogId instead.
+      if (!simExitReason && !tradeLogId) {
+        console.warn(`[SHADOW] ${asset} scan ${scan.id}: sim did not resolve — ticket stays PENDING`);
+        continue;
+      }
+
+      // 🟢 AM2h — sim_params write hardening: merge instead of overwrite, and
+      // never let an empty object wipe a previously stamped params blob.
+      const mergedParams = {
+        ...(simParamsJson && Object.keys(simParamsJson).length ? simParamsJson : {}),
+        ...((pendingRow?.sim_params) && Object.keys(pendingRow.sim_params).length ? pendingRow.sim_params : {})
+      };
+      const paramsToWrite = Object.keys(mergedParams).length ? mergedParams : simParamsJson;
+      console.log(`[SHADOW] Params write ${asset} scan ${scan.id}:`, JSON.stringify(paramsToWrite).slice(0, 120));
+
       // 🟢 PUSH AL — resolution: if a PENDING row exists for this scan, UPDATE it
       // (verdict, amounts, sim_* fields, fill_basis, trade fields, admitted
       // re-computed with the REAL sim_exit_time). Else the existing INSERT path.
@@ -1066,7 +1084,7 @@ async function processUnlabeledVetos() {
             sim_bars: simBars,
             sim_pnl_pts: simPnlPts !== null ? parseFloat(simPnlPts.toFixed(6)) : null,
             sim_pnl_usd: simPnlUsd !== null ? parseFloat(simPnlUsd.toFixed(2)) : null,
-            sim_params: simParamsJson,
+            sim_params: paramsToWrite,
             admitted
           })
           .eq('id', pendingRow.id);
@@ -1087,7 +1105,7 @@ async function processUnlabeledVetos() {
             sim_exit_reason: simExitReason,
             sim_pnl_pts: simPnlPts,
             sim_bars: simBars,
-            sim_params: simParamsJson,
+            sim_params: paramsToWrite,
             saved_amount: savedAmount,
             missed_amount: missedAmount,
             actual_move_pct: actualMovePct
@@ -1133,7 +1151,7 @@ async function processUnlabeledVetos() {
           sim_bars: simBars,
           sim_pnl_pts: simPnlPts !== null ? parseFloat(simPnlPts.toFixed(6)) : null,
           sim_pnl_usd: simPnlUsd !== null ? parseFloat(simPnlUsd.toFixed(2)) : null,
-          sim_params: simParamsJson,
+          sim_params: paramsToWrite,
           // AK2: admission flag (no overlapping same-asset shadow position at label time)
           admitted,
           autopsied_at: null
@@ -1156,7 +1174,7 @@ async function processUnlabeledVetos() {
           sim_exit_reason: simExitReason,
           sim_pnl_pts: simPnlPts,
           sim_bars: simBars,
-          sim_params: simParamsJson,
+          sim_params: paramsToWrite,
           saved_amount: savedAmount,
           missed_amount: missedAmount,
           actual_move_pct: actualMovePct
