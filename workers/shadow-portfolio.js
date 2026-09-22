@@ -347,15 +347,17 @@ function runShadowSim({ direction, entryPrice, series, simParams, atr, nowMs }) 
   let slDist = null, tpDist = null; // price distance from entry (absolute)
 
   if (simParams.sl) {
-    // sl_percent is an ROE fraction → price distance = ROE × entry / leverage
-    slDist = (simParams.sl * entryPrice) / leverage;
+    // 🟢 AM6a: sl_percent is a PRICE fraction by config convention → price
+    // distance = fraction × entry (no /leverage). Leverage belongs only in the
+    // watchdog-mirrored tripwire/trail ROE logic below.
+    slDist = simParams.sl * entryPrice;
     slSource = 'config_sl_percent';
   } else if (atr) {
     slDist = 1.5 * atr;
     slSource = 'atr_1.5x';
   }
   if (simParams.tp) {
-    tpDist = (simParams.tp * entryPrice) / leverage;
+    tpDist = simParams.tp * entryPrice;
     tpSource = 'config_tp_percent';
   } else if (atr) {
     tpDist = 2.0 * atr;
@@ -874,20 +876,19 @@ async function processUnlabeledVetos() {
 
         // 🟢 PUSH AM4 — replay the AGENT'S adjusted parameters, not config defaults.
         // The veto telemetry carries decision_tp_price/sl_price/tripwire_percent/
-        // trail_step_percent (stamped by hermes-brain.js). Convert price distances
-        // to ROE fractions (× leverage) because runShadowSim consumes tp/sl as ROE
-        // fractions and divides by leverage internally. Sanity gate: 0 < f < 0.5.
+        // trail_step_percent (stamped by hermes-brain.js). 🟢 AM6a: tp/sl are PRICE
+        // fractions (no × leverage) — runShadowSim consumes them as price fractions
+        // directly. Sanity gate: 0 < f < 0.5.
         let tp = simParams.tp, sl = simParams.sl;
         let tripwire = simParams.tripwire, trailStep = simParams.trailStep;
         let paramSource = 'config_default';
         let agentTpPrice = null, agentSlPrice = null;
-        const lev = simParams.leverage || 1;
         const dTp = parseFloat(telemetry.decision_tp_price);
         const dSl = parseFloat(telemetry.decision_sl_price);
         if (Number.isFinite(dTp) && farEntry) {
           const f = Math.abs(dTp - farEntry) / farEntry;
           if (f > 0 && f < 0.5) {
-            tp = f * lev; // ROE fraction — runShadowSim: tpDist = tp × entry / leverage
+            tp = f; // price fraction — AM6a (no × lev)
             paramSource = 'agent_adjusted';
             agentTpPrice = dTp;
           }
@@ -895,7 +896,7 @@ async function processUnlabeledVetos() {
         if (Number.isFinite(dSl) && farEntry) {
           const f = Math.abs(dSl - farEntry) / farEntry;
           if (f > 0 && f < 0.5) {
-            sl = f * lev;
+            sl = f; // price fraction — AM6a (no × lev)
             paramSource = 'agent_adjusted';
             agentSlPrice = dSl;
           }
