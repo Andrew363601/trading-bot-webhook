@@ -193,6 +193,38 @@ async function fetchCoinGlass(symbolSpot, macroTf) {
     } catch (e) { console.error('[CG] fetch failed:', e.message); return null; }
 }
 
+// 🟢 PUSH AM8: sniper stamp — precompute the quadrant so the agent stops eyeballing
+// raw series. price24h direction (from macro candles) × cg_oi_delta_24h →
+// FUNDED_RALLY | SQUEEZE | FUNDED_BREAKDOWN | FLUSH | NO_FUEL (flat <1% = NO_FUEL).
+// The thesis should READ cg_quadrant, not re-derive 'delta_oi = 0'.
+function computeCgQuadrant(price24hDelta, oiDelta24h) {
+    const FLAT = 0.01; // <1% move on either leg = no fuel
+    const p = Number.isFinite(price24hDelta) ? price24hDelta : null;
+    const o = Number.isFinite(oiDelta24h) ? oiDelta24h : null;
+    if (p === null || o === null || Math.abs(p) < FLAT || Math.abs(o) < FLAT) return 'NO_FUEL';
+    if (p > 0 && o > 0) return 'FUNDED_RALLY';
+    if (p > 0 && o < 0) return 'SQUEEZE';
+    if (p < 0 && o > 0) return 'FUNDED_BREAKDOWN';
+    return 'FLUSH'; // p < 0 && o < 0
+}
+
+// 24h price delta from macro candles (close now vs close ~24h back).
+function computePrice24hDelta(macroCandles) {
+    try {
+        if (!Array.isArray(macroCandles) || macroCandles.length < 2) return null;
+        const now = parseFloat(macroCandles[macroCandles.length - 1]?.close);
+        // Walk back until we're >= 24h from the last candle close.
+        const lastT = parseFloat(macroCandles[macroCandles.length - 1]?.time || macroCandles[macroCandles.length - 1]?.t) || 0;
+        let past = null;
+        for (let i = macroCandles.length - 1; i >= 0; i--) {
+            const t = parseFloat(macroCandles[i]?.time || macroCandles[i]?.t) || 0;
+            if (lastT - t >= 86400) { past = parseFloat(macroCandles[i]?.close); break; }
+        }
+        if (!Number.isFinite(now) || !Number.isFinite(past) || !past) return null;
+        return (now - past) / past;
+    } catch (e) { return null; }
+}
+
 async function pingHermes(payload) {
     const hermesEndpoint = process.env.HERMES_WEBHOOK_URL || 'http://localhost:8000/api/wake';
     try {
@@ -1007,8 +1039,18 @@ export async function startSniper(tenantId) {
 
                 // 🟢 PUSH AM5: live CoinGlass Tier 3 fuel — merge cg_* fields into telemetry.
                 // Non-fatal: on failure Tier 3 stays neutral evidence (no cg_* fields).
+                // 🟢 PUSH AM8: stamp cg_quadrant — price24h direction × cg_oi_delta_24h,
+                // precomputed so the agent reads the stamp instead of re-deriving it.
                 const cg = await fetchCoinGlass(config.asset, macroTf);
-                if (cg) decision.telemetry = { ...decision.telemetry, ...cg };
+                if (cg) {
+                    const price24hDelta = computePrice24hDelta(macroCandles);
+                    decision.telemetry = {
+                        ...decision.telemetry,
+                        ...cg,
+                        price24h_delta: Number.isFinite(price24hDelta) ? price24hDelta : null,
+                        cg_quadrant: computeCgQuadrant(price24hDelta, cg.cg_oi_delta_24h)
+                    };
+                }
 
                 // 🟢 PUSH AM5: on synthetic CDE venues, venue-native OI/basis is structural
                 // noise (structurally 0 / frozen feed) — strip it so the agent never anchors
@@ -1159,7 +1201,7 @@ export async function startSniper(tenantId) {
                             asset: config.asset,
                             scan_id: scanId,
                             mode: "ENTRY",
-                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}${shadowLine}\n\n── TIER 3 (ENERGY) — LIVE COINGLASS FUEL ──\nTier 3 is graded from cg_oi_close / cg_oi_delta_24h / cg_funding_oi_weighted in telemetry — real aggregated OI on the underlying (CoinGlass, current macro-TF window). Quadrant: price↑+OI↑ = funded (long fuel); price↑+OI↓ = squeeze (fade); price↓+OI↑ = funded breakdown (short fuel); price↓+OI↓ = flush (bounce). Direction applies to the SIGNAL'S side. On synthetic CDE venues, venue-native OI/basis is structural noise — never cite it, never veto on it. Tier 3 N/A on CoinGlass failure = neutral evidence, not a veto.\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Top 3 Walls):\nBIDS:\n${bidWallsText}\n\nASKS:\n${askWallsText}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.\n\n── ALPHA HARVESTING FRAME ──\nThis is a new signal arriving while no trade is open. Your thesis and outcome will be stored in core memory and scored for future signals. Write your working_thesis for future-self: market context, the specific alpha edge, and your exit conditions.`,
+                            message: `Mathematical Strategy ${config.strategy} just fired a ${normalizedSignal} signal for ${config.asset} at $${currentPrice}.\n\nCORE MEMORY (Past Lessons for this asset):\n${memoryString}${shadowLine}\n\n── TIER 3 (ENERGY) — LIVE COINGLASS FUEL ──\nTier 3 is graded from cg_oi_close / cg_oi_delta_24h / cg_funding_oi_weighted in telemetry — real aggregated OI on the underlying (CoinGlass, current macro-TF window). The sniper has precomputed the quadrant for you: READ cg_quadrant in telemetry (FUNDED_RALLY | SQUEEZE | FUNDED_BREAKDOWN | FLUSH | NO_FUEL) — do NOT re-derive 'delta_oi = 0' from raw series. Direction applies to the SIGNAL'S side. On synthetic CDE venues, venue-native OI/basis is structural noise — never cite it, never veto on it. Tier 3 N/A on CoinGlass failure = neutral evidence, not a veto. AM8 LANE A: this is a STRATEGY SIGNAL — Tier 1 + Tier 3 are CONVICTION CONTEXT ONLY: they adjust your conviction_score and reported size, they can NOT veto. Valid vetoes here are execution/risk-rail vetoes only (spread/slippage, liquidity at level, max-pain pin within 1%, cascade/cluster in path, position conflicts, risk rails).\n\nFRACTAL MOMENTUM MATRIX (Last 5 CVDs):\n${JSON.stringify(momentumMatrix, null, 2)}\n\nLIQUIDITY MAP (Order Book Top 3 Walls):\nBIDS:\n${bidWallsText}\n\nASKS:\n${askWallsText}${activeTrapMessage}\n\nPlease fetch get_market_state, evaluate the X-Ray data against your SKILL.md memory, and use execute_order if you approve.\n\n── ALPHA HARVESTING FRAME ──\nThis is a new signal arriving while no trade is open. Your thesis and outcome will be stored in core memory and scored for future signals. Write your working_thesis for future-self: market context, the specific alpha edge, and your exit conditions.`,
                             openTrade: openTrade || null,
                             previous_thesis: config.active_thesis || "No previous thesis recorded.",
                             candles: triggerCandles.slice(-50),

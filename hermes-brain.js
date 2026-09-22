@@ -655,6 +655,19 @@ When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_a
         } else {
             instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. Output ONLY raw, valid JSON.
 
+DECISION LANE (PUSH AM8): This evaluation is a STRATEGY SIGNAL (Lane A) — the
+math fired, the signal IS the alpha. You are the RISK MANAGER, not a second
+strategy. Validate EXECUTION only: spread/slippage, liquidity at level, max-pain
+pin (VETO if within 1%), cascade/cluster directly in path, position conflicts,
+risk rails (daily loss, correlation, 2+ losses same asset). TIER 1 + TIER 3
+(macro tide, OI energy, funding) are CONVICTION CONTEXT ONLY — they adjust your
+conviction_score and reported size, they can NOT veto a strategy signal.
+"Tier 3 energy dead" is context, not a refusal — "VETO: Tier 3" is NOT a valid
+veto here. READ cg_quadrant in telemetry instead of re-deriving OI deltas from
+raw series. Full tier-stack vetoes apply only to discretionary (agent-initiated)
+calls. Prior-veto citations may only be cited alongside their SHADOW GRADES
+(SAVED vs MISSED) — a veto streak without graded evidence is not a precedent.
+
 VIRTUAL_TRAP GEOMETRY RULES: A trap order is a position — size its risk like one.
 trap_sl_price must sit 2-3x ATR(trigger_tf) away from trap_price, and trap_tp_price
 4-6x ATR(trigger_tf) from trap_price. Use the ATR.Trigger value already present in
@@ -941,6 +954,22 @@ output HOLD for an unfilled trap.`;
         const isHold = decisionJson.action === "HOLD"; 
         const isClose = decisionJson.action === "CLOSE"; 
 
+        // 🟢 PUSH AM8 — LANE A SOFT GUARD: a strategy signal (Lane A) vetoed on
+        // Tier 1/Tier 3 grounds alone is doctrine-invalid (tiers are conviction
+        // context, not veto authority). Soft-downgrade: log it, tag telemetry,
+        // and let the veto stand but flag it for autopsy review. Never hard-block
+        // — the veto may still cite a valid execution risk in the same thesis.
+        if (isVeto && mode === "ENTRY") {
+            const thesis = String(decisionJson.working_thesis || '');
+            const tier3Only = /\bVETO:?\s*Tier\s*[13]\b/i.test(thesis) &&
+                !/max.?pain|cascade|cluster|liquidity|spread|slippage|risk rail|daily loss|correlation|position conflict|2\+ losses/i.test(thesis);
+            if (tier3Only) {
+                console.warn(`[AGENT CORTEX] ⚠️ AM8 LANE GUARD: ${asset} veto cites Tier 1/3 only on a strategy signal — doctrine-invalid (context, not refusal). Thesis: ${thesis.slice(0, 200)}`);
+                decisionJson.lane_guard = 'TIER_VETO_DOWNGRADED';
+                await logAgentActivity(tenant_id, "Agent Cortex", asset, `AM8 lane guard: veto cited Tier 1/3 only on a strategy signal (doctrine-invalid, logged for autopsy). Thesis: ${thesis.slice(0, 200)}`, "LANE_GUARD");
+            }
+        }
+
         let chartUrl = null;
         if (candles && indicators) {
             chartUrl = await buildRadarChartUrl({
@@ -1062,7 +1091,10 @@ output HOLD for an unfilled trap.`;
                     decision_tp_price: decisionJson.tp_price ?? null,
                     decision_sl_price: decisionJson.sl_price ?? null,
                     decision_tripwire_percent: decisionJson.tripwire_percent ?? null,
-                    decision_trail_step_percent: decisionJson.trail_step_percent ?? null
+                    decision_trail_step_percent: decisionJson.trail_step_percent ?? null,
+                    // 🟢 PUSH AM8 — lane guard flag: veto cited Tier 1/3 only on a
+                    // strategy signal (doctrine-invalid; logged for autopsy review).
+                    lane_guard: decisionJson.lane_guard || null
                 };
 
                 // 🛡️ FIX: Use the pre-created scan_id from sniper if available.
