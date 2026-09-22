@@ -180,7 +180,8 @@ print('=== NEXUS Trainer starting ===')
 # NOTE: trade_logs has no 'asset'/'macro_tf'/'trigger_tf' columns yet.
 # extract_features() falls back: asset→symbol, tf_pair→'ANY/ANY'.
 select_cols = ('id,tenant_id,symbol,strategy_id,regime_at_entry,pnl,side,'
-               'entry_price,exit_price,market_snapshot_at_entry,tp_price,sl_price,exit_time,created_at')
+               'entry_price,exit_price,market_snapshot_at_entry,tp_price,sl_price,exit_time,created_at,'
+               'params_context')
 trades = sb_get('trade_logs', select_cols,
                 filters='&market_snapshot_at_entry=not.is.null&exit_price=not.is.null',
                 order='created_at.desc', limit=2000)
@@ -191,7 +192,7 @@ print(f'Closed trades with snapshots: {len(trades)}')
 # ── PUSH AA: veto-ledger samples (far-side only) ──
 shadow = sb_get('shadow_portfolio',
                 'id,tenant_id,asset,scan_id,signal_direction,veto_regime,veto_price,verdict,'
-                'saved_amount,missed_amount,fill_basis,macro_tf,trigger_tf',
+                'saved_amount,missed_amount,fill_basis,macro_tf,trigger_tf,params_context',
                 filters="&verdict=in.(SAVED,MISSED)&fill_basis=eq.far_side", limit=2000)
 if TENANT_FILTER:
     shadow = [s for s in shadow if s.get('tenant_id') == TENANT_FILTER]
@@ -213,6 +214,9 @@ feature_names = None
 tenant_of = []
 buckets = defaultdict(list)   # (tenant_id, asset, regime, strategy, tf_pair) -> [(feat, label, pnl, weight)]
 # PUSH AA: real trades keep weight 1.0; veto counterfactuals ride at 0.5
+# 🟢 AM7 — per-bucket param profiles: key -> list of (tp, sl, tripwire, trail,
+# win, pnl, weight). Grouped by params used → win-rate / E[pnl] per profile.
+param_profiles = defaultdict(list)
 
 for t in trades:
     feat, regime, strategy, tf_pair = extract_features(t.get('market_snapshot_at_entry'), t)
@@ -232,6 +236,24 @@ for t in trades:
     if feature_names is None:
         feature_names = list(feat.keys())
     buckets[(tenant, asset, regime, strategy, tf_pair)].append((feat, label, pnl, 1.0))
+    # 🟢 AM7 — record the params profile this trade ran under. Prefer
+    # params_context (AM7, config-as-truth + agent diff); fall back to the
+    # entry snapshot's tp/sl when present. Rounded to 3dp so near-identical
+    # profiles group together.
+    pc = t.get('params_context') or {}
+    snap = t.get('market_snapshot_at_entry') or {}
+    def _r3(v):
+        try:
+            f = float(v)
+            return round(f, 3) if f > 0 else None
+        except (TypeError, ValueError):
+            return None
+    prof = (_r3(pc.get('tp_price') or snap.get('tp_price')),
+            _r3(pc.get('sl_price') or snap.get('sl_price')),
+            _r3(pc.get('tripwire')),
+            _r3(pc.get('trail_step')))
+    if any(prof):
+        param_profiles[(tenant, asset, regime, strategy, tf_pair)].append((*prof, label, pnl, 1.0))
 
 print(f'Dataset: {len(X)} samples x {len(feature_names) if feature_names else 0} features')
 
@@ -334,6 +356,38 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
     }
     feature_importance = {}
     model_params = {'tf_pair': tf_pair}
+
+    # 🟢 AM7 — Layer 2: per-bucket parameter stats. Group closed rows by the
+    # params profile used → win-rate / E[pnl] per profile → suggested_params =
+    # the top profile. Guardrail: only emit when the bucket has >= 10 closes
+    # (small n lies). Shadow rows weigh 0.5, real 1.0 — same as the model fit.
+    suggested_params = None
+    profiles = param_profiles.get((tenant, asset, regime, strategy, tf_pair)) or []
+    if len(profiles) >= 10:
+        by_profile = defaultdict(list)
+        for tp_, sl_, tw_, tr_, win_, pnl_, w_ in profiles:
+            by_profile[(tp_, sl_, tw_, tr_)].append((win_, pnl_, w_))
+        best_key, best_stats = None, None
+        for pkey, rows in by_profile.items():
+            wsum = sum(w for _, _, w in rows)
+            if wsum <= 0:
+                continue
+            pwr = sum(w for win_, _, w in rows if win_ == 1) / wsum
+            pep = sum(pnl_ * w for _, pnl_, w in rows) / wsum
+            if best_stats is None or (pwr, pep) > best_stats[:2]:
+                best_key, best_stats = pkey, (pwr, pep, wsum, len(rows))
+        if best_key is not None:
+            pwr, pep, wsum, pcount = best_stats
+            tp_, sl_, tw_, tr_ = best_key
+            suggested_params = {
+                'tp_price': tp_, 'sl_price': sl_,
+                'tripwire': tw_, 'trail_step': tr_,
+                'win_rate': round(pwr, 3),
+                'expected_pnl': round(pep, 2),
+                'n': pcount,
+                'summary': (f"tp ≈ {tp_}%, sl ≈ {sl_}%, tripwire {tw_}%, "
+                            f"trail {tr_}% → {pwr * 100:.0f}% win, n = {pcount}")
+            }
     expected_mean, expected_std = avg_pnl, 0.0
     accuracy = wr  # baseline: majority-class predictor
 
@@ -374,10 +428,12 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
         'sample_count': n,
         'expected_pnl_mean': expected_mean,
         'expected_pnl_std': expected_std,
+        'suggested_params': suggested_params,
         'last_trained': now_iso
     })
     scope = 'GLOBAL' if tenant is None else str(tenant)[:8]
-    print(f'  [{scope}] {asset}/{regime}/{strategy}/{tf_pair}: n={n} wr={wr:.2f} acc={accuracy:.2f} E[pnl]={expected_mean:.1f}')
+    sp_note = f' | suggested: {suggested_params["summary"]}' if suggested_params else ''
+    print(f'  [{scope}] {asset}/{regime}/{strategy}/{tf_pair}: n={n} wr={wr:.2f} acc={accuracy:.2f} E[pnl]={expected_mean:.1f}{sp_note}')
 
 
 def summarize(samples):

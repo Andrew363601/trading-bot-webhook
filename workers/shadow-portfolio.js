@@ -268,15 +268,19 @@ async function fetchStrategySimParams(tenantId, strategy, asset) {
   try {
     const { data: cfg } = await supabase
       .from('strategy_config')
-      .select('parameters')
+      .select('id, parameters')
       .eq('tenant_id', tenantId)
       .ilike('strategy', strategy)
       .eq('asset', asset)
       .eq('is_active', true)
       .limit(1);
-    const p = (Array.isArray(cfg) && cfg[0]?.parameters) || {};
+    const row = (Array.isArray(cfg) && cfg[0]) || null;
+    const p = row?.parameters || {};
     const num = (v) => (v === undefined || v === null || v === '' || isNaN(parseFloat(v))) ? null : parseFloat(v);
     return {
+      // 🟢 AM7 — config-as-truth: the governing strategy_config row id, stamped
+      // into params_context at resolution so the trainer can join on it.
+      configId: row?.id ?? null,
       tp: num(p.tp_percent) ?? num(p.take_profit_pct) ?? num(p.take_profit_percentage) ?? num(p.target_profit_percentage),
       sl: num(p.sl_percent) ?? num(p.stop_loss_pct) ?? num(p.stop_loss_percentage),
       tripwire: num(p.tripwire_percent),
@@ -290,7 +294,7 @@ async function fetchStrategySimParams(tenantId, strategy, asset) {
       qtySource: num(p.qty) != null ? 'config_qty' : 'default_1k'
     };
   } catch (e) {
-    return { tp: null, sl: null, tripwire: null, trailStep: null, trailActivation: null, leverage: 1, qty: null, qtySource: 'default_1k' };
+    return { configId: null, tp: null, sl: null, tripwire: null, trailStep: null, trailActivation: null, leverage: 1, qty: null, qtySource: 'default_1k' };
   }
 }
 
@@ -610,7 +614,7 @@ async function computeAdmitted({ tenantId, asset, vetoTime, windowEnd, excludeId
 // (verdict PENDING, sim fields null, sim_params stamped) so the chart shows a LIVE
 // ticket with TP/SL lines. Idempotent: skips when a row already exists for the scan.
 // Never throws — log + continue; the sweep must not die on an insert failure.
-async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, vetoRegime, simParams, macroTf, triggerTf, fillBasis, tpPrice, slPrice }) {
+async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, vetoRegime, simParams, macroTf, triggerTf, fillBasis, tpPrice, slPrice, paramsContext }) {
   // 🟢 AM2 — veto_price can arrive as a STRING (signal.price from telemetry). Never
   // call .toFixed on it directly; parse once, guard NaN, and stamp a clean number.
   const priceNum = vetoPrice != null ? parseFloat(vetoPrice) : null;
@@ -693,6 +697,9 @@ async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, ve
               sl_pct: simParams.sl != null ? simParams.sl * 100 : null
             }
           : null,
+        // 🟢 AM7 — params at close: config_id + agent diff, stamped at ticket
+        // creation so PENDING rows carry provenance before resolution.
+        params_context: paramsContext || null,
         admitted,
         autopsied_at: null
       }])
@@ -907,6 +914,18 @@ async function processUnlabeledVetos() {
         if (Number.isFinite(dTrl) && dTrl > 0 && dTrl < 0.5) { trailStep = dTrl; paramSource = 'agent_adjusted'; }
         const mergedSimParams = { ...simParams, tp, sl, tripwire, trailStep, paramSource };
 
+        // 🟢 AM7 — params at close (config-as-truth + agent diff). Stamped on the
+        // PENDING row and the resolution writes alongside sim_params. No full
+        // snapshot — the config was current at close by definition.
+        const paramsContext = {
+          config_id: simParams.configId ?? null,
+          agent_adjusted: paramSource === 'agent_adjusted',
+          tp_price: agentTpPrice,
+          sl_price: agentSlPrice,
+          tripwire: paramSource === 'agent_adjusted' && Number.isFinite(dTr) ? dTr : null,
+          trail_step: paramSource === 'agent_adjusted' && Number.isFinite(dTrl) ? dTrl : null
+        };
+
         // 🟢 PUSH AL — TF pair stamped early too, so the PENDING row carries it.
         // 🟢 PUSH AL2 — plain assignments (no let): variables are for-body scoped.
         macroTf = 'ANY'; triggerTf = 'ANY';
@@ -930,7 +949,8 @@ async function processUnlabeledVetos() {
           const insRow = await insertPendingTicket({
             scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
             simParams: mergedSimParams, macroTf, triggerTf, fillBasis,
-            tpPrice: agentTpPrice, slPrice: agentSlPrice
+            tpPrice: agentTpPrice, slPrice: agentSlPrice,
+            paramsContext
           });
           if (insRow && insRow.id) pendingByScanId.set(scan.id, insRow); // same-tick resolution must find it
           else if (insRow === false) continue; // open cap hit — skip entirely
@@ -959,7 +979,8 @@ async function processUnlabeledVetos() {
               const insRow = await insertPendingTicket({
                 scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
                 simParams: mergedSimParams, macroTf, triggerTf, fillBasis,
-                tpPrice: agentTpPrice, slPrice: agentSlPrice
+                tpPrice: agentTpPrice, slPrice: agentSlPrice,
+                paramsContext
               });
               if (insRow && insRow.id) pendingByScanId.set(scan.id, insRow);
               else if (insRow === false) continue; // open cap hit — skip entirely
@@ -1086,6 +1107,8 @@ async function processUnlabeledVetos() {
             sim_pnl_pts: simPnlPts !== null ? parseFloat(simPnlPts.toFixed(6)) : null,
             sim_pnl_usd: simPnlUsd !== null ? parseFloat(simPnlUsd.toFixed(2)) : null,
             sim_params: paramsToWrite,
+            // 🟢 AM7 — params at close: config_id + agent diff alongside sim_params.
+            params_context: paramsContext,
             admitted
           })
           .eq('id', pendingRow.id);
@@ -1153,6 +1176,8 @@ async function processUnlabeledVetos() {
           sim_pnl_pts: simPnlPts !== null ? parseFloat(simPnlPts.toFixed(6)) : null,
           sim_pnl_usd: simPnlUsd !== null ? parseFloat(simPnlUsd.toFixed(2)) : null,
           sim_params: paramsToWrite,
+          // 🟢 AM7 — params at close: config_id + agent diff alongside sim_params.
+          params_context: paramsContext,
           // AK2: admission flag (no overlapping same-asset shadow position at label time)
           admitted,
           autopsied_at: null
@@ -1225,7 +1250,7 @@ async function processShadowAutopsies() {
     const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
     const { data: rows, error } = await supabase
       .from('shadow_portfolio')
-      .select('id, tenant_id, scan_id, asset, signal_direction, verdict, veto_regime, macro_tf, trigger_tf, sim_exit_price, sim_exit_reason, sim_pnl_pts, sim_pnl_usd, sim_params, veto_price, veto_time')
+      .select('id, tenant_id, scan_id, asset, signal_direction, verdict, veto_regime, macro_tf, trigger_tf, sim_exit_price, sim_exit_reason, sim_pnl_pts, sim_pnl_usd, sim_params, params_context, veto_price, veto_time')
       .is('autopsied_at', null)
       // 🟢 PUSH AL — ungraded (PENDING) tickets must NEVER be autopsied.
       .neq('verdict', 'PENDING')
@@ -1294,6 +1319,8 @@ async function processShadowAutopsies() {
             sim_exit_reason: row.sim_exit_reason,
             sim_pnl_usd: row.sim_pnl_usd,
             sim_params: row.sim_params,
+            // 🟢 AM7 — parameter-aware autopsy: config baseline + agent diff.
+            params_context: row.params_context || null,
             cited_memories: citedMemories,
             market_snapshot: null,
             rolling_ledger: null

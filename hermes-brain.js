@@ -171,7 +171,7 @@ function deriveRegime(marketState) {
 
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
-    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id, calibrationPriors, modelPrediction, regimeTransition, microstructureChange, archetypeResult, telemetry } = req.body;
+    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id, calibrationPriors, modelPrediction, regimeTransition, microstructureChange, archetypeResult, telemetry, suggested_params } = req.body;
     const wakeStartTime = new Date().toISOString();
     
     // Track Hermes API usage
@@ -567,6 +567,20 @@ When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_a
             }
             modelBlock += `\nCompare your conviction against these independent odds — a large gap means re-examine your thesis.\n`;
             instructionText += modelBlock;
+        }
+
+        // ── AM7 LAYER 3: SUGGESTED PARAMS PRIOR ──
+        // The trainer's per-bucket top params profile (Layer 2), delivered at
+        // wake so the agent WEIGHS it exactly like signal priors when it sets
+        // tp/sl/tripwire/trail. It is a prior, not a mandate — the agent may
+        // override with its own levels (the shadow ledger grades the diff).
+        if (suggested_params?.summary) {
+            const sp = suggested_params;
+            let spBlock = `\n--- SUGGESTED PARAMETERS (trained prior) ---`;
+            spBlock += `\n${sp.summary}`;
+            if (sp.win_rate != null) spBlock += `\nWin rate at these levels: ${(sp.win_rate * 100).toFixed(0)}% (n = ${sp.n ?? '?'})`;
+            spBlock += `\nWeigh this like any other prior: if your thesis demands different levels, adjust — but a large deviation from a high-n profile should be justified in your working_thesis.`;
+            instructionText += spBlock + '\n';
         }
 
         // ── L4: REGIME TRANSITION RISK ──
@@ -1459,7 +1473,7 @@ output HOLD for an unfilled trap.`;
 
 // 🟢 THE EVOLUTION ENDPOINT (Agentic Reflection Loop)
 app.post('/api/autopsy', async (req, res) => {
-    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis, trade_log_id, strategy_id, scope, shadow_id, verdict, sim_exit_reason, sim_pnl_usd, sim_params, cited_memories } = req.body;
+    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis, trade_log_id, strategy_id, scope, shadow_id, verdict, sim_exit_reason, sim_pnl_usd, sim_params, cited_memories, params_context, exit_reason, entry_time, model_predicted_win_prob } = req.body;
     const strategyId = strategy_id || null;
     const isShadow = scope === 'shadow';
     // 🟢 PUSH Q: one autopsy lesson per trade. Both the execute-trade close path
@@ -1539,6 +1553,40 @@ app.post('/api/autopsy', async (req, res) => {
 
         const winLoss = parseFloat(pnl) >= 0 ? "WIN" : "LOSS";
 
+        // 🟢 AM7 — parameter-aware autopsy inputs. params_context carries the
+        // governing config_id + the agent's adjusted levels at entry; exit
+        // reason + bars held give the reflection the outcome axis.
+        const pc = params_context || null;
+        const barsHeld = entry_time ? Math.max(0, Math.round((Date.now() - new Date(entry_time).getTime()) / 60000)) : null;
+        const paramContextBlock = pc ? `
+
+--- PARAMETERS AT CLOSE (config-as-truth + agent diff) ---
+Governing config_id: ${pc.config_id ?? 'unknown'}
+Agent adjusted levels: ${pc.agent_adjusted ? 'YES' : 'no — config defaults used'}
+Agent TP: ${pc.tp_price ?? 'config'} | Agent SL: ${pc.sl_price ?? 'config'}
+Agent tripwire: ${pc.tripwire ?? 'config'} | Agent trail step: ${pc.trail_step ?? 'config'}
+Exit reason: ${exit_reason || trigger || 'unknown'} | Bars held: ${barsHeld ?? 'unknown'}
+Entry win-prob (model): ${model_predicted_win_prob != null ? (model_predicted_win_prob * 100).toFixed(0) + '%' : 'n/a'}
+Regime at close: ${regime_at_close || 'unknown'}
+` : '';
+
+        // 🟢 AM7 — bucket-size guardrail: param recommendations only when this
+        // (tenant, asset, regime, strategy) bucket has >= 10 closes. Small n lies.
+        let bucketN = null;
+        try {
+            let bq = supabase.from('trade_logs')
+                .select('id', { count: 'exact', head: true })
+                .eq('symbol', asset)
+                .not('exit_price', 'is', null);
+            if (tenant_id) bq = bq.eq('tenant_id', tenant_id);
+            if (regime_at_close) bq = bq.eq('regime_at_close', regime_at_close);
+            if (strategyId) bq = bq.eq('strategy_id', strategyId);
+            const { count } = await bq;
+            bucketN = count ?? null;
+        } catch (e) { console.warn('[AUTOPSY] bucket count failed:', e.message); }
+        const PARAM_MIN_BUCKET = 10;
+        const paramRecAllowed = bucketN !== null && bucketN >= PARAM_MIN_BUCKET;
+
         // AG3 — SHADOW-CLASS reflection: counterfactual observation only. The
         // T-v2 rule is extended verbatim; regime-scoped void clauses required.
         const shadowPrefix = isShadow ? `
@@ -1575,13 +1623,20 @@ app.post('/api/autopsy', async (req, res) => {
         Extract ONE concise, quantitative behavioral rule to improve future
         performance for this specific asset. Do not give generic advice. Give
         hard mathematical/structural rules based on the ledger context.
-
+${paramContextBlock}
+${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes — enough evidence. Based on the outcome (exit reason, PnL, hold time) and the params used, recommend ONE parameter adjustment:
+  field: one of "trail_step_percent" | "tp_percent" | "sl_percent" | "tripwire_percent", or null if no change is warranted
+  direction: "increase" or "decrease" (null if field is null)
+  reason: one sentence, specific to this bucket's evidence
+` : `PARAMETER RECOMMENDATION: This bucket has only ${bucketN ?? 'an unknown number of'} closes (minimum ${PARAM_MIN_BUCKET} required). Small n lies — do NOT recommend a parameter change. Set field and direction to null and note the sample size in your lesson if relevant.
+`}
         Output raw JSON format exactly:
         {
           "tools_used": "Comma separated list of tools mentioned (e.g., Fibonacci, Fractals, Volume Nodes, Open Interest)",
           "lesson_learned": "The specific quantitative rule extracted.",
           "thesis_accurate": true or false,
-          "thesis_summary": "One-line summary of what the thesis was trying to capture"
+          "thesis_summary": "One-line summary of what the thesis was trying to capture",
+          "param_recommendation": { "field": "trail_step_percent" or "tp_percent" or "sl_percent" or "tripwire_percent" or null, "direction": "increase" or "decrease" or null, "reason": "one sentence, bucket-specific" }
         }
         `;
 
@@ -1647,7 +1702,16 @@ app.post('/api/autopsy', async (req, res) => {
         
         const autopsyJson = JSON.parse(rawText);
 
-        console.log(`[AUTOPSY COMPLETE] ${asset} | Rule: ${autopsyJson.lesson_learned}`);
+        // 🟢 AM7 — structured param recommendation, persisted additively on the
+        // memory row (param_field / param_direction). Guardrail already applied
+        // in the prompt; belt-and-braces: null them out when the bucket is small.
+        const pr = autopsyJson.param_recommendation || null;
+        const paramField = (paramRecAllowed && pr?.field &&
+            ['trail_step_percent', 'tp_percent', 'sl_percent', 'tripwire_percent'].includes(pr.field)) ? pr.field : null;
+        const paramDirection = (paramField && ['increase', 'decrease'].includes(pr.direction)) ? pr.direction : null;
+        const paramReason = paramField ? (pr.reason || null) : null;
+
+        console.log(`[AUTOPSY COMPLETE] ${asset} | Rule: ${autopsyJson.lesson_learned}${paramField ? ` | param: ${paramField} ${paramDirection}` : ''}`);
 
         const { error: insErr } = await supabase.from('hermes_core_memory').insert([{
             tenant_id: tenant_id,
@@ -1675,7 +1739,10 @@ app.post('/api/autopsy', async (req, res) => {
             // strategy_id is UPPER-normalized — case-split buckets fragment silently.
             strategy_id: (strategyId || 'ANY').toUpperCase(),
             macro_tf: macro_tf || 'ANY',
-            trigger_tf: trigger_tf || 'ANY'
+            trigger_tf: trigger_tf || 'ANY',
+            // 🟢 AM7 — structured param recommendation (additive columns).
+            param_field: paramField,
+            param_direction: paramDirection
         }]);
 
         // 🟢 PUSH U: race-guard. The AUTOPSKIP pre-check closes most duplicates,

@@ -1174,6 +1174,9 @@ export async function startSniper(tenantId) {
                             // ── NEXUS intelligence payloads (Phase D) ──
                             calibrationPriors: calibrationBlock,
                             modelPrediction: modelPrediction,
+                            // 🟢 AM7 — Layer 3: trainer's top params profile for
+                            // this bucket; the agent weighs it like a signal prior.
+                            suggested_params: modelPrediction?.suggestedParams || null,
                             regimeTransition: regimeTransition,
                             microstructureChange: microstructureChange,
                             archetypeResult: archetypeResult,
