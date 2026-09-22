@@ -971,6 +971,22 @@ async function processUnlabeledVetos() {
             nowMs: Date.now()
           });
 
+          // 🟢 AM7b — name the silent skip: when a PENDING ticket re-evals and the
+          // sim returns null (unresolved), log WHY with real candles in hand —
+          // stop/take levels, entry, direction, param values. One line per pending
+          // ticket per tick; makes horizon-stuck tickets diagnosable from logs.
+          if (!sim && pendingRow) {
+            const _isBuy = signalDirection === 'BUY';
+            const _slDist = mergedSimParams.sl != null ? mergedSimParams.sl * farEntry : (atr != null ? 1.5 * atr : null);
+            const _tpDist = mergedSimParams.tp != null ? mergedSimParams.tp * farEntry : (atr != null ? 2.0 * atr : null);
+            const _stop = _slDist != null ? (_isBuy ? farEntry - _slDist : farEntry + _slDist) : null;
+            const _take = _tpDist != null ? (_isBuy ? farEntry + _tpDist : farEntry - _tpDist) : null;
+            console.warn(
+              `[SHADOW] PENDING re-eval ${asset} scan ${scan.id}: candles=${candleData?.series?.length || 0} ` +
+              `entry=${farEntry} stop=${_stop ?? 'none'} take=${_take ?? 'none'} ` +
+              `sl=${mergedSimParams.sl} tp=${mergedSimParams.tp} dir=${signalDirection} → sim unresolved`);
+          }
+
           if (!sim) {
             // 🟢 PUSH AL — Unresolved (24h horizon not reached). If a PENDING row
             // exists it stays PENDING (candle walk is stateless; re-runs next
