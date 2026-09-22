@@ -11,7 +11,7 @@ import {
   Target, AlertTriangle, ArrowRight, RefreshCw, Layers, BrainCircuit,
   Settings, LogOut, Clock, Crosshair, ChevronRight, Menu, X, PlusCircle,
   Search, AlertOctagon, Eye, Minimize2, Maximize2, Power, ChevronDown, ChevronUp, Sun, Moon,
-  Minus, Slash, Type, Eraser, Sliders
+  Minus, Slash, Type, Eraser, Sliders, FlaskConical
 } from 'lucide-react';
 import AuthGuard from '../components/AuthGuard';
 import MarketScanner from '../components/MarketScanner';
@@ -1781,6 +1781,10 @@ function DashboardContent() {
                 <Link href="/audit" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Shield className="w-3 h-3" /> Audit
                 </Link>
+                {/* 🟢 PUSH AM10 — Shadow Trades nav link */}
+                <Link href="/shadow-trades" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+                  <FlaskConical className="w-3 h-3" /> Shadow Trades
+                </Link>
                 <button id="settings-btn" onClick={() => setShowProfileModal(true)} className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Settings className="w-3 h-3" /> Profile
                 </button>
@@ -1820,6 +1824,10 @@ function DashboardContent() {
         <div className="sm:hidden bg-slate-900/50 border-b border-white/5 p-4 space-y-3 z-40 flex flex-col">
           <Link href="/audit" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
             <Shield className="w-3 h-3" /> Audit
+          </Link>
+          {/* 🟢 PUSH AM10 — Shadow Trades nav link (mobile) */}
+          <Link href="/shadow-trades" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-purple-500/10 text-purple-300 border border-purple-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
+            <FlaskConical className="w-3 h-3" /> Shadow Trades
           </Link>
           <button onClick={() => { setShowProfileModal(true); setShowMobileMenu(false); }} className="text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-300 border border-white/5 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
             <Settings className="w-3 h-3" /> Profile
