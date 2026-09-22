@@ -74,6 +74,8 @@ function DashboardContent() {
 
   const [activeAsset, setActiveAsset] = useState('BTC-PERP-INTX');
   const [activeTab, setActiveTab] = useState('ANALYTICS');
+  // 🟢 PUSH AM11 — Shadow Trades inline tab (fed from /api/shadow-trades)
+  const [shadowTrades, setShadowTrades] = useState([]);
   
   const [assetsList, setAssetsList] = useState([
     'BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-INTX',
@@ -763,6 +765,20 @@ function DashboardContent() {
           }
       })
       .catch(e => console.warn("[NEXUS SYNC] Strategy Metadata API delayed:", e.message));
+
+      // 🟢 PUSH AM11 — Shadow book loader (same cadence as tradeLogs so the
+      // two ledgers stay in sync). SIM-ONLY rows from shadow_portfolio.
+      if (session?.access_token) {
+        fetch('/api/shadow-trades', {
+            headers: { 'Authorization': `Bearer ${session?.access_token}` }
+        })
+        .then(res => res.json())
+        .then(data => {
+            const next = data.trades || [];
+            setShadowTrades(prev => JSON.stringify(prev) === JSON.stringify(next) ? prev : next);
+        })
+        .catch(e => console.warn("[NEXUS SYNC] Shadow Trades API delayed:", e.message));
+      }
 
     } catch (e) { 
       console.error("[NEXUS FATAL] DB Fetch Error:", e); 
@@ -1600,6 +1616,8 @@ function DashboardContent() {
   if (activeTab === 'POSITIONS') baseDisplayLogs = openPositions;
   else if (activeTab === 'TRADE_HISTORY') baseDisplayLogs = tradeHistory;
   else if (activeTab === 'OPEN_ORDERS') baseDisplayLogs = openOrders;
+  // 🟢 PUSH AM11 — Shadow Trades tab renders the sim-only shadow book
+  else if (activeTab === 'SHADOW_TRADES') baseDisplayLogs = shadowTrades;
 
   // Filter by strategy
   let filteredByStrategy = baseDisplayLogs;
@@ -1610,10 +1628,12 @@ function DashboardContent() {
   // Filter by status (for trade history: WINNER/LOSER/SHADOW, for positions: ACTIVE, for orders: PENDING)
   let filteredByStatus = filteredByStrategy;
   if (logStatusFilter !== 'ALL') {
-    if (activeTab === 'TRADE_HISTORY') {
+    // 🟢 PUSH AM11 — WINNER/LOSER apply to both Trade History and Shadow Trades.
+    // The legacy 'SHADOW' (veto) execution_mode filter stays on TRADE_HISTORY only.
+    if (activeTab === 'TRADE_HISTORY' || activeTab === 'SHADOW_TRADES') {
       if (logStatusFilter === 'WINNER') filteredByStatus = filteredByStrategy.filter(log => log.pnl > 0);
       else if (logStatusFilter === 'LOSER') filteredByStatus = filteredByStrategy.filter(log => log.pnl < 0);
-      else if (logStatusFilter === 'SHADOW') filteredByStatus = filteredByStrategy.filter(log => log.execution_mode === 'SHADOW');
+      else if (logStatusFilter === 'SHADOW' && activeTab === 'TRADE_HISTORY') filteredByStatus = filteredByStrategy.filter(log => log.execution_mode === 'SHADOW');
     } else if (activeTab === 'POSITIONS') {
       if (logStatusFilter === 'ACTIVE') filteredByStatus = filteredByStrategy.filter(log => log.exit_price == null);
     } else if (activeTab === 'OPEN_ORDERS') {
@@ -1781,10 +1801,8 @@ function DashboardContent() {
                 <Link href="/audit" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Shield className="w-3 h-3" /> Audit
                 </Link>
-                {/* 🟢 PUSH AM10 — Shadow Trades nav link */}
-                <Link href="/shadow-trades" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
-                  <FlaskConical className="w-3 h-3" /> Shadow Trades
-                </Link>
+                {/* 🟢 PUSH AM11 — /shadow-trades nav link removed; Shadow Trades
+                    now lives as an inline tab beside Trade History. */}
                 <button id="settings-btn" onClick={() => setShowProfileModal(true)} className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-300 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Settings className="w-3 h-3" /> Profile
                 </button>
@@ -1825,10 +1843,7 @@ function DashboardContent() {
           <Link href="/audit" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
             <Shield className="w-3 h-3" /> Audit
           </Link>
-          {/* 🟢 PUSH AM10 — Shadow Trades nav link (mobile) */}
-          <Link href="/shadow-trades" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-purple-500/10 text-purple-300 border border-purple-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
-            <FlaskConical className="w-3 h-3" /> Shadow Trades
-          </Link>
+          {/* 🟢 PUSH AM11 — mobile /shadow-trades nav link removed (inline tab now) */}
           <button onClick={() => { setShowProfileModal(true); setShowMobileMenu(false); }} className="text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-300 border border-white/5 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
             <Settings className="w-3 h-3" /> Profile
           </button>
@@ -2166,6 +2181,13 @@ function DashboardContent() {
                >
                   Trade History
                </button>
+               {/* 🟢 PUSH AM11 — Shadow Trades inline tab (replaces /shadow-trades page nav) */}
+               <button 
+                  onClick={() => setActiveTab('SHADOW_TRADES')} 
+                  className={`pb-3 text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-colors ${activeTab === 'SHADOW_TRADES' ? 'text-purple-400 border-b-2 border-purple-400' : 'text-slate-500 hover:text-slate-300'}`}
+               >
+                  Shadow Trades {shadowTrades.filter(t => t.status === 'OPEN').length > 0 && <span className="ml-1 bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded-full text-[8px]">{shadowTrades.filter(t => t.status === 'OPEN').length}</span>}
+               </button>
             </div>
 
             {/* Log Filters */}
@@ -2192,12 +2214,14 @@ function DashboardContent() {
                   className="bg-slate-800/50 border border-white/10 rounded-lg px-2 py-1 text-[9px] font-bold text-slate-300 outline-none focus:ring-1 focus:ring-indigo-500/50"
                 >
                   <option value="ALL">All</option>
-                  {activeTab === 'TRADE_HISTORY' && (
+                  {(activeTab === 'TRADE_HISTORY' || activeTab === 'SHADOW_TRADES') && (
                     <>
                       <option value="WINNER">Winner (P&L +)</option>
                       <option value="LOSER">Loser (P&L -)</option>
-                      <option value="SHADOW">Shadow (Veto)</option>
                     </>
+                  )}
+                  {activeTab === 'TRADE_HISTORY' && (
+                    <option value="SHADOW">Shadow (Veto)</option>
                   )}
                   {activeTab === 'POSITIONS' && (
                     <option value="ACTIVE">Active</option>
@@ -2231,6 +2255,9 @@ function DashboardContent() {
                   <tbody className="divide-y divide-white/5 font-mono text-[8px] sm:text-xs text-slate-400">
                     {displayLogs.map((log, i) => {
                       const isShadow = log.execution_mode === 'SHADOW';
+                      // 🟢 PUSH AM11 — sim-only shadow book rows (kind: 'SHADOW').
+                      // Distinct from trade_logs veto rows (execution_mode === 'SHADOW').
+                      const isShadowTrade = log.kind === 'SHADOW';
                       const isReversal = log.reason && log.reason.includes('[REVERSAL');
                       const isTripwire = log.reason && log.reason.includes('[TRIPWIRE');
                       
@@ -2246,7 +2273,7 @@ function DashboardContent() {
                           pnlDisplay = <span className={`animate-pulse ${paperPnl >= 0 ? 'text-cyan-400' : 'text-amber-400'}`}>${paperPnl.toFixed(4)} (U)</span>;
                       }
                       
-                      const timestamp = log.created_at || log.exit_time;
+                      const timestamp = log.created_at || log.exit_time || log.closed_at || log.opened_at;
                       // Show DATE + TIME on two lines so users can see when a
                       // trade happened, not just what time of day. Compact format
                       // keeps the cell from blowing up on mobile.
@@ -2267,6 +2294,7 @@ function DashboardContent() {
                                 <span className="text-[7px] sm:text-[8px] font-black uppercase px-1.5 sm:px-2 py-0.5 rounded border bg-indigo-500/5 text-indigo-300/80 border-indigo-500/10">
                                   {log.strategy_id ?? ''}
                                 </span>
+                                {isShadowTrade && <span className="text-[6px] sm:text-[7px] bg-purple-500/20 text-purple-300 px-1 rounded uppercase tracking-widest">SHADOW</span>}
                                 {isShadow && <span className="text-[6px] sm:text-[7px] bg-red-500/20 text-red-300 px-1 rounded uppercase tracking-widest">VETO</span>}
                                 {isReversal && !isShadow && <span className="text-[6px] sm:text-[7px] bg-purple-500/20 text-purple-300 px-1 rounded uppercase tracking-widest">REV</span>}
                                 {isTripwire && !isShadow && <span className="text-[6px] sm:text-[7px] bg-amber-500/20 text-amber-300 px-1 rounded uppercase tracking-widest">TRIP</span>}
@@ -2291,6 +2319,7 @@ function DashboardContent() {
                         </td>
                         <td className="responsive-table-cell status text-center px-1.5 sm:px-2 py-1 sm:py-1.5">
                             {isShadow ? <span className="text-[8px] sm:text-[9px] text-red-400 font-bold">VETOED</span> :
+                            isShadowTrade ? (log.exit_price != null ? <span className="text-[8px] sm:text-[10px] text-slate-400">${log.exit_price.toFixed(2)}</span> : <span className="text-purple-400 animate-pulse font-black text-[8px] sm:text-[9px]">OPEN</span>) :
                             (log.exit_price != null ? <span className="text-[8px] sm:text-[10px] text-slate-400">${log.exit_price.toFixed(2)}</span> : 
                              <><span className="text-indigo-400 animate-pulse font-black text-[8px] sm:text-[9px]">{log.execution_mode.includes('PENDING') ? 'PENDING' : 'ACTIVE'}</span> 
                              <button onClick={() => log.execution_mode.includes('PENDING') ? handleCancelOrder(log) : handleClosePosition(log)} className="ml-1 sm:ml-2 bg-red-500/10 text-red-400 border border-red-500/30 px-1 sm:px-2 py-0.5 rounded text-[7px] sm:text-[8px] font-black">X</button></>)}
