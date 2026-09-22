@@ -956,6 +956,12 @@ async function processUnlabeledVetos() {
           else if (insRow === false) continue; // open cap hit — skip entirely
         }
 
+        // 🟢 AM9 — hoisted ABOVE the AM7b block: the AM7b debug block references
+        // pendingRow, and the old declaration sat below it (TDZ ReferenceError
+        // froze ALL ticket resolution every tick). Declared at the OUTER scope so
+        // both the AM7b block AND the computeAdmitted call below can see it.
+        const pendingRow = pendingByScanId.get(scan.id) || null;
+
         const candleData = await fetchCounterfactualCandles(asset, vetoTime, 24, scan.tenant_id);
         if (candleData && candleData.series && vetoPrice) {
           cLow = candleData.low;
@@ -1069,7 +1075,8 @@ async function processUnlabeledVetos() {
       // ledger + % stats + decision counts keep ALL rows.
       // 🟢 PUSH AL — shared helper; excludes the candidate's own PENDING row when
       // updating it (its provisional window would otherwise overlap itself).
-      const pendingRow = pendingByScanId.get(scan.id) || null;
+      // 🟢 AM9 — pendingRow is now declared ABOVE (before the candle fetch) so the
+      // AM7b block can reference it without a TDZ error.
       const admitted = await computeAdmitted({
         tenantId: scan.tenant_id,
         asset,
