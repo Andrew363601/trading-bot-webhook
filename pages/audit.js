@@ -564,7 +564,12 @@ function AuditLogContent() {
                         {Object.entries(s.telemetry).filter(([k]) => k !== 'oracle_reasoning').map(([k, v]) => (
                           <div key={k} className="flex flex-col">
                             <span className="text-[9px] text-slate-500 uppercase tracking-wider">{k}</span>
-                            <span className="text-[11px] text-slate-300 font-mono">{typeof v === 'boolean' ? (v ? 'TRUE' : 'FALSE') : typeof v === 'number' ? v.toFixed(4) : v}</span>
+                            <span className="text-[11px] text-slate-300 font-mono">{typeof v === 'boolean' ? (v ? 'TRUE' : 'FALSE')
+                              : typeof v === 'number' ? v.toFixed(4)
+                              : typeof v === 'string' ? v
+                              : Array.isArray(v) ? `[${v.length} items]`
+                              : v == null ? '—'
+                              : JSON.stringify(v)}</span>
                           </div>
                         ))}
                      </div>
