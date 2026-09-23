@@ -134,25 +134,35 @@ export default async function handler(req, res) {
         // 4. Create Checkout Session
         //    Embedded mode (challenge popup): dashboard-driven payment methods
         //    (Apple/Google Pay/Link + card), no redirects, clientSecret returned.
-        //    Hosted mode: byte-identical to previous behavior.
+        //    PUSH AM12: RETAIL is a cardless trial — payment_method_collection:false
+        //    + 30-day trial means $0 due now, so Stripe renders checkout WITHOUT a
+        //    card field. PRO/INSTITUTIONAL unchanged (challenge promo / 7-day trial).
         const session = await stripe.checkout.sessions.create({
             customer: customerId,
             ...(isEmbedded ? {} : { payment_method_types: ['card'] }),
             line_items: [{ price: priceId, quantity: 1 }],
             mode: 'subscription',
-            ...(isChallengeBuyer
+            ...(tier === 'RETAIL'
                 ? {
-                    discounts: [{ promotion_code: process.env.CHALLENGE_PROMO_CODE }],
+                    payment_method_collection: false,
                     subscription_data: {
+                        trial_period_days: 30,
                         metadata: { tenantId: realTenantId, tier }
                     }
                 }
-                : {
-                    subscription_data: {
-                        trial_period_days: 7,
-                        metadata: { tenantId: realTenantId, tier }
+                : isChallengeBuyer
+                    ? {
+                        discounts: [{ promotion_code: process.env.CHALLENGE_PROMO_CODE }],
+                        subscription_data: {
+                            metadata: { tenantId: realTenantId, tier }
+                        }
                     }
-                }),
+                    : {
+                        subscription_data: {
+                            trial_period_days: 7,
+                            metadata: { tenantId: realTenantId, tier }
+                        }
+                    }),
             ...(isEmbedded
                 ? {
                     ui_mode: 'embedded',

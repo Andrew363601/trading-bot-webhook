@@ -404,7 +404,8 @@ export default function LandingPage() {
               {content.hero?.ctaDashboard || FALLBACK_CONTENT.hero.ctaDashboard}
             </a>
           </div>
-          <p className="mt-6 text-sm text-slate-500">{content.hero?.trialText || FALLBACK_CONTENT.hero.trialText}</p>
+          {/* PUSH AM13: hardcoded trial copy (code override — site_content DB may still hold the old 7-day line) */}
+          <p className="mt-6 text-sm text-slate-500">Free 100K Challenge · No card · First 30 days free</p>
         </div>
       </div>
 
@@ -1140,9 +1141,23 @@ export default function LandingPage() {
                   <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-cyan-500 text-slate-900 text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">Most Popular</div>
                 )}
                 <h3 className={`text-2xl font-bold ${tier.popular ? 'text-white' : 'text-slate-300'}`}>{tier.name}</h3>
+                {/* PUSH AM13: Retail renders the cardless challenge trial ($0 + badge) regardless of DB content */}
+                {tier.name === 'Retail' && (
+                  <span className="inline-block w-fit px-3 py-1 rounded-full bg-amber-400/10 border border-amber-400/40 text-amber-300 text-[10px] font-black uppercase tracking-widest mb-3">First 30 days free — $0 due today</span>
+                )}
                 <div className="mt-4 mb-8">
-                  <span className={`text-4xl font-extrabold ${tier.popular ? 'text-white' : ''}`}>{tier.price}</span>
-                  <span className="text-slate-500">/mo</span>
+                  {tier.name === 'Retail' ? (
+                    <>
+                      <span className="text-4xl font-extrabold">$0</span>
+                      <span className="text-slate-500">/mo after </span>
+                      <span className="text-slate-500 line-through">$49</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className={`text-4xl font-extrabold ${tier.popular ? 'text-white' : ''}`}>{tier.price}</span>
+                      <span className="text-slate-500">/mo</span>
+                    </>
+                  )}
                 </div>
                 <ul className={`space-y-4 mb-8 flex-1 ${tier.popular ? 'text-slate-300' : 'text-slate-400'}`}>
                   {tier.features.map((f) => (
@@ -1160,7 +1175,7 @@ export default function LandingPage() {
                       : 'bg-slate-800 hover:bg-slate-700 text-white'
                   }`}
                 >
-                  Start 7-Day Trial
+                  {tier.name === 'Retail' ? 'Start Free — 30 Days' : 'Start 7-Day Trial'}
                 </button>
               </div>
             ))}

@@ -63,6 +63,7 @@ export default function AuthPage() {
           // Step 2: Determine billing status from multiple sources (fallback chain)
           let billingTier = null;
           let subscriptionActive = null;
+          let subStatus = null; // PUSH AM12: raw subscriptions.status (trialing routing)
 
           // Source A: Try nested tenants() relationship
           if (tenantId) {
@@ -84,6 +85,8 @@ export default function AuthPage() {
                 .select('status, tier, stripe_subscription_id, stripe_customer_id')
                 .eq('tenant_id', tenantId)
                 .single();
+
+              if (subData) subStatus = subData.status || null;
 
               // Paid if they have a Stripe subscription (active/trialing) OR a valid customer record
               if ((subData?.stripe_subscription_id && (subData.status === 'active' || subData.status === 'trialing')) ||
@@ -178,7 +181,11 @@ export default function AuthPage() {
           }
 
           // Normal redirect: TRIAL users go to plans, paid users go to dashboard
-          const isPaid = billingTier && billingTier !== 'FREE_TRIAL' && subscriptionActive;
+          // PUSH AM12: trialing users ARE active users (cardless 30-day challenge
+          // trial) — route them to the dashboard, not /plans. Do NOT route on bare
+          // subscription_active: onboarding fallback seeds FREE_TRIAL tenants with
+          // subscription_active=true and fresh free users must still land on /plans.
+          const isPaid = (billingTier && billingTier !== 'FREE_TRIAL' && subscriptionActive) || subStatus === 'trialing';
           if (isPaid) {
             router.replace('/');
           } else {

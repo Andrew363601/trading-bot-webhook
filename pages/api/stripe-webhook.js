@@ -208,6 +208,9 @@ export default async function handler(req, res) {
                         stripe_subscription_id: realSub.id,
                         status: realSub.status,
                         tier: csTier,
+                        // PUSH AM12: persist Stripe's real trial window so the lapse
+                        // halt (isTenantBillingActive) can expire trialing subs.
+                        trial_end: realSub.trial_end ? new Date(realSub.trial_end * 1000).toISOString() : null,
                         current_period_end: realSub.current_period_end ? new Date(realSub.current_period_end * 1000).toISOString() : null,
                         cancel_at_period_end: realSub.cancel_at_period_end,
                         updated_at: new Date().toISOString()
@@ -276,6 +279,9 @@ export default async function handler(req, res) {
                     stripe_subscription_id: sub.id,
                     status: sub.status,
                     tier: tier,
+                    // PUSH AM12: persist Stripe's real trial window so the lapse
+                    // halt (isTenantBillingActive) can expire trialing subs.
+                    trial_end: sub.trial_end ? new Date(sub.trial_end * 1000).toISOString() : null,
                     current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
                     cancel_at_period_end: sub.cancel_at_period_end,
                     updated_at: new Date().toISOString()

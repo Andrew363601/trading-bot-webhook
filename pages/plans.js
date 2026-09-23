@@ -116,15 +116,17 @@ export default function PlansPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {/* Retail */}
+          {/* Retail — PUSH AM13: cardless 100K challenge trial */}
           <div className="bg-slate-900 border border-white/5 p-8 rounded-3xl flex flex-col">
             <h3 className="text-xl font-bold text-slate-400 mb-2">Retail</h3>
-            <div className="text-4xl font-black mb-6">$49<span className="text-sm font-normal text-slate-500">/mo</span></div>
+            <span className="inline-block w-fit px-3 py-1 rounded-full bg-amber-400/10 border border-amber-400/40 text-amber-300 text-[10px] font-black uppercase tracking-widest mb-3">First 30 days free — $0 due today</span>
+            <div className="text-4xl font-black mb-6">$0<span className="text-sm font-normal text-slate-500 line-through ml-2">$49</span><span className="text-sm font-normal text-slate-500">/mo after</span></div>
             <ul className="space-y-4 mb-10 flex-1">
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Up to 3 active trading models simultaneously (e.g., BTC, ETH, and SOL)</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Standard polling execution pipeline</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Flat-rate fair use — no complex metered overages</span></li>
-              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Full Agentic Reflection, Multi-TF X-Ray, Discord Log Feed, and hermes_core_memory logging</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>1 asset</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Regime detection</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>ML models</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Core memory + autopsies</span></li>
+              <li className="flex items-start gap-3 text-sm text-slate-300"><Check className="w-4 h-4 text-cyan-400 mt-1" /> <span>Discord notifications &amp; community</span></li>
             </ul>
             <button 
               onClick={() => handleSelectTier('RETAIL')}

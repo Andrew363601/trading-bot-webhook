@@ -418,6 +418,13 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
                 ? 'Your entry is active — next steps: connect Discord for your Challenger tag, then deploy a strategy.'
                 : `Your ${tier} challenge window is active. $0.00 was due today.`}
             </p>
+            {/* PUSH AM13: success state is now a Discord join step — invite copy,
+                env-guarded button (NEXT_PUBLIC_DISCORD_INVITE_URL is inlined at
+                build time; hide the button rather than open about:blank), and a
+                non-gating skip link to the dashboard. */}
+            <p className="mt-3 text-sm font-bold text-gray-200">
+              Live veto alerts. The graded ledger channel. The community. Join us.
+            </p>
             <div className="mt-6 flex flex-col gap-3">
               {discordState === 'linked' ? (
                 <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-300">
@@ -425,14 +432,16 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
                 </div>
               ) : (
                 <>
-                  <button
-                    className="rounded-xl bg-[#5865F2] px-4 py-3 font-bold text-white transition hover:opacity-90"
-                    onClick={() =>
-                      window.open(process.env.NEXT_PUBLIC_DISCORD_INVITE_URL, '_blank')
-                    }
-                  >
-                    Join Discord
-                  </button>
+                  {process.env.NEXT_PUBLIC_DISCORD_INVITE_URL && (
+                    <button
+                      className="rounded-xl bg-[#5865F2] px-4 py-3 font-bold text-white transition hover:opacity-90"
+                      onClick={() =>
+                        window.open(process.env.NEXT_PUBLIC_DISCORD_INVITE_URL, '_blank')
+                      }
+                    >
+                      Join Discord
+                    </button>
+                  )}
                   {discordError && (
                     <p className="text-xs text-red-400">{discordError}</p>
                   )}
@@ -443,7 +452,7 @@ export default function ChallengeCheckout({ onClose, onEntered }) {
                 className="rounded-xl border border-white/15 px-4 py-3 font-bold text-white transition hover:bg-white/10"
                 onClick={onClose}
               >
-                Deploy your first strategy
+                Skip — go to dashboard
               </Link>
             </div>
           </div>

@@ -78,10 +78,12 @@ export default function QuickSignupPopup({ plan, onClose }) {
         {!sent ? (
           <>
             <h2 style={{ margin: '0 0 5px', fontSize: '22px', color: '#1a1a2e' }}>
-              Start Your {planLabel} 7-Day Trial
+              {plan === 'RETAIL' ? 'Start Your Free 100K Challenge' : `Start Your ${planLabel} 7-Day Trial`}
             </h2>
             <p style={{ color: '#666', fontSize: '14px', margin: '10px 0 20px' }}>
-              Get full access to Nexus Quantitative — no credit card required.
+              {plan === 'RETAIL'
+                ? 'No card · First 30 days free, then $49/mo.'
+                : 'Get full access to Nexus Quantitative — no credit card required.'}
             </p>
             <form onSubmit={handleSubmit}>
               <input

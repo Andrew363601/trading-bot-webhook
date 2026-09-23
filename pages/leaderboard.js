@@ -4,7 +4,6 @@ import Link from 'next/link';
 import SiteNav from '../components/SiteNav';
 import ChallengeCheckout from '../components/ChallengeCheckout';
 import { useSession, useSupabaseClient } from '@supabase/auth-helpers-react';
-import { fetchSiteContent, FALLBACK_CONTENT } from '../lib/site-content';
 import { Trophy, ShieldAlert, Award, Crown, Medal, Flag, ScrollText, Rocket, LineChart, Zap } from 'lucide-react';
 
 const WINDOW_OPTIONS = ['1D', '7D', '30D'];
@@ -36,7 +35,7 @@ const CHALLENGE_RULES = [
 ];
 
 const CHALLENGE_STEPS = [
-  { icon: Rocket, title: 'Pick a plan', body: 'RETAIL — paper trading — 30 days free, then $49/mo — card required at checkout.' },
+  { icon: Rocket, title: 'Pick a plan', body: 'RETAIL — paper trading — First 30 days free, $0 due today — then $49/mo.' },
   { title: 'Deploy a strategy', body: 'Get an agent running before the window opens so you start trading at the bell.', icon: Zap },
   { icon: LineChart, title: 'Trade the window', body: 'The board tracks your $100k simulated balance live for 30 days.' }
 ];
@@ -51,9 +50,6 @@ export default function Leaderboard() {
   const supabase = useSupabaseClient();
   const [challengeState, setChallengeState] = useState({ entered: false, status: null, daysRemaining: null, joining: false, joined: false });
   const [checkoutOpen, setCheckoutOpen] = useState(false);
-  const [retailPrice, setRetailPrice] = useState(
-    FALLBACK_CONTENT.pricing.find((t) => t.name === 'Retail')?.price || '$49'
-  );
 
   const PodiumIcon = ({ name }) => name === 'crown'
     ? <Crown className="w-3 h-3" />
@@ -195,16 +191,8 @@ export default function Leaderboard() {
     };
   }, [windowKey, mode]);
 
-  // Real prices from site-content (same source as demo-index / checkout popup).
-  useEffect(() => {
-    let isCancelled = false;
-    fetchSiteContent(supabase).then((content) => {
-      if (isCancelled) return;
-      const retail = (content.pricing || FALLBACK_CONTENT.pricing).find((t) => t.name === 'Retail');
-      if (retail?.price) setRetailPrice(retail.price);
-    });
-    return () => { isCancelled = true; };
-  }, [supabase]);
+  // PUSH AM13: Retail pricing copy is hardcoded cardless-trial text (code override
+  // over site_content) — no retailPrice hydration needed anymore.
 
   // Resume challenge checkout after OAuth/magic-link redirect back to this page.
   useEffect(() => {
@@ -339,7 +327,8 @@ export default function Leaderboard() {
                 Compete in the challenge
               </span>
             </div>
-            <p className="text-[11px] text-slate-400 mb-3">RETAIL — paper trading — 30 days free, then {retailPrice}/mo — card required at checkout.</p>
+            {/* PUSH AM13: hardcoded Retail copy (code override — site_content DB may still hold $49) */}
+            <p className="text-[11px] text-slate-400 mb-3">RETAIL — paper trading — First 30 days free, $0 due today — then $49/mo.</p>
             <button
               onClick={() => setCheckoutOpen(true)}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all"
