@@ -890,6 +890,10 @@ async function processUnlabeledVetos() {
       const asset = scan.asset;
       const vetoTime = scan.created_at;
 
+      // 🟢 AM26 — for-body scope: BOTH Path A (computeAdmitted excludeId) and
+      // Path B (AM7b debug, AM21 heal, resolution merge) reference pendingRow.
+      const pendingRow = pendingByScanId.get(scan.id) || null;
+
       // 🟢 AM2b — freshness gate for the WHOLE scan. Fossils (no ticket yet) are
       // never graded (Path A or B), never inserted, never pinged — they age out.
       // Existing PENDING rows bypass: they must keep resolving.
@@ -1088,12 +1092,6 @@ async function processUnlabeledVetos() {
           else if (insRow === false) continue; // open cap hit — skip entirely
         }
 
-        // 🟢 AM9 — hoisted ABOVE the AM7b block: the AM7b debug block references
-        // pendingRow, and the old declaration sat below it (TDZ ReferenceError
-        // froze ALL ticket resolution every tick). Declared at the OUTER scope so
-        // both the AM7b block AND the computeAdmitted call below can see it.
-        const pendingRow = pendingByScanId.get(scan.id) || null;
-
         // 🟢 PUSH AM21 — SELF-HEAL at re-eval: retroactively repair PENDING rows
         // born incomplete (pre-AM21 ETP/AVP tickets) BEFORE the sim call. Only
         // DB-sourced rows are healed (fresh same-tick inserts carry {id} only).
@@ -1253,8 +1251,8 @@ async function processUnlabeledVetos() {
       // ledger + % stats + decision counts keep ALL rows.
       // 🟢 PUSH AL — shared helper; excludes the candidate's own PENDING row when
       // updating it (its provisional window would otherwise overlap itself).
-      // 🟢 AM9 — pendingRow is now declared ABOVE (before the candle fetch) so the
-      // AM7b block can reference it without a TDZ error.
+      // 🟢 AM26 — pendingRow is declared at for-body scope (top of the scan
+      // loop), so both Path A and Path B reach this call with it defined.
       const admitted = await computeAdmitted({
         tenantId: scan.tenant_id,
         asset,
