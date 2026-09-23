@@ -1462,9 +1462,18 @@ output HOLD for an unfilled trap.`;
                         const execStatus = resultPayload.status;
                         const execReason = resultPayload.reason || resultPayload.message || 'No reason provided';
 
-                        const nonSuccessStatuses = ['duplicate_suppressed', 'strategy_not_active', 'risk_vetoed', 'rr_vetoed', 'ignored_already_open', 'already_closed_natively', 'duplicate'];
+                        const nonSuccessStatuses = ['duplicate_suppressed', 'strategy_not_active', 'risk_vetoed', 'rr_vetoed', 'ignored_already_open', 'already_closed_natively', 'duplicate', 'close_in_progress'];
                         
-                        if (execStatus && nonSuccessStatuses.includes(execStatus)) {
+                        // 🟢 AM14 — a returned { error } is a FAILED execution (e.g. verified
+                        // close rejected by the exchange). It must NOT take the success branch.
+                        if (resultPayload.error) {
+                            console.error(`[AGENT CORTEX] ❌ Execution error for ${asset}: ${resultPayload.error}`);
+                            await sendDiscordAlert(tenant_id, {
+                                title: `❌ Trade Execution Failed: ${asset}`,
+                                description: `**Action:** ${decisionJson.action}\n**Side:** ${decisionJson.side}\n**Error:** ${resultPayload.error}`, 
+                                color: 15548997
+                            });
+                        } else if (execStatus && nonSuccessStatuses.includes(execStatus)) {
                             console.warn(`[AGENT CORTEX] ⚠️ Trade execution not opened (${execStatus}) for ${asset}: ${execReason}`);
                             await sendDiscordAlert(tenant_id, {
                                 title: `⚠️ Trade Execution Blocked/Suppressed: ${asset}`,

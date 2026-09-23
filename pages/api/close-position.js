@@ -151,6 +151,19 @@ export default async function handler(req, res) {
 
     const result = await executeTradeMCP(closePayload);
 
+    // 🟢 AM14 — NEVER report success when the exchange did not confirm the close.
+    // executeTradeMCP returns { error } on any verified-close failure (bracket cancel
+    // failed, close rejected, fill not confirmed). Surface it so the UI shows the
+    // failure and the trade stays retryable.
+    if (result?.error) {
+      console.error(`[CLOSE-POSITION API] Close failed for ${symbol}: ${result.error}`);
+      return res.status(502).json({
+        success: false,
+        error: result.error,
+        trade_id: trade_id || null
+      });
+    }
+
     return res.status(200).json({
       success: true,
       message: 'Position closed successfully',
