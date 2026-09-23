@@ -194,10 +194,21 @@ export default function LandingPage() {
     };
   }, []);
 
+  // 🟢 AM20 — CDE ticker → base asset map (mirrors mcp-gateway.js CDE_TO_BASE).
+  // Demo configs trade CDE perps (SLP-PERP-CDE etc.) whose base ticker differs
+  // from the underlying asset the card displays (SOL-PERP), so a plain suffix
+  // strip can't match trades to cards for these assets.
+  const CDE_TO_BASE = {
+    BIT: 'BTC', BIP: 'BTC', ETP: 'ETH',
+    SLP: 'SOL', DOP: 'DOGE',
+    LCP: 'LTC', AVP: 'AVAX',
+    LNP: 'LINK', XPP: 'XRP',
+  };
+
   const baseTicker = (symbol) => {
     if (!symbol) return '';
     let base = String(symbol).toUpperCase().replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '').split('-')[0];
-    return base;
+    return CDE_TO_BASE[base] || base;
   };
 
   // Helper to normalize execution mode across variants (e.g. 'LIVE', 'LIVE (EXCHANGE)', 'PAPER')
@@ -314,74 +325,53 @@ export default function LandingPage() {
     return { winRate, totalPnL: totalPnL.toFixed(2), history };
   };
 
-  // 🟢 AM19 — strategy card PnL dedup. Previously each card independently
-  // filtered the full windowed trade array, so a trade could be counted by
-  // MULTIPLE cards (two strategies on the same base ticker both matched via
-  // the ticker fallback), inflating aggregate PnL. Contract now:
-  //   1) PRIMARY match: strategy_id exact — a trade belongs to its own
-  //      strategy only.
-  //   2) Ticker fallback: ONLY for strategies with zero direct matches, and
-  //      each trade may be consumed by at most ONE strategy card (consumed
-  //      set; first-match wins by strategy order).
+  // 🟢 AM20 — strategy card identity = (strategy, ASSET). Previously Pass 1
+  // matched by strategy_id ALONE, so two demoConfigs sharing a strategy ID
+  // (e.g. AVP + XPP cards) both absorbed the same trade set → identical PnL.
+  // Contract now:
+  //   1) A trade attaches to a card only if BOTH match:
+  //        t.strategy_id === card id  AND  baseTicker(t.symbol) === baseTicker(card asset)
+  //   2) NO name/ticker fallback — two cards may share a strategy name; they
+  //      may never share a trade set.
   //   3) The AM18 rolling window (getFilteredTrades + dateFilter) is applied
   //      once in the same pass.
-  // The open-trade "live" fallback also respects consumption so an open
-  // trade can't inflate two cards either.
+  // The open-trade "live" fallback also respects the identity match.
   const computeStrategyStatsMap = (strategies, trades) => {
     // 🟢 AM18 — same date window the trade log uses, applied once.
     const windowedTrades = getFilteredTrades(trades, dateFilter);
-    const consumed = new Set();
+    // 🟢 AM20 — keyed by `${id}:${baseTicker(asset)}` because two cards may
+    // share a strategy id (AVP + XPP both run the same strategy); an id-only
+    // key would collide and show identical stats on both cards again.
     const statsMap = {};
+    const keyOf = (s) => `${s.id}:${baseTicker(s.asset)}`;
 
-    // Pass 1 — primary: exact strategy_id matches.
+    // Identity match: strategy_id AND normalized base ticker must both match.
     const direct = new Map();
-    strategies.forEach((s) => direct.set(s.id, []));
+    strategies.forEach((s) => direct.set(keyOf(s), []));
     windowedTrades.forEach((t) => {
-      if (t.strategy_id && direct.has(t.strategy_id)) {
-        direct.get(t.strategy_id).push(t);
-        consumed.add(t);
-      }
-    });
-
-    // Pass 2 — ticker fallback: only for zero-direct-match strategies,
-    // first-match wins by strategy order, one trade feeds at most one card.
-    const fallback = new Map();
-    strategies.forEach((s) => {
-      if (direct.get(s.id).length > 0) return;
-      const base = baseTicker(s.asset);
-      if (!base) return;
-      fallback.set(s.id, []);
-      windowedTrades.forEach((t) => {
-        if (consumed.has(t)) return;
-        if (baseTicker(t.symbol) === base) {
-          fallback.get(s.id).push(t);
-          consumed.add(t);
-        }
+      if (!t.strategy_id) return;
+      const tBase = baseTicker(t.symbol);
+      strategies.forEach((s) => {
+        if (s.id !== t.strategy_id) return;
+        const cardBase = baseTicker(s.asset);
+        if (!cardBase || tBase !== cardBase) return;
+        direct.get(keyOf(s)).push(t);
       });
     });
 
     strategies.forEach((s) => {
-      let strategyTrades = direct.get(s.id).filter(t => t.exit_price !== null && t.exit_price !== undefined);
+      const matches = direct.get(keyOf(s));
+      let strategyTrades = matches.filter(t => t.exit_price !== null && t.exit_price !== undefined);
       let live = false;
       if (strategyTrades.length === 0) {
-        const openMatches = direct.get(s.id).filter(t => t.exit_price === null || t.exit_price === undefined);
+        const openMatches = matches.filter(t => t.exit_price === null || t.exit_price === undefined);
         if (openMatches.length > 0 && openMatches.some(t => Math.abs(parseFloat(t.pnl) || 0) > 0)) {
           strategyTrades = openMatches;
           live = true;
         }
       }
-      if (strategyTrades.length === 0 && fallback.has(s.id)) {
-        strategyTrades = fallback.get(s.id).filter(t => t.exit_price !== null && t.exit_price !== undefined);
-        if (strategyTrades.length === 0) {
-          const openMatches = fallback.get(s.id).filter(t => t.exit_price === null || t.exit_price === undefined);
-          if (openMatches.length > 0 && openMatches.some(t => Math.abs(parseFloat(t.pnl) || 0) > 0)) {
-            strategyTrades = openMatches;
-            live = true;
-          }
-        }
-      }
       const summary = summarizeTrades(strategyTrades);
-      statsMap[s.id] = summary ? { ...summary, live } : null;
+      statsMap[keyOf(s)] = summary ? { ...summary, live } : null;
     });
 
     return statsMap;
@@ -420,8 +410,7 @@ export default function LandingPage() {
     };
   });
 
-  // 🟢 AM19 — compute all card stats in ONE pass so the consumed-trade set is
-  // shared across cards (dedup contract above).
+  // 🟢 AM20 — compute all card stats in ONE pass (identity contract above).
   const strategyStatsMap = computeStrategyStatsMap(activeShowcaseStrategies, demoTrades);
 
   const handlePlanSelect = (tier) => {
@@ -722,7 +711,8 @@ export default function LandingPage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {activeShowcaseStrategies.length > 0 ? activeShowcaseStrategies.map((strat, i) => {
-              const stats = strategyStatsMap[strat.id] || null;
+              // 🟢 AM20 — identity key (strategy id + base ticker), not id alone.
+              const stats = strategyStatsMap[`${strat.id}:${baseTicker(strat.asset)}`] || null;
               const isSelected = selectedStrategy === strat.id;
 
               return (

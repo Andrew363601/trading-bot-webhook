@@ -40,6 +40,13 @@ async function logToolCall({ tool, args, result, duration, status, error }) {
 }
 
 // Map each tool to its parameter schema (positional arguments for module calls)
+// 🟢 AM20 — negative-result cache for tools that CANNOT have data for an asset
+// (e.g. max-pain on a perp-only base). When the lib returns status:'empty', the
+// normalized base is cached here so repeat agent calls short-circuit instead of
+// hammering CoinGlass for an answer that will never change. TTL 1h.
+const COINGLASS_NEGATIVE_CACHE = new Map();
+const COINGLASS_NEGATIVE_TTL_MS = 60 * 60 * 1000;
+
 const COINGLASS_PARAMS = {
   coinglass_oi_momentum_v4: ['symbol', 'n_minutes', 'interval'],
   coinglass_funding_rate_reversion_v4: ['symbol', 'k_minutes', 'interval'],
@@ -322,8 +329,37 @@ app.post('/mcp/execute', async (req, res) => {
                     }
                     return val;
                 });
+
+                // 🟢 AM20 — serve cached negative result for this tool+base so the
+                // agent stops re-calling a tool that can't have data (perp-only asset).
+                const negKeyBase = (() => {
+                    const symIdx = paramNames.indexOf('symbol');
+                    const assetIdx = paramNames.indexOf('asset');
+                    const raw = symIdx !== -1 ? args?.symbol : assetIdx !== -1 ? args?.asset : null;
+                    if (!raw) return null;
+                    let base = String(raw).toUpperCase().trim()
+                        .replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '')
+                        .split('-')[0];
+                    return CDE_TO_BASE[base] || base;
+                })();
+                const negKey = negKeyBase ? `${tool}:${negKeyBase}` : null;
+                if (negKey) {
+                    const cached = COINGLASS_NEGATIVE_CACHE.get(negKey);
+                    if (cached && Date.now() - cached.at < COINGLASS_NEGATIVE_TTL_MS) {
+                        const duration = Date.now() - start;
+                        logToolCall({ tool, args, result: cached.result, duration, status: 'success' }).catch(() => {});
+                        return res.json({ result: cached.result });
+                    }
+                    if (cached) COINGLASS_NEGATIVE_CACHE.delete(negKey);
+                }
+
                 const result = await mod[tool](...callArgs);
                 const duration = Date.now() - start;
+                // 🟢 AM20 — cache the negative result so hollow calls are answered
+                // locally next time.
+                if (negKey && result?.status === 'empty') {
+                    COINGLASS_NEGATIVE_CACHE.set(negKey, { at: Date.now(), result });
+                }
                 // Log tool call — fire and forget
                 logToolCall({ tool, args, result, duration, status: 'success' }).catch(() => {});
                 return res.json({ result });
