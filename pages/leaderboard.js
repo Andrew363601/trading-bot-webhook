@@ -249,7 +249,7 @@ export default function Leaderboard() {
               </span>
               <h2 className="text-2xl font-black tracking-tight text-white uppercase">The 100K Simulation Challenge</h2>
               <p className="text-xs text-slate-400 mt-1">
-                Live now · Free entry ends Sunday, Sep 20 · Paper-trade a simulated $100k for 30 days. Top balance wins.
+                Live now · Entries open until Oct 16 · Paper-trade a simulated $100k for 30 days. Top balance wins.
               </p>
             </div>
             <div className="flex-shrink-0">
@@ -366,7 +366,7 @@ export default function Leaderboard() {
             <p className="text-[10px] text-slate-500 mb-4">
               {data.challenge.total_entries} entrants · 7 days without a trade = benched (hidden until you trade again)
             </p>
-            <p className="text-xs text-slate-400 mt-2">First movers get remembered — free entry ends Sunday, Sep 20.</p>
+            <p className="text-xs text-slate-400 mt-2">First movers get remembered — entries open until Oct 16.</p>
             <div className="rounded-2xl border border-amber-400/20 bg-slate-900/40 overflow-hidden backdrop-blur-sm">
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[560px] text-left border-collapse">

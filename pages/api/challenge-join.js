@@ -8,7 +8,11 @@ import { withTenantAuth } from '../../lib/auth-middleware';
 import { syncToBrevo } from '../../lib/brevo';
 
 const CHALLENGE_START = '2026-09-16T00:00:00Z';   // relaunched live 2026-09-16
-const ENTRY_CUTOFF = '2026-09-21T00:00:00Z';      // free-entry coupon ends Sun Sep 20 23:59 UTC
+// 🟢 PUSH AM23 — entries stay open until the challenge ENDS (Oct 16). The
+// coupon guard in create-checkout-session still validates the promo, so late
+// joiners get a working checkout. Trial math unchanged: the joiner's 30d
+// window (window_start + 30d) naturally ends with or after the event.
+const ENTRY_CUTOFF = '2026-10-16T00:00:00Z';      // challenge end — entries open until Oct 16
 const CHALLENGE_DAYS = 30;
 
 function sanitizeAlias(email) {
@@ -73,10 +77,10 @@ export default withTenantAuth(async function handler(req, res) {
       return res.status(409).json({ error: 'Already entered' });
     }
 
-    // 🟢 PUSH O: entry closes with the coupon — prevents broken checkouts on an
-    // expired promo (create-checkout would 400 on a dead promotion_code).
+    // 🟢 PUSH O (AM23-updated): entry closes at challenge end — prevents broken
+    // checkouts after the event (create-checkout would 400 on a dead promotion_code).
     if (new Date() >= new Date(ENTRY_CUTOFF)) {
-      return res.status(403).json({ error: 'Entry closed for this challenge.' });
+      return res.status(403).json({ error: 'Entries open until Oct 16 — this challenge has ended.' });
     }
 
     // 3. Fixed window. If now < window_start, status='active' anyway (entry held, scoring starts Friday).
