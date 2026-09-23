@@ -125,6 +125,35 @@ const CANDLE_CACHE_TTL_MS = 10 * 60 * 1000;
 // 🟢 AM15 — empty/negative results are cached for 30s only, so a poisoned cache
 // can never keep serving candles=0 across ticks.
 const CANDLE_NEGATIVE_TTL_MS = 30 * 1000;
+// 🟢 AM24 — 429 backoff: exponential delays between retries (1s → 4s → 8s),
+// max 2 retries per attempt path. CDP rate limits are per API key, so the
+// multi-asset sweep hammering requests back-to-back is a textbook tail-asset
+// rate-limit pattern.
+const BACKOFF_DELAYS_MS = [1000, 4000, 8000];
+const SWEEP_STAGGER_MS = 2000;
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/**
+ * 🟢 AM24 — fetch with exponential backoff on HTTP 429 only. Non-429 failures
+ * return immediately (per-asset isolation: retries never starve other assets).
+ * Honors Retry-After when it exceeds the computed delay. Returns the Response
+ * of the last attempt (caller handles !resp.ok).
+ */
+async function fetchWithBackoff(url, options, logTag) {
+  let resp = await fetch(url, options);
+  for (const delayMs of BACKOFF_DELAYS_MS) {
+    if (resp.status !== 429) return resp;
+    // Honor Retry-After if present and larger than our computed delay.
+    let waitMs = delayMs;
+    const ra = parseInt(resp.headers?.get?.('retry-after'), 10);
+    if (Number.isFinite(ra) && ra * 1000 > waitMs) waitMs = ra * 1000;
+    console.warn(`[SHADOW] Candle fetch ${logTag}: 429 — backing off ${waitMs}ms before retry`);
+    await sleep(waitMs);
+    resp = await fetch(url, options);
+  }
+  return resp;
+}
 
 function generateCoinbaseToken(method, path, apiKey, apiSecret) {
     const privateKey = crypto.createPrivateKey({ key: apiSecret.replace(/\\n/g, '\n'), format: 'pem' });
@@ -206,18 +235,27 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
     const isoPath = mkPath(iso(startMs), iso(endMs));
     const epochPath = mkPath(Math.floor(startMs / 1000), Math.floor(endMs / 1000));
 
-    let resp = await fetch(`https://api.coinbase.com${isoPath}`, {
+    // 🟢 AM24 — failure logs ALWAYS carry the exact params (spot, start epoch,
+    // end epoch, granularity) so any failure is diagnosable from logs alone.
+    const paramsSuffix = () => `start=${Math.floor(startMs / 1000)} end=${Math.floor(endMs / 1000)} granularity=FIVE_MINUTE`;
+
+    // 🟢 AM24 — 429 backoff applied per format attempt (ISO ladder first, then
+    // epoch ladder on format fallback). Non-429 failures fall through instantly.
+    let resp = await fetchWithBackoff(`https://api.coinbase.com${isoPath}`, {
       headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', isoPath, apiKey, apiSecret)}` }
-    });
+    }, spotSymbol);
     const isoStatus = resp.status;
     if (!resp.ok) {
-      resp = await fetch(`https://api.coinbase.com${epochPath}`, {
-        headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', epochPath, apiKey, apiSecret)}` }
-      });
+      const isoBody = await resp.text().catch(() => '');
+      console.error(`[SHADOW] Candle fetch ${spotSymbol}: ISO FAILED ${isoStatus} ${isoBody.slice(0, 200)} — ${paramsSuffix()}`);
+      const epochPathStr = epochPath;
+      resp = await fetchWithBackoff(`https://api.coinbase.com${epochPathStr}`, {
+        headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', epochPathStr, apiKey, apiSecret)}` }
+      }, spotSymbol);
       console.error(`[SHADOW] Candle fetch ${spotSymbol}: ISO→${isoStatus}, epoch→${resp.status}`);
       if (!resp.ok) {
         const body = await resp.text().catch(() => '');
-        console.error(`[SHADOW] Candle fetch ${spotSymbol} FAILED: ${resp.status} ${body.slice(0, 200)}`);
+        console.error(`[SHADOW] Candle fetch ${spotSymbol} FAILED: ${resp.status} ${body.slice(0, 200)} — ${paramsSuffix()}`);
         return null;
       }
       console.log(`[SHADOW] Candle fetch ${spotSymbol}: OK via epoch (ISO→${isoStatus})`);
@@ -832,6 +870,11 @@ async function processUnlabeledVetos() {
 
     console.log(`[SHADOW] Processing ${unlabeled.length} unlabeled veto(s)...`);
 
+    // 🟢 AM24 — tenant-aware stagger (Option B): CDP rate limits are per API
+    // key, so only CONSECUTIVE fetches for the SAME tenant are spaced 2s apart.
+    // Fossil-skipped scans never fetch, so they don't inflate tick duration.
+    let lastFetchedTenantId = null;
+
     for (const scan of unlabeled) {
       const asset = scan.asset;
       const vetoTime = scan.created_at;
@@ -1078,6 +1121,12 @@ async function processUnlabeledVetos() {
           }
         }
 
+        // 🟢 AM24 — stagger back-to-back fetches on the SAME tenant key (2s) to
+        // smooth the request rate; different tenant keys have independent limits.
+        if (lastFetchedTenantId === scan.tenant_id) {
+          await sleep(SWEEP_STAGGER_MS);
+        }
+        lastFetchedTenantId = scan.tenant_id;
         const candleData = await fetchCounterfactualCandles(asset, vetoTime, 24, scan.tenant_id);
         if (candleData && candleData.series && vetoPrice) {
           cLow = candleData.low;
