@@ -91,12 +91,15 @@ export default async function handler(req, res) {
     }
 
     // Fetch tool calls for returned trades
+    // 🟢 AM16 — public endpoint must expose safe columns only. Service-role
+    // bypasses RLS, so the whitelist here is the only guard. Never select('*')
+    // on agent_tool_calls: params_snapshot and tenant_id must not leak.
     let toolCalls = [];
     const tradeIds = [...allTradeIds];
     if (tradeIds.length > 0) {
       for (let i = 0; i < tradeIds.length; i += 50) {
         const chunk = tradeIds.slice(i, i + 50);
-        const { data } = await supabase.from('agent_tool_calls').select('*').in('trade_id', chunk).order('created_at', { ascending: true }).limit(200);
+        const { data } = await supabase.from('agent_tool_calls').select('id, trade_id, tool_name, response_summary, duration_ms, status, created_at').in('trade_id', chunk).order('created_at', { ascending: true }).limit(200);
         if (data) toolCalls = toolCalls.concat(data);
       }
     }
