@@ -90,18 +90,18 @@ export default async function handler(req, res) {
       });
     }
 
-    // Fetch tool calls for returned trades
+    // Fetch tool calls for the demo tenant (all recent — the client joins them
+    // to trades via trade_id + time windows, including re-evals on open trades).
     // 🟢 AM16 — public endpoint must expose safe columns only. Service-role
     // bypasses RLS, so the whitelist here is the only guard. Never select('*')
     // on agent_tool_calls: params_snapshot and tenant_id must not leak.
+    // 🟢 AM17 — tenant-scoped single query replaces the trade_id chunk loop:
+    // pre-trade-only chunking orphaned re-evals (HOLDs) that fire after entry,
+    // so open trade cards showed zero tool calls.
     let toolCalls = [];
-    const tradeIds = [...allTradeIds];
-    if (tradeIds.length > 0) {
-      for (let i = 0; i < tradeIds.length; i += 50) {
-        const chunk = tradeIds.slice(i, i + 50);
-        const { data } = await supabase.from('agent_tool_calls').select('id, trade_id, tool_name, response_summary, duration_ms, status, created_at').in('trade_id', chunk).order('created_at', { ascending: true }).limit(200);
-        if (data) toolCalls = toolCalls.concat(data);
-      }
+    {
+      const { data } = await supabase.from('agent_tool_calls').select('id, trade_id, tool_name, response_summary, duration_ms, status, created_at').eq('tenant_id', DEMO_TENANT_ID).order('created_at', { ascending: false }).limit(300);
+      if (data) toolCalls = data;
     }
 
     // Cache at the edge for 10s to keep the landing page snappy and cheap.

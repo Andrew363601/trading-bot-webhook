@@ -99,25 +99,54 @@ export default function LandingPage() {
         const trades = data.trades || [];
         setDemoTrades(trades);
 
-        // Build tool calls map from feed response using time-window matching
+        // 🟢 AM17 — Build tool calls map from feed response with a three-tier
+        // join (audit.js parity): exact trade_id → entry time window → open-trade
+        // re-evals. The old pre-trade-only window orphaned re-evals/HOLDs that
+        // fire after entry, so open trade cards showed zero tool calls.
         if (data.toolCalls?.length) {
           const tcMap = {};
           data.toolCalls.forEach(tc => {
             const tcTime = new Date(tc.created_at).getTime();
-            const matchingTrade = trades.find(tr => {
-              const trTime = new Date(tr.created_at).getTime();
-              const diff = trTime - tcTime;
-              return diff >= 0 && diff < 120000;
-            });
-            if (matchingTrade) {
-              if (!tcMap[matchingTrade.id]) tcMap[matchingTrade.id] = [];
-              const list = tcMap[matchingTrade.id];
+            const attach = (trade) => {
+              if (!trade) return;
+              if (!tcMap[trade.id]) tcMap[trade.id] = [];
+              const list = tcMap[trade.id];
+              if (list.some(existing => String(existing.id) === String(tc.id))) return; // dedupe per trade
               const insertIdx = list.findIndex(existing => new Date(tc.created_at) < new Date(existing.created_at));
               if (insertIdx === -1) list.push(tc); else list.splice(insertIdx, 0, tc);
+            };
+
+            // (a) EXACT: call carries a trade_id that matches a loaded trade.
+            if (tc.trade_id) {
+              attach(trades.find(tr => String(tr.id) === String(tc.trade_id)));
+              return;
+            }
+
+            // (b) ENTRY FALLBACK: no trade_id → audit.js window (created_at in
+            // [tcTime - 60s, tcTime + 300s]); first match wins, audit parity.
+            const entryMatch = trades.find(tr => {
+              const diff = new Date(tr.created_at).getTime() - tcTime;
+              return diff >= -60000 && diff < 300000;
+            });
+            if (entryMatch) {
+              attach(entryMatch);
+              return;
+            }
+
+            // (c) OPEN-TRADE RE-EVALS: call fired after an open trade's entry
+            // within the last 24h (re-evals, HOLDs) → fan out to every
+            // qualifying open trade (agent calls the same tools during re-evals).
+            if (Date.now() - tcTime < 86400000) {
+              trades.forEach(tr => {
+                const isOpen = tr.exit_price === null || tr.exit_price === undefined;
+                if (isOpen && tcTime > new Date(tr.created_at).getTime()) attach(tr);
+              });
             }
           });
           setToolCallsMap(tcMap);
         }
+        // If data.toolCalls is missing/empty we deliberately keep the previous
+        // map — an empty poll must not wipe already-rendered tool call lists.
         // Configs are pre-filtered to is_active=true by /api/demo-feed.
         setDemoConfigs(data.configs || []);
         const closed = trades.filter(t => t.exit_price !== null && t.exit_price !== undefined);
