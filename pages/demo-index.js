@@ -209,7 +209,7 @@ export default function LandingPage() {
   };
 
   // 🟢 AM18 — Single source of truth for the trade-log date window. Both the
-  // trade log section and getStrategyStats (strategy intelligence cards) call
+  // trade log section and the strategy intelligence cards (AM19 dedup pass) call
   // this so the two sections can never drift. Prioritizes closed trade
   // exit_time, falling back to entry created_at; trades with missing/invalid
   // dates drop out of windowed views.
@@ -293,44 +293,17 @@ export default function LandingPage() {
     return out;
   })();
 
-  const getStrategyStats = (strategyName, asset) => {
-    // Match trades to a strategy by strategy_id, OR — when the demo tenant logs
-    // trades under a different id but the same asset — fall back to matching on
-    // the normalized base ticker so the card still reflects real performance.
-    const base = baseTicker(asset);
-    const matches = (t) => t.strategy_id === strategyName || (base && baseTicker(t.symbol) === base);
-
-    // 🟢 AM18 — Aggregate over the SAME date window the trade log uses (shared
-    // getFilteredTrades helper, same dateFilter state), never over lifetime
-    // numbers, so card PnL always equals the log's windowed PnL by construction.
-    const windowedTrades = getFilteredTrades(demoTrades, dateFilter);
-
-    let live = false;
-    let strategyTrades = windowedTrades.filter(t => t.exit_price !== null && t.exit_price !== undefined && matches(t));
-    
-    if (strategyTrades.length === 0) {
-        const openMatches = windowedTrades.filter(t => (t.exit_price === null || t.exit_price === undefined) && matches(t));
-        // Only fall back to live trades if they actually have some PnL data
-        if (openMatches.length > 0 && openMatches.some(t => Math.abs(parseFloat(t.pnl) || 0) > 0)) {
-            strategyTrades = openMatches; 
-            live = true; 
-        }
-    }
-
-    // If completely empty, return a believable synthetic fallback based on the strategy name
-    // so the marketing cards never look broken/empty.
-    if (strategyTrades.length === 0) {
-        return null;
-    }
-
-    const wins = strategyTrades.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
-    const winRate = strategyTrades.length > 0 ? ((wins / strategyTrades.length) * 100).toFixed(0) + '%' : '0%';
-    const totalPnL = strategyTrades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
-    
+  // Shared per-card summary math (win rate, PnL, 7-day history) used by the
+  // AM19 dedup pass below.
+  const summarizeTrades = (trades) => {
+    if (trades.length === 0) return null;
+    const wins = trades.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+    const winRate = ((wins / trades.length) * 100).toFixed(0) + '%';
+    const totalPnL = trades.reduce((sum, t) => sum + (parseFloat(t.pnl) || 0), 0);
     // Calculate last 7 days history (closed trades only; open trades have no exit_time)
     const history = [0, 0, 0, 0, 0, 0, 0];
     const now = new Date();
-    strategyTrades.forEach(t => {
+    trades.forEach(t => {
         if (!t.exit_time) return;
         const tradeDate = new Date(t.exit_time);
         const diffDays = Math.floor((now - tradeDate) / (1000 * 60 * 60 * 24));
@@ -338,8 +311,80 @@ export default function LandingPage() {
             history[6 - diffDays] += (parseFloat(t.pnl) || 0);
         }
     });
+    return { winRate, totalPnL: totalPnL.toFixed(2), history };
+  };
 
-    return { winRate, totalPnL: totalPnL.toFixed(2), history, live };
+  // 🟢 AM19 — strategy card PnL dedup. Previously each card independently
+  // filtered the full windowed trade array, so a trade could be counted by
+  // MULTIPLE cards (two strategies on the same base ticker both matched via
+  // the ticker fallback), inflating aggregate PnL. Contract now:
+  //   1) PRIMARY match: strategy_id exact — a trade belongs to its own
+  //      strategy only.
+  //   2) Ticker fallback: ONLY for strategies with zero direct matches, and
+  //      each trade may be consumed by at most ONE strategy card (consumed
+  //      set; first-match wins by strategy order).
+  //   3) The AM18 rolling window (getFilteredTrades + dateFilter) is applied
+  //      once in the same pass.
+  // The open-trade "live" fallback also respects consumption so an open
+  // trade can't inflate two cards either.
+  const computeStrategyStatsMap = (strategies, trades) => {
+    // 🟢 AM18 — same date window the trade log uses, applied once.
+    const windowedTrades = getFilteredTrades(trades, dateFilter);
+    const consumed = new Set();
+    const statsMap = {};
+
+    // Pass 1 — primary: exact strategy_id matches.
+    const direct = new Map();
+    strategies.forEach((s) => direct.set(s.id, []));
+    windowedTrades.forEach((t) => {
+      if (t.strategy_id && direct.has(t.strategy_id)) {
+        direct.get(t.strategy_id).push(t);
+        consumed.add(t);
+      }
+    });
+
+    // Pass 2 — ticker fallback: only for zero-direct-match strategies,
+    // first-match wins by strategy order, one trade feeds at most one card.
+    const fallback = new Map();
+    strategies.forEach((s) => {
+      if (direct.get(s.id).length > 0) return;
+      const base = baseTicker(s.asset);
+      if (!base) return;
+      fallback.set(s.id, []);
+      windowedTrades.forEach((t) => {
+        if (consumed.has(t)) return;
+        if (baseTicker(t.symbol) === base) {
+          fallback.get(s.id).push(t);
+          consumed.add(t);
+        }
+      });
+    });
+
+    strategies.forEach((s) => {
+      let strategyTrades = direct.get(s.id).filter(t => t.exit_price !== null && t.exit_price !== undefined);
+      let live = false;
+      if (strategyTrades.length === 0) {
+        const openMatches = direct.get(s.id).filter(t => t.exit_price === null || t.exit_price === undefined);
+        if (openMatches.length > 0 && openMatches.some(t => Math.abs(parseFloat(t.pnl) || 0) > 0)) {
+          strategyTrades = openMatches;
+          live = true;
+        }
+      }
+      if (strategyTrades.length === 0 && fallback.has(s.id)) {
+        strategyTrades = fallback.get(s.id).filter(t => t.exit_price !== null && t.exit_price !== undefined);
+        if (strategyTrades.length === 0) {
+          const openMatches = fallback.get(s.id).filter(t => t.exit_price === null || t.exit_price === undefined);
+          if (openMatches.length > 0 && openMatches.some(t => Math.abs(parseFloat(t.pnl) || 0) > 0)) {
+            strategyTrades = openMatches;
+            live = true;
+          }
+        }
+      }
+      const summary = summarizeTrades(strategyTrades);
+      statsMap[s.id] = summary ? { ...summary, live } : null;
+    });
+
+    return statsMap;
   };
 
   // Display metadata for well-known strategy IDs. Anything not in this lookup
@@ -374,6 +419,10 @@ export default function LandingPage() {
       color: meta.color || 'indigo',
     };
   });
+
+  // 🟢 AM19 — compute all card stats in ONE pass so the consumed-trade set is
+  // shared across cards (dedup contract above).
+  const strategyStatsMap = computeStrategyStatsMap(activeShowcaseStrategies, demoTrades);
 
   const handlePlanSelect = (tier) => {
     trackEvent('plan_selected', { tier, method: 'pricing_card' });
@@ -673,7 +722,7 @@ export default function LandingPage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {activeShowcaseStrategies.length > 0 ? activeShowcaseStrategies.map((strat, i) => {
-              const stats = getStrategyStats(strat.id, strat.asset);
+              const stats = strategyStatsMap[strat.id] || null;
               const isSelected = selectedStrategy === strat.id;
 
               return (
