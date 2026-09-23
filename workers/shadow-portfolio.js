@@ -281,9 +281,16 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
 
     // AG1 sim engine: normalized chronological series oldest→newest
     // ({ time, open, high, low, close }) for the SL/TP/trail walk.
+    // 🟢 AM25 — CDP epoch-path responses return `start` as an epoch-SECONDS
+    // string; new Date(<numeric string>) parses it as a year → Invalid Date →
+    // NaN → the validity filter dropped every candle → 'EMPTY after validity
+    // filter' forever. Numeric epoch-seconds values multiply by 1000; ISO
+    // strings keep the Date parse. Both formats now map correctly.
     const series = candles
       .map(c => ({
-        time: new Date(c.start).getTime(),
+        time: (typeof c.start === 'number' || /^\d+$/.test(String(c.start)))
+              ? Number(c.start) * 1000
+              : new Date(c.start).getTime(),
         open: parseFloat(c.open),
         high: parseFloat(c.high),
         low: parseFloat(c.low),
@@ -294,6 +301,10 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
       // timestamps would skew sim_exit_time and every downstream window.
       .filter(c => Number.isFinite(c.time) && Number.isFinite(c.close) && Number.isFinite(c.high) && Number.isFinite(c.low))
       .sort((a, b) => a.time - b.time);
+
+    // 🟢 AM25 — one-line shape diagnostics: series length + first/last time so
+    // any future response-shape change is visible immediately.
+    console.log(`[SHADOW] Candle map ${spotSymbol}: n=${series.length} first=${series[0]?.time} last=${series[series.length - 1]?.time}`);
 
     // 🟢 AM15 — never cache empties: a non-empty raw candles array whose entries
     // all fail the validity filter yields series=[] — caching THAT result was
