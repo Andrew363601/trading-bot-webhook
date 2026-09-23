@@ -208,20 +208,36 @@ export default function LandingPage() {
     return raw;
   };
 
-  // Date filtering prioritizes closed trade exit_time, falling back to entry created_at
-  const now = new Date();
-  const dateFiltered = dateFilter === 'all' ? demoTrades
-    : demoTrades.filter(t => {
-        const rawDate = t.exit_time || t.created_at;
-        if (!rawDate) return false;
-        const d = new Date(rawDate);
-        if (isNaN(d.getTime())) return false;
-        const diff = (now - d) / (1000 * 60 * 60 * 24);
-        if (dateFilter === 'today') return diff <= 1;
-        if (dateFilter === '7d') return diff <= 7;
-        if (dateFilter === '30d') return diff <= 30;
-        return true;
-      });
+  // 🟢 AM18 — Single source of truth for the trade-log date window. Both the
+  // trade log section and getStrategyStats (strategy intelligence cards) call
+  // this so the two sections can never drift. Prioritizes closed trade
+  // exit_time, falling back to entry created_at; trades with missing/invalid
+  // dates drop out of windowed views.
+  const getFilteredTrades = (trades, filter) => {
+    if (filter === 'all') return trades;
+    const now = new Date();
+    return trades.filter(t => {
+      const rawDate = t.exit_time || t.created_at;
+      if (!rawDate) return false;
+      const d = new Date(rawDate);
+      if (isNaN(d.getTime())) return false;
+      const diff = (now - d) / (1000 * 60 * 60 * 24);
+      if (filter === 'today') return diff <= 1;
+      if (filter === '7d') return diff <= 7;
+      if (filter === '30d') return diff <= 30;
+      return true;
+    });
+  };
+
+  // Human label for the active window (used by the strategy card PnL caption).
+  const windowLabel = (filter) => {
+    if (filter === 'today') return 'Today';
+    if (filter === '7d') return '7D';
+    if (filter === '30d') return '30D';
+    return 'All-Time';
+  };
+
+  const dateFiltered = getFilteredTrades(demoTrades, dateFilter);
 
   const filteredTrades = executionMode === 'ALL'
     ? dateFiltered
@@ -284,11 +300,16 @@ export default function LandingPage() {
     const base = baseTicker(asset);
     const matches = (t) => t.strategy_id === strategyName || (base && baseTicker(t.symbol) === base);
 
+    // 🟢 AM18 — Aggregate over the SAME date window the trade log uses (shared
+    // getFilteredTrades helper, same dateFilter state), never over lifetime
+    // numbers, so card PnL always equals the log's windowed PnL by construction.
+    const windowedTrades = getFilteredTrades(demoTrades, dateFilter);
+
     let live = false;
-    let strategyTrades = demoTrades.filter(t => t.exit_price !== null && t.exit_price !== undefined && matches(t));
+    let strategyTrades = windowedTrades.filter(t => t.exit_price !== null && t.exit_price !== undefined && matches(t));
     
     if (strategyTrades.length === 0) {
-        const openMatches = demoTrades.filter(t => (t.exit_price === null || t.exit_price === undefined) && matches(t));
+        const openMatches = windowedTrades.filter(t => (t.exit_price === null || t.exit_price === undefined) && matches(t));
         // Only fall back to live trades if they actually have some PnL data
         if (openMatches.length > 0 && openMatches.some(t => Math.abs(parseFloat(t.pnl) || 0) > 0)) {
             strategyTrades = openMatches; 
@@ -696,7 +717,7 @@ export default function LandingPage() {
                     </div>
 
                     <div className="flex justify-between items-center pt-2">
-                        <span className="text-xs text-slate-400 uppercase font-black tracking-widest">{stats.live ? 'Unrealized PnL' : 'Lifetime PnL'}</span>
+                        <span className="text-xs text-slate-400 uppercase font-black tracking-widest">{stats.live ? 'Unrealized PnL' : `${windowLabel(dateFilter)} PnL`}</span>
                         <span className={`font-bold ${parseFloat(stats.totalPnL) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                             {parseFloat(stats.totalPnL) >= 0 ? '+' : ''}${stats.totalPnL}
                         </span>
