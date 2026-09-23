@@ -324,6 +324,33 @@ async function fetchStrategySimParams(tenantId, strategy, asset) {
   }
 }
 
+// 🟢 PUSH AM21 — resolve COMPLETE ticket levels (entry + SL/TP absolutes).
+// Priority: agent decision absolutes (AM4) > active-config fractions (AM6a
+// price-fraction math: dist = fraction × entry, absolutes = entry ∓ dist by
+// direction). Returns entry=null when no price could be resolved anywhere —
+// the caller must then REJECT the ticket, never insert a zombie.
+function resolveTicketLevels({ entry, direction, configFracs, agentTpPrice, agentSlPrice }) {
+  const entryNum = entry != null ? parseFloat(entry) : null;
+  if (entryNum == null || !Number.isFinite(entryNum) || entryNum <= 0) {
+    return { entry: null, sl_price: null, tp_price: null, sl_src: null, tp_src: null };
+  }
+  const isBuy = direction !== 'SELL';
+  const fin = (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? n : null; };
+  let slPrice = fin(agentSlPrice), slSrc = slPrice != null ? 'agent' : null;
+  if (slPrice == null && configFracs?.sl != null) {
+    const dist = configFracs.sl * entryNum;
+    slPrice = isBuy ? entryNum - dist : entryNum + dist;
+    slSrc = 'config';
+  }
+  let tpPrice = fin(agentTpPrice), tpSrc = tpPrice != null ? 'agent' : null;
+  if (tpPrice == null && configFracs?.tp != null) {
+    const dist = configFracs.tp * entryNum;
+    tpPrice = isBuy ? entryNum + dist : entryNum - dist;
+    tpSrc = 'config';
+  }
+  return { entry: entryNum, sl_price: slPrice, tp_price: tpPrice, sl_src: slSrc, tp_src: tpSrc };
+}
+
 /**
  * AG1: ATR-14 from the sim candle series (Wilder's smoothing on true range).
  * Fallback SL/TP geometry when strategy_config fields are missing.
@@ -640,10 +667,25 @@ async function computeAdmitted({ tenantId, asset, vetoTime, windowEnd, excludeId
 // (verdict PENDING, sim fields null, sim_params stamped) so the chart shows a LIVE
 // ticket with TP/SL lines. Idempotent: skips when a row already exists for the scan.
 // Never throws — log + continue; the sweep must not die on an insert failure.
-async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, vetoRegime, simParams, macroTf, triggerTf, fillBasis, tpPrice, slPrice, paramsContext }) {
+async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, vetoRegime, simParams, macroTf, triggerTf, fillBasis, tpPrice, slPrice, paramsContext, configFracs, entrySrc }) {
   // 🟢 AM2 — veto_price can arrive as a STRING (signal.price from telemetry). Never
   // call .toFixed on it directly; parse once, guard NaN, and stamp a clean number.
   const priceNum = vetoPrice != null ? parseFloat(vetoPrice) : null;
+  // 🟢 PUSH AM21 — INSERT GATE: a PENDING ticket may never be born incomplete.
+  // No resolvable entry price anywhere → NO ticket. Returns BEFORE the open-cap
+  // check so a zombie never owns the one-open-ticket-per-asset slot.
+  if (priceNum == null || isNaN(priceNum) || priceNum <= 0) {
+    console.log(`[SHADOW] TICKET REJECTED ${asset}: no entry price (scan ${scan.id})`);
+    return null;
+  }
+  // 🟢 PUSH AM21 — complete-at-insert: agent absolutes override, config
+  // fractions fill the gaps (AM6a price-fraction math).
+  const resolved = resolveTicketLevels({
+    entry: priceNum, direction: signalDirection, configFracs,
+    agentTpPrice: tpPrice, agentSlPrice: slPrice
+  });
+  // 🟢 PUSH AM21 — PROVENANCE LOG: every stamp names its source.
+  console.log(`[SHADOW] STAMP ${asset}: entry=${entrySrc || 'veto_price'} sl=${resolved.sl_src || 'none'} tp=${resolved.tp_src || 'none'} (scan ${scan.id})`);
   try {
     const { data: dup } = await supabase
       .from('shadow_portfolio')
@@ -717,8 +759,13 @@ async function insertPendingTicket({ scan, asset, signalDirection, vetoPrice, ve
               // prefers tp_price/sl_price over tp_pct/sl_pct, so the chart draws
               // the agent's EXACT levels when the agent adjusted them.
               param_source: simParams.paramSource || 'config_default',
-              tp_price: tpPrice != null && Number.isFinite(parseFloat(tpPrice)) ? parseFloat(tpPrice) : null,
-              sl_price: slPrice != null && Number.isFinite(parseFloat(slPrice)) ? parseFloat(slPrice) : null,
+              // 🟢 PUSH AM21 — complete-at-insert absolutes (agent > config)
+              // + provenance keys so a null field can never pass silently.
+              tp_price: resolved.tp_price,
+              sl_price: resolved.sl_price,
+              entry_source: entrySrc || 'veto_price',
+              sl_source: resolved.sl_src,
+              tp_source: resolved.tp_src,
               tp_pct: simParams.tp != null ? simParams.tp * 100 : null,
               sl_pct: simParams.sl != null ? simParams.sl * 100 : null
             }
@@ -770,7 +817,7 @@ async function processUnlabeledVetos() {
     const scanIds = vetos.map(v => v.id);
     const { data: existing } = await supabase
       .from('shadow_portfolio')
-      .select('id, scan_id, verdict')
+      .select('id, scan_id, verdict, veto_price, sim_params')
       .in('scan_id', scanIds);
 
     const pendingByScanId = new Map();
@@ -808,6 +855,8 @@ async function processUnlabeledVetos() {
 
       let vetoPrice = signal?.price || null;
       let vetoRegime = signal?.regime || null;
+      // 🟢 PUSH AM21 — entry provenance source for the STAMP log.
+      let vetoPriceSrc = signal?.price ? 'signal' : null;
       const signalDirection = inferSignalDirection(signal?.marketState, oracleReasoning);
       const convictionScore = extractConvictionScore(telemetry, oracleReasoning);
 
@@ -815,6 +864,7 @@ async function processUnlabeledVetos() {
       if (!vetoPrice) {
         const match = oracleReasoning.match(/\$(\d+\.?\d*)/);
         vetoPrice = match ? parseFloat(match[1]) : null;
+        if (vetoPrice) vetoPriceSrc = 'thesis_regex';
       }
 
       // 3. Find nearest closed trade on same asset AFTER veto (within 48h)
@@ -976,7 +1026,9 @@ async function processUnlabeledVetos() {
             scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
             simParams: mergedSimParams, macroTf, triggerTf, fillBasis,
             tpPrice: agentTpPrice, slPrice: agentSlPrice,
-            paramsContext
+            paramsContext,
+            // 🟢 PUSH AM21 — config fractions for complete-at-insert backfill.
+            configFracs: simParams, entrySrc: vetoPriceSrc
           });
           if (insRow && insRow.id) pendingByScanId.set(scan.id, insRow); // same-tick resolution must find it
           else if (insRow === false) continue; // open cap hit — skip entirely
@@ -987,6 +1039,44 @@ async function processUnlabeledVetos() {
         // froze ALL ticket resolution every tick). Declared at the OUTER scope so
         // both the AM7b block AND the computeAdmitted call below can see it.
         const pendingRow = pendingByScanId.get(scan.id) || null;
+
+        // 🟢 PUSH AM21 — SELF-HEAL at re-eval: retroactively repair PENDING rows
+        // born incomplete (pre-AM21 ETP/AVP tickets) BEFORE the sim call. Only
+        // DB-sourced rows are healed (fresh same-tick inserts carry {id} only).
+        if (pendingRow && pendingRow.id && pendingRow.verdict === 'PENDING') {
+          const healNeeded = pendingRow.veto_price == null ||
+            !pendingRow.sim_params?.sl_price || !pendingRow.sim_params?.tp_price;
+          if (healNeeded && vetoPrice != null && Number.isFinite(parseFloat(vetoPrice))) {
+            const healed = resolveTicketLevels({
+              entry: vetoPrice, direction: signalDirection, configFracs: simParams,
+              agentTpPrice: agentTpPrice, agentSlPrice: agentSlPrice
+            });
+            if (healed.entry) {
+              const healedParams = {
+                ...(pendingRow.sim_params || {}),
+                ...mergedSimParams,
+                tp_price: healed.tp_price,
+                sl_price: healed.sl_price,
+                entry_source: vetoPriceSrc || 'veto_price',
+                sl_source: healed.sl_src || pendingRow.sim_params?.sl_source || 'config',
+                tp_source: healed.tp_src || pendingRow.sim_params?.tp_source || 'config'
+              };
+              const { error: healErr } = await supabase
+                .from('shadow_portfolio')
+                .update({ veto_price: parseFloat(healed.entry.toFixed(2)), sim_params: healedParams })
+                .eq('id', pendingRow.id);
+              if (healErr) {
+                console.error(`[SHADOW] HEAL failed ${asset} scan ${scan.id}:`, healErr.message);
+              } else {
+                console.log(`[SHADOW] HEALED ${asset} scan ${scan.id}: entry/sl/tp backfilled (sl=${healed.sl_src || 'none'}, tp=${healed.tp_src || 'none'})`);
+                // Keep the in-memory row in sync — the AM2h resolution merge
+                // below reads pendingRow.sim_params.
+                pendingRow.veto_price = healed.entry;
+                pendingRow.sim_params = healedParams;
+              }
+            }
+          }
+        }
 
         const candleData = await fetchCounterfactualCandles(asset, vetoTime, 24, scan.tenant_id);
         if (candleData && candleData.series && vetoPrice) {
@@ -1028,7 +1118,9 @@ async function processUnlabeledVetos() {
                 scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
                 simParams: mergedSimParams, macroTf, triggerTf, fillBasis,
                 tpPrice: agentTpPrice, slPrice: agentSlPrice,
-                paramsContext
+                paramsContext,
+                // 🟢 PUSH AM21 — config fractions for complete-at-insert backfill.
+                configFracs: simParams, entrySrc: vetoPriceSrc
               });
               if (insRow && insRow.id) pendingByScanId.set(scan.id, insRow);
               else if (insRow === false) continue; // open cap hit — skip entirely
@@ -1128,6 +1220,9 @@ async function processUnlabeledVetos() {
       };
       const paramsToWrite = Object.keys(mergedParams).length ? mergedParams : simParamsJson;
       console.log(`[SHADOW] Params write ${asset} scan ${scan.id}:`, JSON.stringify(paramsToWrite).slice(0, 120));
+      // 🟢 PUSH AM21 — PROVENANCE LOG at resolution: a null field can never
+      // again pass silently — every graded ticket names its sources.
+      console.log(`[SHADOW] STAMP ${asset}: entry=${paramsToWrite.entry_source || 'n/a'} sl=${paramsToWrite.sl_source || 'n/a'} tp=${paramsToWrite.tp_source || 'n/a'} (scan ${scan.id})`);
 
       // 🟢 PUSH AL — resolution: if a PENDING row exists for this scan, UPDATE it
       // (verdict, amounts, sim_* fields, fill_basis, trade fields, admitted
