@@ -122,6 +122,9 @@ const tenantKeyCache = new Map();
 // sweep re-fetches the same veto window tick after tick.
 const candleCache = new Map();
 const CANDLE_CACHE_TTL_MS = 10 * 60 * 1000;
+// 🟢 AM15 — empty/negative results are cached for 30s only, so a poisoned cache
+// can never keep serving candles=0 across ticks.
+const CANDLE_NEGATIVE_TTL_MS = 30 * 1000;
 
 function generateCoinbaseToken(method, path, apiKey, apiSecret) {
     const privateKey = crypto.createPrivateKey({ key: apiSecret.replace(/\\n/g, '\n'), format: 'pem' });
@@ -179,13 +182,23 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
     // 🟢 AM2g — dual-format: try ISO first; on !resp.ok retry with epoch seconds
     // (settle ISO-vs-epoch-vs-auth in one tick). Both outcomes logged loudly.
     const startMs = new Date(startTime).getTime();
-    const endMs = startMs + hours * 3600 * 1000;
+    // 🟢 AM15 — window clamp: a fetch window reaching into the future must never
+    // be passed to the exchange API (Coinbase empties/rejects it, which silently
+    // froze every ticket). Clamp end to now; if <5min of window exists there is
+    // nothing to walk yet — return null gracefully (not an error).
+    let endMs = Math.min(startMs + hours * 3600 * 1000, Date.now());
+    if (endMs - startMs < 5 * 60 * 1000) {
+      console.log(`[SHADOW] Candle fetch ${spotSymbol}: window not started yet — skipping (start=${Math.floor(startMs / 1000)} end=${Math.floor(endMs / 1000)})`);
+      return null;
+    }
     const iso = (ms) => new Date(ms).toISOString();
 
     // 🟢 AM2f — cache hit: same symbol + same 10-min bucket → reuse the series.
+    // 🟢 AM15 — negative entries (empty series) expire after 30s, not 10min.
     const cacheKey = `${spotSymbol}:${Math.floor(startMs / 600)}`;
     const cached = candleCache.get(cacheKey);
-    if (cached && (Date.now() - cached.fetchedAt) < CANDLE_CACHE_TTL_MS) {
+    const ttl = (cached && cached.negative) ? CANDLE_NEGATIVE_TTL_MS : CANDLE_CACHE_TTL_MS;
+    if (cached && (Date.now() - cached.fetchedAt) < ttl) {
       return cached.data;
     }
 
@@ -212,7 +225,11 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
     const data = await resp.json();
     const candles = data?.candles;
     if (!candles || !Array.isArray(candles) || candles.length === 0) {
-      console.error(`[SHADOW] Candle fetch ${spotSymbol}: 200 but empty candles`);
+      // 🟢 AM15 — LOUD empty diagnostics: this is the case that silently froze
+      // every ticket; start/end/granularity in one line pins params-vs-product.
+      console.error(`[SHADOW] Candle fetch ${spotSymbol}: 200 but EMPTY — start=${Math.floor(startMs / 1000)} end=${Math.floor(endMs / 1000)} granularity=FIVE_MINUTE`);
+      // 🟢 AM15 — 30s negative cache: empties are NEVER cached at the 10-min TTL.
+      candleCache.set(cacheKey, { data: null, fetchedAt: Date.now(), negative: true });
       return null;
     }
 
@@ -240,8 +257,17 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
       .filter(c => Number.isFinite(c.time) && Number.isFinite(c.close) && Number.isFinite(c.high) && Number.isFinite(c.low))
       .sort((a, b) => a.time - b.time);
 
+    // 🟢 AM15 — never cache empties: a non-empty raw candles array whose entries
+    // all fail the validity filter yields series=[] — caching THAT result was
+    // the real poisoning path (200-but-empty served as candles=0 for 10min).
+    if (series.length === 0) {
+      console.error(`[SHADOW] Candle fetch ${spotSymbol}: 200 but EMPTY after validity filter — start=${Math.floor(startMs / 1000)} end=${Math.floor(endMs / 1000)} granularity=FIVE_MINUTE`);
+      candleCache.set(cacheKey, { data: null, fetchedAt: Date.now(), negative: true });
+      return null;
+    }
+
     const result = { high, low, firstClose, lastClose, series };
-    // 🟢 AM2f — cache only successful fetches; prune stale entries opportunistically.
+    // 🟢 AM2f/AM15 — cache only successful non-empty fetches; prune stale entries opportunistically.
     candleCache.set(cacheKey, { data: result, fetchedAt: Date.now() });
     if (candleCache.size > 100) {
       const now = Date.now();
