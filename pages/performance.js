@@ -324,6 +324,8 @@ function PerformanceLogContent() {
   // PUSH AB — dedicated refs for the timeline chart (never touch chartRef/chartContainerRef)
   const timelineContainerRef = useRef(null);
   const timelineChartRef = useRef(null);
+  // 🟢 PUSH AM29 — shared-crosshair tooltip state (all series values at cursor)
+  const [timelineTooltip, setTimelineTooltip] = useState(null);
   // AH2 — MODEL view: remember the last non-empty model series so a 0-trade
   // bucket does not silently blank the chart (explicit empty > silent vanish).
   const lastModelSeriesRef = useRef(null);
@@ -424,7 +426,9 @@ function PerformanceLogContent() {
 
   // PUSH AC — cumulative series for the timeline chart. Obeys the EXISTING controls:
   // modeFilter picks LIVE/PAPER (ALL = both); showVetos (SHADOW mode) replaces the
-  // trade series with the shadow pts series. WEEK granularity re-buckets into ISO weeks.
+  // trade series with the shadow curve. WEEK granularity re-buckets into ISO weeks.
+  // 🟢 PUSH AM29 — ALL-mode renders all FIVE series (MISSED/SAVED/NET/PAPER/LIVE)
+  // on ONE shared axis in % of entry; the dual-axis $ overlay is gone.
   const timelineSeries = useMemo(() => {
     if (!timeline?.cumulative) return [];
     // PUSH AF2 — MODEL attribution view: Approved (emerald $) vs Flagged (rose $)
@@ -454,30 +458,34 @@ function PerformanceLogContent() {
     }
     if (showVetos) {
       // PUSH AF1 — SHADOW renders THREE lines in % of veto price (measured):
-      // SAVED (emerald), MISSED (rose), NET (orange, bold).
+      // SAVED (emerald), MISSED (rose), NET (orange, bold). AM29 — config-$
+      // dropped from the chart (kept in the ledger card + totals strip): $
+      // can't share a % axis honestly.
       const shadow = [
-        { key: 'shadowSavedPct', color: '#10b981', data: timeline.cumulative.shadowSavedPct || [] },
-        { key: 'shadowMissedPct', color: '#f43f5e', data: timeline.cumulative.shadowMissedPct || [] },
-        { key: 'shadowNetPct', color: '#f97316', data: timeline.cumulative.shadowNetPct || [], lineWidth: 3 },
-        // AG2 — 4th series: config-true $ (slate dashed, LEFT axis — $ vs % unit clash)
-        { key: 'shadowUsd', color: '#94a3b8', data: timeline.cumulative.shadowUsd || [], dashed: true, priceScaleId: 'left', label: 'config-true $' },
+        { key: 'shadowMissedPct', label: 'SHADOW MISSED', color: '#f43f5e', data: timeline.cumulative.shadowMissedPct || [] },
+        { key: 'shadowSavedPct', label: 'SHADOW SAVED', color: '#10b981', data: timeline.cumulative.shadowSavedPct || [] },
+        { key: 'shadowNetPct', label: 'SHADOW NET', color: '#f97316', data: timeline.cumulative.shadowNetPct || [], lineWidth: 3 },
       ];
       if (calGranularity === 'WEEK') return shadow.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
       return shadow.filter(s => s.data.length > 0);
     }
-    const live = { key: 'live', color: '#3b82f6', data: timeline.cumulative.live || [] };
-    const paper = { key: 'paper', color: '#a78bfa', data: timeline.cumulative.paper || [] };
-    let series = modeFilter === 'LIVE' ? [live] : modeFilter === 'PAPER' ? [paper] : [live, paper];
-    // AJ2 — ALL-mode comparison overlay: add the shadow NET series (% of veto
-    // price, orange dashed) as a THIRD line. Units clash ($ vs %) → two-axis:
-    // live/paper $ on the LEFT scale, shadow % on the RIGHT scale. This is the
-    // agent-alpha comparison: what the books did WITH vetoes vs the
-    // counterfactual WITHOUT them.
-    if (modeFilter === 'ALL') {
-      series = series.map(s => ({ ...s, priceScaleId: 'left' }));
-      const shadowNet = { key: 'shadowNetPct', color: '#f97316', data: timeline.cumulative.shadowNetPct || [], lineWidth: 2, dashed: true, priceScaleId: 'right', label: 'SHADOW NET (% of veto price)' };
-      series = [...series, shadowNet];
-    }
+    // 🟢 PUSH AM29 — ONE shared axis, % of entry everywhere. pts are asset-scaled
+    // (870 pts on BIP ≠ 870 pts on SLP) and $ mixes position sizes; % of entry is
+    // the only unit where shadow, paper and live share one axis honestly. PAPER/
+    // LIVE are cumulative pnl/notional (sum of per-trade %, same non-compounded
+    // convention as the shadow series).
+    const allSeries = [
+      { key: 'shadowMissedPct', label: 'SHADOW MISSED', color: '#f43f5e', data: timeline.cumulative.shadowMissedPct || [] },
+      { key: 'shadowSavedPct', label: 'SHADOW SAVED', color: '#10b981', data: timeline.cumulative.shadowSavedPct || [] },
+      { key: 'shadowNetPct', label: 'SHADOW NET', color: '#f97316', data: timeline.cumulative.shadowNetPct || [], lineWidth: 3 },
+      { key: 'paperPct', label: 'PAPER', color: '#a78bfa', data: timeline.cumulative.paperPct || [] },
+      { key: 'livePct', label: 'LIVE', color: '#3b82f6', data: timeline.cumulative.livePct || [] },
+    ];
+    let series = modeFilter === 'LIVE'
+      ? allSeries.filter(s => s.key === 'livePct')
+      : modeFilter === 'PAPER'
+        ? allSeries.filter(s => s.key === 'paperPct')
+        : allSeries;
     if (calGranularity === 'WEEK') series = series.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
     return series.filter(s => s.data.length > 0);
   }, [timeline, modeFilter, showVetos, modelView, modelViewLoading, calGranularity]);
@@ -936,21 +944,44 @@ function PerformanceLogContent() {
     for (const s of timelineSeries) {
       const series = chart.addSeries(LineSeries, {
         color: s.color,
-        lineWidth: s.lineWidth || 2, // PUSH AF1 — NET line is bold (3)
-        lineStyle: s.dashed ? LineStyle.Dashed : LineStyle.Solid, // AG2 — config-$ dashed
-        priceScaleId: s.priceScaleId || 'right', // AG2 — config-$ on left scale ($ vs %)
+        lineWidth: s.lineWidth || 2, // PUSH AF1/AM29 — NET line is bold (3)
+        lineStyle: s.dashed ? LineStyle.Dashed : LineStyle.Solid,
+        // 🟢 PUSH AM29 — single shared axis: every series binds the default right
+        // scale (% of entry unit). Dual-axis structure removed entirely.
         priceLineVisible: false,
         lastValueVisible: true,
       });
       series.setData(s.data);
     }
-    // AG2/AJ2 — enable the left price scale when any series targets it
-    // (config-$ in shadow mode; live/paper $ in ALL-mode overlay)
-    if (timelineSeries.some(s => s.priceScaleId === 'left')) {
-      chart.applyOptions({ leftPriceScale: { visible: true, borderColor: 'rgba(255,255,255,0.1)' } });
-    }
     chart.timeScale().fitContent();
     timelineChartRef.current = chart;
+
+    // 🟢 PUSH AM29 — shared-crosshair tooltip: one date + ALL series values at cursor.
+    // param.time can be a string, a BusinessDay object, or a UTCTimestamp depending
+    // on library internals — normalize to 'YYYY-MM-DD' before lookup + formatting.
+    chart.subscribeCrosshairMove((param) => {
+      if (!param || !param.time || !param.point) {
+        setTimelineTooltip(null);
+        return;
+      }
+      const t = param.time;
+      let timeStr = null;
+      if (typeof t === 'string') timeStr = t;
+      else if (t && typeof t === 'object' && typeof t.year === 'number') {
+        timeStr = `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`;
+      } else if (typeof t === 'number' && isFinite(t)) {
+        timeStr = new Date(t * 1000).toISOString().slice(0, 10);
+      }
+      if (!timeStr) {
+        setTimelineTooltip(null);
+        return;
+      }
+      const rows = timelineSeries.map(s => {
+        const pt = (s.data || []).find(p => p.time === timeStr);
+        return { label: s.label || s.key, color: s.color, value: pt ? pt.value : null };
+      });
+      setTimelineTooltip({ x: param.point.x, y: param.point.y, time: timelineTimeFormatter(timeStr), rows });
+    });
 
     const handleResize = () => {
       if (timelineContainerRef.current && timelineChartRef.current) {
@@ -965,6 +996,7 @@ function PerformanceLogContent() {
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      setTimelineTooltip(null); // AM29 — no stale tooltip once the chart is torn down
       if (timelineChartRef.current) {
         try { timelineChartRef.current.remove(); } catch (e) {}
         timelineChartRef.current = null;
@@ -1282,12 +1314,42 @@ function PerformanceLogContent() {
                 ? (modelViewLoading ? 'loading model bucket…' : 'model attribution ($ — real trades)')
                 : showVetos
                   ? 'shadow curve (% of veto price — measured)'
-                  : modeFilter === 'LIVE' ? 'live only' : modeFilter === 'PAPER' ? 'paper only' : 'live + paper $ (left) · shadow net % (right)'}
+                  : modeFilter === 'LIVE' ? 'live — % of entry' : modeFilter === 'PAPER' ? 'paper — % of entry' : 'all five series — % of entry (shared axis)'}
             </div>
           </div>
 
           {timelineSeries.length > 0 ? (
-            <div ref={timelineContainerRef} className="w-full relative min-h-[220px]" style={{ height: '300px' }} />
+            <div className="relative">
+              {/* 🟢 PUSH AM29 — single legend for the shared-axis chart */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 px-1 text-[8px] md:text-[9px] font-black uppercase tracking-widest font-mono">
+                {timelineSeries.map(s => (
+                  <span key={s.key} className="flex items-center gap-1.5" style={{ color: s.color }}>
+                    <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />
+                    {s.label || s.key}
+                  </span>
+                ))}
+              </div>
+              <div ref={timelineContainerRef} className="w-full min-h-[220px]" style={{ height: '300px' }} />
+              {/* 🟢 PUSH AM29 — shared-crosshair tooltip (all series at cursor; gaps render as —) */}
+              {timelineTooltip && (
+                <div
+                  className="absolute z-10 pointer-events-none bg-slate-900/95 border border-white/10 rounded-lg px-3 py-2 shadow-xl"
+                  style={{
+                    left: Math.min(timelineTooltip.x + 14, (timelineContainerRef.current?.clientWidth || 600) - 170),
+                    top: timelineTooltip.y + 30,
+                  }}
+                >
+                  <div className="text-[8px] font-black uppercase tracking-widest text-slate-500 mb-1">{timelineTooltip.time}</div>
+                  {timelineTooltip.rows.map(r => (
+                    <div key={r.label} className="flex items-center gap-2 text-[9px] font-mono leading-relaxed">
+                      <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: r.color }} />
+                      <span className="text-slate-400" style={{ width: 96 }}>{r.label}</span>
+                      <span style={{ color: r.color }}>{r.value === null ? '—' : `${r.value >= 0 ? '+' : '−'}${Math.abs(r.value).toFixed(2)}%`}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           ) : (
             <div className="flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest" style={{ height: '300px' }}>
               {modelView ? 'no model-scored trades in window' : 'No timeline data in window'}

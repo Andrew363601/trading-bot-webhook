@@ -3,6 +3,8 @@
 // Auth exactly like pages/api/engine-intel.js.
 
 import { verifyTenantContext } from '../../../lib/auth-middleware';
+// 🟢 PUSH AM29 — shared contract-size lookup for the pnl/notional % normalization
+import { contractSizeFor } from '../../../lib/asset-contract-size';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -20,6 +22,8 @@ function emptyBucket() {
   return {
     live_pnl: 0, live_count: 0,
     paper_pnl: 0, paper_count: 0,
+    // 🟢 PUSH AM29 — per-bucket % of entry sums (pnl / notional) for the shared-axis chart
+    live_pct: 0, paper_pct: 0,
     shadow_saved: 0, shadow_missed: 0, shadow_net: 0,
     // PUSH AF1 — shadow in % of veto price (signed sums, computed at read time — no migration)
     shadow_saved_pct: 0, shadow_missed_pct: 0, shadow_net_pct: 0,
@@ -27,6 +31,23 @@ function emptyBucket() {
     shadow_net_usd: 0,
     veto_saved_count: 0, veto_missed_count: 0, veto_neutral_count: 0,
   };
+}
+
+// 🟢 PUSH AM29 — pnl / notional for one trade, as % of entry (read-time).
+// qty is CONTRACTS (min 1, always set at insert — lib/execute-trade-mcp.js),
+// so USD notional = qty × entry_price × contract-size multiplier. Dividing pnl
+// (which carries fees/reconciliations) by that notional keeps the series
+// config-true even for watchdog-reconciled qty rows. null ⇒ row is skipped
+// from the % series only (the $ totals still count it).
+function tradePctOfEntry(t) {
+  const entry = parseFloat(t.entry_price);
+  const qty = parseFloat(t.qty);
+  if (!entry || isNaN(entry) || entry <= 0 || !qty || isNaN(qty) || qty <= 0) return null;
+  const notional = qty * entry * contractSizeFor(t.symbol);
+  if (!notional || notional <= 0) return null;
+  const pnl = parseFloat(t.pnl);
+  if (isNaN(pnl)) return null;
+  return (pnl / notional) * 100;
 }
 
 // PUSH AF1 — signed % of veto price for one ledger row, computed at read time.
@@ -74,9 +95,11 @@ export default async function handler(req, res) {
   try {
     const [tradesRes, shadowRes, toolCallsRes, modelTradesRes] = await Promise.all([
       // A) Closed trades (exit_price present ⇒ closed)
+      // 🟢 PUSH AM29 — qty + entry_price + symbol pulled for the pnl/notional
+      // % of entry normalization (shared-axis chart); $ totals untouched.
       supabase
         .from('trade_logs')
-        .select('pnl, exit_time, execution_mode')
+        .select('pnl, exit_time, execution_mode, qty, entry_price, symbol')
         .eq('tenant_id', tenantId)
         .not('exit_price', 'is', null)
         .gte('exit_time', since)
@@ -208,17 +231,25 @@ export default async function handler(req, res) {
       if (!key) continue;
       if (!buckets[key]) buckets[key] = emptyBucket();
       const pnl = parseFloat(t.pnl) || 0;
+      // 🟢 PUSH AM29 — per-trade % of entry (pnl / notional × 100). Rows with a
+      // missing/zero entry or qty are skipped from the % series only (the $
+      // series keeps every row). PAPER and unknown modes bucket together,
+      // same convention as the $ sums below.
+      const pct = tradePctOfEntry(t);
       const mode = (t.execution_mode || '').toUpperCase();
       if (mode === 'LIVE') {
         buckets[key].live_pnl += pnl;
         buckets[key].live_count += 1;
+        if (pct !== null) buckets[key].live_pct += pct;
       } else if (mode === 'PAPER') {
         buckets[key].paper_pnl += pnl;
         buckets[key].paper_count += 1;
+        if (pct !== null) buckets[key].paper_pct += pct;
       } else {
         // Unknown mode — bucket under paper (execution_mode is only 'LIVE'|'PAPER')
         buckets[key].paper_pnl += pnl;
         buckets[key].paper_count += 1;
+        if (pct !== null) buckets[key].paper_pct += pct;
       }
     }
 
@@ -268,6 +299,9 @@ export default async function handler(req, res) {
       buckets[k].shadow_net = buckets[k].shadow_saved - buckets[k].shadow_missed;
       buckets[k].live_pnl = round2(buckets[k].live_pnl);
       buckets[k].paper_pnl = round2(buckets[k].paper_pnl);
+      // 🟢 PUSH AM29 — % of entry sums (live positive/negative signed, same shape as the $ sums)
+      buckets[k].live_pct = round2(buckets[k].live_pct);
+      buckets[k].paper_pct = round2(buckets[k].paper_pct);
       buckets[k].shadow_saved = round2(buckets[k].shadow_saved);
       buckets[k].shadow_missed = round2(buckets[k].shadow_missed);
       buckets[k].shadow_net = round2(buckets[k].shadow_net);
@@ -284,7 +318,9 @@ export default async function handler(req, res) {
     }
 
     // ── Cumulative series (running sums; only days where the series exists) ──
-    const cumLive = [], cumPaper = [], cumShadow = [];
+    // 🟢 PUSH AM29 — live/paper cumulative series are now % of entry; the $
+    // cumulative arrays retired from the chart (totals keep $).
+    const cumLivePct = [], cumPaperPct = [], cumShadow = [];
     // PUSH AF1 — cumulative shadow in % of veto price (running sums, % unit)
     const cumShadowSavedPct = [], cumShadowMissedPct = [], cumShadowNetPct = [];
     // AG2 — cumulative config-true $ (strategy-true sim, signed)
@@ -292,13 +328,26 @@ export default async function handler(req, res) {
     // PUSH AF2 — cumulative model attribution ($, real trades)
     const cumModelApproved = [], cumModelFlagged = [];
     let runLive = 0, runPaper = 0, runShadow = 0;
+    // 🟢 PUSH AM29 — % of entry runners (same active-day gating as the $ runners)
+    let runLivePct = 0, runPaperPct = 0;
     let runSavedPct = 0, runMissedPct = 0, runNetPct = 0;
     let runShadowUsd = 0;
     let runModelApproved = 0, runModelFlagged = 0;
     for (const k of dayKeys) {
       const b = buckets[k];
-      if (b.live_count > 0) { runLive = round2(runLive + b.live_pnl); cumLive.push({ time: k, value: runLive }); }
-      if (b.paper_count > 0) { runPaper = round2(runPaper + b.paper_pnl); cumPaper.push({ time: k, value: runPaper }); }
+      // 🟢 PUSH AM29 — % running sums on the same active days as the $ rows.
+      // A day whose live/paper rows all lack a usable entry/qty still gets a
+      // flat % point (series stays contiguous with the $ series' day set).
+      if (b.live_count > 0) {
+        runLive = round2(runLive + b.live_pnl);
+        runLivePct = round2(runLivePct + b.live_pct);
+        cumLivePct.push({ time: k, value: runLivePct });
+      }
+      if (b.paper_count > 0) {
+        runPaper = round2(runPaper + b.paper_pnl);
+        runPaperPct = round2(runPaperPct + b.paper_pct);
+        cumPaperPct.push({ time: k, value: runPaperPct });
+      }
       if (b.veto_saved_count > 0 || b.veto_missed_count > 0 || b.veto_neutral_count > 0) {
         runShadow = round2(runShadow + b.shadow_net);
         cumShadow.push({ time: k, value: runShadow });
@@ -392,8 +441,10 @@ export default async function handler(req, res) {
     return res.status(200).json({
       days: daily,
       cumulative: {
-        live: cumLive,
-        paper: cumPaper,
+        // 🟢 PUSH AM29 — live/paper cumulative now % of entry (shared axis);
+        // renamed livePct/paperPct so the unit is auditable from the key alone.
+        livePct: cumLivePct,
+        paperPct: cumPaperPct,
         shadow: cumShadow,
         // PUSH AF1 — shadow cumulative in % of veto price
         shadowSavedPct: cumShadowSavedPct,
