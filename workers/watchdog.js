@@ -1151,8 +1151,57 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
 
                             const closingSide = openTrade.side === 'BUY' ? 'SELL' : 'BUY';
                             const orderQty = Math.abs(parseFloat(activePosition.number_of_contracts));
-                            const safeSlPrice = (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(4);
+
+                            // 🟢 AM30 — WATCHDOG RE-ARM VALIDATION: recompute the stop from the
+                            // position's CURRENT average entry (cfm/positions returns it). A stop
+                            // computed from a stale DB entry lands out of bounds after partial
+                            // closes / manual adds. Prefer the live avg entry; fall back to the
+                            // DB entry price if the exchange doesn't report one.
+                            const liveAvgEntry = parseFloat(activePosition.avg_entry_price || 0);
+                            const effectiveEntry = (liveAvgEntry > 0) ? liveAvgEntry : parseFloat(openTrade.entry_price);
+                            if (liveAvgEntry > 0 && Math.abs(liveAvgEntry - parseFloat(openTrade.entry_price)) > tickSize) {
+                                console.warn(`[WATCHDOG RE-ARM] ${asset}: live avg entry $${liveAvgEntry} differs from DB entry $${openTrade.entry_price}. Recomputing stop from live avg entry.`);
+                            }
+                            const slDistanceFromEntry = Math.abs(effectiveEntry - parseFloat(openTrade.sl_price));
+                            const tpDistanceFromEntry = Math.abs(parseFloat(openTrade.tp_price) - effectiveEntry);
+                            let safeSlPrice = (Math.round(openTrade.sl_price / tickSize) * tickSize).toFixed(4);
                             const safeTpPrice = (Math.round(openTrade.tp_price / tickSize) * tickSize).toFixed(4);
+
+                            // Out-of-bounds guard: the SL must sit on the LOSS side of the current
+                            // entry (below for LONG, above for SHORT) and be at least 1 tick away.
+                            // If the recomputed stop is still out of bounds, skip the SL (keep
+                            // TP-only) instead of burning 3 failed previews against Coinbase.
+                            const slOnLossSide = openTrade.side === 'BUY'
+                                ? parseFloat(safeSlPrice) < effectiveEntry
+                                : parseFloat(safeSlPrice) > effectiveEntry;
+                            if (!slOnLossSide || slDistanceFromEntry < tickSize) {
+                                console.warn(`[WATCHDOG RE-ARM] ${asset}: recomputed SL $${safeSlPrice} is out of bounds vs current avg entry $${effectiveEntry} (dist $${slDistanceFromEntry.toFixed(4)}). Skipping SL — deploying TP-only bracket.`);
+                                await logAgentActivity(tenantId, "Watchdog", asset, `Recomputed SL $${safeSlPrice} out of bounds vs avg entry $${effectiveEntry}. Deploying TP-only safety net.`, "SAFETY_NET_TP_ONLY");
+                                const executePathTpOnly = '/api/v3/brokerage/orders';
+                                const tpOnlyId = `nx_wd_tp_${openTrade.id}_${Date.now()}`;
+                                try {
+                                    const tpOnlyResp = await fetch(`https://api.coinbase.com${executePathTpOnly}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePathTpOnly, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({
+                                        client_order_id: tpOnlyId, product_id: coinbaseProduct, side: closingSide,
+                                        order_configuration: { limit_limit_gtc: { limit_price: safeTpPrice, base_size: orderQty.toString() } }
+                                    }) });
+                                    const tpOnlyResult = await tpOnlyResp.json();
+                                    if (tpOnlyResp.ok && tpOnlyResult.success !== false) {
+                                        console.log(`[WATCHDOG RE-ARM] TP-only bracket deployed for ${asset} at $${safeTpPrice}.`);
+                                        await sendDiscordAlert(tenantId, { title: `⚠️ TP-Only Safety Net: ${asset}`, description: `**Take Profit:** $${safeTpPrice}\n**Reason:** Recomputed SL out of bounds vs current avg entry $${effectiveEntry}. Position protected by TP only.`, color: 16776960 });
+                                        bracketCircuitTripped[openTrade.id] = true;
+                                        deployedSafetyNets.add(asset);
+                                        delete missingBracketTracker[openTrade.id];
+                                    } else {
+                                        const tpOnlyErr = tpOnlyResult.error_response?.preview_failure_reason || tpOnlyResult.error_response?.error || 'unknown';
+                                        console.error(`[WATCHDOG RE-ARM] TP-only bracket also failed for ${asset}: ${tpOnlyErr}`);
+                                        missingBracketTracker[openTrade.id] = Date.now();
+                                    }
+                                } catch (tpOnlyEx) {
+                                    console.error('[WATCHDOG RE-ARM] TP-only fatal:', tpOnlyEx.message);
+                                    missingBracketTracker[openTrade.id] = Date.now();
+                                }
+                                continue;
+                            }
 
                             await logAgentActivity(tenantId, "Watchdog", asset, `Missing OCO Brackets for ${asset} exceeded grace period. Deploying deterministic safety net.`, "SAFETY_NET_DEPLOYMENT");
                             console.log(`[WATCHDOG] Missing OCO Brackets for ${asset} exceeded grace period. Deploying deterministic safety net...`);
