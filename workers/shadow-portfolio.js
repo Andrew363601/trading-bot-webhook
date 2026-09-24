@@ -568,6 +568,10 @@ function runShadowSim({ direction, entryPrice, series, simParams, atr, nowMs }) 
     tp_source: simParams.paramSource === 'agent_adjusted' ? 'agent_adjusted' : tpSource,
     param_source: simParams.paramSource || 'config_default',
     atr_14: atr != null ? parseFloat(atr.toFixed(6)) : null,
+    // 🟢 PUSH AM28 — notional basis actually used for sim_pnl_usd
+    // ((signedPts / entryPrice) × qty), stamped so the config-$ figure is
+    // auditable from the row alone (null ⇒ $1k default applied).
+    qty: simParams.qty ?? null,
     qty_source: simParams.qtySource
   };
 
@@ -1210,8 +1214,15 @@ async function processUnlabeledVetos() {
           simPnlPts = sim.signedPts - feePoints; // per-unit, minus round-trip fees
           simParamsJson = sim.simParams;
 
-          const qty = simParams.qty != null ? simParams.qty : 1000; // $1k notional default
-          simPnlUsd = simPnlPts * qty;
+          // 🟢 PUSH AM28 — sim_pnl_usd is now % of entry × notional, not pts × qty.
+          // Raw price points are meaningless as dollars for low-priced assets
+          // (BIP/SLP/XPP: pts × qty overstated/understated by orders of
+          // magnitude). usd = (signedPts / entryPrice) × notional, notional =
+          // config qty or $1k default; farEntry is the same fill-basis entry the
+          // sim walked, so this converts the sim's raw (pre-fee) move into
+          // config-true $ (fees stay visible in sim_pnl_pts).
+          const notional = simParams.qty != null ? simParams.qty : 1000; // $1k notional default
+          simPnlUsd = farEntry > 0 ? (sim.signedPts / farEntry) * notional : null;
 
           // saved/missed = |sim_pnl_pts| + fees into the SAME legacy columns.
           const magnitude = Math.abs(sim.signedPts) + feePoints;
