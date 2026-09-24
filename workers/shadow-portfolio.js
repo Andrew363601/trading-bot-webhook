@@ -956,6 +956,10 @@ async function processUnlabeledVetos() {
       // AG1: strategy-true sim outputs (Path B only)
       let simExitPrice = null, simExitTime = null, simExitReason = null;
       let simPnlPts = null, simPnlUsd = null, simBars = null, simParamsJson = null;
+      // 🟢 PUSH AM27 — paramsContext hoisted to for-body scope (same class of bug
+      // as AM26: Path B declared it, shared tail reads it). Path B assigns;
+      // Path A leaves null — correct for real-trade-graded rows.
+      let paramsContext = null;
 
       // 🟢 AL4 — Path A gate: a live sim ticket (PENDING in this sweep's map, or
       // inserted earlier) means the veto is sim-only — a real trade close must
@@ -1051,7 +1055,8 @@ async function processUnlabeledVetos() {
         // 🟢 AM7 — params at close (config-as-truth + agent diff). Stamped on the
         // PENDING row and the resolution writes alongside sim_params. No full
         // snapshot — the config was current at close by definition.
-        const paramsContext = {
+        // 🟢 PUSH AM27 — plain assignment (no let): for-body scoped hoist above.
+        paramsContext = {
           config_id: simParams.configId ?? null,
           agent_adjusted: paramSource === 'agent_adjusted',
           tp_price: agentTpPrice,
