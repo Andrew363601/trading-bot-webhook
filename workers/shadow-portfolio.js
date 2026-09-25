@@ -520,7 +520,9 @@ function runShadowSim({ direction, entryPrice, series, simParams, atr, nowMs }) 
 
     if (hitSL) {
       exitPrice = stopPrice;
-      exitReason = tripped || trailing ? 'TRAIL' : 'SL';
+      exitReason = trailing ? 'TRAIL'
+        : tripped ? 'TRIPWIRE' // BE-buffer wicked — the +0.15 disease
+        : 'SL';
       break;
     }
     if (hitTP) {

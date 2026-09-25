@@ -661,7 +661,7 @@ When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_a
         if (mode === "TRIPWIRE_HIT") {
             instructionText += `THE HARVEST PROTOCOL IS ACTIVE. You are currently in profit and your Stop Loss is secured at Break-Even. Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. If the momentum is explosive and the runway is clear, output action "HOLD". If OI is dropping, absorption is failing, or funding is extremely skewed against you, output action "CLOSE" to harvest the profit immediately. Output ONLY raw, valid JSON.`;
         } else {
-            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. If trainer priors are present, state in one sentence whether you follow or override them and the dollar reason. Your geometry is replayed and graded either way. Output ONLY raw, valid JSON.
+            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. TRIPWIRE arms BE at entry±0.1% once; TRAIL_STEP is the standing stop after that. Wick-outs after arming are trail_step or BE-buffer sizing problems. If trainer priors are present, state in one sentence whether you follow or override them and the dollar reason. Your geometry is replayed and graded either way. Output ONLY raw, valid JSON.
 
 DECISION LANE (PUSH AM8): This evaluation is a STRATEGY SIGNAL (Lane A) — the
 math fired, the signal IS the alpha. You are the RISK MANAGER, not a second
@@ -1607,6 +1607,18 @@ app.post('/api/autopsy', async (req, res) => {
         // reason + bars held give the reflection the outcome axis.
         const pc = params_context || null;
         const barsHeld = entry_time ? Math.max(0, Math.round((Date.now() - new Date(entry_time).getTime()) / 60000)) : null;
+                // ?? PUSH AM39: ARMING CONTEXT line for tripwire/trail/SL semantics
+        const entryNum = parseFloat(entry_price) || 0;
+        const twPct = pc?.tripwire != null ? (parseFloat(pc.tripwire) * 100).toFixed(2) : (sim_params?.tripwire_percent != null ? (parseFloat(sim_params.tripwire_percent) * 100).toFixed(2) : 'n/a');
+        const beBufferPts = entryNum > 0 ? (entryNum * 0.001).toFixed(2) : 'n/a';
+        const atr5mVal = market_snapshot?.volatility_atr?.['5M'] || market_snapshot?.volatility_atr?.Trigger || persistedSnapshot?.volatility_atr?.['5M'] || persistedSnapshot?.volatility_atr?.Trigger || sim_params?.atr_14 || 'n/a';
+        const atr5mStr = typeof atr5mVal === 'number' ? atr5mVal.toFixed(2) : String(atr5mVal);
+        const resolvedExitReason = exit_reason || sim_exit_reason || trigger || 'unknown';
+        const exitReasonLabel = String(resolvedExitReason).toUpperCase().includes('TRIPWIRE') ? 'TRIPWIRE (BE wicked)'
+            : String(resolvedExitReason).toUpperCase().includes('TRAIL') ? 'TRAIL (ratchet wicked)'
+            : String(resolvedExitReason).toUpperCase().includes('SL') || String(resolvedExitReason).toUpperCase().includes('STOP_LOSS') ? 'SL (config stop hit)'
+            : resolvedExitReason;
+        const armingContextLine = `tripwire armed at ROE ${twPct}% → BE stop = entry±0.1% (${beBufferPts} pts buffer vs 5M-ATR ${atr5mStr} pts). Exit reason: ${exitReasonLabel}`;
         const paramContextBlock = pc ? `
 
 --- PARAMETERS AT CLOSE (config-as-truth + agent diff) ---
@@ -1615,6 +1627,7 @@ Agent adjusted levels: ${pc.agent_adjusted ? 'YES' : 'no — config defaults use
 Agent TP: ${pc.tp_price ?? 'config'} | Agent SL: ${pc.sl_price ?? 'config'}
 Agent tripwire: ${pc.tripwire ?? 'config'} | Agent trail step: ${pc.trail_step ?? 'config'}
 Exit reason: ${exit_reason || trigger || 'unknown'} | Bars held: ${barsHeld ?? 'unknown'}
+ARMING CONTEXT: ${armingContextLine}
 Entry win-prob (model): ${model_predicted_win_prob != null ? (model_predicted_win_prob * 100).toFixed(0) + '%' : 'n/a'}
 Regime at close: ${regime_at_close || 'unknown'}
 ` : '';
@@ -1675,9 +1688,12 @@ Regime at close: ${regime_at_close || 'unknown'}
         Extract ONE concise, quantitative behavioral rule to improve future
         performance for this specific asset. Do not give generic advice. Give
         hard mathematical/structural rules based on the ledger context.
+        ARMING CONTEXT: ${armingContextLine}
+        Template rule: a TRIPWIRE exit near $0 must be attributed to the BE buffer
+        (fix: wider trail_step or later tripwire), never to conviction or walls.
 ${paramContextBlock}
 ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes — enough evidence. Based on the outcome (exit reason, PnL, hold time) and the params used, recommend ONE parameter adjustment:
-  field: one of "trail_step_percent" | "tp_percent" | "sl_percent" | "tripwire_percent", or null if no change is warranted
+  field: one of "trail_step_percent" | "tp_percent" | "sl_percent" | "tripwire_percent" | "be_buffer", or null if no change is warranted
   direction: "increase" or "decrease" (null if field is null)
   reason: one sentence, specific to this bucket's evidence
   🟢 AM32 — DOLLAR RULE: every param_recommendation MUST cite a dollar figure
@@ -1694,7 +1710,7 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
           "lesson_learned": "The specific quantitative rule extracted.",
           "thesis_accurate": true or false,
           "thesis_summary": "One-line summary of what the thesis was trying to capture",
-          "param_recommendation": { "field": "trail_step_percent" or "tp_percent" or "sl_percent" or "tripwire_percent" or null, "direction": "increase" or "decrease" or null, "reason": "one sentence, bucket-specific", "dollar_evidence": 12.00 or null }
+          "param_recommendation": { "field": "trail_step_percent" or "tp_percent" or "sl_percent" or "tripwire_percent" or "be_buffer" or null, "direction": "increase" or "decrease" or null, "reason": "one sentence, bucket-specific", "dollar_evidence": 12.00 or null }
         }
         `;
 
@@ -1765,7 +1781,7 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
         // in the prompt; belt-and-braces: null them out when the bucket is small.
         const pr = autopsyJson.param_recommendation || null;
         const paramField = (paramRecAllowed && pr?.field &&
-            ['trail_step_percent', 'tp_percent', 'sl_percent', 'tripwire_percent'].includes(pr.field)) ? pr.field : null;
+            ['trail_step_percent', 'tp_percent', 'sl_percent', 'tripwire_percent', 'be_buffer'].includes(pr.field)) ? pr.field : null;
         const paramDirection = (paramField && ['increase', 'decrease'].includes(pr.direction)) ? pr.direction : null;
         const paramReason = paramField ? (pr.reason || null) : null;
         // 🟢 AM32 — dollar-quantified autopsies: the claimed dollar figure rides
