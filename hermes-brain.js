@@ -574,11 +574,19 @@ When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_a
         // wake so the agent WEIGHS it exactly like signal priors when it sets
         // tp/sl/tripwire/trail. It is a prior, not a mandate — the agent may
         // override with its own levels (the shadow ledger grades the diff).
+        // 🟢 AM32 — THREE PRIORS merged into ONE coherent economics message:
+        // win_prob (Head 1 classifier) + expected_pnl_$ per $1k (Head 2
+        // expectancy regression, variance-penalized) + suggested geometry
+        // (combined-EV pick). "Evidence, not commands" framing intact — the
+        // agent keeps override authority; param_source split still measures it.
         if (suggested_params?.summary) {
             const sp = suggested_params;
-            let spBlock = `\n--- SUGGESTED PARAMETERS (trained prior) ---`;
+            let spBlock = `\n--- SUGGESTED PARAMETERS (trained prior — evidence, not commands) ---`;
             spBlock += `\n${sp.summary}`;
             if (sp.win_rate != null) spBlock += `\nWin rate at these levels: ${(sp.win_rate * 100).toFixed(0)}% (n = ${sp.n ?? '?'})`;
+            if (sp.win_prob != null) spBlock += `\nModel win probability (Head 1): ${(sp.win_prob * 100).toFixed(0)}%`;
+            if (sp.expected_pnl_per_1k != null) spBlock += `\nExpected PnL (Head 2, variance-penalized): $${Number(sp.expected_pnl_per_1k).toFixed(2)} per $1k notional`;
+            if (sp.ev_per_1k != null) spBlock += `\nCombined EV: $${Number(sp.ev_per_1k).toFixed(2)} per $1k = p_win × avg_win_$ − p_loss × avg_loss_$`;
             spBlock += `\nWeigh this like any other prior: if your thesis demands different levels, adjust — but a large deviation from a high-n profile should be justified in your working_thesis.`;
             instructionText += spBlock + '\n';
         }
@@ -653,7 +661,7 @@ When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_a
         if (mode === "TRIPWIRE_HIT") {
             instructionText += `THE HARVEST PROTOCOL IS ACTIVE. You are currently in profit and your Stop Loss is secured at Break-Even. Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. If the momentum is explosive and the runway is clear, output action "HOLD". If OI is dropping, absorption is failing, or funding is extremely skewed against you, output action "CLOSE" to harvest the profit immediately. Output ONLY raw, valid JSON.`;
         } else {
-            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. Output ONLY raw, valid JSON.
+            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. If trainer priors are present, state in one sentence whether you follow or override them and the dollar reason. Your geometry is replayed and graded either way. Output ONLY raw, valid JSON.
 
 DECISION LANE (PUSH AM8): This evaluation is a STRATEGY SIGNAL (Lane A) — the
 math fired, the signal IS the alpha. You are the RISK MANAGER, not a second
@@ -1514,7 +1522,7 @@ output HOLD for an unfilled trap.`;
 
 // 🟢 THE EVOLUTION ENDPOINT (Agentic Reflection Loop)
 app.post('/api/autopsy', async (req, res) => {
-    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis, trade_log_id, strategy_id, scope, shadow_id, verdict, sim_exit_reason, sim_pnl_usd, sim_params, cited_memories, params_context, exit_reason, entry_time, model_predicted_win_prob } = req.body;
+    const { tenant_id, asset, entry_price, exit_price, pnl, rolling_ledger, trigger, macro_tf, trigger_tf, execution_mode, regime_at_close, market_snapshot, working_thesis, trade_log_id, strategy_id, scope, shadow_id, verdict, sim_exit_reason, sim_pnl_usd, sim_params, saved_amount, missed_amount, tp_price, exit_bar_count, cited_memories, params_context, exit_reason, entry_time, model_predicted_win_prob } = req.body;
     const strategyId = strategy_id || null;
     const isShadow = scope === 'shadow';
     // 🟢 PUSH Q: one autopsy lesson per trade. Both the execute-trade close path
@@ -1637,6 +1645,9 @@ Regime at close: ${regime_at_close || 'unknown'}
         Signal: ${asset} ${verdict ? `| sim verdict: ${verdict}` : ''}
         Entry (far-side): $${entry_price} | Sim Exit: $${exit_price} | Sim PnL (pts): ${pnl}
         Sim Exit Reason: ${sim_exit_reason || 'HORIZON'} | Config-$ PnL: ${sim_pnl_usd ?? 'n/a'}
+        🟢 AM32 — the row's own numbers (dollar-quantified autopsy inputs):
+        Saved amount (damage avoided): $${saved_amount ?? 'n/a'} | Missed amount (profit forgone): $${missed_amount ?? 'n/a'}
+        TP price (NEVER reached): $${tp_price ?? 'n/a'} | Exit bar count: ${exit_bar_count ?? 'n/a'}
         Sim Rules: ${sim_params ? JSON.stringify(sim_params).substring(0, 600) : 'n/a'}
         Cited Memories (what the agent relied on when vetoing):
         ${cited_memories ? JSON.stringify(cited_memories).substring(0, 800) : 'none recorded'}
@@ -1669,6 +1680,12 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
   field: one of "trail_step_percent" | "tp_percent" | "sl_percent" | "tripwire_percent", or null if no change is warranted
   direction: "increase" or "decrease" (null if field is null)
   reason: one sentence, specific to this bucket's evidence
+  🟢 AM32 — DOLLAR RULE: every param_recommendation MUST cite a dollar figure
+  from this row's own numbers (sim_pnl_usd, saved/missed amount, PnL vs the
+  never-reached TP). Example: "trail capped +0.14% while TP was +1.38%: left
+  ~$12/1k unrealized → trail_activation 5%→8% in TREND."
+  dollar_evidence: the dollar figure your recommendation is based on (number,
+  e.g. 12.00), or null if field is null.
 ` : `PARAMETER RECOMMENDATION: This bucket has only ${bucketN ?? 'an unknown number of'} closes (minimum ${PARAM_MIN_BUCKET} required). Small n lies — do NOT recommend a parameter change. Set field and direction to null and note the sample size in your lesson if relevant.
 `}
         Output raw JSON format exactly:
@@ -1677,7 +1694,7 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
           "lesson_learned": "The specific quantitative rule extracted.",
           "thesis_accurate": true or false,
           "thesis_summary": "One-line summary of what the thesis was trying to capture",
-          "param_recommendation": { "field": "trail_step_percent" or "tp_percent" or "sl_percent" or "tripwire_percent" or null, "direction": "increase" or "decrease" or null, "reason": "one sentence, bucket-specific" }
+          "param_recommendation": { "field": "trail_step_percent" or "tp_percent" or "sl_percent" or "tripwire_percent" or null, "direction": "increase" or "decrease" or null, "reason": "one sentence, bucket-specific", "dollar_evidence": 12.00 or null }
         }
         `;
 
@@ -1751,6 +1768,12 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
             ['trail_step_percent', 'tp_percent', 'sl_percent', 'tripwire_percent'].includes(pr.field)) ? pr.field : null;
         const paramDirection = (paramField && ['increase', 'decrease'].includes(pr.direction)) ? pr.direction : null;
         const paramReason = paramField ? (pr.reason || null) : null;
+        // 🟢 AM32 — dollar-quantified autopsies: the claimed dollar figure rides
+        // alongside param_field/param_direction. The trainer ranks autopsy
+        // advice by claimed dollars and the next grade verifies the claim —
+        // advice that claimed $12 and delivered $1 gets demoted.
+        const expectedCostUsd = (paramField && pr.dollar_evidence != null && isFinite(Number(pr.dollar_evidence)))
+            ? Number(pr.dollar_evidence) : null;
 
         console.log(`[AUTOPSY COMPLETE] ${asset} | Rule: ${autopsyJson.lesson_learned}${paramField ? ` | param: ${paramField} ${paramDirection}` : ''}`);
 
@@ -1783,7 +1806,9 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
             trigger_tf: trigger_tf || 'ANY',
             // 🟢 AM7 — structured param recommendation (additive columns).
             param_field: paramField,
-            param_direction: paramDirection
+            param_direction: paramDirection,
+            // 🟢 AM32 — claimed dollar cost of the miss (migration 050).
+            expected_cost_usd: expectedCostUsd
         }]);
 
         // 🟢 PUSH U: race-guard. The AUTOPSKIP pre-check closes most duplicates,

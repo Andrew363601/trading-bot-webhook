@@ -1247,13 +1247,14 @@ function PerformanceLogContent() {
                       <th className="pb-2 text-center">N</th>
                       <th className="pb-2 text-right">Win Rate</th>
                       <th className="pb-2 text-right">Exp PnL</th>
+                      <th className="pb-2 text-right">H2 Pred $</th>
                       <th className="pb-2 text-right">Capture</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5 text-slate-300">
                     {!engineIntel?.priors || engineIntel.priors.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="py-6 text-center text-slate-600 italic">No calibration priors available</td>
+                        <td colSpan={7} className="py-6 text-center text-slate-600 italic">No calibration priors available</td>
                       </tr>
                     ) : (
                       engineIntel.priors.map((p, idx) => (
@@ -1267,6 +1268,17 @@ function PerformanceLogContent() {
                           </td>
                           <td className="py-2 text-right text-emerald-400 font-bold">{p.win_rate !== null ? `${(p.win_rate * 100).toFixed(0)}%` : '--'}</td>
                           <td className="py-2 text-right">{p.expected_pnl_mean !== null ? `$${p.expected_pnl_mean.toFixed(2)}` : '--'}</td>
+                          {/* 🟢 AM32 — calibration card row 2: Head 2 predicted vs realized $ */}
+                          <td className="py-2 text-right">
+                            {p.expected_pnl_model?.expected_pnl_per_1k != null ? (
+                              <span
+                                className={p.expected_pnl_model.expected_pnl_per_1k >= 0 ? 'text-emerald-300' : 'text-rose-300'}
+                                title={`Head 2 expectancy (n=${p.expected_pnl_model.n}, shrink=${p.expected_pnl_model.shrink_factor}) | realized avg: $${p.expected_pnl_mean ?? '--'} | EV: $${p.expected_pnl_model.ev_per_1k}/1k`}
+                              >
+                                ${p.expected_pnl_model.expected_pnl_per_1k.toFixed(2)}/1k
+                              </span>
+                            ) : '--'}
+                          </td>
                           <td className="py-2 text-right flex items-center justify-end gap-1">
                             {p.capture_ratio !== null ? `${(p.capture_ratio * 100).toFixed(0)}%` : '--'}
                             {/* PUSH AF2 — view PnL: switches timeline to MODEL attribution for this bucket */}

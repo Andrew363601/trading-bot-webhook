@@ -35,7 +35,7 @@ export default async function handler(req, res) {
         .not('model_predicted_win_prob', 'is', null),
       supabase
         .from('calibration_models')
-        .select('asset, regime, strategy, sample_count, expected_pnl_mean, metrics, last_trained')
+        .select('asset, regime, strategy, sample_count, expected_pnl_mean, metrics, expected_pnl_model, last_trained')
         .eq('tenant_id', tenantId)
         .order('last_trained', { ascending: false }),
       supabase
@@ -110,6 +110,8 @@ export default async function handler(req, res) {
           win_rate: winRate !== null ? Number(winRate) : null,
           expected_pnl_mean: row.expected_pnl_mean !== null ? Number(row.expected_pnl_mean) : null,
           capture_ratio: captureRatio !== null ? Number(captureRatio) : null,
+          // 🟢 AM32 — Head 2 (expectancy regression): predicted vs realized $
+          expected_pnl_model: row.expected_pnl_model || null,
           last_trained: row.last_trained
         });
       }

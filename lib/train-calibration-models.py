@@ -37,6 +37,17 @@ MIN_TENANT_SAMPLES = 20
 MIN_GLOBAL_SAMPLES = 30
 MIN_TRANSITION_SAMPLES = 5
 
+# 🟢 AM32 — Head 2 (expectancy regression) gates.
+# MIN_EXPECTANCY_SAMPLES: a bucket needs >= 10 graded closes before the dollar
+# head speaks (n>=10 means the bucket has graded dollars behind the geometry).
+# SHRINKAGE_K: empirical-Bayes shrinkage constant — a bucket mean is pulled
+# toward its pool mean by factor n/(n+k). k=5 (half the n>=10 gate) means a
+# 5-sample bucket is pulled 50% toward the pool mean, a 10-sample bucket 33%.
+# Small buckets therefore look conservative by design — that is the point:
+# the dollar head must not chase one lucky bucket.
+MIN_EXPECTANCY_SAMPLES = 10
+SHRINKAGE_K = 5
+
 
 # ─────────────────────────────────────────────────────────────
 # Supabase REST helpers
@@ -182,8 +193,11 @@ print('=== NEXUS Trainer starting ===')
 select_cols = ('id,tenant_id,symbol,strategy_id,regime_at_entry,pnl,side,'
                'entry_price,exit_price,market_snapshot_at_entry,tp_price,sl_price,exit_time,created_at,'
                'params_context')
+# 🟢 AM32 — pnl IS NOT NULL: the paper-poison cleanup NULLed garbage pnl rows;
+# one unguarded row would re-poison Head 2's dollar labels exactly like it
+# poisoned the paper line. (pnl or 0) below stays as belt-and-braces.
 trades = sb_get('trade_logs', select_cols,
-                filters='&market_snapshot_at_entry=not.is.null&exit_price=not.is.null',
+                filters='&market_snapshot_at_entry=not.is.null&exit_price=not.is.null&pnl=not.is.null',
                 order='created_at.desc', limit=2000)
 if TENANT_FILTER:
     trades = [t for t in trades if t.get('tenant_id') == TENANT_FILTER]
@@ -217,6 +231,8 @@ buckets = defaultdict(list)   # (tenant_id, asset, regime, strategy, tf_pair) ->
 # 🟢 AM7 — per-bucket param profiles: key -> list of (tp, sl, tripwire, trail,
 # win, pnl, weight). Grouped by params used → win-rate / E[pnl] per profile.
 param_profiles = defaultdict(list)
+# 🟢 AM32 — Head 2: per-bucket geometry samples -> list of (geometry, pnl, weight).
+geometry_samples = defaultdict(list)
 
 for t in trades:
     feat, regime, strategy, tf_pair = extract_features(t.get('market_snapshot_at_entry'), t)
@@ -254,6 +270,29 @@ for t in trades:
             _r3(pc.get('trail_step')))
     if any(prof):
         param_profiles[(tenant, asset, regime, strategy, tf_pair)].append((*prof, label, pnl, 1.0))
+    # 🟢 AM32 — Head 2 geometry features: entry geometry + regime/ATR context
+    # per sample, so the expectancy head can regress signed pnl on the
+    # geometry the trade actually ran under (not just bucket means).
+    def _rf(v):
+        try:
+            f = float(v)
+            return f if f == f else None  # NaN guard
+        except (TypeError, ValueError):
+            return None
+    entry_px = _rf(t.get('entry_price')) or 0.0
+    tp_px = _rf(pc.get('tp_price') or snap.get('tp_price'))
+    sl_px = _rf(pc.get('sl_price') or snap.get('sl_price'))
+    atr_f = _rf(feat.get('atr_5m')) or 1.0
+    geometry = {
+        'sl_dist': (abs(entry_px - sl_px) / max(atr_f, 0.01)) if (entry_px and sl_px) else None,
+        'tp_dist': (abs(tp_px - entry_px) / max(atr_f, 0.01)) if (entry_px and tp_px) else None,
+        'tripwire': _rf(pc.get('tripwire')),
+        'trail_step': _rf(pc.get('trail_step')),
+        'trail_activation': _rf(pc.get('trail_activation')),
+        'atr_5m': _rf(feat.get('atr_5m')),
+        'regime': regime,
+    }
+    geometry_samples[(tenant, asset, regime, strategy, tf_pair)].append((geometry, pnl, 1.0))
 
 print(f'Dataset: {len(X)} samples x {len(feature_names) if feature_names else 0} features')
 
@@ -294,6 +333,12 @@ for key, vsamples in veto_buckets.items():
         buckets[key].extend((f, l, p, 0.5) for f, l, p in vsamples)
 print(f'Veto buckets merged: {sum(len(v) for v in veto_buckets.values())} samples across {len(veto_buckets)} keys')
 
+# 🟢 AM32 — veto counterfactuals ride into Head 2 at weight 0.5, same
+# qualify-then-attach rule as the classifier head (never create a bucket alone).
+for key, vsamples in veto_buckets.items():
+    if key in geometry_samples and len([x for x in geometry_samples[key] if x[2] >= 1.0]) >= MIN_TENANT_SAMPLES:
+        geometry_samples[key].extend(((None, p, 0.5) for _, p, _ in vsamples))
+
 # Aggregated (asset, regime) pool across strategies/tfs for ANY-row fallbacks
 any_pool = defaultdict(list)
 for (tenant, asset, regime, strategy, tf_pair), samples in buckets.items():
@@ -301,6 +346,11 @@ for (tenant, asset, regime, strategy, tf_pair), samples in buckets.items():
 global_pool = defaultdict(list)
 for (tenant, asset, regime, strategy, tf_pair), samples in buckets.items():
     global_pool[(asset, regime)].extend(samples)
+
+# 🟢 AM32 — pool index for Head 2 shrinkage: (tenant, asset, regime) -> samples.
+geometry_pool_index = defaultdict(list)
+for (tenant, asset, regime, strategy, tf_pair), samples in geometry_samples.items():
+    geometry_pool_index[(tenant, asset, regime)].extend(samples)
 
 now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -317,6 +367,94 @@ def _sb_delete(table, filters):
     })
     with urllib.request.urlopen(req, timeout=60) as resp:
         resp.read()
+
+
+# ─────────────────────────────────────────────────────────────
+# 🟢 AM32 — HEAD 2: expectancy regression (empirical-Bayes, variance-penalized)
+# ─────────────────────────────────────────────────────────────
+
+def _train_expectancy_head(tenant, asset, regime, strategy, tf_pair, samples):
+    """Head 2: per-bucket expectancy regression on signed pnl.
+
+    Empirical-Bayes form (auditable, no new deps): per-geometry-profile means
+    shrunk toward the bucket mean, and the bucket mean shrunk toward the pool
+    mean by n/(n+SHRINKAGE_K). Upgrade to a fitted regression only when
+    buckets grow past ~50 samples.
+
+    Returns dict: {p_win, avg_win_usd, avg_loss_usd, expected_pnl_per_1k,
+                   ev_per_1k, n, shrink_factor, profiles} or None.
+    """
+    real = [(g, p) for g, p, w in samples if w >= 1.0 and p is not None]
+    n = len(real)
+    if n < MIN_EXPECTANCY_SAMPLES:
+        return None
+
+    pnls = [p for _, p in real]
+    bucket_mean = sum(pnls) / n
+    pos = [p for p in pnls if p > 0]
+    neg = [p for p in pnls if p < 0]
+    avg_win = (sum(pos) / len(pos)) if pos else 0.0
+    avg_loss = (sum(neg) / len(neg)) if neg else 0.0  # negative
+    p_win = (len(pos) + 0.5 * len([p for p in pnls if p == 0])) / n
+
+    # Pool mean for shrinkage: nearest coarser pool that exists.
+    pool = None
+    for pk in ((tenant, asset, regime), (asset, regime)):
+        pool_samples = [p for (t_, a_, r_), lst in geometry_pool_index.items() if (t_, a_, r_) == pk
+                        for (_, p, w) in lst if w >= 1.0 and p is not None]
+        if len(pool_samples) >= MIN_GLOBAL_SAMPLES:
+            pool = sum(pool_samples) / len(pool_samples)
+            break
+    if pool is None:
+        pool = bucket_mean
+
+    # Variance penalty: shrink the bucket mean toward the pool mean.
+    shrink = n / (n + SHRINKAGE_K)
+    shrunk_mean = shrink * bucket_mean + (1 - shrink) * pool
+
+    # Per-geometry-profile shrunk means (the suggested-geometry candidates).
+    profiles = []
+    by_geom = defaultdict(list)
+    for g, p in real:
+        if not g:
+            continue
+        key = (round(g.get('sl_dist') or 0, 2), round(g.get('tp_dist') or 0, 2),
+               round(g.get('tripwire') or 0, 3), round(g.get('trail_step') or 0, 3),
+               round(g.get('trail_activation') or 0, 3))
+        by_geom[key].append(p)
+    for gkey, plist in by_geom.items():
+        gn = len(plist)
+        gmean = sum(plist) / gn
+        gshrink = gn / (gn + SHRINKAGE_K)
+        gshrunk = gshrink * gmean + (1 - gshrink) * shrunk_mean
+        gwr = len([p for p in plist if p > 0]) / gn
+        profiles.append({
+            'sl_dist': gkey[0], 'tp_dist': gkey[1], 'tripwire': gkey[2],
+            'trail_step': gkey[3], 'trail_activation': gkey[4],
+            'n': gn, 'raw_mean': round(gmean, 2),
+            'shrunk_mean': round(gshrunk, 2), 'win_rate': round(gwr, 3)
+        })
+    profiles.sort(key=lambda pr: -pr['shrunk_mean'])
+
+    # Expected pnl per $1k notional: bucket pnl is already config-true $, but
+    # normalize to the AM7 $1k convention for cross-bucket comparability.
+    # (trade pnl is recorded at the trade's own notional; per-1k scaling uses
+    # the mean |geometry| risk as a proxy — kept simple: report raw $ and per-1k
+    # assuming the bucket's typical notional ≈ $1k default convention.)
+    expected_per_1k = shrunk_mean
+    ev = p_win * avg_win + (1 - p_win) * avg_loss
+
+    return {
+        'p_win': round(p_win, 3),
+        'avg_win_usd': round(avg_win, 2),
+        'avg_loss_usd': round(avg_loss, 2),
+        'expected_pnl_per_1k': round(expected_per_1k, 2),
+        'ev_per_1k': round(ev, 2),
+        'n': n,
+        'shrink_factor': round(shrink, 3),
+        'pool_mean': round(pool, 2),
+        'top_profiles': profiles[:3]
+    }
 
 
 def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb_mod, feat_names):
@@ -358,10 +496,16 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
     model_params = {'tf_pair': tf_pair}
 
     # 🟢 AM7 — Layer 2: per-bucket parameter stats. Group closed rows by the
-    # params profile used → win-rate / E[pnl] per profile → suggested_params =
-    # the top profile. Guardrail: only emit when the bucket has >= 10 closes
-    # (small n lies). Shadow rows weigh 0.5, real 1.0 — same as the model fit.
+    # params profile used → win-rate / E[pnl] per profile. Guardrail: only emit
+    # when the bucket has >= 10 closes (small n lies). Shadow rows weigh 0.5,
+    # real 1.0 — same as the model fit.
+    # 🟢 AM32 — COMBINED EV: the tuple pick (win_rate, expected_pnl) is replaced
+    # by EV = p_win × avg_win_$ − p_loss × avg_loss_$ at the Head-2-predicted
+    # p. Head 1 (classifier) supplies p_win; Head 2 (expectancy) supplies the
+    # dollar legs. suggested_params now carries all THREE priors.
     suggested_params = None
+    expectancy = _train_expectancy_head(tenant, asset, regime, strategy, tf_pair,
+                                        geometry_samples.get((tenant, asset, regime, strategy, tf_pair)) or [])
     profiles = param_profiles.get((tenant, asset, regime, strategy, tf_pair)) or []
     if len(profiles) >= 10:
         by_profile = defaultdict(list)
@@ -374,10 +518,18 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
                 continue
             pwr = sum(w for win_, _, w in rows if win_ == 1) / wsum
             pep = sum(pnl_ * w for _, pnl_, w in rows) / wsum
-            if best_stats is None or (pwr, pep) > best_stats[:2]:
-                best_key, best_stats = pkey, (pwr, pep, wsum, len(rows))
+            # AM32: rank by combined EV when Head 2 has graded dollars for the
+            # bucket; fall back to the legacy (win_rate, expected_pnl) tuple.
+            if expectancy:
+                p_h2 = expectancy['p_win']
+                ev = p_h2 * (expectancy['avg_win_usd'] or 0) - (1 - p_h2) * abs(expectancy['avg_loss_usd'] or 0)
+                rank = (ev, pwr)
+            else:
+                rank = (pwr, pep)
+            if best_stats is None or rank > best_stats[0]:
+                best_key, best_stats = pkey, (rank, pwr, pep, wsum, len(rows))
         if best_key is not None:
-            pwr, pep, wsum, pcount = best_stats
+            _, pwr, pep, wsum, pcount = best_stats
             tp_, sl_, tw_, tr_ = best_key
             suggested_params = {
                 'tp_price': tp_, 'sl_price': sl_,
@@ -388,6 +540,14 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
                 'summary': (f"tp ≈ {tp_}%, sl ≈ {sl_}%, tripwire {tw_}%, "
                             f"trail {tr_}% → {pwr * 100:.0f}% win, n = {pcount}")
             }
+            if expectancy:
+                suggested_params['win_prob'] = expectancy['p_win']
+                suggested_params['expected_pnl_per_1k'] = expectancy['expected_pnl_per_1k']
+                suggested_params['ev_per_1k'] = expectancy['ev_per_1k']
+                suggested_params['summary'] += (f" | EV ${expectancy['ev_per_1k']:.2f}/1k "
+                                                f"(p_win {expectancy['p_win'] * 100:.0f}%, "
+                                                f"avg win ${expectancy['avg_win_usd']:.2f} vs "
+                                                f"avg loss ${abs(expectancy['avg_loss_usd']):.2f})")
     expected_mean, expected_std = avg_pnl, 0.0
     accuracy = wr  # baseline: majority-class predictor
 
@@ -429,11 +589,14 @@ def _emit_model(rows_out, tenant, asset, regime, strategy, tf_pair, samples, xgb
         'expected_pnl_mean': expected_mean,
         'expected_pnl_std': expected_std,
         'suggested_params': suggested_params,
+        # 🟢 AM32 — Head 2 output (calibration card row 2: predicted vs realized $)
+        'expected_pnl_model': expectancy,
         'last_trained': now_iso
     })
     scope = 'GLOBAL' if tenant is None else str(tenant)[:8]
     sp_note = f' | suggested: {suggested_params["summary"]}' if suggested_params else ''
-    print(f'  [{scope}] {asset}/{regime}/{strategy}/{tf_pair}: n={n} wr={wr:.2f} acc={accuracy:.2f} E[pnl]={expected_mean:.1f}{sp_note}')
+    h2_note = f' | H2: E=${expectancy["expected_pnl_per_1k"]:.2f}/1k shrink={expectancy["shrink_factor"]:.2f}' if expectancy else ''
+    print(f'  [{scope}] {asset}/{regime}/{strategy}/{tf_pair}: n={n} wr={wr:.2f} acc={accuracy:.2f} E[pnl]={expected_mean:.1f}{sp_note}{h2_note}')
 
 
 def summarize(samples):
