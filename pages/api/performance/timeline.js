@@ -29,6 +29,11 @@ function emptyBucket() {
     shadow_saved_pct: 0, shadow_missed_pct: 0, shadow_net_pct: 0,
     // AG2 — config-true $ (strategy-true sim, signed, from sim_pnl_usd)
     shadow_net_usd: 0,
+    // 🟢 PUSH AM37 — ledger-USD shadow series (signed sim_pnl_usd, all rows with
+    // a sim): SAVED → +|sim| (money the veto kept), MISSED → +sim (money the
+    // veto passed up). Both plotted as positive magnitudes; NET = SAVED − MISSED.
+    // Rows without a sim (legacy/Path A) are skipped from the USD series only.
+    shadow_saved_usd: 0, shadow_missed_usd: 0,
     veto_saved_count: 0, veto_missed_count: 0, veto_neutral_count: 0,
   };
 }
@@ -80,6 +85,9 @@ export default async function handler(req, res) {
   if (isNaN(days) || days < 1) days = 30;
   if (days > 90) days = 90;
   const since = new Date(Date.now() - days * DAY_MS).toISOString();
+  // 🟢 PUSH AM37 — window metadata returned so the chart can label the actual
+  // range it is plotting (no silent mismatch between claim and data).
+  const windowMeta = { days, start: since, end: new Date().toISOString() };
 
   // PUSH AF2 — optional attribution bucket filters: ?asset=&strategy=&tf=&regime=
   // When present, the model query is filtered to the bucket and n_approved/n_flagged
@@ -104,7 +112,10 @@ export default async function handler(req, res) {
         .not('exit_price', 'is', null)
         .gte('exit_time', since)
         .order('exit_time', { ascending: true })
-        .limit(10000),
+        // 🟢 PUSH AM37 — cap raised 10000 → 50000: sums are computed server-side,
+        // so a silent ASC+limit truncation drops the OLDEST rows and corrupts the
+        // cumulative series. `truncated` flag below surfaces any residual cap hit.
+        .limit(50000),
       // B) Shadow portfolio rows (one veto per row)
       supabase
         .from('shadow_portfolio')
@@ -112,14 +123,16 @@ export default async function handler(req, res) {
         .eq('tenant_id', tenantId)
         .gte('veto_time', since)
         .order('veto_time', { ascending: true })
-        .limit(2000),
+        // 🟢 PUSH AM37 — cap raised 2000 → 20000 (same truncation rationale).
+        .limit(20000),
       // D) Tool calls over the window (matched to vetoes by scan_id later)
       supabase
         .from('agent_tool_calls')
         .select('scan_id, tool_name, response_summary')
         .eq('tenant_id', tenantId)
         .gte('created_at', since)
-        .limit(5000),
+        // 🟢 PUSH AM37 — cap raised 5000 → 20000 (telemetry only; degrade-safe).
+        .limit(20000),
       // PUSH AF2 — model attribution: model-scored closed trades. SELECT mirrors
       // lib/train-calibration-models.py's trade_logs pull so attribution keys match
       // training buckets exactly (asset→symbol fallback; no tf columns on trade_logs).
@@ -133,7 +146,8 @@ export default async function handler(req, res) {
           .not('market_snapshot_at_entry', 'is', null)
           .gte('exit_time', since)
           .order('exit_time', { ascending: true })
-          .limit(10000);
+          // 🟢 PUSH AM37 — cap raised 10000 → 50000 (model attribution pull).
+          .limit(50000);
         // AH2 — bucket filtering moved to JS below. SQL .eq() on regime_at_entry
         // misses NULL-regime rows, but the trainer buckets those as 'CHOP'
         // (lib/train-calibration-models.py ~L162), so a regime=CHOP request must
@@ -143,6 +157,15 @@ export default async function handler(req, res) {
     ]);
 
     const trades = tradesRes.data || [];
+    // 🟢 PUSH AM37 — truncation surfacing: if any query came back at its cap,
+    // older rows may have been dropped and the cumulative sums under-count.
+    const truncated = {
+      trades: trades.length >= 50000,
+      vetoes: (shadowRes.data || []).length >= 20000,
+      toolCalls: (toolCallsRes.data || []).length >= 20000,
+      modelTrades: (modelTradesRes.data || []).length >= 50000,
+    };
+    const anyTruncated = Object.values(truncated).some(Boolean);
     // 🟢 PUSH AL — PENDING shadow rows (LIVE tickets, no sim yet) carry no pnl.
     // Filter them out BEFORE bucketing so SAVED/MISSED/NET series, decision
     // counts, config-$ and n= chips never count them.
@@ -275,6 +298,15 @@ export default async function handler(req, res) {
       }
       // AG2/AK2 — config-true $ (signed sim_pnl_usd; ADMITTED rows only; null-safe for legacy rows)
       if (v.admitted !== false) buckets[key].shadow_net_usd += parseFloat(v.sim_pnl_usd) || 0;
+      // 🟢 PUSH AM37 — ledger-USD magnitudes from the sim (all rows with a sim;
+      // null sim ⇒ skipped, same convention as the % series). SAVED rows have a
+      // negative sim (the trade would have lost) → savings = −sim. MISSED rows
+      // have a positive sim (foregone profit) → missed = +sim.
+      const simUsd = parseFloat(v.sim_pnl_usd);
+      if (Number.isFinite(simUsd)) {
+        if (verdict === 'SAVED') buckets[key].shadow_saved_usd += -simUsd;
+        else if (verdict === 'MISSED') buckets[key].shadow_missed_usd += simUsd;
+      }
     }
 
     // PUSH AF2 — model attribution buckets: approved (prob >= 0.5) vs flagged (< 0.5), $ PnL
@@ -311,6 +343,9 @@ export default async function handler(req, res) {
       buckets[k].shadow_net_pct = round2(buckets[k].shadow_saved_pct + buckets[k].shadow_missed_pct);
       // AG2 — config-true $ per day
       buckets[k].shadow_net_usd = round2(buckets[k].shadow_net_usd);
+      // 🟢 PUSH AM37 — ledger-USD per day (NET = SAVED − MISSED, both positive magnitudes)
+      buckets[k].shadow_saved_usd = round2(buckets[k].shadow_saved_usd);
+      buckets[k].shadow_missed_usd = round2(buckets[k].shadow_missed_usd);
     }
     for (const k of Object.keys(modelBuckets)) {
       modelBuckets[k].approved_pnl = round2(modelBuckets[k].approved_pnl);
@@ -325,6 +360,10 @@ export default async function handler(req, res) {
     const cumShadowSavedPct = [], cumShadowMissedPct = [], cumShadowNetPct = [];
     // AG2 — cumulative config-true $ (strategy-true sim, signed)
     const cumShadowUsd = [];
+    // 🟢 PUSH AM37 — USD cumulative series (the chart's five series, one shared
+    // $ axis): live/paper running $ pnl; shadow SAVED/MISSed/NET in ledger-USD.
+    const cumLiveUsd = [], cumPaperUsd = [];
+    const cumShadowSavedUsd = [], cumShadowMissedUsd = [], cumShadowNetUsd = [];
     // PUSH AF2 — cumulative model attribution ($, real trades)
     const cumModelApproved = [], cumModelFlagged = [];
     let runLive = 0, runPaper = 0, runShadow = 0;
@@ -332,6 +371,8 @@ export default async function handler(req, res) {
     let runLivePct = 0, runPaperPct = 0;
     let runSavedPct = 0, runMissedPct = 0, runNetPct = 0;
     let runShadowUsd = 0;
+    // 🟢 PUSH AM37 — ledger-USD runners (same active-day gating as the % runners)
+    let runSavedUsd = 0, runMissedUsd = 0;
     let runModelApproved = 0, runModelFlagged = 0;
     for (const k of dayKeys) {
       const b = buckets[k];
@@ -342,11 +383,15 @@ export default async function handler(req, res) {
         runLive = round2(runLive + b.live_pnl);
         runLivePct = round2(runLivePct + b.live_pct);
         cumLivePct.push({ time: k, value: runLivePct });
+        // 🟢 PUSH AM37 — USD running sum on the same active days
+        cumLiveUsd.push({ time: k, value: runLive });
       }
       if (b.paper_count > 0) {
         runPaper = round2(runPaper + b.paper_pnl);
         runPaperPct = round2(runPaperPct + b.paper_pct);
         cumPaperPct.push({ time: k, value: runPaperPct });
+        // 🟢 PUSH AM37 — USD running sum on the same active days
+        cumPaperUsd.push({ time: k, value: runPaper });
       }
       if (b.veto_saved_count > 0 || b.veto_missed_count > 0 || b.veto_neutral_count > 0) {
         runShadow = round2(runShadow + b.shadow_net);
@@ -361,6 +406,13 @@ export default async function handler(req, res) {
         // AG2 — config-true $ running sum on the same veto-active days
         runShadowUsd = round2(runShadowUsd + b.shadow_net_usd);
         cumShadowUsd.push({ time: k, value: runShadowUsd });
+        // 🟢 PUSH AM37 — ledger-USD running sums (SAVED/MISSed positive magnitudes,
+        // NET = SAVED − MISSED) on the same veto-active days
+        runSavedUsd = round2(runSavedUsd + b.shadow_saved_usd);
+        runMissedUsd = round2(runMissedUsd + b.shadow_missed_usd);
+        cumShadowSavedUsd.push({ time: k, value: runSavedUsd });
+        cumShadowMissedUsd.push({ time: k, value: runMissedUsd });
+        cumShadowNetUsd.push({ time: k, value: round2(runSavedUsd - runMissedUsd) });
       }
       const m = modelBuckets[k];
       if (m && (m.approved_count > 0 || m.flagged_count > 0)) {
@@ -388,6 +440,10 @@ export default async function handler(req, res) {
       shadow_net_pct: round2(runSavedPct + runMissedPct),
       // AG2/AK2 — config-true $ total (signed, ADMITTED rows only)
       shadow_net_usd: round2(runShadowUsd),
+      // 🟢 PUSH AM37 — ledger-USD shadow totals (SAVED/MISSed positive magnitudes)
+      shadow_saved_usd: round2(runSavedUsd),
+      shadow_missed_usd: round2(runMissedUsd),
+      shadow_net_usd_ledger: round2(runSavedUsd - runMissedUsd),
       // AK2 — comparison totals over ALL rows (ledger truth, not config-$ truth)
       shadow_net_usd_all: round2(daily.reduce((s, d) => s + d.shadow_net_usd, 0) + vetoes.filter(v => v.admitted === false).reduce((s, v) => s + (parseFloat(v.sim_pnl_usd) || 0), 0)),
       veto_admitted_count: vetoes.filter(v => v.admitted !== false).length,
@@ -454,11 +510,22 @@ export default async function handler(req, res) {
         shadowNetPct: cumShadowNetPct,
         // AG2 — config-true $ cumulative (strategy-true sim, signed)
         shadowUsd: cumShadowUsd,
+        // 🟢 PUSH AM37 — USD cumulative series (one shared $ axis on the chart)
+        liveUsd: cumLiveUsd,
+        paperUsd: cumPaperUsd,
+        shadowSavedUsd: cumShadowSavedUsd,
+        shadowMissedUsd: cumShadowMissedUsd,
+        shadowNetUsd: cumShadowNetUsd,
         // PUSH AF2 — model attribution cumulative ($)
         modelApproved: cumModelApproved,
         modelFlagged: cumModelFlagged,
       },
       totals,
+      // 🟢 PUSH AM37 — window metadata (chart labels the actual range) +
+      // truncation flag (true ⇒ a row cap was hit and sums may under-count).
+      window: windowMeta,
+      truncated: anyTruncated,
+      truncatedBy: truncated,
       vetoes: vetoLedger,
       // PUSH AF2 — per-day model buckets + n counts when a bucket filter is applied
       modelDays: Object.keys(modelBuckets).sort().map(k => ({ date: k, ...modelBuckets[k] })),

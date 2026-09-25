@@ -445,34 +445,32 @@ function PerformanceLogContent() {
       return series;
     }
     if (showVetos) {
-      // PUSH AF1 — SHADOW renders THREE lines in % of veto price (measured):
-      // SAVED (emerald), MISSED (rose), NET (orange, bold). AM29 — config-$
-      // dropped from the chart (kept in the ledger card + totals strip): $
-      // can't share a % axis honestly.
+      // 🟢 PUSH AM37 — SHADOW renders THREE lines in ledger-USD (signed sim_pnl_usd):
+      // SAVED (emerald, +), MISSED (rose, +), NET = SAVED − MISSED (orange, bold).
+      // % of veto price retired from the chart (kept in the ledger card).
       const shadow = [
-        { key: 'shadowMissedPct', label: 'SHADOW MISSED', color: '#f43f5e', data: timeline.cumulative.shadowMissedPct || [] },
-        { key: 'shadowSavedPct', label: 'SHADOW SAVED', color: '#10b981', data: timeline.cumulative.shadowSavedPct || [] },
-        { key: 'shadowNetPct', label: 'SHADOW NET', color: '#f97316', data: timeline.cumulative.shadowNetPct || [], lineWidth: 3 },
+        { key: 'shadowMissedUsd', label: 'SHADOW MISSED', color: '#f43f5e', data: timeline.cumulative.shadowMissedUsd || [] },
+        { key: 'shadowSavedUsd', label: 'SHADOW SAVED', color: '#10b981', data: timeline.cumulative.shadowSavedUsd || [] },
+        { key: 'shadowNetUsd', label: 'SHADOW NET', color: '#f97316', data: timeline.cumulative.shadowNetUsd || [], lineWidth: 3 },
       ];
       if (calGranularity === 'WEEK') return shadow.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
       return shadow.filter(s => s.data.length > 0);
     }
-    // 🟢 PUSH AM29 — ONE shared axis, % of entry everywhere. pts are asset-scaled
-    // (870 pts on BIP ≠ 870 pts on SLP) and $ mixes position sizes; % of entry is
-    // the only unit where shadow, paper and live share one axis honestly. PAPER/
-    // LIVE are cumulative pnl/notional (sum of per-trade %, same non-compounded
-    // convention as the shadow series).
+    // 🟢 PUSH AM37 — ONE shared axis, USD everywhere. All five series are dollar
+    // amounts: shadow MISSED (+), shadow SAVED (+), NET = SAVED − MISSED, paper
+    // pnl, live pnl. % of entry retired from the chart (unit-mixing across
+    // position sizes made the shared axis dishonest in the other direction).
     const allSeries = [
-      { key: 'shadowMissedPct', label: 'SHADOW MISSED', color: '#f43f5e', data: timeline.cumulative.shadowMissedPct || [] },
-      { key: 'shadowSavedPct', label: 'SHADOW SAVED', color: '#10b981', data: timeline.cumulative.shadowSavedPct || [] },
-      { key: 'shadowNetPct', label: 'SHADOW NET', color: '#f97316', data: timeline.cumulative.shadowNetPct || [], lineWidth: 3 },
-      { key: 'paperPct', label: 'PAPER', color: '#a78bfa', data: timeline.cumulative.paperPct || [] },
-      { key: 'livePct', label: 'LIVE', color: '#3b82f6', data: timeline.cumulative.livePct || [] },
+      { key: 'shadowMissedUsd', label: 'SHADOW MISSED', color: '#f43f5e', data: timeline.cumulative.shadowMissedUsd || [] },
+      { key: 'shadowSavedUsd', label: 'SHADOW SAVED', color: '#10b981', data: timeline.cumulative.shadowSavedUsd || [] },
+      { key: 'shadowNetUsd', label: 'SHADOW NET', color: '#f97316', data: timeline.cumulative.shadowNetUsd || [], lineWidth: 3 },
+      { key: 'paperUsd', label: 'PAPER', color: '#a78bfa', data: timeline.cumulative.paperUsd || [] },
+      { key: 'liveUsd', label: 'LIVE', color: '#3b82f6', data: timeline.cumulative.liveUsd || [] },
     ];
     let series = modeFilter === 'LIVE'
-      ? allSeries.filter(s => s.key === 'livePct')
+      ? allSeries.filter(s => s.key === 'liveUsd')
       : modeFilter === 'PAPER'
-        ? allSeries.filter(s => s.key === 'paperPct')
+        ? allSeries.filter(s => s.key === 'paperUsd')
         : allSeries;
     if (calGranularity === 'WEEK') series = series.map(s => ({ ...s, data: weeklyCumulative(s.data) }));
     return series.filter(s => s.data.length > 0);
@@ -926,7 +924,12 @@ function PerformanceLogContent() {
         // PUSH AC — WEEK granularity: tick labels show the ISO-week start date.
         tickMarkFormatter: timelineTimeFormatter,
       },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.1)' },
+      // 🟢 PUSH AM37 — USD axis: every series is dollars, so the price scale
+      // formats with a $ prefix (kills the % axis remnants).
+      rightPriceScale: {
+        borderColor: 'rgba(255,255,255,0.1)',
+        priceFormat: { type: 'price', precision: 0, minMove: 1 },
+      },
     });
 
     for (const s of timelineSeries) {
@@ -969,6 +972,15 @@ function PerformanceLogContent() {
         return { label: s.label || s.key, color: s.color, value: pt ? pt.value : null };
       });
       setTimelineTooltip({ x: param.point.x, y: param.point.y, time: timelineTimeFormatter(timeStr), rows });
+    });
+
+    // 🟢 PUSH AM37 — $ axis labels: apply a $ formatter to the price scale so
+    // axis ticks read as dollars (kills the % axis remnants).
+    chart.applyOptions({
+      rightPriceScale: {
+        borderColor: 'rgba(255,255,255,0.1)',
+        priceFormat: { type: 'price', precision: 0, minMove: 1, formatter: (v) => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString() },
+      },
     });
 
     const handleResize = () => {
@@ -1313,8 +1325,16 @@ function PerformanceLogContent() {
               {modelView
                 ? (modelViewLoading ? 'loading model bucket…' : 'model attribution ($ — real trades)')
                 : showVetos
-                  ? 'shadow curve (% of veto price — measured)'
-                  : modeFilter === 'LIVE' ? 'live — % of entry' : modeFilter === 'PAPER' ? 'paper — % of entry' : 'all five series — % of entry (shared axis)'}
+                  ? 'shadow curve (USD — ledger sim)'
+                  : modeFilter === 'LIVE' ? 'live — USD' : modeFilter === 'PAPER' ? 'paper — USD' : 'all five series — USD (shared axis)'}
+              {/* 🟢 PUSH AM37 — window label: the chart states the actual range it
+                  plots (from the endpoint's window metadata), not a hardcoded claim. */}
+              {timeline?.window?.days && (
+                <span className="text-slate-600">· last {timeline.window.days}d</span>
+              )}
+              {timeline?.truncated && (
+                <span className="px-2 py-0.5 rounded-full text-[8px] bg-amber-500/20 text-amber-300" title="A row cap was hit — sums may under-count older rows">window truncated</span>
+              )}
             </div>
           </div>
 
@@ -1344,7 +1364,8 @@ function PerformanceLogContent() {
                     <div key={r.label} className="flex items-center gap-2 text-[9px] font-mono leading-relaxed">
                       <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ backgroundColor: r.color }} />
                       <span className="text-slate-400" style={{ width: 96 }}>{r.label}</span>
-                      <span style={{ color: r.color }}>{r.value === null ? '—' : `${r.value >= 0 ? '+' : '−'}${Math.abs(r.value).toFixed(2)}%`}</span>
+                      {/* 🟢 PUSH AM37 — tooltip in USD (signed $), % suffix removed */}
+                      <span style={{ color: r.color }}>{r.value === null ? '—' : `${r.value >= 0 ? '+' : '−'}$${Math.abs(r.value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}</span>
                     </div>
                   ))}
                 </div>
@@ -1368,10 +1389,12 @@ function PerformanceLogContent() {
               </span>
             ) : (
               <span className="text-orange-400">
-                SHADOW {Number(timeline.totals?.shadow_net_pct || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_net_pct || 0)).toFixed(2)}% net
-                <span className="text-emerald-400"> · saved {Number(timeline.totals?.shadow_saved_pct || 0) >= 0 ? '+' : '−'}{Math.abs(Number(timeline.totals?.shadow_saved_pct || 0)).toFixed(2)}%</span>
-                <span className="text-rose-400"> · missed −{Math.abs(Number(timeline.totals?.shadow_missed_pct || 0)).toFixed(2)}%</span>
-                <span className="text-slate-500"> (% of veto price — measured, over {timeline.totals?.veto_total ?? 0} vetoes)</span>
+                {/* 🟢 PUSH AM37 — shadow totals in ledger-USD (SAVED/MISSed positive
+                    magnitudes, NET = SAVED − MISSED); % of veto price retired. */}
+                SHADOW {Number(timeline.totals?.shadow_net_usd_ledger || 0) >= 0 ? '+' : '−'}${Math.abs(Number(timeline.totals?.shadow_net_usd_ledger || 0)).toFixed(2)} net
+                <span className="text-emerald-400"> · saved +${Math.abs(Number(timeline.totals?.shadow_saved_usd || 0)).toFixed(2)}</span>
+                <span className="text-rose-400"> · missed ${Math.abs(Number(timeline.totals?.shadow_missed_usd || 0)).toFixed(2)}</span>
+                <span className="text-slate-500"> (USD — ledger sim, over {timeline.totals?.veto_total ?? 0} vetoes)</span>
               </span>
             )}
             {!modelView && Number.isFinite(Number(timeline.totals?.shadow_net_usd)) && (
