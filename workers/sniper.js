@@ -18,6 +18,7 @@ class ResilientWebSocket extends WebSocket {
 import { evaluateStrategy } from '../lib/strategy-router.js';
 import { executeTradeMCP } from '../lib/execute-trade-mcp.js'; 
 import { isTenantBillingActive, deactivateTenantStrategies } from '../lib/tenant-context.js';
+import { registerTimer, registerStopHook, stopWorkerTimers, firstSweepDelayMs } from '../lib/worker-registry.js';
 // 🟢 NEXUS intelligence layers (Phase D)
 import { getCalibrationPriors } from '../lib/calibration-engine.js';
 import { getModelPrediction } from '../lib/predictive-regression.js';
@@ -680,6 +681,9 @@ function getTenantState(tenantId) {
     return tenantRAM.get(tenantId);
 }
 
+// PUSH AM35 — live WebSocket per tenant, so teardown can close the socket.
+const sniperSockets = new Map(); // tenantId => WebSocket
+
 export async function startSniper(tenantId) {
     const state = getTenantState(tenantId);
     await logAgentActivity(tenantId, "Sniper", "N/A", "Sniper worker started.", "WORKER_START");
@@ -687,6 +691,7 @@ export async function startSniper(tenantId) {
     const apiKeyName = process.env.COINBASE_API_KEY; const apiSecret = process.env.COINBASE_API_SECRET;
     
     let ws = new WebSocket('wss://advanced-trade-ws.coinbase.com');
+    sniperSockets.set(tenantId, ws);
 
     const syncConfigs = async () => {
         try {
@@ -725,8 +730,13 @@ export async function startSniper(tenantId) {
         } catch (e) { console.error("[RAM SYNC FAULT]", e.message); }
     };
     
-    await syncConfigs();
-    setInterval(syncConfigs, 30000); 
+    // PUSH AM35 — stagger first sync by (instanceHash % 30)s so multiple
+    // instances booting together don't stampede Supabase/Coinbase. Steady
+    // 30s interval unchanged.
+    const firstSync = setTimeout(() => { syncConfigs().catch(e => console.error('[SNIPER] first sync fault:', e.message)); }, firstSweepDelayMs());
+    registerTimer(`sniper:${tenantId}`, firstSync);
+    const syncTimer = setInterval(syncConfigs, 30000);
+    registerTimer(`sniper:${tenantId}`, syncTimer);
 
     ws.on('open', async () => {
         await logAgentActivity(tenantId, "Sniper", "N/A", "WebSocket connected. Subscribing to live tape...", "WEBSOCKET_CONNECT");
@@ -1255,8 +1265,26 @@ export async function startSniper(tenantId) {
         }
     });
 
-    ws.on('close', () => { setTimeout(() => startSniper(tenantId), 5000); });
+    ws.on('close', () => {
+        // PUSH AM35 — don't auto-reconnect after an intentional teardown
+        // (billing lapsed): the registry timers/hooks were cleared.
+        if (!stoppedSnipers.has(tenantId)) setTimeout(() => startSniper(tenantId), 5000);
+    });
     ws.on('error', (err) => { console.error(`[SNIPER-${tenantId}] WebSocket Error:`, err.message); });
+}
+
+// PUSH AM35 — teardown registry: tenants whose billing lapsed get their
+// sniper fully stopped (intervals cleared + WebSocket closed), not just
+// halted. stopSniper is idempotent.
+const stoppedSnipers = new Set();
+
+export function stopSniper(tenantId) {
+    stoppedSnipers.add(tenantId);
+    stopWorkerTimers(`sniper:${tenantId}`);
+    const ws = sniperSockets.get(tenantId);
+    if (ws) { try { ws.close(); } catch (e) { /* already closed */ } sniperSockets.delete(tenantId); }
+    // Allow a future re-boot (e.g. billing re-activated) to reconnect.
+    setTimeout(() => stoppedSnipers.delete(tenantId), 10000);
 }
 
 async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_type = 'INFO') {

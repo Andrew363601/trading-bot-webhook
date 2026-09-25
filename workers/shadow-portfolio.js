@@ -31,6 +31,7 @@ class ResilientWebSocket extends WebSocket {
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { retrieveAPIKey } from '../lib/secrets-manager.js';
+import { registerTimer, firstSweepDelayMs } from '../lib/worker-registry.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -1568,17 +1569,20 @@ async function processShadowAutopsies() {
 export function startShadowPortfolio() {
   console.log('[SHADOW] v2 Shadow Portfolio worker starting (corrected signal direction)...');
 
-  processUnlabeledVetos();
-
-  setInterval(() => {
+  // PUSH AM35 — stagger first sweeps by (instanceHash % 30)s so multiple
+  // instances booting together don't stampede Supabase. Steady intervals
+  // unchanged. Timers registered for teardown via worker-registry.
+  const delay = firstSweepDelayMs();
+  registerTimer('shadow:global', setTimeout(() => processUnlabeledVetos(), delay));
+  registerTimer('shadow:global', setInterval(() => {
     processUnlabeledVetos();
-  }, 5 * 60 * 1000);
+  }, 5 * 60 * 1000));
 
   // AG3: 6h shadow autopsy feed (dead until brain service redeploy — safe to run now).
-  processShadowAutopsies();
-  setInterval(() => {
+  registerTimer('shadow:global', setTimeout(() => processShadowAutopsies(), delay));
+  registerTimer('shadow:global', setInterval(() => {
     processShadowAutopsies();
-  }, 6 * 3600 * 1000);
+  }, 6 * 3600 * 1000));
 
   console.log('[SHADOW] v2 worker active (5 min interval, 6h autopsy feed).');
 }

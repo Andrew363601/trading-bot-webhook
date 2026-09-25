@@ -4,7 +4,8 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
 import { cleanupOldScanResults } from '../lib/cleanup-scan-results.js'; 
-import { cleanupOldAgentLogs } from '../lib/cleanup-agent-logs.js'; 
+import { cleanupOldAgentLogs } from '../lib/cleanup-agent-logs.js';
+import { registerTimer, stopWorkerTimers, firstSweepDelayMs } from '../lib/worker-registry.js'; 
 
 import WebSocket from 'ws'; 
 
@@ -116,7 +117,7 @@ async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, o
         const end = Math.floor(Date.now() / 1000);
         const start = end - (300 * 50); 
         const publicProduct = getSpotSymbol(symbol);
-        const candleResp = await fetch(`https://api.exchange.coinbase.com/products/${publicProduct}/candles?start=${start}&end=${end}&granularity=300`);
+        const candleResp = await fetch(`https://api.exchange.coinbase.com/products/${publicProduct}/candles?start=${start}&end=${end}&granularity=300`, { signal: AbortSignal.timeout(10000) });
         let recentCandles = [];
         if (candleResp.ok) {
             const cData = await candleResp.json();
@@ -190,17 +191,39 @@ export async function startWatchdog(tenantId) {
     await logAgentActivity(tenantId, "Watchdog", "N/A", "Watchdog worker started.", "WORKER_START");
     console.log(`[WATCHDOG-${tenantId}] Physical Exchange Janitor online. Sweeping orders...`);
 
-    // Hourly cleanup of old scan_results (72h retention) and agent_session_logs (24h retention)
-    setInterval(() => {
+    // PUSH AM35 — stagger first sweeps by (instanceHash % 30)s so multiple
+    // instances booting together don't stampede the exchange APIs. Steady
+    // intervals unchanged.
+    const firstCleanup = setTimeout(() => {
+        cleanupOldScanResults();
+        cleanupOldAgentLogs();
+    }, firstSweepDelayMs());
+    registerTimer(`watchdog:${tenantId}`, firstCleanup);
+    const cleanupTimer = setInterval(() => {
         cleanupOldScanResults();
         cleanupOldAgentLogs();
     }, 60 * 60 * 1000);
-    // Run once immediately on startup
-    cleanupOldScanResults();
-    cleanupOldAgentLogs();
+    registerTimer(`watchdog:${tenantId}`, cleanupTimer);
 
-    setInterval(async () => {
+    const firstSweep = setTimeout(() => { sweepOpenTrades().catch(e => console.error(`[WATCHDOG-${tenantId}] first sweep fault:`, e.message)); }, firstSweepDelayMs());
+    registerTimer(`watchdog:${tenantId}`, firstSweep);
+    const sweepTimer = setInterval(async () => {
         try {
+            await sweepOpenTrades();
+        } catch (e) {
+            console.error(`[WATCHDOG-${tenantId}] sweep fault:`, e.message);
+        }
+    }, 5000);
+    registerTimer(`watchdog:${tenantId}`, sweepTimer);
+}
+
+// PUSH AM35 — teardown for lapsed tenants: clear janitor intervals.
+export function stopWatchdog(tenantId) {
+    stopWorkerTimers(`watchdog:${tenantId}`);
+}
+
+async function sweepOpenTrades() {
+    try {
             // 🟢 Per-sweep reset of tracking state
             deployedSafetyNets.clear();
             closingNow.clear();
@@ -256,7 +279,7 @@ export async function startWatchdog(tenantId) {
 
                 // 🟢 PUBLIC TICKER: Use unauthenticated exchange API with spot symbol mapping
                 const spotSymbol = getSpotSymbol(asset);
-                const tickerResp = await fetch(`https://api.exchange.coinbase.com/products/${spotSymbol}/ticker`);
+                const tickerResp = await fetch(`https://api.exchange.coinbase.com/products/${spotSymbol}/ticker`, { signal: AbortSignal.timeout(10000) });
                 
                 let tickerData;
                 try {
@@ -335,8 +358,8 @@ export async function startWatchdog(tenantId) {
                     const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
                     
                     const [posResp, orderResp] = await Promise.all([
-                        fetch(`https://api.coinbase.com${posPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', posPath, liveApiKey, liveApiSecret)}` } }),
-                        fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, liveApiKey, liveApiSecret)}` } })
+                        fetch(`https://api.coinbase.com${posPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', posPath, liveApiKey, liveApiSecret)}` }, signal: AbortSignal.timeout(10000) }),
+                        fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, liveApiKey, liveApiSecret)}` }, signal: AbortSignal.timeout(10000) })
                     ]);
 
                     if (posResp.ok) {
@@ -691,8 +714,8 @@ export async function startWatchdog(tenantId) {
                         const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
                         
                         const [histResp, fillResp] = await Promise.all([
-                            fetch(`https://api.coinbase.com${histPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', histPath, liveApiKey, liveApiSecret)}` } }),
-                            fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, liveApiKey, liveApiSecret)}` } })
+                            fetch(`https://api.coinbase.com${histPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', histPath, liveApiKey, liveApiSecret)}` }, signal: AbortSignal.timeout(10000) }),
+                            fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, liveApiKey, liveApiSecret)}` }, signal: AbortSignal.timeout(10000) })
                         ]);
 
                         if (histResp.ok) {
@@ -1561,8 +1584,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
             console.error("[WATCHDOG FAULT]:", err.message);
             await logAgentActivity(tenantId, "Watchdog", "N/A", `WATCHDOG worker encountered a fault: ${err.message}`, "ERROR");
         }
-    }, 5000);
-} // end startWatchdog
+} // end sweepOpenTrades
 
 async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_type = 'INFO') {
     try {

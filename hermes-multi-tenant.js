@@ -7,14 +7,30 @@ import { startShadowPortfolio } from './workers/shadow-portfolio.js';
 // never kill the swarm. Contain + log (the log line names the failing host);
 // the next sweep tick retries naturally. Mirrors ENGINE 3's WS-guard philosophy.
 let am1Rejections = 0;
+// PUSH AM35 — cause-aware containment: AggregateError (DNS failures) carries
+// the attempted IPs in .cause.errors; fetch failures carry the failing URL in
+// .cause. Log both so the next wave names the dependency instead of a bare code.
+function describeTransportFailure(reason) {
+    const parts = [];
+    if (reason?.code) parts.push(`code=${reason.code}`);
+    const cause = reason?.cause;
+    if (cause) {
+        if (cause.code) parts.push(`cause.code=${cause.code}`);
+        if (Array.isArray(cause.errors)) parts.push(`cause.errors=[${cause.errors.map(e => e?.code || e?.message).join(', ').slice(0, 200)}]`);
+        else if (cause.message) parts.push(`cause=${String(cause.message).slice(0, 150)}`);
+    }
+    const host = typeof reason?.message === 'string' ? (reason.message.match(/https?:\/\/[^\s"']+/) || [])[0] : null;
+    if (host) parts.push(`host=${host}`);
+    return parts.join(' ');
+}
 process.on('unhandledRejection', (reason) => {
     am1Rejections++;
     console.error(`[SWARM] Unhandled rejection CONTAINED (#${am1Rejections}):`,
-        reason?.code || '', String(reason?.message || reason).slice(0, 300));
+        describeTransportFailure(reason), String(reason?.message || reason).slice(0, 300));
 });
 process.on('uncaughtException', (err) => {
     console.error('[SWARM] Uncaught exception CONTAINED:',
-        err?.code || '', String(err?.message || err).slice(0, 300));
+        describeTransportFailure(err), String(err?.message || err).slice(0, 300));
 });
 
 console.log("[NEXUS COMMANDER] Booting multi-tenant autonomous swarm...");
