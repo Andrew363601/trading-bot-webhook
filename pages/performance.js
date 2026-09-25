@@ -7,6 +7,7 @@ import {
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { createServerSupabaseClient } from '@supabase/auth-helpers-nextjs';
 import { getTierInfo, getStageColor } from '../lib/tier-mapping';
+import ThesisViewer from '../components/ThesisViewer';
 
 // PUSH AC — local YYYY-MM-DD at module scope (component has its own copy for
 // back-compat; helpers here run outside the component tree).
@@ -114,23 +115,10 @@ function ShadowLedgerCard({ v, expandedKey, expandedMap, onToggle }) {
         )}
       </div>
 
-      {/* Reason (oracle_reasoning) — expandable, same pattern as expandedThesis */}
+      {/* Reason (oracle_reasoning) — 🟢 PUSH AM36 shared ThesisViewer */}
       {v.reason && (
-        <div className="border-l-2 border-amber-500/30 pl-4 py-1 mt-2">
-          <div className="flex items-center justify-between mb-1">
-            <h4 className="text-[9px] font-black uppercase tracking-widest text-amber-400 flex items-center gap-2">Oracle Reasoning</h4>
-            {String(v.reason).length > 140 && (
-              <button
-                onClick={() => onToggle(expandedKey)}
-                className="text-[9px] font-black uppercase tracking-widest text-amber-300 hover:text-amber-200 flex items-center gap-1"
-              >
-                {isExpanded ? <>Collapse <ChevronUp size={10}/></> : <>Expand <ChevronDown size={10}/></>}
-              </button>
-            )}
-          </div>
-          <p className={`text-[11px] text-slate-400 italic whitespace-pre-wrap ${isExpanded ? '' : 'line-clamp-3'}`}>
-            {String(v.reason)}
-          </p>
+        <div className="mt-2">
+          <ThesisViewer reasoning={String(v.reason)} simParams={v.sim_params} />
         </div>
       )}
 
@@ -1621,21 +1609,9 @@ function PerformanceLogContent() {
 
                      <div className="flex flex-col gap-3 pl-2">
                         {pipeline.reasoning && (
-                          <div className="border-l-2 border-amber-500/30 pl-4 py-1">
-                             <div className="flex items-center justify-between mb-1">
-                               <h4 className="text-[9px] font-black uppercase tracking-widest text-amber-400 flex items-center gap-2"><BrainCircuit size={10}/> Oracle Rationale</h4>
-                               {pipeline.reasoning.length > 220 && (
-                                 <button
-                                   onClick={() => setExpandedThesis(prev => ({ ...prev, [t.id]: !prev[t.id] }))}
-                                   className="text-[9px] font-black uppercase tracking-widest text-amber-300 hover:text-amber-200 flex items-center gap-1"
-                                 >
-                                   {expandedThesis[t.id] ? <>Collapse <ChevronUp size={10}/></> : <>Expand <ChevronDown size={10}/></>}
-                                 </button>
-                               )}
-                             </div>
-                             <p className={`text-[11px] text-slate-400 italic whitespace-pre-wrap ${expandedThesis[t.id] ? '' : 'line-clamp-3'}`}>
-                               &quot;{pipeline.reasoning}&quot;
-                             </p>
+                          <div className="pl-2">
+                            {/* 🟢 PUSH AM36 — shared ThesisViewer (audit parity) */}
+                            <ThesisViewer reasoning={pipeline.reasoning} />
                           </div>
                         )}
 

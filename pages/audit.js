@@ -3,36 +3,12 @@ import { Activity, Filter, RefreshCw, CheckCircle2, Zap, BrainCircuit, Server, C
 import { useSupabaseClient, useSession } from '@supabase/auth-helpers-react';
 import { createPagesServerClient } from '@supabase/auth-helpers-nextjs';
 import { getTierInfo, getStageColor } from '../lib/tier-mapping';
+import ThesisViewer from '../components/ThesisViewer';
 
-function ThesisDisplay({ reasoning, isVeto, score }) {
-  const [expanded, setExpanded] = useState(false);
-  
-  if (!reasoning) return null;
-  
-  const isLong = reasoning.length > 250;
-  const content = (isLong && !expanded) ? reasoning.slice(0, 250) + '...' : reasoning;
-
-  return (
-    <div className={`border-l-2 pl-4 py-1 ${isVeto ? 'border-red-500/30' : 'border-amber-500/30'}`}>
-       <h4 className={`text-[10px] font-black uppercase tracking-widest flex items-center gap-2 mb-2 ${isVeto ? 'text-red-400' : 'text-amber-400'}`}>
-          <BrainCircuit size={12}/> Oracle Analysis {score && `(Score: ${score})`}
-       </h4>
-       <div className="bg-black/20 p-3 rounded-xl border border-white/5 relative">
-         <p className="text-[12px] text-slate-400 leading-relaxed italic whitespace-pre-wrap">
-            &quot;{content}&quot;
-         </p>
-         {isLong && (
-           <button 
-             onClick={() => setExpanded(!expanded)}
-             className="text-[10px] text-amber-500 hover:text-amber-400 mt-2 font-bold uppercase tracking-widest flex items-center gap-1 transition-colors"
-           >
-             {expanded ? 'Show Less' : 'Show More'}
-           </button>
-         )}
-       </div>
-    </div>
-  );
-}
+// 🟢 PUSH AM36 — local ThesisDisplay replaced by the shared ThesisViewer
+// (components/ThesisViewer.js) so audit, performance and demo-index all read
+// oracle_reasoning identically (decision badge, param chips, section cards,
+// raw-text fallback).
 
 export default function AuditLog({ initialSession }) {
   const session = useSession() || initialSession;
@@ -576,10 +552,10 @@ function AuditLogContent() {
                   </div>
                 )}
 
-                <ThesisDisplay 
-                  reasoning={displayReasoning} 
-                  isVeto={isVeto} 
-                  score={s?.telemetry?.oracle_score} 
+                <ThesisViewer
+                  reasoning={displayReasoning}
+                  isVeto={isVeto}
+                  score={s?.telemetry?.oracle_score}
                 />
 
                 {/* 🟢 THE FIX: Rendering the new Expectancy Metrics cleanly */}

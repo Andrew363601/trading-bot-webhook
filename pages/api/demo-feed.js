@@ -28,11 +28,11 @@ export default async function handler(req, res) {
 
   if (!DEMO_TENANT_ID) {
     // No demo tenant configured — let the client fall back to synthetic data.
-    return res.status(200).json({ configured: false, logs: [], trades: [], configs: [], memories: [] });
+    return res.status(200).json({ configured: false, logs: [], trades: [], configs: [], memories: [], shadowTrades: [] });
   }
 
   try {
-    const [logsRes, tradesRes, configsRes] = await Promise.all([
+    const [logsRes, tradesRes, configsRes, shadowRes] = await Promise.all([
       supabase
         .from('agent_session_logs')
         .select('agent_name, log_message, log_type, timestamp')
@@ -51,6 +51,20 @@ export default async function handler(req, res) {
         .eq('tenant_id', DEMO_TENANT_ID)
         .eq('is_active', true)   // Only currently-running strategies surface on the landing page.
         .order('last_updated', { ascending: false }),
+      // 🟢 PUSH AM36 — shadow ledger rows for the demo tenant. Same safe-column
+      // whitelist as pages/api/shadow-trades.js (service-role bypasses RLS, so
+      // this list is the only guard). Mapped to the SAME trade-card shape the
+      // client already renders (kind: 'SHADOW'). Read-only — no mutations.
+      supabase
+        .from('shadow_portfolio')
+        .select(`
+          id, asset, signal_direction, verdict, veto_price, veto_time,
+          sim_exit_price, sim_exit_time, sim_exit_reason, sim_pnl_pts,
+          sim_pnl_usd, sim_params, created_at
+        `)
+        .eq('tenant_id', DEMO_TENANT_ID)
+        .order('created_at', { ascending: false })
+        .limit(200),
     ]);
 
     // Fetch linked core memories for all returned trades
@@ -104,6 +118,29 @@ export default async function handler(req, res) {
       if (data) toolCalls = data;
     }
 
+    // 🟢 PUSH AM36 — map shadow rows to the shadow-trades.js trade-card shape
+    // (identical field names so the demo-index card renders them as-is).
+    const shadowTrades = (shadowRes.data || []).map(row => {
+      const simParams = row?.sim_params || {};
+      return {
+        id: row?.id ?? null,
+        symbol: row?.asset ?? null,
+        side: row?.signal_direction ?? null,
+        status: row?.verdict === 'PENDING' ? 'OPEN' : 'CLOSED',
+        entry_price: row?.veto_price != null ? parseFloat(row.veto_price) : null,
+        exit_price: row?.sim_exit_price != null ? parseFloat(row.sim_exit_price) : null,
+        exit_reason: row?.sim_exit_reason ?? null,
+        qty: simParams?.qty != null ? simParams.qty : 1000,
+        pnl: row?.sim_pnl_usd != null ? parseFloat(row.sim_pnl_usd) : null,
+        opened_at: row?.created_at ?? null,
+        closed_at: row?.sim_exit_time ?? null,
+        tp_price: simParams?.tp_price != null ? simParams.tp_price : null,
+        sl_price: simParams?.sl_price != null ? simParams.sl_price : null,
+        sim_params: simParams,
+        kind: 'SHADOW',
+      };
+    });
+
     // Cache at the edge for 10s to keep the landing page snappy and cheap.
     res.setHeader('Cache-Control', 's-maxage=10, stale-while-revalidate=30');
 
@@ -114,9 +151,10 @@ export default async function handler(req, res) {
       configs: configsRes.data || [],
       memories,
       toolCalls,
+      shadowTrades,
     });
   } catch (e) {
     console.error('[DEMO_FEED] Error:', e.message);
-    return res.status(200).json({ configured: true, logs: [], trades: [], configs: [], memories: [], error: e.message });
+    return res.status(200).json({ configured: true, logs: [], trades: [], configs: [], memories: [], shadowTrades: [], error: e.message });
   }
 }

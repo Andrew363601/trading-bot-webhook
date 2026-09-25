@@ -8,6 +8,8 @@ import WebhookCreator from '../components/WebhookCreator';
 import { fetchSiteContent, FALLBACK_CONTENT } from '../lib/site-content';
 import { trackEvent } from '../lib/analytics';
 import QuickSignupPopup from '../components/QuickSignupPopup';
+import ThesisViewer from '../components/ThesisViewer';
+import { getTierInfo, getStageColor } from '../lib/tier-mapping';
 import Link from 'next/link';
 
 const supabaseReadOnly = createClient(
@@ -36,6 +38,10 @@ export default function LandingPage() {
   const [expandedMemories, setExpandedMemories] = useState({});
   const [toolCallsMap, setToolCallsMap] = useState({});
   const [expandedToolCalls, setExpandedToolCalls] = useState({});
+  // 🟢 PUSH AM36 — shadow ledger rows (kind: 'SHADOW') kept in a SEPARATE list
+  // so they never pollute modeStats / getTradeMode / date filters (shadow rows
+  // lack execution_mode and exit_time). Mirrors index.js's SHADOW_TRADES tab.
+  const [shadowTrades, setShadowTrades] = useState([]);
 
   useEffect(() => {
     fetchSiteContent(supabaseReadOnly).then(setContent);
@@ -98,6 +104,9 @@ export default function LandingPage() {
         // win rate and PnL reflect what the demo tenant is actually doing.
         const trades = data.trades || [];
         setDemoTrades(trades);
+        // 🟢 PUSH AM36 — shadow ledger rows (separate list, never merged into
+        // trades[] so stats/filters stay clean).
+        if (data.shadowTrades) setShadowTrades(data.shadowTrades);
 
         // 🟢 AM17 — Build tool calls map from feed response with a three-tier
         // join (audit.js parity): exact trade_id → entry time window → open-trade
@@ -250,9 +259,19 @@ export default function LandingPage() {
 
   const dateFiltered = getFilteredTrades(demoTrades, dateFilter);
 
-  const filteredTrades = executionMode === 'ALL'
-    ? dateFiltered
-    : dateFiltered.filter(t => getTradeMode(t) === executionMode);
+  // 🟢 PUSH AM36 — SHADOW tab renders its own list (shadow rows have no
+  // execution_mode / exit_time, so they must not flow through the live filters).
+  const sortedShadowTrades = [...shadowTrades].sort((a, b) => {
+    const ta = a.opened_at ? new Date(a.opened_at).getTime() : 0;
+    const tb = b.opened_at ? new Date(b.opened_at).getTime() : 0;
+    return tb - ta;
+  });
+
+  const filteredTrades = executionMode === 'SHADOW'
+    ? []   // shadow rows render from sortedShadowTrades below
+    : executionMode === 'ALL'
+      ? dateFiltered
+      : dateFiltered.filter(t => getTradeMode(t) === executionMode);
 
   // Client-side sort: newest first by created_at, regardless of filter.
   const sortedFilteredTrades = [...filteredTrades].sort((a, b) => {
@@ -262,6 +281,18 @@ export default function LandingPage() {
   });
 
   const modeStats = (() => {
+    // 🟢 PUSH AM36 — SHADOW tab has its own stats from sim PnL; live/paper
+    // stats never include shadow rows.
+    if (executionMode === 'SHADOW') {
+      const closed = sortedShadowTrades.filter(t => t.exit_price !== null && t.exit_price !== undefined);
+      const open = sortedShadowTrades.filter(t => t.exit_price === null || t.exit_price === undefined);
+      const pool = closed.length > 0 ? closed : open;
+      if (pool.length > 0) {
+        const wins = pool.filter(t => (parseFloat(t.pnl) || 0) > 0).length;
+        return { winRate: ((wins / pool.length) * 100).toFixed(1) + '%', totalTrades: pool.length, totalPnL: `$${pool.reduce((s, t) => s + (parseFloat(t.pnl) || 0), 0).toFixed(2)}`, mode: 'SHADOW' };
+      }
+      return { winRate: '0%', totalTrades: 0, totalPnL: '$0.00', mode: 'SHADOW' };
+    }
     const all = sortedFilteredTrades;
     const closed = all.filter(t => t.exit_price !== null && t.exit_price !== undefined);
     const open = all.filter(t => t.exit_price === null || t.exit_price === undefined);
@@ -839,6 +870,23 @@ export default function LandingPage() {
               >
                 PAPER
               </button>
+              {/* 🟢 PUSH AM36 — SHADOW tab (purple, mirrors index.js AM11 tab). */}
+              <button
+                type="button"
+                onClick={() => setExecutionMode('SHADOW')}
+                className={`relative px-2 sm:px-4 py-1.5 rounded-lg text-[10px] sm:text-xs font-black uppercase tracking-widest transition-all ${
+                  executionMode === 'SHADOW'
+                    ? 'bg-purple-500/20 text-purple-400 shadow-[inset_0_0_10px_rgba(168,85,247,0.15)]'
+                    : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                <span className="flex items-center gap-1.5">
+                  SHADOW
+                  {shadowTrades.some(t => t.exit_price === null || t.exit_price === undefined) && (
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${executionMode === 'SHADOW' ? 'bg-purple-400 animate-pulse' : 'bg-purple-600/50'}`} />
+                  )}
+                </span>
+              </button>
             </div>
 
             {/* 🆕 Date filter */}
@@ -885,7 +933,116 @@ export default function LandingPage() {
           )}
 
           {/* Trade list */}
-          {sortedFilteredTrades.length > 0 ? (
+          {executionMode === 'SHADOW' ? (
+            /* 🟢 PUSH AM36 — shadow ledger list (kind: 'SHADOW' cards). */
+            sortedShadowTrades.length > 0 ? (
+              <div className="max-h-[400px] sm:max-h-[600px] overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
+                {sortedShadowTrades.slice(0, 50).map((trade, i) => {
+                  const isOpen = trade.exit_price === null || trade.exit_price === undefined;
+                  const pnlVal = parseFloat(trade.pnl) || 0;
+                  const isWin = !isOpen && pnlVal > 0;
+                  const isLoss = !isOpen && pnlVal <= 0;
+                  const isExpanded = expandedTrade === `shadow-${trade.id}`;
+                  const reasonText = trade.reason || trade.working_thesis;
+
+                  let rowBorderBg = 'border-slate-800 bg-slate-950/40';
+                  if (isOpen) rowBorderBg = 'border-purple-500/30 bg-purple-500/5';
+                  else if (isWin) rowBorderBg = 'border-emerald-500/20 bg-slate-950/40';
+                  else if (isLoss) rowBorderBg = 'border-red-500/20 bg-slate-950/40';
+
+                  return (
+                    <div
+                      key={trade.id || i}
+                      onClick={() => setExpandedTrade(isExpanded ? null : `shadow-${trade.id}`)}
+                      className={`border rounded-2xl p-4 sm:p-5 transition-all duration-200 cursor-pointer hover:border-slate-700 ${rowBorderBg}`}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        {/* Left: SHADOW badge + asset + side */}
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded tracking-wider bg-purple-500/20 text-purple-400 border border-purple-500/30">
+                            SHADOW
+                          </span>
+
+                          <span className="font-bold text-white text-base font-mono">
+                            {baseTicker(trade.symbol)}-PERP
+                          </span>
+
+                          <span className={`text-xs font-black uppercase px-2 py-0.5 rounded tracking-wide ${
+                            String(trade.side).toUpperCase() === 'BUY' || String(trade.side).toUpperCase() === 'LONG'
+                              ? 'bg-emerald-500/10 text-emerald-400'
+                              : 'bg-red-500/10 text-red-400'
+                          }`}>
+                            {trade.side}
+                          </span>
+
+                          <span className="text-xs text-slate-500 font-mono hidden md:inline">
+                            sim ledger
+                          </span>
+                        </div>
+
+                        {/* Right: prices, PnL, open/closed, chevron */}
+                        <div className="flex items-center gap-2 sm:gap-4 justify-between sm:justify-end flex-wrap">
+                          <div className="text-right font-mono text-[10px] sm:text-xs text-slate-400 min-w-0">
+                            <span className="truncate inline-block max-w-[70px] sm:max-w-none align-bottom">${trade.entry_price || '—'}</span>
+                            <span className="mx-1 text-slate-600">→</span>
+                            <span className="truncate inline-block max-w-[70px] sm:max-w-none align-bottom">{trade.exit_price ? `$${trade.exit_price}` : 'OPEN'}</span>
+                          </div>
+
+                          <div className="text-right min-w-[60px] sm:min-w-[80px]">
+                            <span className={`text-xs sm:text-sm font-bold font-mono ${
+                              pnlVal > 0 ? 'text-emerald-400' : (pnlVal < 0 ? 'text-red-400' : 'text-slate-300')
+                            }`}>
+                              {pnlVal > 0 ? '+' : ''}${pnlVal.toFixed(2)}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1 sm:gap-2">
+                            <span className={`text-[9px] sm:text-[10px] font-bold uppercase tracking-wider px-1.5 sm:px-2 py-0.5 rounded ${
+                              isOpen
+                                ? 'bg-purple-500/20 text-purple-300'
+                                : 'bg-slate-800 text-slate-400'
+                            }`}>
+                              {isOpen ? 'OPEN' : 'CLOSED'}
+                            </span>
+                            <ChevronRight className={`w-3.5 h-3.5 sm:w-4 sm:h-4 text-slate-500 transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Expandable panel — sim params + thesis (no tool calls:
+                          shadow rows have no agent_tool_calls trade_id). */}
+                      {isExpanded && (
+                        <div className="mt-4 pt-4 border-t border-slate-800/80 bg-purple-950/20 -mx-3 -mb-3 sm:-mx-4 sm:-mb-4 p-3 sm:p-4 rounded-b-2xl overflow-x-hidden">
+                          <div className="flex items-center gap-2 mb-2">
+                            <div className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                            <span className="text-[10px] font-mono uppercase tracking-widest text-purple-300">Shadow Sim Ledger</span>
+                          </div>
+                          {trade.sim_params && Object.keys(trade.sim_params).length > 0 && (
+                            <div className="mb-3 bg-black/30 rounded-xl p-3 border border-purple-500/10">
+                              <div className="text-[9px] font-black uppercase tracking-widest text-purple-400 mb-2">Sim Rules (config-true)</div>
+                              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[9px] font-mono text-slate-400">
+                                {Object.entries(trade.sim_params).map(([k, val]) => (
+                                  <div key={k} className="flex justify-between gap-2">
+                                    <span className="text-slate-600">{k}</span>
+                                    <span className="text-slate-300 truncate">{val === null || val === undefined ? '—' : String(val)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <ThesisViewer reasoning={reasonText} simParams={trade.sim_params} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="py-16 text-center bg-slate-950/30 rounded-3xl border border-white/5">
+                <p className="text-slate-500 font-mono text-sm uppercase tracking-widest">No shadow ledger entries recorded yet.</p>
+              </div>
+            )
+          ) : sortedFilteredTrades.length > 0 ? (
             <div className="max-h-[400px] sm:max-h-[600px] overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
               {sortedFilteredTrades.slice(0, 50).map((trade, i) => {
                 const isOpen = trade.exit_price === null || trade.exit_price === undefined;
@@ -971,9 +1128,7 @@ export default function LandingPage() {
                           <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />
                           <span className="text-[10px] font-mono uppercase tracking-widest text-indigo-300">Agent Reasoning &amp; Working Thesis</span>
                         </div>
-                        <p className="text-xs text-slate-300 font-mono leading-relaxed whitespace-pre-wrap break-words">
-                          {reasonText || 'No rationalization notes recorded for this trade.'}
-                        </p>
+                        <ThesisViewer reasoning={reasonText} simParams={trade.sim_params} />
 
                         {/* 🧠 Core Memory (Influenced This Trade) */}
                         {(() => {
@@ -1084,20 +1239,51 @@ export default function LandingPage() {
                                 </button>
                               </div>
                               {tcExpanded && (
-                                <div className="bg-black/20 rounded-xl border border-white/5 overflow-hidden max-h-[200px] overflow-y-auto">
+                                <div className="bg-black/20 rounded-xl border border-white/5 overflow-hidden max-h-[300px] overflow-y-auto">
+                                  {/* 🟢 PUSH AM36 — full 6-col table ported from audit.js
+                                      (Tool | Tier | Stage | Why | Duration | Status) so
+                                      demo-index and audit read identically. */}
                                   <table className="w-full text-[10px] font-mono">
                                     <thead>
-                                      <tr className="border-b border-white/5 text-[8px] uppercase tracking-widest text-slate-500">
+                                      <tr className="border-b border-white/5 text-[8px] uppercase tracking-widest text-slate-500 sticky top-0 bg-black/90">
                                         <th className="px-3 py-2 text-left">Tool</th>
+                                        <th className="px-3 py-2 text-center">Tier</th>
+                                        <th className="px-3 py-2 text-center">Stage</th>
+                                        <th className="px-3 py-2 text-left">Why</th>
                                         <th className="px-3 py-2 text-right">Duration</th>
                                         <th className="px-3 py-2 text-right">Status</th>
                                       </tr>
                                     </thead>
                                     <tbody>
-                                      {toolCalls.map(tc => (
+                                      {toolCalls.map(tc => {
+                                        const info = getTierInfo(tc.tool_name);
+                                        const [stageLetter] = info.stage === 1 ? ['E'] :
+                                          info.stage === 2 ? ['V'] :
+                                          info.stage === 3 ? ['D'] :
+                                          info.stage === 4 ? ['R'] :
+                                          info.stage === 'SYSTEM' ? ['S'] :
+                                          info.stage === 'EXECUTION' ? ['X'] : ['?'];
+                                        return (
                                         <tr key={tc.id || tc.tool_name + tc.created_at} className="border-b border-white/5 hover:bg-white/5 transition-colors">
-                                          <td className="px-3 py-2 text-slate-300">{tc.tool_name.replace('coinglass_', 'cg_')}</td>
-                                          <td className="px-3 py-2 text-right text-slate-400">{tc.duration_ms}ms</td>
+                                          <td className="px-3 py-2 text-slate-300 whitespace-nowrap">{tc.tool_name.replace('coinglass_', 'cg_')}</td>
+                                          <td className="px-3 py-2 text-center">
+                                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black"
+                                              style={{ backgroundColor: `${info.tierColor}20`, color: info.tierColor, border: `1px solid ${info.tierColor}40` }}
+                                              title={info.tierLabel}>
+                                              {typeof info.tier === 'number' ? `T${info.tier}` : info.tier === 'SYSTEM' ? '⚙️' : info.tier === 'EXECUTION' ? '▶️' : '?'}
+                                            </span>
+                                          </td>
+                                          <td className="px-3 py-2 text-center">
+                                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black"
+                                              style={{ backgroundColor: `${getStageColor(info.stage)}20`, color: getStageColor(info.stage), border: `1px solid ${getStageColor(info.stage)}40` }}
+                                              title={info.stageLabel}>
+                                              {stageLetter}
+                                            </span>
+                                          </td>
+                                          <td className="px-3 py-2 text-left text-slate-400 text-[9px] leading-tight max-w-[200px] truncate" title={info.reason}>
+                                            {info.reason}
+                                          </td>
+                                          <td className="px-3 py-2 text-right text-slate-400 whitespace-nowrap">{tc.duration_ms}ms</td>
                                           <td className="px-3 py-2 text-right">
                                             <span className={`px-1.5 py-0.5 rounded text-[9px] font-black ${
                                               tc.status === 'success' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'
@@ -1106,7 +1292,7 @@ export default function LandingPage() {
                                             </span>
                                           </td>
                                         </tr>
-                                      ))}
+                                      )})}
                                     </tbody>
                                   </table>
                                   {toolCalls.some(tc => tc.response_summary) && (

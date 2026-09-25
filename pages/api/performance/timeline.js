@@ -428,7 +428,9 @@ export default async function handler(req, res) {
         sim_pnl_pts: v.sim_pnl_pts,
         sim_pnl_usd: v.sim_pnl_usd,
         sim_params: v.sim_params,
-        reason: rawReason ? rawReason.slice(0, 400) : null,
+        // 🟢 PUSH AM36 — full oracle_reasoning (no 400-char slice) so the shared
+        // ThesisViewer can parse the complete thesis on the performance page.
+        reason: rawReason || null,
         tools: toolsByScanId[v.scan_id] || [],
         // 🟢 PUSH AE: telemetry-first — cited memories stamped by sniper at scan time.
         // agent_tool_calls fallback stays for old rows written before the stamp.
