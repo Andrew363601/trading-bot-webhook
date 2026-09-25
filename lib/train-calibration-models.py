@@ -48,6 +48,13 @@ MIN_TRANSITION_SAMPLES = 5
 MIN_EXPECTANCY_SAMPLES = 10
 SHRINKAGE_K = 5
 
+# 🟢 Synthetic-era guard — trainer only learns from the last 30 days of real
+# trades. The qty=100 backfill era (synthetic rows, entry_price=0) must never
+# re-enter the dollar heads: one poisoned bucket shifts expected_pnl for every
+# geometry it shares. Applied to all three loaders (real trades, veto ledger,
+# archetype stats) so the three sample pools can never drift apart in era.
+CUTOFF = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+
 
 # ─────────────────────────────────────────────────────────────
 # Supabase REST helpers
@@ -197,7 +204,9 @@ select_cols = ('id,tenant_id,symbol,strategy_id,regime_at_entry,pnl,side,'
 # one unguarded row would re-poison Head 2's dollar labels exactly like it
 # poisoned the paper line. (pnl or 0) below stays as belt-and-braces.
 trades = sb_get('trade_logs', select_cols,
-                filters='&market_snapshot_at_entry=not.is.null&exit_price=not.is.null&pnl=not.is.null',
+                filters=('&market_snapshot_at_entry=not.is.null&exit_price=not.is.null&pnl=not.is.null'
+                         f'&created_at=gte.{CUTOFF}'
+                         '&qty=lte.99&entry_price=gt.0'),   # synthetic-era guard (qty=100 backfill, e=0 rows)
                 order='created_at.desc', limit=2000)
 if TENANT_FILTER:
     trades = [t for t in trades if t.get('tenant_id') == TENANT_FILTER]
@@ -207,7 +216,11 @@ print(f'Closed trades with snapshots: {len(trades)}')
 shadow = sb_get('shadow_portfolio',
                 'id,tenant_id,asset,scan_id,signal_direction,veto_regime,veto_price,verdict,'
                 'saved_amount,missed_amount,fill_basis,macro_tf,trigger_tf,params_context',
-                filters="&verdict=in.(SAVED,MISSED)&fill_basis=eq.far_side", limit=2000)
+                # Synthetic-era guard: shadow_portfolio has no qty column (qty
+                # lives in sim_params JSONB) — veto_price is the entry analog.
+                filters=("&verdict=in.(SAVED,MISSED)&fill_basis=eq.far_side"
+                         f'&created_at=gte.{CUTOFF}'
+                         '&veto_price=gt.0'), limit=2000)
 if TENANT_FILTER:
     shadow = [s for s in shadow if s.get('tenant_id') == TENANT_FILTER]
 scan_ids = list({str(s['scan_id']) for s in shadow if s.get('scan_id')})
@@ -794,7 +807,8 @@ if transition_rows:
 print('\n=== Archetype stats ===')
 arch_trades = sb_get('trade_logs',
                      'tenant_id,symbol,microstructure_archetype,pnl,entry_price,exit_price,market_snapshot_at_entry,tp_price,sl_price,exit_time,created_at',
-                     filters='&microstructure_archetype=not.is.null&exit_price=not.is.null',
+                     filters=('&microstructure_archetype=not.is.null&exit_price=not.is.null'
+                              f'&created_at=gte.{CUTOFF}&entry_price=gt.0'),
                      order='created_at.desc', limit=2000)
 arch_agg = defaultdict(list)
 for t in arch_trades:
