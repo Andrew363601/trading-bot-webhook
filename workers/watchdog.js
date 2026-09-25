@@ -205,11 +205,11 @@ export async function startWatchdog(tenantId) {
     }, 60 * 60 * 1000);
     registerTimer(`watchdog:${tenantId}`, cleanupTimer);
 
-    const firstSweep = setTimeout(() => { sweepOpenTrades().catch(e => console.error(`[WATCHDOG-${tenantId}] first sweep fault:`, e.message)); }, firstSweepDelayMs());
+    const firstSweep = setTimeout(() => { sweepOpenTrades(tenantId).catch(e => console.error(`[WATCHDOG-${tenantId}] first sweep fault:`, e.message)); }, firstSweepDelayMs());
     registerTimer(`watchdog:${tenantId}`, firstSweep);
     const sweepTimer = setInterval(async () => {
         try {
-            await sweepOpenTrades();
+            await sweepOpenTrades(tenantId);
         } catch (e) {
             console.error(`[WATCHDOG-${tenantId}] sweep fault:`, e.message);
         }
@@ -222,7 +222,7 @@ export function stopWatchdog(tenantId) {
     stopWorkerTimers(`watchdog:${tenantId}`);
 }
 
-async function sweepOpenTrades() {
+async function sweepOpenTrades(tenantId) {
     try {
             // 🟢 Per-sweep reset of tracking state
             deployedSafetyNets.clear();
