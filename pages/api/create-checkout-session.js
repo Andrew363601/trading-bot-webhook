@@ -144,7 +144,7 @@ export default async function handler(req, res) {
             mode: 'subscription',
             ...(tier === 'RETAIL'
                 ? {
-                    payment_method_collection: false,
+                    payment_method_collection: 'if_required',
                     subscription_data: {
                         trial_period_days: 30,
                         metadata: { tenantId: realTenantId, tier }
