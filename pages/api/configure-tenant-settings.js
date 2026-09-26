@@ -47,13 +47,13 @@ async function handler(req, res) {
           if (notification_webhook_url && !notification_webhook_url.startsWith('https://')) {
             return res.status(400).json({ error: 'Webhook URL must start with https://' });
           }
-          updateData.notification_webhook_url = notification_webhook_url;
+          updateData.notification_webhook_url = notification_webhook_url || null;
         }
         if (notification_nexus_webhook_url !== undefined) {
           if (notification_nexus_webhook_url && !notification_nexus_webhook_url.startsWith('https://')) {
             return res.status(400).json({ error: 'Nexus webhook URL must start with https://' });
           }
-          updateData.notification_nexus_webhook_url = notification_nexus_webhook_url;
+          updateData.notification_nexus_webhook_url = notification_nexus_webhook_url || null;
         }
         if (account_balance_usd !== undefined) updateData.account_balance_usd = account_balance_usd;
         if (risk_per_trade_percent !== undefined) updateData.risk_per_trade_percent = risk_per_trade_percent;

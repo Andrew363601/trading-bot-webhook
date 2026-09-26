@@ -12,8 +12,8 @@ async function handler(req, res) {
         const { exchange, apiKey, apiSecret } = req.body;
         const { tenantId, supabase, role } = req.tenant;
 
-        if (role !== 'ADMIN') {
-            return res.status(403).json({ error: 'Admin role required' });
+        if (role !== 'ADMIN' && role !== 'TRADER' && role !== 'TRIAL') {
+            return res.status(403).json({ error: 'Unauthorized role' });
         }
 
         if (!exchange || !apiKey || !apiSecret) {
