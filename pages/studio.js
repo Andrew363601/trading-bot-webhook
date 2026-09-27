@@ -66,6 +66,10 @@ export default function StudioPage() {
   const [backtestResult, setBacktestResult] = useState(null);
   const [backtestError, setBacktestError] = useState('');
 
+  // PUSH AM49a — Deploy-to-Paper state
+  const [deploying, setDeploying] = useState(false);
+  const [deployStatus, setDeployStatus] = useState(null); // { type: 'success'|'error'|'quota', message }
+
   // PUSH AM47c — Simulation parameters editor state (UI shows WHOLE percent, payload converts to DECIMALS)
   const [simParamsOpen, setSimParamsOpen] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -261,6 +265,47 @@ export default function StudioPage() {
       setBacktestError(err.message);
     } finally {
       setBacktesting(false);
+    }
+  };
+
+  // PUSH AM49a — Deploy to Paper (uses the parameters you just SIMULATED, not library defaults)
+  const handleDeployToPaper = async () => {
+    if (!selectedStrategy || !backtestResult?.effective_parameters) return;
+    const ok = window.confirm(
+      `Deploy ${selectedStrategy.display_name || selectedStrategy.name} to PAPER on ${backtestProduct} using the parameters you just backtested?\n\nNote: this replaces any currently active strategy on ${backtestProduct}.`
+    );
+    if (!ok) return;
+
+    try {
+      setDeploying(true);
+      setDeployStatus(null);
+      const res = await fetch('/api/deploy-strategy', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify({
+          strategy: selectedStrategy.name,
+          version: 'v' + selectedStrategy.version + '.0',
+          config: backtestResult.effective_parameters,
+          asset: backtestProduct,
+          execution_mode: 'PAPER'
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setDeployStatus({ type: 'success', message: data.message || 'Strategy deployed to PAPER.' });
+      } else if (res.status === 403) {
+        setDeployStatus({ type: 'quota', message: data.error || 'Plan quota reached — upgrade to deploy more strategies.' });
+      } else {
+        setDeployStatus({ type: 'error', message: data.error || `Deploy failed (${res.status})` });
+      }
+    } catch (err) {
+      console.error('Deploy error:', err);
+      setDeployStatus({ type: 'error', message: err.message });
+    } finally {
+      setDeploying(false);
     }
   };
 
@@ -1221,6 +1266,65 @@ export default function StudioPage() {
             {/* Backtest Results Display */}
             {backtestResult && backtestResult.summary && (
               <div className="space-y-6">
+                {/* PUSH AM49a — Deploy to Paper control */}
+                {isUnlocked && (
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/50 border border-white/5 rounded-2xl p-4">
+                    <div className="text-[11px] text-slate-400">
+                      <span className="font-black uppercase tracking-widest text-slate-300">Deploy to Paper</span>
+                      <span className="block text-slate-500 mt-0.5">
+                        Activates this strategy on {backtestProduct} in PAPER mode with the exact parameters simulated above.
+                      </span>
+                    </div>
+                    <button
+                      onClick={handleDeployToPaper}
+                      disabled={backtesting || deploying}
+                      className={`px-5 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center gap-2 whitespace-nowrap ${
+                        deploying
+                          ? 'bg-emerald-600/50 text-emerald-200 cursor-not-allowed'
+                          : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-500/20 active:scale-95'
+                      }`}
+                    >
+                      {deploying ? (
+                        <>
+                          <RotateCw className="w-3.5 h-3.5 animate-spin" /> Deploying...
+                        </>
+                      ) : (
+                        <>
+                          <Shield className="w-3.5 h-3.5" /> Deploy to Paper
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+
+                {/* PUSH AM49a — Deploy status chip */}
+                {deployStatus && (
+                  <div
+                    className={`p-3 rounded-xl text-xs flex items-center gap-2 border ${
+                      deployStatus.type === 'success'
+                        ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
+                        : deployStatus.type === 'quota'
+                        ? 'bg-amber-500/10 border-amber-500/20 text-amber-400'
+                        : 'bg-red-500/10 border-red-500/20 text-red-400'
+                    }`}
+                  >
+                    {deployStatus.type === 'success' ? (
+                      <Shield className="w-4 h-4 flex-shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                    )}
+                    <span className="flex-1">{deployStatus.message}</span>
+                    {deployStatus.type === 'success' && (
+                      <Link
+                        href="/performance"
+                        className="font-black uppercase tracking-widest underline underline-offset-2 hover:text-emerald-300 whitespace-nowrap"
+                      >
+                        Open Dashboard <ChevronRight className="w-3 h-3 inline" />
+                      </Link>
+                    )}
+                  </div>
+                )}
+
                 {/* Metric Summary Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                   <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-4 space-y-1">

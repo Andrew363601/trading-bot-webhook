@@ -262,6 +262,7 @@ export default async function handler(req, res) {
     EXCEPTIONS (only these — no others):
     • \`queryTradeLedger\` and \`readCoreMemory\` — read-only queries that inform your response. These can fire without confirmation when you need data to answer a question the user already asked.
     • \`fetchHistoricalData\` — allowed without confirmation when the user explicitly says "analyze [ASSET]" or "look at [ASSET]"
+    • EXPLICIT ACTION CHAINS (PUSH AM49a) — when the user's message explicitly names an action chain (e.g. "save this and backtest it", "update and re-run"), that message IS the confirmation for the named chain. Execute the full chain without asking again mid-chain. This relief does NOT extend to: LIVE mode anything, \`overwrite: true\`, visibility change to public, or any \`strategy_config\` write — those ALWAYS require a fresh, explicit confirmation even inside a named chain.
 
     When in doubt, ask first. A single sentence is enough: "Want me to run that?"
 
@@ -1295,8 +1296,8 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         model: modelInstance,
         system: systemPrompt,
         messages: safeMessages,
-        maxSteps: 12,
-        stopWhen: stepCountIs(12),
+        maxSteps: 20,
+        stopWhen: stepCountIs(20),
         timeout: { totalMs: 290000 },
         tools: tools,
       });
