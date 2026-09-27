@@ -11,6 +11,8 @@ import path from 'path';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 import { recordUsage } from '../../lib/usage-meter';
 import { getActiveModel } from '../../lib/model-router';
+import { getBillingTier, hasStudioAccess } from '../../lib/entitlements.js';
+import { validateStrategyCode } from '../../lib/strategy-validator.js';
 import jwt from 'jsonwebtoken';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -620,6 +622,192 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
             }
           },
         }), 
+
+        saveStrategyCode: tool({
+          description: 'Saves new JavaScript strategy code to the tenant strategy library. Note: Saving does NOT deploy or activate the strategy. Users must backtest and deploy explicitly in Strategy Studio. Requires PRO tier or higher.',
+          parameters: z.object({
+            name: z.string().describe('Canonical strategy slug (3-64 chars, lowercase letters, numbers, and underscores, e.g. "btc_trend_follow_v1"). Required.'),
+            code: z.string().describe('Complete JavaScript strategy source code defining `run(macroCandles, triggerCandles, parameters)`. Required.'),
+            description: z.string().optional().describe('Short description of the strategy thesis and rules.')
+          }),
+          execute: async ({ name, code, description }) => {
+            if (!tenantId) {
+              return { success: false, error: 'Refused: no tenant context found.' };
+            }
+            try {
+              const currentTier = await getBillingTier(supabase, tenantId);
+              if (!hasStudioAccess(currentTier)) {
+                return {
+                  success: false,
+                  error: 'Strategy Studio requires PRO plan or higher. Upgrade at /plans'
+                };
+              }
+
+              const cleanName = (name || '').toString().trim().toLowerCase();
+              if (!/^[a-z0-9_]{3,64}$/.test(cleanName)) {
+                return {
+                  success: false,
+                  error: `Invalid strategy name '${cleanName}'. Must match /^[a-z0-9_]{3,64}$/ (3-64 chars, lowercase letters, numbers, underscores).`
+                };
+              }
+
+              const validation = validateStrategyCode(code);
+              if (!validation.ok) {
+                return {
+                  success: false,
+                  error: 'Strategy code validation failed: ' + validation.errors.join(' | '),
+                  errors: validation.errors
+                };
+              }
+
+              // Check existing (tenant_id, name)
+              const { data: existing, error: checkError } = await supabase
+                .from('strategy_library')
+                .select('id, name, version')
+                .eq('tenant_id', tenantId)
+                .eq('name', cleanName)
+                .maybeSingle();
+
+              if (checkError) {
+                return { success: false, error: `Database check error: ${checkError.message}` };
+              }
+
+              if (existing) {
+                return {
+                  success: false,
+                  error: `Strategy '${cleanName}' already exists with version ${existing.version}. Use updateStrategyCode to update it.`,
+                  existing: { name: existing.name, version: existing.version }
+                };
+              }
+
+              const { data: inserted, error: insertError } = await supabase
+                .from('strategy_library')
+                .insert([{
+                  tenant_id: tenantId,
+                  name: cleanName,
+                  display_name: cleanName,
+                  description: description || null,
+                  code,
+                  version: 1,
+                  visibility: 'private',
+                  status: 'draft'
+                }])
+                .select('id, name, version')
+                .single();
+
+              if (insertError) {
+                return { success: false, error: `Insert error: ${insertError.message}` };
+              }
+
+              await supabase
+                .from('strategy_library_versions')
+                .insert([{
+                  library_id: inserted.id,
+                  version: 1,
+                  code,
+                  change_note: 'Initial version via chat'
+                }]);
+
+              return {
+                saved: true,
+                name: cleanName,
+                version: 1,
+                studio_url: `/studio?strategy=${cleanName}`,
+                note: 'Strategy saved to Strategy Studio library in draft status. It is NOT active or deployed.'
+              };
+            } catch (err) {
+              console.error('[CHAT saveStrategyCode ERROR]', err.message);
+              return { success: false, error: `Exception during saveStrategyCode: ${err.message}` };
+            }
+          }
+        }),
+
+        updateStrategyCode: tool({
+          description: 'Updates existing JavaScript strategy code in the tenant strategy library, incrementing the version and preserving version history. Note: This does NOT deploy or activate the strategy. Requires PRO tier or higher.',
+          parameters: z.object({
+            name: z.string().describe('Canonical strategy slug to update (must exist in library). Required.'),
+            code: z.string().describe('Updated JavaScript strategy source code defining `run(macroCandles, triggerCandles, parameters)`. Required.'),
+            change_note: z.string().optional().describe('Summary of modifications made in this version.')
+          }),
+          execute: async ({ name, code, change_note }) => {
+            if (!tenantId) {
+              return { success: false, error: 'Refused: no tenant context found.' };
+            }
+            try {
+              const currentTier = await getBillingTier(supabase, tenantId);
+              if (!hasStudioAccess(currentTier)) {
+                return {
+                  success: false,
+                  error: 'Strategy Studio requires PRO plan or higher. Upgrade at /plans'
+                };
+              }
+
+              const cleanName = (name || '').toString().trim().toLowerCase();
+              const { data: existing, error: checkError } = await supabase
+                .from('strategy_library')
+                .select('id, name, version, code')
+                .eq('tenant_id', tenantId)
+                .eq('name', cleanName)
+                .maybeSingle();
+
+              if (checkError) {
+                return { success: false, error: `Database check error: ${checkError.message}` };
+              }
+              if (!existing) {
+                return {
+                  success: false,
+                  error: `Strategy '${cleanName}' not found in library. Use saveStrategyCode to create it first.`
+                };
+              }
+
+              const validation = validateStrategyCode(code);
+              if (!validation.ok) {
+                return {
+                  success: false,
+                  error: 'Strategy code validation failed: ' + validation.errors.join(' | '),
+                  errors: validation.errors
+                };
+              }
+
+              const oldVersion = existing.version || 1;
+              const newVersion = oldVersion + 1;
+
+              const { error: updateError } = await supabase
+                .from('strategy_library')
+                .update({
+                  code,
+                  version: newVersion,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', existing.id)
+                .eq('tenant_id', tenantId);
+
+              if (updateError) {
+                return { success: false, error: `Update failed: ${updateError.message}` };
+              }
+
+              await supabase
+                .from('strategy_library_versions')
+                .insert([{
+                  library_id: existing.id,
+                  version: newVersion,
+                  code,
+                  change_note: change_note || `Version bump from v${oldVersion} to v${newVersion} via chat`
+                }]);
+
+              return {
+                saved: true,
+                name: cleanName,
+                version: newVersion,
+                studio_url: `/studio?strategy=${cleanName}`,
+                note: `Strategy updated to version ${newVersion}. It is saved to the library and NOT active or deployed.`
+              };
+            } catch (err) {
+              console.error('[CHAT updateStrategyCode ERROR]', err.message);
+              return { success: false, error: `Exception during updateStrategyCode: ${err.message}` };
+            }
+          }
+        }),
 
         readStrategyLogic: tool({
           description: 'Reads the raw JavaScript source code of a specific strategy file.',

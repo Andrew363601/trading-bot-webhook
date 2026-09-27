@@ -11,8 +11,9 @@ import {
   Target, AlertTriangle, ArrowRight, RefreshCw, Layers, BrainCircuit,
   Settings, LogOut, Clock, Crosshair, ChevronRight, Menu, X, PlusCircle,
   Search, AlertOctagon, Eye, Minimize2, Maximize2, Power, ChevronDown, ChevronUp, Sun, Moon,
-  Minus, Slash, Type, Eraser, Sliders, FlaskConical
+  Minus, Slash, Type, Eraser, Sliders, FlaskConical, Lock, Code
 } from 'lucide-react';
+import { hasStudioAccess } from '../lib/entitlements.js';
 import AuthGuard from '../components/AuthGuard';
 import MarketScanner from '../components/MarketScanner';
 import QuickStartGuide from '../components/QuickStartGuide';
@@ -1817,6 +1818,15 @@ function DashboardContent() {
                 <Link href="/performance" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
                   <Activity className="w-3 h-3" /> Performance
                 </Link>
+                {hasStudioAccess(billingTier) ? (
+                  <Link href="/studio" target="_blank" className="text-[10px] font-black uppercase tracking-widest bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+                    <Code className="w-3 h-3" /> Studio
+                  </Link>
+                ) : (
+                  <Link href="/plans" target="_blank" title="Strategy Studio requires PRO plan" className="text-[10px] font-black uppercase tracking-widest bg-slate-500/10 hover:bg-slate-500/20 text-slate-400 border border-white/5 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-2">
+                    <Lock className="w-3 h-3 text-amber-400" /> Studio
+                  </Link>
+                )}
             </div>
         </div>
         
@@ -1858,6 +1868,15 @@ function DashboardContent() {
           <Link href="/performance" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
             <Activity className="w-3 h-3" /> Performance
           </Link>
+          {hasStudioAccess(billingTier) ? (
+            <Link href="/studio" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
+              <Code className="w-3 h-3" /> Studio
+            </Link>
+          ) : (
+            <Link href="/plans" target="_blank" onClick={() => setShowMobileMenu(false)} className="text-[9px] font-black uppercase tracking-widest bg-slate-500/10 text-slate-400 border border-white/5 px-3 py-2 rounded-lg transition-colors flex items-center gap-2 w-full">
+              <Lock className="w-3 h-3 text-amber-400" /> Studio
+            </Link>
+          )}
           <div className="border-t border-white/5 pt-3 mt-3">
             <div className="flex flex-col gap-2">
               <div className="flex justify-between">
