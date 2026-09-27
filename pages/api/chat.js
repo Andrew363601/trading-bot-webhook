@@ -854,7 +854,9 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         }),
 
         runBacktest: tool({
-          description: 'Runs a closed-bar backtest simulation for a strategy from the tenant library. Summarize win_rate, total_pnl_usd, and max_drawdown honestly. Compare against previous latest_backtest if one exists. PROPOSE parameter or code changes based on results � NEVER claim deployment or live execution. Saving/running is library-scope only. Requires PRO tier or higher.',
+          // PUSH AM49d — product is REQUIRED and passed verbatim; the tool
+          // errors loudly if the symbol is unavailable. Never substitute assets.
+          description: 'Runs a closed-bar backtest simulation for a strategy from the tenant library. Summarize win_rate, total_pnl_usd, and max_drawdown honestly. Compare against previous latest_backtest if one exists. PROPOSE parameter or code changes based on results — NEVER claim deployment or live execution. Saving/running is library-scope only. product is REQUIRED and passed verbatim — echo the product name and first_close in your reply, and sanity-check the price scale matches the product class (BTC ~5 digits, ETH ~4 digits). If the requested symbol is not available the tool errors loudly — never substitute another asset. Requires PRO tier or higher.',
           parameters: z.object({
             strategy_name: z.string().describe('Canonical strategy slug in the strategy library (e.g. "btc_trend_follow_v1"). Required.'),
             product: z.string().describe('Target asset product (e.g. "BTC-USD", "DOGE-PERP-INTX"). Required.'),
@@ -864,10 +866,15 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
             end: z.string().optional().describe('End date (ISO date string or epoch seconds). Defaults to current time.'),
             parameters: z.record(z.any()).optional().describe('Optional runtime parameter overrides for the simulation.')
           }),
-          execute: async ({ strategy_name, product, macro_tf, trigger_tf, start, end, parameters }) => {
+          execute: async ({ strategy_name, product, macro_tf, trigger_tf, start, end, parameters, asset, symbol }) => {
             if (!tenantId) {
               return { success: false, error: 'Refused: no tenant context found.' };
             }
+            // PUSH AM49d — the manual OpenRouter loop does not enforce zod, so the
+            // model may send the asset under a different key. Accept aliases
+            // defensively; if still empty the service throws BAD_REQUEST loudly
+            // (no silent BTC fallback).
+            const resolvedProduct = product || asset || symbol;
             try {
               const currentTier = await getBillingTier(supabase, tenantId);
               if (!hasStudioAccess(currentTier)) {
@@ -892,7 +899,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
 
               const result = await runBacktestForTenant(supabase, tenantId, {
                 strategy_name: cleanName,
-                product,
+                product: resolvedProduct,
                 macro_tf,
                 trigger_tf,
                 start: actualStart,
@@ -908,6 +915,10 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
               return {
                 run_id: result.run_id,
                 summary: result.summary,
+                // PUSH AM49d — provenance echo so the model can self-verify
+                // price scale before presenting numbers.
+                product: result.product,
+                first_close: result.first_close,
                 worst_trades,
                 best_trades,
                 studio_url: '/studio?strategy=' + cleanName + '&run=' + (result.run_id || ''),

@@ -66,6 +66,10 @@ export default function StudioPage() {
   const [backtestResult, setBacktestResult] = useState(null);
   const [backtestError, setBacktestError] = useState('');
 
+  // PUSH AM49d — asset matrix dropdown (replaces free-text input)
+  const [availableAssets, setAvailableAssets] = useState([]);
+  const assetsFetchedRef = useRef(false);
+
   // PUSH AM49a — Deploy-to-Paper state
   const [deploying, setDeploying] = useState(false);
   const [deployStatus, setDeployStatus] = useState(null); // { type: 'success'|'error'|'quota', message }
@@ -267,6 +271,37 @@ export default function StudioPage() {
       setBacktesting(false);
     }
   };
+
+  // PUSH AM49d — fetch the tradeable asset matrix once per session (cached)
+  useEffect(() => {
+    if (activeTab !== 'BACKTEST' || assetsFetchedRef.current) return;
+    assetsFetchedRef.current = true;
+    (async () => {
+      try {
+        const res = await fetch('/api/available-assets', {
+          headers: { Authorization: `Bearer ${session?.access_token}` }
+        });
+        const data = await res.json();
+        const products = Array.isArray(data.products) ? data.products : [];
+        setAvailableAssets(products.map(p => p.id).filter(Boolean));
+      } catch (err) {
+        console.error('Available assets fetch error:', err);
+        assetsFetchedRef.current = false; // allow retry on next tab mount
+      }
+    })();
+  }, [activeTab, session]);
+
+  // PUSH AM49d — keep manual entry if it matches a listed option; else fall
+  // back to the strategy's latest_backtest.product, else the first listed product.
+  useEffect(() => {
+    if (activeTab !== 'BACKTEST' || availableAssets.length === 0) return;
+    setBacktestProduct(prev => {
+      if (availableAssets.includes(prev)) return prev;
+      const lbProduct = selectedStrategy?.latest_backtest?.product;
+      if (lbProduct && availableAssets.includes(lbProduct)) return lbProduct;
+      return availableAssets[0];
+    });
+  }, [activeTab, availableAssets, selectedStrategy]);
 
   // PUSH AM49a — Deploy to Paper (uses the parameters you just SIMULATED, not library defaults)
   const handleDeployToPaper = async () => {
@@ -922,13 +957,22 @@ export default function StudioPage() {
                   <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
                     Asset / Product
                   </label>
-                  <input
-                    type="text"
+                  {/* PUSH AM49d — dropdown from /api/available-assets (no free-text guessing) */}
+                  <select
                     value={backtestProduct}
                     onChange={(e) => setBacktestProduct(e.target.value)}
-                    placeholder="BTC-USD"
                     className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
-                  />
+                  >
+                    {availableAssets.length === 0 && (
+                      <option value={backtestProduct}>{backtestProduct}</option>
+                    )}
+                    {availableAssets.map((id) => (
+                      <option key={id} value={id}>{id}</option>
+                    ))}
+                  </select>
+                  <p className="text-[9px] text-slate-500 mt-1">
+                    CDE futures (e.g. ETP-20DEC30-CDE) are included when listed on Coinbase.
+                  </p>
                 </div>
 
                 <div>
