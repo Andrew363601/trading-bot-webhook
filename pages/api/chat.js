@@ -1295,8 +1295,8 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         model: modelInstance,
         system: systemPrompt,
         messages: safeMessages,
-        maxSteps: 5,
-        stopWhen: stepCountIs(5),
+        maxSteps: 12,
+        stopWhen: stepCountIs(12),
         timeout: { totalMs: 290000 },
         tools: tools,
       });

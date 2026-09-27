@@ -77,21 +77,18 @@ async function handler(req, res) {
     const modeToPersist = (execution_mode === 'LIVE' && isCDEAsset) ? 'LIVE' : (execution_mode || 'PAPER');
 
     // Build payload for upsert using the canonical strategy name in `strategy`.
-    // Column fix (AM48): write BOTH column pairs — `config`+`parameters` and
-    // `updated_at`+`last_updated` — because the base CREATE TABLE for
-    // strategy_config is not in the migration set and migration 018 proves
-    // both timestamp columns exist. Writing both is safe either way.
+    // Column fix (AM48): the strategy_config table exposes `parameters` and
+    // `last_updated`; `config` / `updated_at` do not exist and caused upsert 500s
+    // when sent (AM48b cleanup).
     const nowIso = new Date().toISOString();
     let payload = {
       tenant_id: tenantId,
       strategy,
       version,
-      config,
       parameters: config,
       asset,
       execution_mode: modeToPersist,
       is_active: true,
-      updated_at: nowIso,
       last_updated: nowIso
     };
 
