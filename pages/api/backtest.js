@@ -1,14 +1,6 @@
 ﻿// pages/api/backtest.js
 // 🟢 PUSH AM46 — Strategy Studio Backtest API
-//
-// GATING & CONCURRENCY:
-// - withTenantAuth: extracts tenant context and verifies subscription.
-// - Tier gate: hasStudioAccess(tier) required, else 403.
-// - Concurrency: one backtest at a time per tenant via in-memory lock (returns 409 if active).
-// - Strategy source: loads code from strategy_library (tenant-owned OR public).
-// - Range guard: max 180 days or 60k trigger candles.
-// - Timeout: 60s cap on the run.
-// - Persistence (Option A): updates strategy_library.latest_backtest and records to backtest_results.
+// 🟢 PUSH AM46b — backtest_results persistence fix + cooldown parity
 
 import { withTenantAuth } from '../../lib/auth-middleware.js';
 import { hasStudioAccess } from '../../lib/entitlements.js';
@@ -24,6 +16,19 @@ const tenantLocks = global.__tenantBacktestLocks;
 const MAX_RANGE_DAYS = 180;
 const MAX_TRIGGER_CANDLES = 60000;
 const RUN_TIMEOUT_MS = 60000;
+
+function tfToHorizon(tf) {
+  const s = String(tf || '').toUpperCase().trim();
+  if (s === 'ONE_MINUTE' || s === '60') return '1M';
+  if (s === 'FIVE_MINUTE' || s === '300') return '5M';
+  if (s === 'FIFTEEN_MINUTE' || s === '900') return '15M';
+  if (s === 'THIRTY_MINUTE' || s === '1800') return '30M';
+  if (s === 'ONE_HOUR' || s === '3600') return '1H';
+  if (s === 'TWO_HOUR' || s === '7200') return '2H';
+  if (s === 'SIX_HOUR' || s === '21600') return '6H';
+  if (s === 'ONE_DAY' || s === '86400') return '1D';
+  return '5M';
+}
 
 async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -162,7 +167,7 @@ async function handler(req, res) {
 
     const { summary, trades, equity_curve } = result;
 
-    // 6. Persistence (Option A)
+    // 6. Persistence
     let runId = null;
 
     // A. Update strategy_library.latest_backtest if associated with an existing library item
@@ -189,34 +194,30 @@ async function handler(req, res) {
         .eq('id', strategyRecord.id);
     }
 
-    // B. Record in backtest_results table
+    // B. Record in backtest_results table (AM46b: mapped strictly to verified OpenAPI columns)
     try {
+      const pnlPercent = parseFloat(((summary.total_pnl_usd / 10000) * 100).toFixed(2));
+      const horizonLabel = tfToHorizon(trigger_tf);
+
       const { data: inserted, error: insertError } = await supabase
         .from('backtest_results')
         .insert({
           tenant_id: tenantId,
-          strategy: strategyRecord.name,
-          version: `v${strategyRecord.version || 1}`,
+          asset: normProduct,
+          horizon: horizonLabel,
           win_rate: summary.win_rate,
-          pnl: summary.total_pnl_usd,
-          trades: summary.total_trades,
-          config: {
-            parameters,
-            product: normProduct,
-            macro_tf,
-            trigger_tf,
-            start_epoch: startEpoch,
-            end_epoch: endEpoch,
-            expectancy_usd: summary.expectancy_usd,
-            max_drawdown_usd: summary.max_drawdown_usd,
-            avg_hold_bars: summary.avg_hold_bars
-          }
+          pnl_percent: pnlPercent,
+          profit_factor: summary.profit_factor,
+          max_drawdown: summary.max_drawdown_usd,
+          is_active: true
         })
         .select('id')
         .maybeSingle();
 
       if (!insertError && inserted?.id) {
         runId = inserted.id;
+      } else if (insertError) {
+        console.warn('[BACKTEST API] backtest_results insert returned error:', insertError.message);
       }
     } catch (e) {
       console.warn('[BACKTEST API] Legacy backtest_results insert skipped:', e.message);
