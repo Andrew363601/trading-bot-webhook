@@ -987,7 +987,7 @@ export async function startSniper(tenantId) {
                 const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).eq('tenant_id', tenantId).is('exit_price', null).limit(1);
                 const openTrade = openTrades?.[0];
 
-                let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params);
+                let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params, tenantId);
 
                 // 🟢 TF CANON REGIME (Phase 0.11.1C — Hazard 2+3): compute the regime label
                 // from FIXED timeframes (6H POC, 5M ATR, 6H CVD tide) so it never changes

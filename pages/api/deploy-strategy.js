@@ -4,6 +4,7 @@ import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 import { setPendingMode, consumePendingMode, isPendingMode } from '../../lib/phase3-mode.js';
 import { getConcurrentStrategyQuota } from '../../lib/tenant-context.js';
+import { resolveStrategy } from '../../lib/strategy-resolver.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -23,6 +24,17 @@ async function handler(req, res) {
   // Validate config is an object
   if (typeof config !== 'object' || Array.isArray(config)) {
     return res.status(400).json({ error: 'Config must be a valid JSON object' });
+  }
+
+  // 🧭 RESOLVE GATE: the strategy must be a built-in OR a library row this
+  // tenant owns OR a public library row. Anything else is rejected loudly.
+  try {
+    const resolved = await resolveStrategy(strategy, tenantId);
+    if (resolved.source === 'none') {
+      return res.status(400).json({ error: `Unknown strategy ${strategy}` });
+    }
+  } catch (e) {
+    return res.status(500).json({ error: `Strategy resolution failed: ${e.message}` });
   }
 
   // 🔒 LIVE MODE GATE: Check if tenant has Coinbase API keys before allowing LIVE deployment
@@ -64,16 +76,23 @@ async function handler(req, res) {
     // If LIVE requested without API keys, reject with guidance
     const modeToPersist = (execution_mode === 'LIVE' && isCDEAsset) ? 'LIVE' : (execution_mode || 'PAPER');
 
-    // Build payload for upsert using the canonical strategy name in `strategy`
+    // Build payload for upsert using the canonical strategy name in `strategy`.
+    // Column fix (AM48): write BOTH column pairs — `config`+`parameters` and
+    // `updated_at`+`last_updated` — because the base CREATE TABLE for
+    // strategy_config is not in the migration set and migration 018 proves
+    // both timestamp columns exist. Writing both is safe either way.
+    const nowIso = new Date().toISOString();
     let payload = {
       tenant_id: tenantId,
       strategy,
       version,
       config,
+      parameters: config,
       asset,
       execution_mode: modeToPersist,
       is_active: true,
-      updated_at: new Date().toISOString()
+      updated_at: nowIso,
+      last_updated: nowIso
     };
 
     // 🪟 PLAN GATE: enforce per-tier ceiling on concurrently active strategies.

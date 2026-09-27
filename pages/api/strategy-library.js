@@ -2,6 +2,7 @@
 import { withTenantAuth } from '../../lib/auth-middleware.js';
 import { hasStudioAccess } from '../../lib/entitlements.js';
 import { validateStrategyCode } from '../../lib/strategy-validator.js';
+import { BUILT_IN_STRATEGIES } from '../../lib/strategy-router.js';
 
 const NAME_REGEX = /^[a-z0-9_]{3,64}$/;
 
@@ -82,6 +83,13 @@ async function handler(req, res) {
     if (!NAME_REGEX.test(cleanName)) {
       return res.status(400).json({
         error: `Invalid strategy name '${cleanName}'. Name must match lowercase letters, numbers, and underscores (3-64 chars).`
+      });
+    }
+
+    // 🔒 RESERVED NAMES: a library row must never shadow/impersonate a built-in.
+    if (BUILT_IN_STRATEGIES.has(cleanName.toUpperCase())) {
+      return res.status(400).json({
+        error: `Strategy name '${cleanName}' is reserved for a built-in strategy and cannot be used in the library.`
       });
     }
 
