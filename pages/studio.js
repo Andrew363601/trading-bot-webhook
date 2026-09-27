@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
@@ -17,7 +17,13 @@ import {
   ExternalLink,
   ChevronRight,
   Shield,
-  Activity
+  Activity,
+  AlertCircle,
+  RotateCw,
+  TrendingUp,
+  TrendingDown,
+  DollarSign,
+  BarChart2
 } from 'lucide-react';
 import { STUDIO_TIERS, hasStudioAccess } from '../lib/entitlements.js';
 
@@ -34,6 +40,22 @@ export default function StudioPage() {
   const [selectedStrategy, setSelectedStrategy] = useState(null);
   const [versions, setVersions] = useState([]);
   const [errorMsg, setErrorMsg] = useState('');
+
+  // Backtest configuration & state
+  const [backtestProduct, setBacktestProduct] = useState('BTC-USD');
+  const [macroTf, setMacroTf] = useState('ONE_HOUR');
+  const [triggerTf, setTriggerTf] = useState('FIVE_MINUTE');
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 14);
+    return d.toISOString().split('T')[0];
+  });
+  const [endDate, setEndDate] = useState(() => {
+    return new Date().toISOString().split('T')[0];
+  });
+  const [backtesting, setBacktesting] = useState(false);
+  const [backtestResult, setBacktestResult] = useState(null);
+  const [backtestError, setBacktestError] = useState('');
 
   // 1. Fetch user billing tier
   useEffect(() => {
@@ -101,6 +123,9 @@ export default function StudioPage() {
         const data = await res.json();
         setSelectedStrategy(data.strategy);
         setVersions(data.versions || []);
+        if (data.strategy?.latest_backtest) {
+          setBacktestResult(data.strategy.latest_backtest);
+        }
         setActiveTab('BUILDER');
       }
     } catch (err) {
@@ -113,6 +138,55 @@ export default function StudioPage() {
       loadStrategyDetail(router.query.strategy);
     }
   }, [router.isReady, router.query.strategy, session]);
+
+  // 4. Run Backtest
+  const handleRunBacktest = async () => {
+    if (!selectedStrategy) {
+      setBacktestError('Please select a strategy from the Library first.');
+      return;
+    }
+    if (backtesting) return;
+
+    try {
+      setBacktesting(true);
+      setBacktestError('');
+      setBacktestResult(null);
+
+      const startEpoch = Math.floor(new Date(`${startDate}T00:00:00Z`).getTime() / 1000);
+      const endEpoch = Math.floor(new Date(`${endDate}T23:59:59Z`).getTime() / 1000);
+
+      const res = await fetch('/api/backtest', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token}`
+        },
+        body: JSON.stringify({
+          strategy_id: selectedStrategy.id,
+          name: selectedStrategy.name,
+          product: backtestProduct,
+          macro_tf: macroTf,
+          trigger_tf: triggerTf,
+          start: startEpoch,
+          end: endEpoch
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Backtest failed (${res.status})`);
+      }
+
+      setBacktestResult(data);
+      // Refresh library in background to update latest_backtest
+      fetchLibrary();
+    } catch (err) {
+      console.error('Backtest error:', err);
+      setBacktestError(err.message);
+    } finally {
+      setBacktesting(false);
+    }
+  };
 
   const isUnlocked = hasStudioAccess(billingTier);
 
@@ -173,7 +247,7 @@ export default function StudioPage() {
           </div>
         </div>
 
-        {/* Tier Gate Lock Banner (Cosmetic - API remains server-gated) */}
+        {/* Tier Gate Lock Banner */}
         {!isUnlocked && billingTier && (
           <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent border border-amber-500/20 p-5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -340,7 +414,7 @@ export default function StudioPage() {
           </div>
         )}
 
-        {/* TAB 2: BUILDER (Code viewer + version history this push) */}
+        {/* TAB 2: BUILDER */}
         {activeTab === 'BUILDER' && (
           <div className="space-y-6">
             {selectedStrategy ? (
@@ -379,7 +453,7 @@ export default function StudioPage() {
                     <div className="flex items-center justify-between pb-3 border-b border-white/5 mb-3 text-xs text-slate-500">
                       <span className="font-mono text-[11px]">{selectedStrategy.name}.js</span>
                       <span className="text-[10px] uppercase tracking-widest">
-                        Read-only (AM45) • In-browser Editor lands in AM46
+                        Strategy Studio Engine • Active
                       </span>
                     </div>
                     <pre className="font-mono text-xs text-indigo-200/90 overflow-x-auto p-2 bg-slate-900/50 rounded-xl leading-relaxed whitespace-pre">
@@ -459,24 +533,292 @@ export default function StudioPage() {
           </div>
         )}
 
-        {/* TAB 3: BACKTEST PLACEHOLDER */}
+        {/* TAB 3: BACKTEST ENGINE (PUSH AM46) */}
         {activeTab === 'BACKTEST' && (
-          <div className="bg-slate-900/40 border border-white/5 rounded-3xl p-12 text-center space-y-4 max-w-2xl mx-auto my-8">
-            <div className="w-12 h-12 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto">
-              <Play className="w-6 h-6 ml-0.5" />
+          <div className="space-y-6">
+            {/* Backtest Control Header */}
+            <div className="bg-slate-900/60 border border-white/5 rounded-2xl p-5 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-white/5">
+                <div>
+                  <h2 className="text-base font-bold text-white flex items-center gap-2">
+                    <BarChart2 className="w-4 h-4 text-indigo-400" />
+                    Backtest Parameters
+                    {selectedStrategy && (
+                      <span className="text-xs font-mono font-normal text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                        {selectedStrategy.display_name || selectedStrategy.name} (v{selectedStrategy.version})
+                      </span>
+                    )}
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Simulate strategy execution on unauthenticated Coinbase historical candles with closed-bar parity.
+                  </p>
+                </div>
+
+                {!selectedStrategy && (
+                  <button
+                    onClick={() => setActiveTab('LIBRARY')}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-colors inline-flex items-center gap-1.5"
+                  >
+                    Select Strategy <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* Form Row */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 pt-1">
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                    Asset / Product
+                  </label>
+                  <input
+                    type="text"
+                    value={backtestProduct}
+                    onChange={(e) => setBacktestProduct(e.target.value)}
+                    placeholder="BTC-USD"
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                    Trigger TF
+                  </label>
+                  <select
+                    value={triggerTf}
+                    onChange={(e) => setTriggerTf(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="ONE_MINUTE">ONE_MINUTE (1m)</option>
+                    <option value="FIVE_MINUTE">FIVE_MINUTE (5m)</option>
+                    <option value="FIFTEEN_MINUTE">FIFTEEN_MINUTE (15m)</option>
+                    <option value="THIRTY_MINUTE">THIRTY_MINUTE (30m)</option>
+                    <option value="ONE_HOUR">ONE_HOUR (1h)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                    Macro TF
+                  </label>
+                  <select
+                    value={macroTf}
+                    onChange={(e) => setMacroTf(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="THIRTY_MINUTE">THIRTY_MINUTE (30m)</option>
+                    <option value="ONE_HOUR">ONE_HOUR (1h)</option>
+                    <option value="TWO_HOUR">TWO_HOUR (2h)</option>
+                    <option value="SIX_HOUR">SIX_HOUR (6h)</option>
+                    <option value="ONE_DAY">ONE_DAY (1d)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                    Start Date
+                  </label>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                    End Date
+                  </label>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+
+              {/* Action Button */}
+              <div className="flex items-center justify-between pt-2">
+                <div className="text-[11px] text-slate-500 flex items-center gap-1.5 font-mono">
+                  <Shield className="w-3.5 h-3.5 text-indigo-400" />
+                  Isolated VM sandbox • 5 req/s rate limit • SL-priority intrabar resolution
+                </div>
+
+                <button
+                  onClick={handleRunBacktest}
+                  disabled={backtesting || !selectedStrategy}
+                  className={`px-5 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all flex items-center gap-2 ${
+                    backtesting
+                      ? 'bg-indigo-600/50 text-indigo-200 cursor-not-allowed'
+                      : !selectedStrategy
+                      ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                      : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/20 active:scale-95'
+                  }`}
+                >
+                  {backtesting ? (
+                    <>
+                      <RotateCw className="w-3.5 h-3.5 animate-spin" /> Running Simulation...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3.5 h-3.5" /> Run Backtest
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {backtestError && (
+                <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-xs text-red-400 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                  <span>{backtestError}</span>
+                </div>
+              )}
             </div>
-            <h2 className="text-xl font-black italic tracking-tighter uppercase text-white">
-              Backtest Engine — AM46
-            </h2>
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Historical candle replay, trade simulations, and parameter visualizer will land in PUSH AM46.
-              The backtester will run closed-bar simulations strictly using live Coinbase execution candle shape for 100% parity with live sniper execution.
-            </p>
-            <div className="pt-2">
-              <span className="text-[10px] font-black uppercase tracking-widest bg-white/5 text-slate-400 px-3 py-1.5 rounded-lg border border-white/5">
-                Foundation Deployed (AM45)
-              </span>
-            </div>
+
+            {/* Backtest Results Display */}
+            {backtestResult && backtestResult.summary && (
+              <div className="space-y-6">
+                {/* Metric Summary Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-4 space-y-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Total Trades
+                    </span>
+                    <div className="text-xl font-bold font-mono text-white">
+                      {backtestResult.summary.total_trades}
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-4 space-y-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Win Rate
+                    </span>
+                    <div className="text-xl font-bold font-mono text-cyan-400">
+                      {(backtestResult.summary.win_rate * 100).toFixed(1)}%
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-4 space-y-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Net PnL
+                    </span>
+                    <div
+                      className={`text-xl font-bold font-mono flex items-center gap-1 ${
+                        backtestResult.summary.total_pnl_usd >= 0 ? 'text-green-400' : 'text-rose-400'
+                      }`}
+                    >
+                      {backtestResult.summary.total_pnl_usd >= 0 ? '+' : ''}$
+                      {backtestResult.summary.total_pnl_usd.toFixed(2)}
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-4 space-y-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Max Drawdown
+                    </span>
+                    <div className="text-xl font-bold font-mono text-rose-400">
+                      -${backtestResult.summary.max_drawdown_usd?.toFixed(2) || '0.00'}
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-4 space-y-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Expectancy
+                    </span>
+                    <div
+                      className={`text-xl font-bold font-mono ${
+                        backtestResult.summary.expectancy_usd >= 0 ? 'text-green-400' : 'text-rose-400'
+                      }`}
+                    >
+                      ${backtestResult.summary.expectancy_usd?.toFixed(2) || '0.00'}
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-4 space-y-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+                      Avg Hold Bars
+                    </span>
+                    <div className="text-xl font-bold font-mono text-indigo-300">
+                      {backtestResult.summary.avg_hold_bars}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Trade Logs Table */}
+                <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 space-y-4">
+                  <div className="flex items-center justify-between pb-2 border-b border-white/5">
+                    <h3 className="text-xs font-black uppercase tracking-widest text-slate-400 flex items-center gap-2">
+                      <Activity className="w-3.5 h-3.5 text-indigo-400" /> Simulated Trade History
+                    </h3>
+                    <span className="text-xs font-mono text-slate-500">
+                      {backtestResult.trades?.length || 0} executions
+                    </span>
+                  </div>
+
+                  {(!backtestResult.trades || backtestResult.trades.length === 0) ? (
+                    <div className="text-center py-8 text-xs text-slate-500">
+                      Zero trades executed in this range. The strategy did not emit actionable triggers.
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs font-mono">
+                        <thead className="bg-slate-950/60 text-slate-400 border-b border-white/5">
+                          <tr>
+                            <th className="py-2.5 px-3">Side</th>
+                            <th className="py-2.5 px-3">Entry Time</th>
+                            <th className="py-2.5 px-3">Entry Price</th>
+                            <th className="py-2.5 px-3">Exit Time</th>
+                            <th className="py-2.5 px-3">Exit Price</th>
+                            <th className="py-2.5 px-3">Reason</th>
+                            <th className="py-2.5 px-3">Hold</th>
+                            <th className="py-2.5 px-3 text-right">Net PnL (USD)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                          {backtestResult.trades.map((t, idx) => (
+                            <tr key={idx} className="hover:bg-white/[0.02] transition-colors">
+                              <td className="py-2.5 px-3">
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                    t.side === 'LONG'
+                                      ? 'bg-green-500/10 text-green-400 border border-green-500/20'
+                                      : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                                  }`}
+                                >
+                                  {t.side}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-400">
+                                {new Date(t.entry_time * 1000).toLocaleString()}
+                              </td>
+                              <td className="py-2.5 px-3 text-white">${t.entry_price}</td>
+                              <td className="py-2.5 px-3 text-slate-400">
+                                {new Date(t.exit_time * 1000).toLocaleString()}
+                              </td>
+                              <td className="py-2.5 px-3 text-white">${t.exit_price}</td>
+                              <td className="py-2.5 px-3">
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300">
+                                  {t.exit_reason}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-slate-400">{t.bars_held} bars</td>
+                              <td
+                                className={`py-2.5 px-3 text-right font-bold ${
+                                  t.pnl_usd >= 0 ? 'text-green-400' : 'text-rose-400'
+                                }`}
+                              >
+                                {t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
