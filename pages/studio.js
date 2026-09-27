@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
@@ -25,7 +25,16 @@ import {
   DollarSign,
   BarChart2
 } from 'lucide-react';
+import {
+  createChart,
+  CandlestickSeries,
+  AreaSeries,
+  createSeriesMarkers,
+  CrosshairMode
+} from 'lightweight-charts';
 import { STUDIO_TIERS, hasStudioAccess } from '../lib/entitlements.js';
+import StudioChat from '../components/StudioChat.js';
+import { MessageSquare, X } from 'lucide-react';
 
 export default function StudioPage() {
   const router = useRouter();
@@ -56,6 +65,18 @@ export default function StudioPage() {
   const [backtesting, setBacktesting] = useState(false);
   const [backtestResult, setBacktestResult] = useState(null);
   const [backtestError, setBacktestError] = useState('');
+  const [selectedTradeIdx, setSelectedTradeIdx] = useState(null);
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
+
+  // Lightweight-Charts refs
+  const chartContainerRef = useRef(null);
+  const equityContainerRef = useRef(null);
+  const candleChartRef = useRef(null);
+  const candleSeriesRef = useRef(null);
+  const markersPluginRef = useRef(null);
+  const priceLinesRef = useRef([]);
+  const equityChartRef = useRef(null);
+  const equitySeriesRef = useRef(null);
 
   // 1. Fetch user billing tier
   useEffect(() => {
@@ -111,7 +132,7 @@ export default function StudioPage() {
   }, [session]);
 
   // 3. Load specific strategy by query param or selection
-  const loadStrategyDetail = async (strategyName) => {
+  const loadStrategyDetail = async (strategyName, targetRunId) => {
     if (!session?.access_token || !strategyName) return;
     try {
       const res = await fetch(`/api/strategy-library?name=${encodeURIComponent(strategyName)}`, {
@@ -126,7 +147,11 @@ export default function StudioPage() {
         if (data.strategy?.latest_backtest) {
           setBacktestResult(data.strategy.latest_backtest);
         }
-        setActiveTab('BUILDER');
+        if (targetRunId) {
+          setActiveTab('BACKTEST');
+        } else {
+          setActiveTab('BUILDER');
+        }
       }
     } catch (err) {
       console.error('Failed to load strategy details:', err);
@@ -135,9 +160,9 @@ export default function StudioPage() {
 
   useEffect(() => {
     if (router.isReady && router.query.strategy && session?.access_token) {
-      loadStrategyDetail(router.query.strategy);
+      loadStrategyDetail(router.query.strategy, router.query.run);
     }
-  }, [router.isReady, router.query.strategy, session]);
+  }, [router.isReady, router.query.strategy, router.query.run, session]);
 
   // 4. Run Backtest
   const handleRunBacktest = async () => {
@@ -185,6 +210,229 @@ export default function StudioPage() {
       setBacktestError(err.message);
     } finally {
       setBacktesting(false);
+    }
+  };
+
+  // 5. Lightweight-Charts v5 Visual Replay Mounting
+  useEffect(() => {
+    if (activeTab !== 'BACKTEST') return;
+    if (!chartContainerRef.current) return;
+
+    if (candleChartRef.current) {
+      candleChartRef.current.remove();
+      candleChartRef.current = null;
+    }
+    if (equityChartRef.current) {
+      equityChartRef.current.remove();
+      equityChartRef.current = null;
+    }
+    priceLinesRef.current = [];
+
+    const mainChart = createChart(chartContainerRef.current, {
+      layout: {
+        background: { type: 'solid', color: 'transparent' },
+        textColor: '#94a3b8'
+      },
+      grid: {
+        vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
+        horzLines: { color: 'rgba(255, 255, 255, 0.03)' }
+      },
+      crosshair: { mode: CrosshairMode.Normal },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        borderColor: 'rgba(255, 255, 255, 0.1)'
+      },
+      rightPriceScale: {
+        borderColor: 'rgba(255, 255, 255, 0.1)',
+        autoScale: true
+      },
+      autoSize: true
+    });
+
+    const candleSeries = mainChart.addSeries(CandlestickSeries, {
+      upColor: '#10b981',
+      downColor: '#ef4444',
+      borderVisible: false,
+      wickUpColor: '#10b981',
+      wickDownColor: '#ef4444'
+    });
+
+    const markersPlugin = createSeriesMarkers(candleSeries, []);
+
+    candleChartRef.current = mainChart;
+    candleSeriesRef.current = candleSeries;
+    markersPluginRef.current = markersPlugin;
+
+    if (equityContainerRef.current) {
+      const eqChart = createChart(equityContainerRef.current, {
+        layout: {
+          background: { type: 'solid', color: 'transparent' },
+          textColor: '#94a3b8'
+        },
+        grid: {
+          vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
+          horzLines: { color: 'rgba(255, 255, 255, 0.03)' }
+        },
+        crosshair: { mode: CrosshairMode.Normal },
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: false,
+          borderColor: 'rgba(255, 255, 255, 0.1)'
+        },
+        rightPriceScale: {
+          borderColor: 'rgba(255, 255, 255, 0.1)',
+          autoScale: true
+        },
+        autoSize: true
+      });
+
+      const eqSeries = eqChart.addSeries(AreaSeries, {
+        topColor: 'rgba(99, 102, 241, 0.4)',
+        bottomColor: 'rgba(99, 102, 241, 0.02)',
+        lineColor: '#6366f1',
+        lineWidth: 2
+      });
+
+      equityChartRef.current = eqChart;
+      equitySeriesRef.current = eqSeries;
+    }
+
+    return () => {
+      if (candleChartRef.current) {
+        candleChartRef.current.remove();
+        candleChartRef.current = null;
+      }
+      if (equityChartRef.current) {
+        equityChartRef.current.remove();
+        equityChartRef.current = null;
+      }
+      priceLinesRef.current = [];
+    };
+  }, [activeTab]);
+
+  // 6. Populate Chart Data, Markers, Price Lines, and Equity Curve
+  useEffect(() => {
+    if (activeTab !== 'BACKTEST') return;
+    if (!candleSeriesRef.current || !candleChartRef.current) return;
+
+    const rawCandles = backtestResult?.trigger_candles || [];
+    if (!rawCandles || rawCandles.length === 0) {
+      candleSeriesRef.current.setData([]);
+      if (markersPluginRef.current) markersPluginRef.current.setMarkers([]);
+      if (equitySeriesRef.current) equitySeriesRef.current.setData([]);
+      return;
+    }
+
+    const formattedCandles = rawCandles.map((c) => ({
+      time: Math.floor(Number(c.time)),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close)
+    })).sort((a, b) => a.time - b.time);
+
+    candleSeriesRef.current.setData(formattedCandles);
+
+    const minTime = formattedCandles[0].time;
+    const maxTime = formattedCandles[formattedCandles.length - 1].time;
+
+    priceLinesRef.current.forEach((pl) => {
+      try {
+        candleSeriesRef.current?.removePriceLine(pl);
+      } catch (e) {}
+    });
+    priceLinesRef.current = [];
+
+    const markers = [];
+    const trades = backtestResult?.trades || [];
+
+    trades.forEach((t) => {
+      const entrySec = Math.floor(Number(t.entry_time));
+      const exitSec = t.exit_time ? Math.floor(Number(t.exit_time)) : null;
+
+      if (entrySec >= minTime && entrySec <= maxTime) {
+        const isLong = t.side === 'LONG';
+        markers.push({
+          time: entrySec,
+          position: isLong ? 'belowBar' : 'aboveBar',
+          color: isLong ? '#10b981' : '#ef4444',
+          shape: isLong ? 'arrowUp' : 'arrowDown',
+          text: t.side + ' $' + t.entry_price
+        });
+      }
+
+      if (exitSec && exitSec >= minTime && exitSec <= maxTime) {
+        const isWin = (t.pnl_usd || 0) >= 0;
+        const color = isWin ? '#10b981' : '#f43f5e';
+        markers.push({
+          time: exitSec,
+          position: t.side === 'LONG' ? 'aboveBar' : 'belowBar',
+          color: color,
+          shape: isWin ? 'arrowUp' : 'arrowDown',
+          text: (t.exit_reason || 'EXIT') + ' (' + (isWin ? '+' : '') + '$' + (t.pnl_usd || 0).toFixed(2) + ')'
+        });
+      }
+    });
+
+    markers.sort((a, b) => a.time - b.time);
+    if (markersPluginRef.current) {
+      markersPluginRef.current.setMarkers(markers);
+    }
+
+    const lastTrade = trades[trades.length - 1];
+    if (lastTrade && !lastTrade.exit_time) {
+      if (lastTrade.tp_price) {
+        const tpLine = candleSeriesRef.current.createPriceLine({
+          price: Number(lastTrade.tp_price),
+          color: '#10b981',
+          lineWidth: 2,
+          lineStyle: 2,
+          title: 'OPEN TP'
+        });
+        priceLinesRef.current.push(tpLine);
+      }
+      if (lastTrade.sl_price) {
+        const slLine = candleSeriesRef.current.createPriceLine({
+          price: Number(lastTrade.sl_price),
+          color: '#ef4444',
+          lineWidth: 2,
+          lineStyle: 2,
+          title: 'OPEN SL'
+        });
+        priceLinesRef.current.push(slLine);
+      }
+    }
+
+    candleChartRef.current.timeScale().fitContent();
+
+    const rawEquity = backtestResult?.equity_curve || [];
+    if (equitySeriesRef.current && rawEquity.length > 0) {
+      const formattedEquity = rawEquity.map((pt) => ({
+        time: Math.floor(Number(pt.t)),
+        value: Number(pt.equity)
+      })).sort((a, b) => a.time - b.time);
+
+      equitySeriesRef.current.setData(formattedEquity);
+      equityChartRef.current?.timeScale().fitContent();
+    }
+  }, [backtestResult, activeTab]);
+
+  const handleTradeClick = (trade, idx) => {
+    setSelectedTradeIdx(idx);
+    if (!candleChartRef.current || !trade.entry_time) return;
+
+    try {
+      const entrySec = Math.floor(Number(trade.entry_time));
+      const exitSec = trade.exit_time ? Math.floor(Number(trade.exit_time)) : entrySec + 3600;
+      const buffer = Math.max(3600, (exitSec - entrySec) * 2);
+
+      candleChartRef.current.timeScale().setVisibleRange({
+        from: entrySec - buffer,
+        to: exitSec + buffer
+      });
+    } catch (err) {
+      console.warn('Scroll to trade error:', err.message);
     }
   };
 
@@ -244,10 +492,18 @@ export default function StudioPage() {
             >
               <Play className="w-3.5 h-3.5" /> Backtest
             </button>
+            <button
+              onClick={() => setMobileChatOpen(!mobileChatOpen)}
+              className="lg:hidden px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all flex items-center gap-1.5 text-slate-400 hover:text-white hover:bg-white/5 border-l border-white/10 ml-1"
+            >
+              <MessageSquare className="w-3.5 h-3.5 text-indigo-400" /> Chat
+            </button>
           </div>
         </div>
 
-        {/* Tier Gate Lock Banner */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-8 space-y-6">
+            {/* Tier Gate Lock Banner */}
         {!isUnlocked && billingTier && (
           <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent border border-amber-500/20 p-5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -676,6 +932,51 @@ export default function StudioPage() {
               )}
             </div>
 
+            {/* Backtest Visual Replay Canvas (PUSH AM47) */}
+            <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 space-y-4">
+              <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                <div className="flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-cyan-400" />
+                  <h3 className="text-xs font-black uppercase tracking-widest text-slate-300">
+                    Visual Replay Canvas (Trigger TF)
+                  </h3>
+                  {backtestResult?.trigger_candles && (
+                    <span className="text-[10px] font-mono text-slate-500">
+                      ({backtestResult.trigger_candles.length} bars)
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-3 text-[10px] font-mono text-slate-400">
+                  <span className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400" /> Long Entry
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-rose-500" /> Short Entry
+                  </span>
+                </div>
+              </div>
+
+              {/* Main Candlestick Replay Pane */}
+              <div className="w-full h-[400px] relative bg-slate-950/80 rounded-xl overflow-hidden border border-white/5">
+                <div ref={chartContainerRef} className="w-full h-full" />
+                {(!backtestResult || !backtestResult.trigger_candles || backtestResult.trigger_candles.length === 0) && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs text-xs text-slate-500 font-mono">
+                    Run a backtest simulation to view interactive candle replay & trade markers.
+                  </div>
+                )}
+              </div>
+
+              {/* Equity Curve Sub-pane */}
+              <div className="space-y-1 pt-2">
+                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-slate-500">
+                  <span>Equity Curve (,000 baseline)</span>
+                </div>
+                <div className="w-full h-[140px] relative bg-slate-950/80 rounded-xl overflow-hidden border border-white/5">
+                  <div ref={equityContainerRef} className="w-full h-full" />
+                </div>
+              </div>
+            </div>
+
             {/* Backtest Results Display */}
             {backtestResult && backtestResult.summary && (
               <div className="space-y-6">
@@ -777,7 +1078,11 @@ export default function StudioPage() {
                         </thead>
                         <tbody className="divide-y divide-white/5">
                           {backtestResult.trades.map((t, idx) => (
-                            <tr key={idx} className="hover:bg-white/[0.02] transition-colors">
+                            <tr
+                                key={idx}
+                                onClick={() => handleTradeClick(t, idx)}
+                                className={"cursor-pointer transition-colors " + (selectedTradeIdx === idx ? "bg-indigo-600/20 border-l-2 border-indigo-400" : "hover:bg-white/[0.02]")}
+                              >
                               <td className="py-2.5 px-3">
                                 <span
                                   className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
@@ -821,7 +1126,51 @@ export default function StudioPage() {
             )}
           </div>
         )}
+          </div>
+
+          {/* Desktop Right Panel: Embedded StudioChat (lg:w-96) */}
+          <div className="hidden lg:block lg:col-span-4 sticky top-6">
+            <div className="h-[760px]">
+              <StudioChat
+                session={session}
+                strategyName={selectedStrategy?.name}
+                onStrategyUpdated={() => {
+                  if (selectedStrategy?.name) {
+                    loadStrategyDetail(selectedStrategy.name);
+                    fetchLibrary();
+                  }
+                }}
+              />
+            </div>
+          </div>
+        </div>
       </div>
+
+      {/* Mobile Drawer StudioChat */}
+      {mobileChatOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/80 backdrop-blur-xs lg:hidden">
+          <div className="w-full max-w-lg h-[550px] bg-slate-950 border border-white/10 rounded-2xl overflow-hidden relative shadow-2xl flex flex-col">
+            <button
+              onClick={() => setMobileChatOpen(false)}
+              className="absolute top-3 right-3 z-10 p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <div className="flex-1 overflow-hidden">
+              <StudioChat
+                session={session}
+                strategyName={selectedStrategy?.name}
+                onStrategyUpdated={() => {
+                  if (selectedStrategy?.name) {
+                    loadStrategyDetail(selectedStrategy.name);
+                    fetchLibrary();
+                  }
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

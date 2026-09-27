@@ -13,6 +13,7 @@ import { recordUsage } from '../../lib/usage-meter';
 import { getActiveModel } from '../../lib/model-router';
 import { getBillingTier, hasStudioAccess } from '../../lib/entitlements.js';
 import { validateStrategyCode } from '../../lib/strategy-validator.js';
+import { runBacktestForTenant } from '../../lib/backtest-service.js';
 import jwt from 'jsonwebtoken';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -44,6 +45,7 @@ export default async function handler(req, res) {
     }
 
     const messages = data?.messages || [];
+    const rawStudioContext = data?.studio_context;
     if (!Array.isArray(messages) || messages.length === 0) {
         throw new Error("Invalid or empty message payload.");
     }
@@ -196,7 +198,7 @@ export default async function handler(req, res) {
     5. If any of these conditions are unmet, default every activation to PAPER and explain why LIVE is unavailable.
     `;
 
-    const systemPrompt = riskAssessmentComplete ? `
+    let systemPrompt = riskAssessmentComplete ? `
     You are Nexus, the elite Portfolio Architect. You manage an autonomous fleet of quantitative strategies for the user.
     
     --- YOUR IDENTITY & CAPABILITIES ---
@@ -416,6 +418,41 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
     
     After Q8, call \`saveRiskAssessment\` with ALL collected data. Then say: "✅ Your risk profile is complete! You can always update it in Settings. Now follow the Quick Start guide on screen to explore the dashboard."
     `;
+
+    // Studio Context Injection (PUSH AM47)
+    let studioContextBlock = '';
+    if (rawStudioContext?.strategy_name) {
+      const cleanStudioStrat = String(rawStudioContext.strategy_name).trim().toLowerCase();
+      if (/^[a-z0-9_]{3,64}$/.test(cleanStudioStrat) && tenantId) {
+        try {
+          const { data: stratInfo } = await supabase
+            .from('strategy_library')
+            .select('name, version, status, description, latest_backtest')
+            .eq('name', cleanStudioStrat)
+            .or('tenant_id.eq.' + tenantId + ',visibility.eq.public')
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (stratInfo) {
+            const lbSummary = stratInfo.latest_backtest?.summary
+              ? JSON.stringify(stratInfo.latest_backtest.summary)
+              : 'No backtest on record yet';
+
+            studioContextBlock = '\n\n--- STRATEGY STUDIO ACTIVE CONTEXT ---\n' +
+              'The user is viewing strategy "' + stratInfo.name + '" (v' + (stratInfo.version || 1) + ', status: ' + (stratInfo.status || 'draft') + ') in the Strategy Studio.\n' +
+              'Description: ' + (stratInfo.description || 'N/A') + '\n' +
+              'Latest Backtest Summary: ' + lbSummary + '\n' +
+              'CRITICAL INSTRUCTION: The user is viewing this strategy in the Strategy Studio. Results and code changes should reference the backtest loop: readBacktestResults -> propose changes -> updateStrategyCode -> runBacktest.\n';
+          }
+        } catch (e) {
+          console.warn('[CHAT] Studio context fetch error:', e.message);
+        }
+      }
+    }
+    if (studioContextBlock) {
+      systemPrompt += studioContextBlock;
+    }
 
     const tools = {
         queryTradeLedger: tool({
@@ -805,6 +842,138 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
             } catch (err) {
               console.error('[CHAT updateStrategyCode ERROR]', err.message);
               return { success: false, error: `Exception during updateStrategyCode: ${err.message}` };
+            }
+          }
+        }),
+
+        runBacktest: tool({
+          description: 'Runs a closed-bar backtest simulation for a strategy from the tenant library. Summarize win_rate, total_pnl_usd, and max_drawdown honestly. Compare against previous latest_backtest if one exists. PROPOSE parameter or code changes based on results � NEVER claim deployment or live execution. Saving/running is library-scope only. Requires PRO tier or higher.',
+          parameters: z.object({
+            strategy_name: z.string().describe('Canonical strategy slug in the strategy library (e.g. "btc_trend_follow_v1"). Required.'),
+            product: z.string().describe('Target asset product (e.g. "BTC-USD", "DOGE-PERP-INTX"). Required.'),
+            macro_tf: z.string().describe('Macro timeframe enum: "ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE", "THIRTY_MINUTE", "ONE_HOUR", "TWO_HOUR", "SIX_HOUR", "ONE_DAY". Required.'),
+            trigger_tf: z.string().describe('Trigger timeframe enum: "ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE", "THIRTY_MINUTE", "ONE_HOUR", "TWO_HOUR", "SIX_HOUR", "ONE_DAY". Required.'),
+            start: z.string().optional().describe('Start date (ISO date string or epoch seconds). Defaults to 30 days prior to end.'),
+            end: z.string().optional().describe('End date (ISO date string or epoch seconds). Defaults to current time.'),
+            parameters: z.record(z.any()).optional().describe('Optional runtime parameter overrides for the simulation.')
+          }),
+          execute: async ({ strategy_name, product, macro_tf, trigger_tf, start, end, parameters }) => {
+            if (!tenantId) {
+              return { success: false, error: 'Refused: no tenant context found.' };
+            }
+            try {
+              const currentTier = await getBillingTier(supabase, tenantId);
+              if (!hasStudioAccess(currentTier)) {
+                return {
+                  success: false,
+                  error: 'Strategy Studio backtesting requires PRO plan or higher. Upgrade at /plans'
+                };
+              }
+
+              const cleanName = (strategy_name || '').toString().trim().toLowerCase();
+              if (!/^[a-z0-9_]{3,64}$/.test(cleanName)) {
+                return {
+                  success: false,
+                  error: 'Invalid strategy name "' + cleanName + '". Must match /^[a-z0-9_]{3,64}$/.'
+                };
+              }
+
+              const nowIso = new Date().toISOString();
+              const defaultStartIso = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
+              const actualEnd = end || nowIso;
+              const actualStart = start || defaultStartIso;
+
+              const result = await runBacktestForTenant(supabase, tenantId, {
+                strategy_name: cleanName,
+                product,
+                macro_tf,
+                trigger_tf,
+                start: actualStart,
+                end: actualEnd,
+                parameters: parameters || {}
+              });
+
+              const trades = result.trades || [];
+              const sortedByPnl = [...trades].sort((a, b) => (a.pnl_usd || 0) - (b.pnl_usd || 0));
+              const worst_trades = sortedByPnl.slice(0, 3);
+              const best_trades = [...sortedByPnl].reverse().slice(0, 3);
+
+              return {
+                run_id: result.run_id,
+                summary: result.summary,
+                worst_trades,
+                best_trades,
+                studio_url: '/studio?strategy=' + cleanName + '&run=' + (result.run_id || ''),
+                note: 'visual replay is in the Studio Backtest tab'
+              };
+            } catch (err) {
+              console.error('[CHAT runBacktest ERROR]', err.message);
+              return {
+                success: false,
+                error: 'Backtest failed: ' + err.message
+              };
+            }
+          }
+        }),
+
+        readBacktestResults: tool({
+          description: 'Reads the latest backtest results for a strategy from the tenant library (or public library). Returns summary, notable trades, and execution date. Requires PRO tier or higher.',
+          parameters: z.object({
+            strategy_name: z.string().describe('Canonical strategy slug in the strategy library. Required.')
+          }),
+          execute: async ({ strategy_name }) => {
+            if (!tenantId) {
+              return { success: false, error: 'Refused: no tenant context found.' };
+            }
+            try {
+              const currentTier = await getBillingTier(supabase, tenantId);
+              if (!hasStudioAccess(currentTier)) {
+                return {
+                  success: false,
+                  error: 'Strategy Studio requires PRO plan or higher. Upgrade at /plans'
+                };
+              }
+
+              const cleanName = (strategy_name || '').toString().trim().toLowerCase();
+              const { data: strat, error } = await supabase
+                .from('strategy_library')
+                .select('name, version, status, latest_backtest')
+                .eq('name', cleanName)
+                .or('tenant_id.eq.' + tenantId + ',visibility.eq.public')
+                .order('updated_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+              if (error) {
+                return { success: false, error: 'Database lookup error: ' + error.message };
+              }
+
+              if (!strat || !strat.latest_backtest) {
+                return {
+                  error: 'No backtest on record for ' + cleanName + '. Run one first.'
+                };
+              }
+
+              const lb = strat.latest_backtest;
+              const trades = lb.trades || [];
+              const notableTrades = trades.slice(-10);
+
+              return {
+                strategy_name: strat.name,
+                version: strat.version,
+                status: strat.status,
+                executed_at: lb.executed_at,
+                product: lb.product,
+                macro_tf: lb.macro_tf,
+                trigger_tf: lb.trigger_tf,
+                summary: lb.summary,
+                notable_trades: notableTrades,
+                total_trades_count: trades.length,
+                studio_url: '/studio?strategy=' + cleanName
+              };
+            } catch (err) {
+              console.error('[CHAT readBacktestResults ERROR]', err.message);
+              return { success: false, error: 'Exception reading backtest results: ' + err.message };
             }
           }
         }),
