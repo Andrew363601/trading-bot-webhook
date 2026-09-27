@@ -26,6 +26,11 @@ import crypto from 'crypto';
 // prevents duplicate rows / clobbering. Keyed by tenantId|asset|strategy.
 const MANAGE_STRATEGY_DEDUPE = new Map();
 const MANAGE_STRATEGY_DEDUPE_TTL_MS = 5000;
+
+// PUSH AM49c — single shared tool-loop cap for BOTH chat execution branches
+// (streamText stopWhen and the manual OpenRouter fetch loop). One const so
+// future bumps can never fork the two branches again.
+const CHAT_MAX_STEPS = 20;
 function dedupeKey(tenantId, asset, strategy) {
   return `${tenantId}|${(asset || '').toUpperCase()}|${(strategy || '').toUpperCase()}`;
 }
@@ -1327,8 +1332,8 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         model: modelInstance,
         system: systemPrompt,
         messages: safeMessages,
-        maxSteps: 20,
-        stopWhen: stepCountIs(20),
+        maxSteps: CHAT_MAX_STEPS,
+        stopWhen: stepCountIs(CHAT_MAX_STEPS),
         timeout: { totalMs: 290000 },
         tools: tools,
       });
@@ -1393,7 +1398,9 @@ async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tool
 
   let currentMessages = [...openAiMessages];
 
-  for (let step = 0; step < 5; step++) {
+  // PUSH AM49c — was hardcoded at 5, truncating every BYO-key/OpenRouter
+  // tenant regardless of the streamText maxSteps bumps. Now shares CHAT_MAX_STEPS.
+  for (let step = 0; step < CHAT_MAX_STEPS; step++) {
     const resp = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
