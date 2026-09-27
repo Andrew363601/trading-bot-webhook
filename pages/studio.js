@@ -34,7 +34,7 @@ import {
 } from 'lightweight-charts';
 import { STUDIO_TIERS, hasStudioAccess } from '../lib/entitlements.js';
 import StudioChat from '../components/StudioChat.js';
-import { MessageSquare, X } from 'lucide-react';
+import { MessageSquare, X, Sliders } from 'lucide-react';
 
 export default function StudioPage() {
   const router = useRouter();
@@ -65,6 +65,20 @@ export default function StudioPage() {
   const [backtesting, setBacktesting] = useState(false);
   const [backtestResult, setBacktestResult] = useState(null);
   const [backtestError, setBacktestError] = useState('');
+
+  // PUSH AM47c — Simulation parameters editor state (UI shows WHOLE percent, payload converts to DECIMALS)
+  const [simParamsOpen, setSimParamsOpen] = useState(true);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [sizingMode, setSizingMode] = useState('qty'); // 'qty' | 'target_usd'
+  const [simQty, setSimQty] = useState('10');
+  const [simTargetUsd, setSimTargetUsd] = useState('10000');
+  const [simLeverage, setSimLeverage] = useState('10');
+  const [simTp, setSimTp] = useState('5');
+  const [simSl, setSimSl] = useState('0.45');
+  const [simTripwire, setSimTripwire] = useState('2');
+  const [simTrail, setSimTrail] = useState('2');
+  const [simCooldown, setSimCooldown] = useState('30');
+  const [simFee, setSimFee] = useState('0.08');
   const [selectedTradeIdx, setSelectedTradeIdx] = useState(null);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
 
@@ -164,6 +178,30 @@ export default function StudioPage() {
     }
   }, [router.isReady, router.query.strategy, router.query.run, session]);
 
+  // PUSH AM47c — Prefill simulation parameters from latest_backtest.config.parameters (rerun reproducibility)
+  useEffect(() => {
+    if (!selectedStrategy) return;
+    const cfgParams = selectedStrategy?.latest_backtest?.config?.parameters
+      || selectedStrategy?.latest_backtest?.effective_parameters;
+    if (cfgParams && typeof cfgParams === 'object') {
+      if (cfgParams.target_usd != null) {
+        setSizingMode('target_usd');
+        setSimTargetUsd(String(cfgParams.target_usd));
+      } else if (cfgParams.qty != null) {
+        setSizingMode('qty');
+        setSimQty(String(cfgParams.qty));
+      }
+      if (cfgParams.leverage != null) setSimLeverage(String(cfgParams.leverage));
+      // DECIMALS -> WHOLE percent for UI display
+      if (cfgParams.tp_percent != null) setSimTp(String(cfgParams.tp_percent * 100));
+      if (cfgParams.sl_percent != null) setSimSl(String(cfgParams.sl_percent * 100));
+      if (cfgParams.tripwire_percent != null) setSimTripwire(String(cfgParams.tripwire_percent * 100));
+      if (cfgParams.trail_step_percent != null) setSimTrail(String(cfgParams.trail_step_percent * 100));
+      if (cfgParams.veto_cooldown_minutes != null) setSimCooldown(String(cfgParams.veto_cooldown_minutes));
+      if (cfgParams.agent_taker_fee_rate != null) setSimFee(String(cfgParams.agent_taker_fee_rate * 100));
+    }
+  }, [selectedStrategy]);
+
   // 4. Run Backtest
   const handleRunBacktest = async () => {
     if (!selectedStrategy) {
@@ -193,7 +231,20 @@ export default function StudioPage() {
           macro_tf: macroTf,
           trigger_tf: triggerTf,
           start: startEpoch,
-          end: endEpoch
+          end: endEpoch,
+          // PUSH AM47c — Simulation parameters (UNIT DISCIPLINE: UI whole-percent -> payload decimals)
+          parameters: {
+            ...(sizingMode === 'target_usd'
+              ? { target_usd: parseFloat(simTargetUsd) || 10000 }
+              : { qty: parseFloat(simQty) || 10 }),
+            leverage: parseInt(simLeverage, 10) || 10,
+            tp_percent: (parseFloat(simTp) || 0) / 100,
+            sl_percent: (parseFloat(simSl) || 0) / 100,
+            tripwire_percent: (parseFloat(simTripwire) || 0) / 100,
+            trail_step_percent: (parseFloat(simTrail) || 0) / 100,
+            veto_cooldown_minutes: parseInt(simCooldown, 10) || 0,
+            agent_taker_fee_rate: (parseFloat(simFee) || 0) / 100
+          }
         })
       });
 
@@ -894,6 +945,196 @@ export default function StudioPage() {
                 </div>
               </div>
 
+              {/* PUSH AM47c — SIMULATION PARAMETERS (collapsible; UI whole-percent -> payload decimals) */}
+              <div className="bg-slate-950/60 border border-white/5 rounded-2xl p-4 space-y-3">
+                <button
+                  type="button"
+                  onClick={() => setSimParamsOpen(!simParamsOpen)}
+                  className="w-full flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-slate-400 hover:text-white transition-colors"
+                >
+                  <span className="flex items-center gap-2">
+                    <Sliders className="w-3.5 h-3.5 text-indigo-400" />
+                    Simulation Parameters
+                    <span className="text-[9px] font-mono text-slate-500 normal-case tracking-normal">
+                      (whole % in UI, decimals in payload)
+                    </span>
+                  </span>
+                  <ChevronRight className={"w-3.5 h-3.5 transition-transform " + (simParamsOpen ? "rotate-90" : "")} />
+                </button>
+
+                {simParamsOpen && (
+                  <div className="space-y-3 pt-1">
+                    {/* Sizing Mode Toggle */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-500">Sizing:</span>
+                      <div className="flex items-center gap-1 bg-slate-900/80 p-0.5 rounded-lg border border-white/5">
+                        <button
+                          type="button"
+                          onClick={() => setSizingMode('qty')}
+                          className={"px-2.5 py-1 rounded-md text-[10px] font-bold transition-all " + (sizingMode === "qty" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white")}
+                        >
+                          Qty Contracts
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSizingMode('target_usd')}
+                          className={"px-2.5 py-1 rounded-md text-[10px] font-bold transition-all " + (sizingMode === "qty" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-white")}
+                        >
+                          Target USD
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Parameter Grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                      {sizingMode === 'qty' ? (
+                        <div>
+                          <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                            Qty (contracts)
+                          </label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            min="0.001"
+                            value={simQty}
+                            onChange={(e) => setSimQty(e.target.value)}
+                            className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                            Target USD
+                          </label>
+                          <input
+                            type="number"
+                            min="10"
+                            value={simTargetUsd}
+                            onChange={(e) => setSimTargetUsd(e.target.value)}
+                            className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                          />
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                          Leverage (1-10x)
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          step="1"
+                          value={simLeverage}
+                          onChange={(e) => setSimLeverage(e.target.value)}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                          Take Profit %
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={simTp}
+                          onChange={(e) => setSimTp(e.target.value)}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                          Stop Loss %
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={simSl}
+                          onChange={(e) => setSimSl(e.target.value)}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                          Tripwire %
+                        </label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          value={simTripwire}
+                          onChange={(e) => setSimTripwire(e.target.value)}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                          Trail Step %
+                        </label>
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          value={simTrail}
+                          onChange={(e) => setSimTrail(e.target.value)}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                          Cooldown (min)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={simCooldown}
+                          onChange={(e) => setSimCooldown(e.target.value)}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Advanced (collapsed) */}
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        onClick={() => setAdvancedOpen(!advancedOpen)}
+                        className="text-[10px] font-bold uppercase tracking-widest text-slate-500 hover:text-slate-300 transition-colors flex items-center gap-1"
+                      >
+                        <ChevronRight className={"w-3 h-3 transition-transform " + (advancedOpen ? "rotate-90" : "")} />
+                        Advanced
+                      </button>
+
+                      {advancedOpen && (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                          <div>
+                            <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                              Taker Fee %
+                            </label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={simFee}
+                              onChange={(e) => setSimFee(e.target.value)}
+                              className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Action Button */}
               <div className="flex items-center justify-between pt-2">
                 <div className="text-[11px] text-slate-500 flex items-center gap-1.5 font-mono">
@@ -1045,6 +1286,60 @@ export default function StudioPage() {
                     </div>
                   </div>
                 </div>
+
+                {/* PUSH AM47c — Effective Parameters Chip Row (transparency: what actually ran) */}
+                {backtestResult?.effective_parameters && (
+                  <div className="bg-slate-950/60 border border-white/5 rounded-xl px-4 py-3 flex flex-wrap items-center gap-2 text-[10px] font-mono">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-slate-500 mr-1">
+                      Ran with:
+                    </span>
+                    {backtestResult.effective_parameters.qty != null && (
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                        qty {backtestResult.effective_parameters.qty}
+                      </span>
+                    )}
+                    {backtestResult.effective_parameters.target_usd != null && (
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                        target {backtestResult.effective_parameters.target_usd}
+                      </span>
+                    )}
+                    {backtestResult.effective_parameters.leverage != null && (
+                      <span className="px-2 py-0.5 rounded-md bg-white/5 text-slate-300">
+                        {backtestResult.effective_parameters.leverage}x
+                      </span>
+                    )}
+                    {backtestResult.effective_parameters.tp_percent != null && (
+                      <span className="px-2 py-0.5 rounded-md bg-white/5 text-slate-300">
+                        TP {(backtestResult.effective_parameters.tp_percent * 100).toFixed(2)}%
+                      </span>
+                    )}
+                    {backtestResult.effective_parameters.sl_percent != null && (
+                      <span className="px-2 py-0.5 rounded-md bg-white/5 text-slate-300">
+                        SL {(backtestResult.effective_parameters.sl_percent * 100).toFixed(2)}%
+                      </span>
+                    )}
+                    {backtestResult.effective_parameters.tripwire_percent != null && (
+                      <span className="px-2 py-0.5 rounded-md bg-white/5 text-slate-300">
+                        trip {(backtestResult.effective_parameters.tripwire_percent * 100).toFixed(1)}%
+                      </span>
+                    )}
+                    {backtestResult.effective_parameters.trail_step_percent != null && (
+                      <span className="px-2 py-0.5 rounded-md bg-white/5 text-slate-300">
+                        trail {(backtestResult.effective_parameters.trail_step_percent * 100).toFixed(1)}%
+                      </span>
+                    )}
+                    {backtestResult.effective_parameters.veto_cooldown_minutes != null && (
+                      <span className="px-2 py-0.5 rounded-md bg-white/5 text-slate-300">
+                        cd {backtestResult.effective_parameters.veto_cooldown_minutes}m
+                      </span>
+                    )}
+                    {backtestResult.effective_parameters.agent_taker_fee_rate != null && (
+                      <span className="px-2 py-0.5 rounded-md bg-white/5 text-slate-300">
+                        fee {(backtestResult.effective_parameters.agent_taker_fee_rate * 100).toFixed(3)}%
+                      </span>
+                    )}
+                  </div>
+                )}
 
                 {/* Trade Logs Table */}
                 <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 space-y-4">
