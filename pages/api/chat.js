@@ -761,7 +761,8 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         }),
 
         updateStrategyCode: tool({
-          description: 'Updates existing JavaScript strategy code in the tenant strategy library, incrementing the version and preserving version history. Note: This does NOT deploy or activate the strategy. Requires PRO tier or higher.',
+          // PUSH AM49b — blind-edit guard: read before write.
+          description: 'Updates existing JavaScript strategy code in the tenant strategy library, incrementing the version and preserving version history. You MUST call readStrategyLogic first for any library strategy — never rewrite code you haven\'t read. Note: This does NOT deploy or activate the strategy. Requires PRO tier or higher.',
           parameters: z.object({
             name: z.string().describe('Canonical strategy slug to update (must exist in library). Required.'),
             code: z.string().describe('Updated JavaScript strategy source code defining `run(macroCandles, triggerCandles, parameters)`. Required.'),
@@ -980,7 +981,8 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         }),
 
         readStrategyLogic: tool({
-          description: 'Reads the raw JavaScript source code of a specific strategy file.',
+          // PUSH AM49b — reads built-in files OR library strategies (chat-created).
+          description: 'Reads a strategy\'s source — built-in files or library strategies (chat-created). Always call this BEFORE updateStrategyCode so edits are surgical, not blind.',
           parameters: z.object({
             fileName: z.string().optional().describe('The name of the strategy file to read, e.g., "doge_hf_scalper_v1.js"'),
             strategy_name: z.string().optional().describe('The name of the strategy to read, e.g., "ORACLE_PRICE_ACTION_V1"')
@@ -995,11 +997,40 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
               const filePath = path.join(process.cwd(), 'lib', 'strategies', finalFileName);
               
               if (!fs.existsSync(filePath)) {
-                return { error: `Strategy file not found: ${finalFileName}. Ensure you are using the exact filename in lowercase.` };
+                // PUSH AM49b — LIBRARY FALLBACK: the name may be a chat-created library
+                // strategy, not a built-in file. Read it from strategy_library so the
+                // agent never edits code it hasn't seen (no blind/hallucinated rewrites).
+                if (!tenantId) {
+                  return { error: `Strategy file not found: ${finalFileName}. Ensure you are using the exact filename in lowercase.` };
+                }
+                const { data: libRow, error: libError } = await supabase
+                  .from('strategy_library')
+                  .select('name, version, code, description, updated_at')
+                  .eq('name', cleanName)
+                  .or(`tenant_id.eq.${tenantId},visibility.eq.public`)
+                  .order('version', { ascending: false })
+                  .limit(1)
+                  .maybeSingle();
+                if (libError) {
+                  return { error: `Library lookup failed: ${libError.message}` };
+                }
+                if (!libRow) {
+                  return { error: `Strategy file not found: ${finalFileName}. Ensure you are using the exact filename in lowercase.` };
+                }
+                return {
+                  success: true,
+                  source: 'library',
+                  fileName: `${cleanName}.js`,
+                  name: libRow.name,
+                  version: libRow.version,
+                  architecture: libRow.code,
+                  description: libRow.description || null,
+                  updated_at: libRow.updated_at
+                };
               }
               
               const code = fs.readFileSync(filePath, 'utf8');
-              return { success: true, fileName: finalFileName, architecture: code };
+              return { success: true, source: 'file', fileName: finalFileName, architecture: code };
             } catch (err) {
               return { error: `Failed to read file: ${err.message}` };
             }
