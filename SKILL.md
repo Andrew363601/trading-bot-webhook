@@ -309,6 +309,23 @@ failure, position conflicts, and risk rails.
   quote a wall size that is not present in the provided telemetry — walls come
   from the snapshot's largest_bid_wall / largest_ask_wall and the LIQUIDITY MAP,
   nowhere else.
+  * **REGIME MAP GOVERNING GEOMETRY (PUSH AM53b):** When the wake carries a
+    `--- REGIME MAP (governing exit geometry) ---` block (i.e. `telemetry.regime_selected`
+    is present), the mapped percentages are the GOVERNING exit geometry for this entry:
+    your `tp_price`/`sl_price` must IMPLEMENT the mapped percentages, converted to price
+    from the signal entry price — LONG: `tp = entry × (1 + tp_percent)`,
+    `sl = entry × (1 − sl_percent)`; SHORT inverted. You retain override authority as
+    risk manager: if live context (cascade, funding shock, liquidity gap) demands
+    different prices, you may override — but the override MUST be stated in your
+    reasoning as `REGIME OVERRIDE: <why>` so it lands in the audit trail. When the block
+    says the geometry is a BASE fallback (the map had no entry for this regime), the
+    percentages are the strategy's base exits — treat them as the governing defaults and
+    cite the regime gap in your thesis. For strategies with no regime map
+    (`regime_selected` null, no block emitted), proceed exactly as today — no behavior
+    change.
+  * **CITE THE REGIME (PUSH AM53b):** Cite the regime in decisions that depend on it
+    (e.g. "CHOP entry — map SL 1.2%, tight management"). This contract is additive only:
+    strategies without `regime_params` behave byte-identically to before.
 
 #### 5. Core Memory Parameter Learning
 Core memory lessons are injected into every signal evaluation. If past lessons

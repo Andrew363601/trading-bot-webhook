@@ -516,6 +516,44 @@ When Microstructure Archetype stats are available (optimal_tp_atr / optimal_sl_a
 
 `;
 
+        // 🟢 PUSH AM53b — REGIME MAP (governing exit geometry). Emitted ONLY when the
+        // sniper resolved a regime for this entry (regime_selected present). Strategies
+        // without a regime map produce a byte-identical prompt (block skipped entirely).
+        // Primary source: telemetry.regime_exit_geometry (one coherent object). Fallback
+        // for old in-flight decisions during deploy: regime_params_applied +
+        // resolved_exit_params. The brain must IMPLEMENT the mapped percentages as
+        // tp_price/sl_price, or state a REGIME OVERRIDE with a reason.
+        const regimeGeom = telemetry?.regime_exit_geometry || null;
+        const regimeSelected = regimeGeom?.regime_selected ?? telemetry?.regime_selected ?? null;
+        if (regimeSelected) {
+            const geom = regimeGeom || {
+                regime_selected: regimeSelected,
+                tp_percent: telemetry?.regime_params_applied?.tp_percent ?? null,
+                sl_percent: telemetry?.regime_params_applied?.sl_percent ?? null,
+                tripwire_percent: telemetry?.resolved_exit_params?.tripwire_percent ?? null,
+                trail_step_percent: telemetry?.resolved_exit_params?.trail_step_percent ?? null,
+                trail_activation_percent: telemetry?.resolved_exit_params?.trail_activation_percent ?? null,
+                source: (telemetry?.regime_params_applied && Object.keys(telemetry.regime_params_applied).length > 0) ? 'map' : 'base'
+            };
+            const fmtPct = (v) => (v != null ? `${(parseFloat(v) * 100).toFixed(2)}%` : '—');
+            const entryPx = marketState?.result?.current_price
+                || marketState?.current_price
+                || (candles && candles.length > 0 ? candles[candles.length - 1].close : null);
+            const entryPxStr = entryPx != null ? `$${entryPx}` : 'the signal entry price';
+            const srcNote = geom.source === 'map'
+                ? 'from the strategy\'s regime map (governing)'
+                : 'BASE fallback — the map had no entry for this regime';
+            instructionText += `--- REGIME MAP (governing exit geometry) ---
+Regime selected: ${regimeSelected} (${srcNote})
+Mapped exits: TP ${fmtPct(geom.tp_percent)} | SL ${fmtPct(geom.sl_percent)} | tripwire ${fmtPct(geom.tripwire_percent)} | trail step ${fmtPct(geom.trail_step_percent)} | trail activation ${fmtPct(geom.trail_activation_percent)}
+These percentages are the GOVERNING exit geometry for this entry. Your tp_price/sl_price MUST implement them, converted to price from the signal entry price (${entryPxStr}):
+  LONG:  tp_price = entry × (1 + tp_percent)   |  sl_price = entry × (1 − sl_percent)
+  SHORT: tp_price = entry × (1 − tp_percent)   |  sl_price = entry × (1 + sl_percent)
+You retain override authority as risk manager: if live context (cascade, funding shock, liquidity gap) demands different prices, you may override — but the override MUST be stated in your reasoning as 'REGIME OVERRIDE: <why>' so it lands in the audit trail.
+
+`;
+        }
+
         // ═══════════════ NEXUS INTELLIGENCE BLOCKS (Phase D) ═══════════════
         const currentRegimeCtx = marketState?.result?.regime
             || marketState?.result?.macro_regime_oracle

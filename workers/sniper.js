@@ -938,6 +938,18 @@ export async function startSniper(tenantId) {
                                             trail_step_percent: trapRegimeResolved.params.trail_step_percent ?? null,
                                             trail_activation_percent: trapRegimeResolved.params.trail_activation_percent ?? null
                                         };
+                                        // 🟢 PUSH AM53b — same coherent geometry object as the
+                                        // signal path (trap springs bypass the cortex, so this rides
+                                        // the payload; execute-trade-mcp prefers payload over telemetry).
+                                        trapPayload._regime_exit_geometry = {
+                                            regime_selected: trapRegimeResolved.regime_selected,
+                                            tp_percent: trapRegimeResolved.params.tp_percent ?? null,
+                                            sl_percent: trapRegimeResolved.params.sl_percent ?? null,
+                                            tripwire_percent: trapRegimeResolved.params.tripwire_percent ?? null,
+                                            trail_step_percent: trapRegimeResolved.params.trail_step_percent ?? null,
+                                            trail_activation_percent: trapRegimeResolved.params.trail_activation_percent ?? null,
+                                            source: (trapRegimeResolved.regime_selected && Object.keys(trapRegimeResolved.overrides_applied || {}).length > 0) ? 'map' : 'base'
+                                        };
                                         // 🟢 PUSH R: attach archetype/model enrichment (mirrors hermes-brain Phase 3D)
                                         trapPayload._microstructure_archetype = trapArch;
                                         trapPayload._model_predicted_win_prob = trapModel?.winProbability ?? null;
@@ -1106,6 +1118,20 @@ export async function startSniper(tenantId) {
                         tripwire_percent: regimeResolved.params.tripwire_percent ?? null,
                         trail_step_percent: regimeResolved.params.trail_step_percent ?? null,
                         trail_activation_percent: regimeResolved.params.trail_activation_percent ?? null
+                    },
+                    // 🟢 PUSH AM53b — ONE coherent governing-geometry object for the brain.
+                    // regime_selected/regime_params_applied/resolved_exit_params stay for
+                    // AM53 compatibility; this is the single read the brain's REGIME MAP
+                    // block consumes. source='map' when the map supplied an entry for this
+                    // regime, 'base' when it fell back (gap in map, or no map at all).
+                    regime_exit_geometry: {
+                        regime_selected: regimeResolved.regime_selected,
+                        tp_percent: regimeResolved.params.tp_percent ?? null,
+                        sl_percent: regimeResolved.params.sl_percent ?? null,
+                        tripwire_percent: regimeResolved.params.tripwire_percent ?? null,
+                        trail_step_percent: regimeResolved.params.trail_step_percent ?? null,
+                        trail_activation_percent: regimeResolved.params.trail_activation_percent ?? null,
+                        source: (regimeResolved.regime_selected && Object.keys(regimeResolved.overrides_applied || {}).length > 0) ? 'map' : 'base'
                     }
                 };
 
