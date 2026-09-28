@@ -24,6 +24,8 @@ import { getCalibrationPriors } from '../lib/calibration-engine.js';
 import { getModelPrediction } from '../lib/predictive-regression.js';
 import { getRegimeTransitions } from '../lib/regime-transitions.js';
 import { getMicrostructureChange, classifyArchetype } from '../lib/microstructure-detector.js';
+// 🟢 PUSH AM53 — regime-conditional execution params (pure resolver).
+import { resolveRegimeParams } from '../lib/regime-params.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -795,8 +797,43 @@ export async function startSniper(tenantId) {
                     let trapTpPrice = config.trap_tp_price;
                     let trapSlPrice = config.trap_sl_price;
 
+                    // 🟢 PUSH AM53 — trap springs resolve regime-conditional exit params too.
+                    // Compute the trap's canon regime (FIXED TFs, same classifier as the
+                    // signal path) up front so the fallback TP/SL derivation and the
+                    // entry-time snapshot both use the regime-resolved geometry. HARD RULE:
+                    // resolve once at spring time — never mid-position.
+                    let trapRegime = null;
+                    try {
+                        const [trap6H, trap5M] = await Promise.all([
+                            fetchCoinbaseData(config.asset, 'SIX_HOUR', apiKeyName, apiSecret).catch(() => []),
+                            fetchCoinbaseData(config.asset, 'FIVE_MINUTE', apiKeyName, apiSecret).catch(() => [])
+                        ]);
+                        if (trap6H && trap6H.length > 0 && trap5M && trap5M.length > 0) {
+                            trapRegime = classifyCanonRegime({
+                                price: currentPrice,
+                                poc: computeVolumeProfile(trap6H, currentPrice).macro_poc,
+                                atr5m: computeAtr(trap5M, 14),
+                                cvd6h: computeCandleCvd(trap6H, 50),
+                                bidAskRatio: 0 // book not fetched on trap path — CHOP-safe thresholds
+                            });
+                        }
+                    } catch (e) {
+                        console.log(`[SNIPER-TRAP] Canon regime computation failed (non-fatal): ${e.message}`);
+                    }
+                    let trapRegimeResolved;
+                    try {
+                        trapRegimeResolved = resolveRegimeParams(params, trapRegime);
+                    } catch (regimeErr) {
+                        const msg = regimeErr?.error || regimeErr?.message || String(regimeErr);
+                        console.error(`[SNIPER-${tenantId}] ❌ AM53 regime_params INVALID for trap on ${config.asset}/${config.strategy}: ${msg} — trap entry skipped.`);
+                        await logAgentActivity(tenantId, "Sniper", config.asset, `Invalid regime_params map — trap entry skipped: ${msg}`, "ERROR");
+                        state.trapLocks.delete(config.id);
+                        continue;
+                    }
+
                     if (!trapTpPrice || !trapSlPrice) {
-                        const slP = params.sl_percent || 0.01; const tpP = params.tp_percent || 0.02;
+                        // 🟢 PUSH AM53 — regime-resolved exit params govern the fallback.
+                        const slP = trapRegimeResolved.params.sl_percent || 0.01; const tpP = trapRegimeResolved.params.tp_percent || 0.02;
                         trapTpPrice = trapSide === 'BUY' ? currentPrice * (1 + tpP) : currentPrice * (1 - tpP);
                         trapSlPrice = trapSide === 'BUY' ? currentPrice * (1 - slP) : currentPrice * (1 + slP);
                     } 
@@ -844,28 +881,9 @@ export async function startSniper(tenantId) {
 
                                         // 🟢 Fetch scored memories for trap payload
                                         // so influencing_memory_ids are stored in trade_logs.
-                                        // 🟢 PUSH AM3 (Option B): compute the canon regime at
-                                        // trap-spring time from FIXED timeframes (6H POC, 5M ATR,
-                                        // 6H CVD tide) — same classifier as the signal path — so
-                                        // the hard regime filter never degrades to IS NULL here.
-                                        let trapRegime = null;
-                                        try {
-                                            const [trap6H, trap5M] = await Promise.all([
-                                                fetchCoinbaseData(config.asset, 'SIX_HOUR', apiKeyName, apiSecret).catch(() => []),
-                                                fetchCoinbaseData(config.asset, 'FIVE_MINUTE', apiKeyName, apiSecret).catch(() => [])
-                                            ]);
-                                            if (trap6H && trap6H.length > 0 && trap5M && trap5M.length > 0) {
-                                                trapRegime = classifyCanonRegime({
-                                                    price: currentPrice,
-                                                    poc: computeVolumeProfile(trap6H, currentPrice).macro_poc,
-                                                    atr5m: computeAtr(trap5M, 14),
-                                                    cvd6h: computeCandleCvd(trap6H, 50),
-                                                    bidAskRatio: 0 // book not fetched on trap path — CHOP-safe thresholds
-                                                });
-                                            }
-                                        } catch (e) {
-                                            console.log(`[SNIPER-TRAP] Canon regime computation failed (non-fatal): ${e.message}`);
-                                        }
+                                        // NOTE (AM53): trapRegime is computed ABOVE (before the
+                                        // exit-geometry derivation) so regime params could be
+                                        // resolved for this trap.
                                         let trapMemoryIds = [];
                                         try {
                                             const scoredResult = await getScoredMemories(
@@ -910,6 +928,16 @@ export async function startSniper(tenantId) {
 
                                         // Augment trapPayload with memory IDs
                                         trapPayload._influencing_memory_ids = trapMemoryIds;
+                                        // 🟢 PUSH AM53 — trap springs bypass the cortex, so the
+                                        // regime resolution is carried EXPLICITLY on the payload
+                                        // (execute-trade-mcp prefers these over scan telemetry).
+                                        trapPayload._regime_selected = trapRegimeResolved.regime_selected;
+                                        trapPayload._regime_params_applied = trapRegimeResolved.overrides_applied;
+                                        trapPayload._resolved_exit_params = {
+                                            tripwire_percent: trapRegimeResolved.params.tripwire_percent ?? null,
+                                            trail_step_percent: trapRegimeResolved.params.trail_step_percent ?? null,
+                                            trail_activation_percent: trapRegimeResolved.params.trail_activation_percent ?? null
+                                        };
                                         // 🟢 PUSH R: attach archetype/model enrichment (mirrors hermes-brain Phase 3D)
                                         trapPayload._microstructure_archetype = trapArch;
                                         trapPayload._model_predicted_win_prob = trapModel?.winProbability ?? null;
@@ -987,14 +1015,15 @@ export async function startSniper(tenantId) {
                 const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).eq('tenant_id', tenantId).is('exit_price', null).limit(1);
                 const openTrade = openTrades?.[0];
 
-                let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, params, tenantId);
-
                 // 🟢 TF CANON REGIME (Phase 0.11.1C — Hazard 2+3): compute the regime label
                 // from FIXED timeframes (6H POC, 5M ATR, 6H CVD tide) so it never changes
                 // with a strategy's macro_tf/trigger_tf. Signal evaluation still uses config
                 // TFs (intended). Telemetry POC/nodes now match the snapshot canon
                 // (get_market_state 6H volume profile) — live labels, backfill, and future
                 // models all share one POC source.
+                //
+                // 🟢 PUSH AM53: hoisted ABOVE evaluateStrategy so the canon label can resolve
+                // regime-conditional exit params for the signal execution itself.
                 const canon6H = (candles6H && candles6H.length > 0) ? candles6H : (c1h || macroCandles);
                 const canon5M = candles5M || c5m || triggerCandles;
                 const canonProfile = computeVolumeProfile(canon6H, currentPrice);
@@ -1014,6 +1043,23 @@ export async function startSniper(tenantId) {
                     cvd6h: canonCvd6h,
                     bidAskRatio: canonBidAskRatio
                 });
+
+                // 🟢 PUSH AM53 — resolve regime-conditional EXIT params ONCE per entry from
+                // the canon regime. HARD RULE: an open position never re-reads this map;
+                // regime changes mid-trade do NOT retune it. Sizing/leverage stay global.
+                // On an invalid map we FAIL LOUD and skip the entry — a bad map must never
+                // silently trade on base params (the spec's "skip-if-unresolvable" rule).
+                let regimeResolved;
+                try {
+                    regimeResolved = resolveRegimeParams(params, canonRegime);
+                } catch (regimeErr) {
+                    const msg = regimeErr?.error || regimeErr?.message || String(regimeErr);
+                    console.error(`[SNIPER-${tenantId}] ❌ AM53 regime_params INVALID for ${config.asset}/${config.strategy}: ${msg} — entry skipped.`);
+                    await logAgentActivity(tenantId, "Sniper", config.asset, `Invalid regime_params map — entry skipped: ${msg}`, "ERROR");
+                    throw (regimeErr instanceof Error ? regimeErr : new Error(msg));
+                }
+
+                let decision = await evaluateStrategy(config.strategy, { macro: macroCandles, trigger: triggerCandles }, regimeResolved.params, tenantId);
 
                 decision.telemetry = { 
                     ...decision.telemetry, 
@@ -1044,7 +1090,23 @@ export async function startSniper(tenantId) {
                             bidAskRatio: canonBidAskRatio
                           })
                         : null,
-                    regime_pair_tf: (macroTf && macroCandles && macroCandles.length >= 30) ? macroTf : null
+                    regime_pair_tf: (macroTf && macroCandles && macroCandles.length >= 30) ? macroTf : null,
+                    // 🟢 PUSH AM53 — regime-conditional exit resolution (entry-time snapshot).
+                    // regime_selected is recorded even when the map had no entry for it
+                    // (overrides_applied {}) so gaps in the map are visible downstream.
+                    // resolved_exit_params are the ACTUAL exit mechanics in force for this
+                    // entry — execute-trade-mcp persists them into trade_logs.params_context
+                    // so the watchdog locks to them instead of re-reading live config.
+                    // NOTE (known limitation): the brain still authors decisionJson.tp_price/
+                    // sl_price, so regime maps hard-bind the MECHANICAL paths (trap springs,
+                    // config fallbacks) until the brain prompt is taught to honor them.
+                    regime_selected: regimeResolved.regime_selected,
+                    regime_params_applied: regimeResolved.overrides_applied,
+                    resolved_exit_params: {
+                        tripwire_percent: regimeResolved.params.tripwire_percent ?? null,
+                        trail_step_percent: regimeResolved.params.trail_step_percent ?? null,
+                        trail_activation_percent: regimeResolved.params.trail_activation_percent ?? null
+                    }
                 };
 
                 // 🟢 PUSH AM5: live CoinGlass Tier 3 fuel — merge cg_* fields into telemetry.

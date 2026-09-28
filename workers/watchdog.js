@@ -421,9 +421,15 @@ async function sweepOpenTrades(tenantId) {
                             
                         // Tripwire/trailing values are always decimal fractions (e.g. 0.005 = 0.5%).
                         // No conversion/normalization — the stored value is used as-is.
-                        const tripwire = parseFloat(params.tripwire_percent || 0);
-                        const trailStep = parseFloat(params.trail_step_percent || 0);
-                        const trailActivation = parseFloat(params.trail_activation_percent || params.tripwire_percent || 0);
+                        //
+                        // 🟢 PUSH AM53 — LOCK AT ENTRY: prefer the entry-time snapshot
+                        // (trade_logs.params_context.entry_*) so a config edit or a regime
+                        // change mid-trade can NOT retune an open position. Fall back to the
+                        // live config for pre-AM53 trades that have no snapshot.
+                        const entryCtx = (openTrade.params_context && typeof openTrade.params_context === 'object') ? openTrade.params_context : {};
+                        const tripwire = parseFloat(entryCtx.entry_tripwire ?? params.tripwire_percent ?? 0);
+                        const trailStep = parseFloat(entryCtx.entry_trail_step ?? params.trail_step_percent ?? 0);
+                        const trailActivation = parseFloat(entryCtx.entry_trail_activation ?? params.trail_activation_percent ?? params.tripwire_percent ?? 0);
 
                         const now = Date.now();
                         if (!heartbeatTracker[openTrade.id] || now - heartbeatTracker[openTrade.id] >= 60000) {
@@ -1353,9 +1359,13 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                         
                         // Tripwire/trailing values are always decimal fractions (e.g. 0.005 = 0.5%).
                         // No conversion/normalization — the stored value is used as-is.
-                        const paperTripwire = parseFloat(paperParams.tripwire_percent || 0);
-                        const paperTrailStep = parseFloat(paperParams.trail_step_percent || 0);
-                        const paperTrailActivation = parseFloat(paperParams.trail_activation_percent || paperParams.tripwire_percent || 0);
+                        //
+                        // 🟢 PUSH AM53 — LOCK AT ENTRY (paper path): prefer the entry-time
+                        // snapshot; fall back to live config for pre-AM53 trades.
+                        const paperEntryCtx = (openTrade.params_context && typeof openTrade.params_context === 'object') ? openTrade.params_context : {};
+                        const paperTripwire = parseFloat(paperEntryCtx.entry_tripwire ?? paperParams.tripwire_percent ?? 0);
+                        const paperTrailStep = parseFloat(paperEntryCtx.entry_trail_step ?? paperParams.trail_step_percent ?? 0);
+                        const paperTrailActivation = parseFloat(paperEntryCtx.entry_trail_activation ?? paperParams.trail_activation_percent ?? paperParams.tripwire_percent ?? 0);
 
                         // 🟢 PAPER TRIPWIRE: Move SL to break-even when profit target reached
                         if (paperTripwire > 0 && pnlPercent >= paperTripwire && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {

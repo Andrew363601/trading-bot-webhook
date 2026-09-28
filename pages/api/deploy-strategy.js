@@ -5,6 +5,8 @@ import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 import { setPendingMode, consumePendingMode, isPendingMode } from '../../lib/phase3-mode.js';
 import { getConcurrentStrategyQuota } from '../../lib/tenant-context.js';
 import { resolveStrategy } from '../../lib/strategy-resolver.js';
+// 🟢 PUSH AM53 — regime-conditional exit map validation (deploy-time dry-check).
+import { validateRegimeParamsMap } from '../../lib/regime-params.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -24,6 +26,19 @@ async function handler(req, res) {
   // Validate config is an object
   if (typeof config !== 'object' || Array.isArray(config)) {
     return res.status(400).json({ error: 'Config must be a valid JSON object' });
+  }
+
+  // 🟢 PUSH AM53 — DEPLOY DRY-CHECK: reject an invalid regime_params map at the
+  // door, not at 3am in the scan loop. Uses validateRegimeParamsMap() DIRECTLY
+  // (never the resolver) so the check is regime-independent — a deploy has no
+  // canon regime to resolve against, and the resolver would skip validation
+  // when the regime is null.
+  try {
+    validateRegimeParamsMap(config.regime_params);
+  } catch (regimeErr) {
+    const msg = regimeErr?.error || regimeErr?.message || String(regimeErr);
+    console.error(`[DEPLOY_STRATEGY] ❌ Invalid regime_params for ${strategy}/${asset}: ${msg}`);
+    return res.status(400).json({ error: msg });
   }
 
   // 🧭 RESOLVE GATE: the strategy must be a built-in OR a library row this

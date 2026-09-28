@@ -554,7 +554,11 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         }),
 
         manageStrategy: tool({
-          description: 'Creates or updates a strategy config row for the CURRENT tenant. Always upserts by (tenant_id, asset, strategy). Strategy name MUST be non-blank.',
+          description: 'Creates or updates a strategy config row for the CURRENT tenant. Always upserts by (tenant_id, asset, strategy). Strategy name MUST be non-blank. '
+            + 'REGIME-CONDITIONAL EXITS (AM53): `parameters` MAY include a `regime_params` map keyed by regime — TREND | CHOP | ACCUMULATION | DISTRIBUTION — whose entries may contain ONLY exit keys: tp_percent, sl_percent, tripwire_percent, trail_step_percent. '
+            + 'Sizing/leverage/market_type/macro_tf/trigger_tf/veto_cooldown_minutes are GLOBAL and may NOT appear inside a regime_params entry (the deploy gate rejects them). '
+            + 'The sniper resolves the map from the TF-invariant canon regime at signal time and LOCKS the resolved exits at entry (no mid-trade retuning). '
+            + 'Propose regime maps ONLY from measured backtest regime_breakdowns, and state which regime each entry is backed by (n, win rate). Do not invent regime tuning without evidence.',
           parameters: z.object({
             asset: z.string().min(1).describe('The asset symbol, e.g., DOGE-PERP-INTX. Required.'),
             strategy: z.string().describe('Canonical strategy name (matches the filename in lib/strategies). Must be non-blank.'),
