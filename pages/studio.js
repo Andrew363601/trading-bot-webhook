@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import Head from 'next/head';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
@@ -34,9 +34,11 @@ import {
 } from 'lightweight-charts';
 import { STUDIO_TIERS, hasStudioAccess } from '../lib/entitlements.js';
 import StudioChat from '../components/StudioChat.js';
+import BacktestChart from '../components/BacktestChart.js';
+import StudioTheater from '../components/StudioTheater.js';
 import { MessageSquare, X, Sliders } from 'lucide-react';
 
-// PUSH AM50 — regime chip palette + canonical order (shared by table, summary, legend).
+// PUSH AM50 â€” regime chip palette + canonical order (shared by table, summary, legend).
 const REGIME_ORDER = ['TREND', 'CHOP', 'ACCUMULATION', 'DISTRIBUTION'];
 const REGIME_STYLES = {
   TREND: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20',
@@ -75,19 +77,19 @@ export default function StudioPage() {
   const [backtestResult, setBacktestResult] = useState(null);
   const [backtestError, setBacktestError] = useState('');
 
-  // PUSH AM49d — asset matrix dropdown (replaces free-text input)
+  // PUSH AM49d â€” asset matrix dropdown (replaces free-text input)
   const [availableAssets, setAvailableAssets] = useState([]);
   const assetsFetchedRef = useRef(false);
 
-  // PUSH AM50 — timestamp of the currently rendered backtest run, so the tab
+  // PUSH AM50 â€” timestamp of the currently rendered backtest run, so the tab
   // auto-sync can avoid clobbering a fresher locally-run result.
   const backtestExecutedAtRef = useRef(null);
 
-  // PUSH AM49a — Deploy-to-Paper state
+  // PUSH AM49a â€” Deploy-to-Paper state
   const [deploying, setDeploying] = useState(false);
   const [deployStatus, setDeployStatus] = useState(null); // { type: 'success'|'error'|'quota', message }
 
-  // PUSH AM47c — Simulation parameters editor state (UI shows WHOLE percent, payload converts to DECIMALS)
+  // PUSH AM47c â€” Simulation parameters editor state (UI shows WHOLE percent, payload converts to DECIMALS)
   const [simParamsOpen, setSimParamsOpen] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [sizingMode, setSizingMode] = useState('qty'); // 'qty' | 'target_usd'
@@ -102,16 +104,6 @@ export default function StudioPage() {
   const [simFee, setSimFee] = useState('0.08');
   const [selectedTradeIdx, setSelectedTradeIdx] = useState(null);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
-
-  // Lightweight-Charts refs
-  const chartContainerRef = useRef(null);
-  const equityContainerRef = useRef(null);
-  const candleChartRef = useRef(null);
-  const candleSeriesRef = useRef(null);
-  const markersPluginRef = useRef(null);
-  const priceLinesRef = useRef([]);
-  const equityChartRef = useRef(null);
-  const equitySeriesRef = useRef(null);
 
   // 1. Fetch user billing tier
   useEffect(() => {
@@ -181,7 +173,7 @@ export default function StudioPage() {
         setVersions(data.versions || []);
         if (data.strategy?.latest_backtest) {
           setBacktestResult(data.strategy.latest_backtest);
-          // PUSH AM50 — track which run is displayed for auto-sync comparisons.
+          // PUSH AM50 â€” track which run is displayed for auto-sync comparisons.
           backtestExecutedAtRef.current = data.strategy.latest_backtest.executed_at || null;
         }
         if (targetRunId) {
@@ -201,7 +193,7 @@ export default function StudioPage() {
     }
   }, [router.isReady, router.query.strategy, router.query.run, session]);
 
-  // PUSH AM47c — Prefill simulation parameters from latest_backtest.config.parameters (rerun reproducibility)
+  // PUSH AM47c â€” Prefill simulation parameters from latest_backtest.config.parameters (rerun reproducibility)
   useEffect(() => {
     if (!selectedStrategy) return;
     const cfgParams = selectedStrategy?.latest_backtest?.config?.parameters
@@ -255,7 +247,7 @@ export default function StudioPage() {
           trigger_tf: triggerTf,
           start: startEpoch,
           end: endEpoch,
-          // PUSH AM47c — Simulation parameters (UNIT DISCIPLINE: UI whole-percent -> payload decimals)
+          // PUSH AM47c â€” Simulation parameters (UNIT DISCIPLINE: UI whole-percent -> payload decimals)
           parameters: {
             ...(sizingMode === 'target_usd'
               ? { target_usd: parseFloat(simTargetUsd) || 10000 }
@@ -277,7 +269,7 @@ export default function StudioPage() {
       }
 
       setBacktestResult(data);
-      // PUSH AM50 — stamp the execution time so tab auto-sync never overwrites
+      // PUSH AM50 â€” stamp the execution time so tab auto-sync never overwrites
       // this fresh manual run with an older persisted result.
       backtestExecutedAtRef.current = data.executed_at || new Date().toISOString();
       // Refresh library in background to update latest_backtest
@@ -290,7 +282,7 @@ export default function StudioPage() {
     }
   };
 
-  // PUSH AM49d — fetch the tradeable asset matrix once per session (cached)
+  // PUSH AM49d â€” fetch the tradeable asset matrix once per session (cached)
   useEffect(() => {
     if (activeTab !== 'BACKTEST' || assetsFetchedRef.current) return;
     assetsFetchedRef.current = true;
@@ -309,7 +301,7 @@ export default function StudioPage() {
     })();
   }, [activeTab, session]);
 
-  // PUSH AM49d — keep manual entry if it matches a listed option; else fall
+  // PUSH AM49d â€” keep manual entry if it matches a listed option; else fall
   // back to the strategy's latest_backtest.product, else the first listed product.
   useEffect(() => {
     if (activeTab !== 'BACKTEST' || availableAssets.length === 0) return;
@@ -321,7 +313,7 @@ export default function StudioPage() {
     });
   }, [activeTab, availableAssets, selectedStrategy]);
 
-  // PUSH AM50 — Backtest tab AUTO-SYNC: when the tab is activated, pull the
+  // PUSH AM50 â€” Backtest tab AUTO-SYNC: when the tab is activated, pull the
   // strategy's latest_backtest and render it if it is NEWER than whatever run
   // is currently displayed (e.g. an agent-run backtest done from chat). A
   // fresher local run (higher executed_at in the ref) is never clobbered.
@@ -356,7 +348,7 @@ export default function StudioPage() {
     return () => { cancelled = true; };
   }, [activeTab, selectedStrategy, session]);
 
-  // PUSH AM49a — Deploy to Paper (uses the parameters you just SIMULATED, not library defaults)
+  // PUSH AM49a â€” Deploy to Paper (uses the parameters you just SIMULATED, not library defaults)
   const handleDeployToPaper = async () => {
     if (!selectedStrategy || !backtestResult?.effective_parameters) return;
     const ok = window.confirm(
@@ -385,7 +377,7 @@ export default function StudioPage() {
       if (res.ok) {
         setDeployStatus({ type: 'success', message: data.message || 'Strategy deployed to PAPER.' });
       } else if (res.status === 403) {
-        setDeployStatus({ type: 'quota', message: data.error || 'Plan quota reached — upgrade to deploy more strategies.' });
+        setDeployStatus({ type: 'quota', message: data.error || 'Plan quota reached â€” upgrade to deploy more strategies.' });
       } else {
         setDeployStatus({ type: 'error', message: data.error || `Deploy failed (${res.status})` });
       }
@@ -397,229 +389,6 @@ export default function StudioPage() {
     }
   };
 
-  // 5. Lightweight-Charts v5 Visual Replay Mounting
-  useEffect(() => {
-    if (activeTab !== 'BACKTEST') return;
-    if (!chartContainerRef.current) return;
-
-    if (candleChartRef.current) {
-      candleChartRef.current.remove();
-      candleChartRef.current = null;
-    }
-    if (equityChartRef.current) {
-      equityChartRef.current.remove();
-      equityChartRef.current = null;
-    }
-    priceLinesRef.current = [];
-
-    const mainChart = createChart(chartContainerRef.current, {
-      layout: {
-        background: { type: 'solid', color: 'transparent' },
-        textColor: '#94a3b8'
-      },
-      grid: {
-        vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
-        horzLines: { color: 'rgba(255, 255, 255, 0.03)' }
-      },
-      crosshair: { mode: CrosshairMode.Normal },
-      timeScale: {
-        timeVisible: true,
-        secondsVisible: false,
-        borderColor: 'rgba(255, 255, 255, 0.1)'
-      },
-      rightPriceScale: {
-        borderColor: 'rgba(255, 255, 255, 0.1)',
-        autoScale: true
-      },
-      autoSize: true
-    });
-
-    const candleSeries = mainChart.addSeries(CandlestickSeries, {
-      upColor: '#10b981',
-      downColor: '#ef4444',
-      borderVisible: false,
-      wickUpColor: '#10b981',
-      wickDownColor: '#ef4444'
-    });
-
-    const markersPlugin = createSeriesMarkers(candleSeries, []);
-
-    candleChartRef.current = mainChart;
-    candleSeriesRef.current = candleSeries;
-    markersPluginRef.current = markersPlugin;
-
-    if (equityContainerRef.current) {
-      const eqChart = createChart(equityContainerRef.current, {
-        layout: {
-          background: { type: 'solid', color: 'transparent' },
-          textColor: '#94a3b8'
-        },
-        grid: {
-          vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
-          horzLines: { color: 'rgba(255, 255, 255, 0.03)' }
-        },
-        crosshair: { mode: CrosshairMode.Normal },
-        timeScale: {
-          timeVisible: true,
-          secondsVisible: false,
-          borderColor: 'rgba(255, 255, 255, 0.1)'
-        },
-        rightPriceScale: {
-          borderColor: 'rgba(255, 255, 255, 0.1)',
-          autoScale: true
-        },
-        autoSize: true
-      });
-
-      const eqSeries = eqChart.addSeries(AreaSeries, {
-        topColor: 'rgba(99, 102, 241, 0.4)',
-        bottomColor: 'rgba(99, 102, 241, 0.02)',
-        lineColor: '#6366f1',
-        lineWidth: 2
-      });
-
-      equityChartRef.current = eqChart;
-      equitySeriesRef.current = eqSeries;
-    }
-
-    return () => {
-      if (candleChartRef.current) {
-        candleChartRef.current.remove();
-        candleChartRef.current = null;
-      }
-      if (equityChartRef.current) {
-        equityChartRef.current.remove();
-        equityChartRef.current = null;
-      }
-      priceLinesRef.current = [];
-    };
-  }, [activeTab]);
-
-  // 6. Populate Chart Data, Markers, Price Lines, and Equity Curve
-  useEffect(() => {
-    if (activeTab !== 'BACKTEST') return;
-    if (!candleSeriesRef.current || !candleChartRef.current) return;
-
-    const rawCandles = backtestResult?.trigger_candles || [];
-    if (!rawCandles || rawCandles.length === 0) {
-      candleSeriesRef.current.setData([]);
-      if (markersPluginRef.current) markersPluginRef.current.setMarkers([]);
-      if (equitySeriesRef.current) equitySeriesRef.current.setData([]);
-      return;
-    }
-
-    const formattedCandles = rawCandles.map((c) => ({
-      time: Math.floor(Number(c.time)),
-      open: Number(c.open),
-      high: Number(c.high),
-      low: Number(c.low),
-      close: Number(c.close)
-    })).sort((a, b) => a.time - b.time);
-
-    candleSeriesRef.current.setData(formattedCandles);
-
-    const minTime = formattedCandles[0].time;
-    const maxTime = formattedCandles[formattedCandles.length - 1].time;
-
-    priceLinesRef.current.forEach((pl) => {
-      try {
-        candleSeriesRef.current?.removePriceLine(pl);
-      } catch (e) {}
-    });
-    priceLinesRef.current = [];
-
-    const markers = [];
-    const trades = backtestResult?.trades || [];
-
-    trades.forEach((t) => {
-      const entrySec = Math.floor(Number(t.entry_time));
-      const exitSec = t.exit_time ? Math.floor(Number(t.exit_time)) : null;
-
-      if (entrySec >= minTime && entrySec <= maxTime) {
-        const isLong = t.side === 'LONG';
-        markers.push({
-          time: entrySec,
-          position: isLong ? 'belowBar' : 'aboveBar',
-          color: isLong ? '#10b981' : '#ef4444',
-          shape: isLong ? 'arrowUp' : 'arrowDown',
-          // AM50 — color stays = side; regime surfaces in the marker text.
-          text: t.side + (t.regime ? ' [' + t.regime + ']' : '') + ' $' + t.entry_price
-        });
-      }
-
-      if (exitSec && exitSec >= minTime && exitSec <= maxTime) {
-        const isWin = (t.pnl_usd || 0) >= 0;
-        const color = isWin ? '#10b981' : '#f43f5e';
-        markers.push({
-          time: exitSec,
-          position: t.side === 'LONG' ? 'aboveBar' : 'belowBar',
-          color: color,
-          shape: isWin ? 'arrowUp' : 'arrowDown',
-          text: (t.exit_reason || 'EXIT') + ' (' + (isWin ? '+' : '') + '$' + (t.pnl_usd || 0).toFixed(2) + ')'
-        });
-      }
-    });
-
-    markers.sort((a, b) => a.time - b.time);
-    if (markersPluginRef.current) {
-      markersPluginRef.current.setMarkers(markers);
-    }
-
-    const lastTrade = trades[trades.length - 1];
-    if (lastTrade && !lastTrade.exit_time) {
-      if (lastTrade.tp_price) {
-        const tpLine = candleSeriesRef.current.createPriceLine({
-          price: Number(lastTrade.tp_price),
-          color: '#10b981',
-          lineWidth: 2,
-          lineStyle: 2,
-          title: 'OPEN TP'
-        });
-        priceLinesRef.current.push(tpLine);
-      }
-      if (lastTrade.sl_price) {
-        const slLine = candleSeriesRef.current.createPriceLine({
-          price: Number(lastTrade.sl_price),
-          color: '#ef4444',
-          lineWidth: 2,
-          lineStyle: 2,
-          title: 'OPEN SL'
-        });
-        priceLinesRef.current.push(slLine);
-      }
-    }
-
-    candleChartRef.current.timeScale().fitContent();
-
-    const rawEquity = backtestResult?.equity_curve || [];
-    if (equitySeriesRef.current && rawEquity.length > 0) {
-      const formattedEquity = rawEquity.map((pt) => ({
-        time: Math.floor(Number(pt.t)),
-        value: Number(pt.equity)
-      })).sort((a, b) => a.time - b.time);
-
-      equitySeriesRef.current.setData(formattedEquity);
-      equityChartRef.current?.timeScale().fitContent();
-    }
-  }, [backtestResult, activeTab]);
-
-  const handleTradeClick = (trade, idx) => {
-    setSelectedTradeIdx(idx);
-    if (!candleChartRef.current || !trade.entry_time) return;
-
-    try {
-      const entrySec = Math.floor(Number(trade.entry_time));
-      const exitSec = trade.exit_time ? Math.floor(Number(trade.exit_time)) : entrySec + 3600;
-      const buffer = Math.max(3600, (exitSec - entrySec) * 2);
-
-      candleChartRef.current.timeScale().setVisibleRange({
-        from: entrySec - buffer,
-        to: exitSec + buffer
-      });
-    } catch (err) {
-      console.warn('Scroll to trade error:', err.message);
-    }
-  };
 
   const isUnlocked = hasStudioAccess(billingTier);
 
@@ -686,7 +455,7 @@ export default function StudioPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-12 xl:grid-cols-12 gap-6 items-start">
           <div className="lg:col-span-8 space-y-6">
             {/* Tier Gate Lock Banner */}
         {!isUnlocked && billingTier && (
@@ -697,7 +466,7 @@ export default function StudioPage() {
               </div>
               <div>
                 <h3 className="text-sm font-black uppercase tracking-wider text-amber-300">
-                  Strategy Studio — Pro Tier Required
+                  Strategy Studio â€” Pro Tier Required
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
                   Your current tier ({billingTier}) allows browsing public strategies. Upgrading to PRO or higher unlocks custom strategy building, AI chat saves, and backtesting.
@@ -736,7 +505,7 @@ export default function StudioPage() {
                 <div className="bg-slate-900/40 border border-white/5 rounded-2xl p-10 text-center space-y-3">
                   <FileCode className="w-8 h-8 text-slate-600 mx-auto" />
                   <p className="text-sm font-medium text-slate-400">
-                    No custom strategies yet — ask Nexus in chat to build one, or create your first strategy.
+                    No custom strategies yet â€” ask Nexus in chat to build one, or create your first strategy.
                   </p>
                   <Link
                     href="/"
@@ -894,7 +663,7 @@ export default function StudioPage() {
                     <div className="flex items-center justify-between pb-3 border-b border-white/5 mb-3 text-xs text-slate-500">
                       <span className="font-mono text-[11px]">{selectedStrategy.name}.js</span>
                       <span className="text-[10px] uppercase tracking-widest">
-                        Strategy Studio Engine • Active
+                        Strategy Studio Engine â€¢ Active
                       </span>
                     </div>
                     <pre className="font-mono text-xs text-indigo-200/90 overflow-x-auto p-2 bg-slate-900/50 rounded-xl leading-relaxed whitespace-pre">
@@ -1011,7 +780,7 @@ export default function StudioPage() {
                   <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
                     Asset / Product
                   </label>
-                  {/* PUSH AM49d — dropdown from /api/available-assets (no free-text guessing) */}
+                  {/* PUSH AM49d â€” dropdown from /api/available-assets (no free-text guessing) */}
                   <select
                     value={backtestProduct}
                     onChange={(e) => setBacktestProduct(e.target.value)}
@@ -1088,7 +857,7 @@ export default function StudioPage() {
                 </div>
               </div>
 
-              {/* PUSH AM47c — SIMULATION PARAMETERS (collapsible; UI whole-percent -> payload decimals) */}
+              {/* PUSH AM47c â€” SIMULATION PARAMETERS (collapsible; UI whole-percent -> payload decimals) */}
               <div className="bg-slate-950/60 border border-white/5 rounded-2xl p-4 space-y-3">
                 <button
                   type="button"
@@ -1282,7 +1051,7 @@ export default function StudioPage() {
               <div className="flex items-center justify-between pt-2">
                 <div className="text-[11px] text-slate-500 flex items-center gap-1.5 font-mono">
                   <Shield className="w-3.5 h-3.5 text-indigo-400" />
-                  Isolated VM sandbox • 5 req/s rate limit • SL-priority intrabar resolution
+                  Isolated VM sandbox â€¢ 5 req/s rate limit â€¢ SL-priority intrabar resolution
                 </div>
 
                 <button
@@ -1316,7 +1085,7 @@ export default function StudioPage() {
               )}
             </div>
 
-            {/* Backtest Visual Replay Canvas (PUSH AM47) */}
+            {/* Backtest Visual Replay Canvas (PUSH AM47, extracted AM52b) */}
             <div className="bg-slate-900/50 border border-white/5 rounded-2xl p-5 space-y-4">
               <div className="flex items-center justify-between border-b border-white/5 pb-2">
                 <div className="flex items-center gap-2">
@@ -1347,31 +1116,18 @@ export default function StudioPage() {
                 </div>
               </div>
 
-              {/* Main Candlestick Replay Pane */}
-              <div className="w-full h-[400px] relative bg-slate-950/80 rounded-xl overflow-hidden border border-white/5">
-                <div ref={chartContainerRef} className="w-full h-full" />
-                {(!backtestResult || !backtestResult.trigger_candles || backtestResult.trigger_candles.length === 0) && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-slate-950/60 backdrop-blur-xs text-xs text-slate-500 font-mono">
-                    Run a backtest simulation to view interactive candle replay & trade markers.
-                  </div>
-                )}
-              </div>
-
-              {/* Equity Curve Sub-pane */}
-              <div className="space-y-1 pt-2">
-                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-slate-500">
-                  <span>Equity Curve (,000 baseline)</span>
-                </div>
-                <div className="w-full h-[140px] relative bg-slate-950/80 rounded-xl overflow-hidden border border-white/5">
-                  <div ref={equityContainerRef} className="w-full h-full" />
-                </div>
-              </div>
+              <BacktestChart
+                data={backtestResult}
+                mode="replay"
+                height={400}
+                equityHeight={140}
+              />
             </div>
 
             {/* Backtest Results Display */}
             {backtestResult && backtestResult.summary && (
               <div className="space-y-6">
-                {/* PUSH AM49a — Deploy to Paper control */}
+                {/* PUSH AM49a â€” Deploy to Paper control */}
                 {isUnlocked && (
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/50 border border-white/5 rounded-2xl p-4">
                     <div className="text-[11px] text-slate-400">
@@ -1402,7 +1158,7 @@ export default function StudioPage() {
                   </div>
                 )}
 
-                {/* PUSH AM49a — Deploy status chip */}
+                {/* PUSH AM49a â€” Deploy status chip */}
                 {deployStatus && (
                   <div
                     className={`p-3 rounded-xl text-xs flex items-center gap-2 border ${
@@ -1496,7 +1252,7 @@ export default function StudioPage() {
                   </div>
                 </div>
 
-                {/* PUSH AM50 — Per-regime breakdown. All four buckets always shown;
+                {/* PUSH AM50 â€” Per-regime breakdown. All four buckets always shown;
                     zero-n renders dimmed 'n=0' (loud, not hidden). Old runs that
                     pre-date the proxy simply omit this block. */}
                 {backtestResult.summary.regime_breakdown && (
@@ -1523,7 +1279,7 @@ export default function StudioPage() {
                               {empty ? 'n=0' : (b.win_rate * 100).toFixed(1) + '% WR'}
                             </div>
                             <div className="font-mono text-[10px] opacity-80">
-                              n={b.n} · {b.pnl_usd >= 0 ? '+' : ''}${b.pnl_usd.toFixed(2)}
+                              n={b.n} Â· {b.pnl_usd >= 0 ? '+' : ''}${b.pnl_usd.toFixed(2)}
                             </div>
                           </div>
                         );
@@ -1532,7 +1288,7 @@ export default function StudioPage() {
                   </div>
                 )}
 
-                {/* PUSH AM47c — Effective Parameters Chip Row (transparency: what actually ran) */}
+                {/* PUSH AM47c â€” Effective Parameters Chip Row (transparency: what actually ran) */}
                 {backtestResult?.effective_parameters && (
                   <div className="bg-slate-950/60 border border-white/5 rounded-xl px-4 py-3 flex flex-wrap items-center gap-2 text-[10px] font-mono">
                     <span className="text-[9px] font-black uppercase tracking-widest text-slate-500 mr-1">
@@ -1641,7 +1397,7 @@ export default function StudioPage() {
                                     {t.regime}
                                   </span>
                                 ) : (
-                                  <span className="text-slate-600 text-[10px]">—</span>
+                                  <span className="text-slate-600 text-[10px]">â€”</span>
                                 )}
                               </td>
                               <td className="py-2.5 px-3 text-slate-400">
@@ -1692,6 +1448,11 @@ export default function StudioPage() {
                 }}
               />
             </div>
+          </div>
+
+          {/* PUSH AM52b â€” Theater third column (xl only, stacks on smaller) */}
+          <div className="hidden xl:block xl:col-span-3 sticky top-6 max-h-[760px] overflow-y-auto">
+            <StudioTheater session={session} visible={true} />
           </div>
         </div>
       </div>
