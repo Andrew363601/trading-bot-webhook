@@ -36,6 +36,15 @@ import { STUDIO_TIERS, hasStudioAccess } from '../lib/entitlements.js';
 import StudioChat from '../components/StudioChat.js';
 import { MessageSquare, X, Sliders } from 'lucide-react';
 
+// PUSH AM50 — regime chip palette + canonical order (shared by table, summary, legend).
+const REGIME_ORDER = ['TREND', 'CHOP', 'ACCUMULATION', 'DISTRIBUTION'];
+const REGIME_STYLES = {
+  TREND: 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20',
+  CHOP: 'bg-slate-500/10 text-slate-300 border border-slate-500/20',
+  ACCUMULATION: 'bg-amber-500/10 text-amber-400 border border-amber-500/20',
+  DISTRIBUTION: 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+};
+
 export default function StudioPage() {
   const router = useRouter();
   const session = useSession();
@@ -69,6 +78,10 @@ export default function StudioPage() {
   // PUSH AM49d — asset matrix dropdown (replaces free-text input)
   const [availableAssets, setAvailableAssets] = useState([]);
   const assetsFetchedRef = useRef(false);
+
+  // PUSH AM50 — timestamp of the currently rendered backtest run, so the tab
+  // auto-sync can avoid clobbering a fresher locally-run result.
+  const backtestExecutedAtRef = useRef(null);
 
   // PUSH AM49a — Deploy-to-Paper state
   const [deploying, setDeploying] = useState(false);
@@ -168,6 +181,8 @@ export default function StudioPage() {
         setVersions(data.versions || []);
         if (data.strategy?.latest_backtest) {
           setBacktestResult(data.strategy.latest_backtest);
+          // PUSH AM50 — track which run is displayed for auto-sync comparisons.
+          backtestExecutedAtRef.current = data.strategy.latest_backtest.executed_at || null;
         }
         if (targetRunId) {
           setActiveTab('BACKTEST');
@@ -262,6 +277,9 @@ export default function StudioPage() {
       }
 
       setBacktestResult(data);
+      // PUSH AM50 — stamp the execution time so tab auto-sync never overwrites
+      // this fresh manual run with an older persisted result.
+      backtestExecutedAtRef.current = data.executed_at || new Date().toISOString();
       // Refresh library in background to update latest_backtest
       fetchLibrary();
     } catch (err) {
@@ -302,6 +320,41 @@ export default function StudioPage() {
       return availableAssets[0];
     });
   }, [activeTab, availableAssets, selectedStrategy]);
+
+  // PUSH AM50 — Backtest tab AUTO-SYNC: when the tab is activated, pull the
+  // strategy's latest_backtest and render it if it is NEWER than whatever run
+  // is currently displayed (e.g. an agent-run backtest done from chat). A
+  // fresher local run (higher executed_at in the ref) is never clobbered.
+  const autoSyncedRef = useRef(null);
+  useEffect(() => {
+    if (activeTab !== 'BACKTEST' || !selectedStrategy?.name || !session?.access_token) return;
+    const strategyName = selectedStrategy.name;
+    if (autoSyncedRef.current === strategyName) return; // once per strategy selection
+    autoSyncedRef.current = strategyName;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/strategy-library?name=${encodeURIComponent(strategyName)}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` }
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const lb = data.strategy?.latest_backtest;
+        if (!lb || cancelled) return;
+
+        const lbAt = lb.executed_at ? Date.parse(lb.executed_at) : 0;
+        const currentAt = backtestExecutedAtRef.current ? Date.parse(backtestExecutedAtRef.current) : 0;
+        if (lbAt > currentAt) {
+          setBacktestResult(lb);
+          backtestExecutedAtRef.current = lb.executed_at || new Date().toISOString();
+        }
+      } catch (err) {
+        console.error('Backtest auto-sync error:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeTab, selectedStrategy, session]);
 
   // PUSH AM49a — Deploy to Paper (uses the parameters you just SIMULATED, not library defaults)
   const handleDeployToPaper = async () => {
@@ -489,7 +542,8 @@ export default function StudioPage() {
           position: isLong ? 'belowBar' : 'aboveBar',
           color: isLong ? '#10b981' : '#ef4444',
           shape: isLong ? 'arrowUp' : 'arrowDown',
-          text: t.side + ' $' + t.entry_price
+          // AM50 — color stays = side; regime surfaces in the marker text.
+          text: t.side + (t.regime ? ' [' + t.regime + ']' : '') + ' $' + t.entry_price
         });
       }
 
@@ -1276,13 +1330,20 @@ export default function StudioPage() {
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-3 text-[10px] font-mono text-slate-400">
+                <div className="flex items-center gap-3 text-[10px] font-mono text-slate-400 flex-wrap">
                   <span className="flex items-center gap-1">
                     <span className="w-2 h-2 rounded-full bg-emerald-400" /> Long Entry
                   </span>
                   <span className="flex items-center gap-1">
                     <span className="w-2 h-2 rounded-full bg-rose-500" /> Short Entry
                   </span>
+                  <span className="text-slate-600">|</span>
+                  <span className="text-slate-500">Regime (marker text):</span>
+                  {REGIME_ORDER.map((r) => (
+                    <span key={r} className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${REGIME_STYLES[r]}`}>
+                      {r}
+                    </span>
+                  ))}
                 </div>
               </div>
 
@@ -1435,6 +1496,42 @@ export default function StudioPage() {
                   </div>
                 </div>
 
+                {/* PUSH AM50 — Per-regime breakdown. All four buckets always shown;
+                    zero-n renders dimmed 'n=0' (loud, not hidden). Old runs that
+                    pre-date the proxy simply omit this block. */}
+                {backtestResult.summary.regime_breakdown && (
+                  <div className="bg-slate-950/60 border border-white/5 rounded-xl px-4 py-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">
+                        Regime Breakdown
+                      </span>
+                      <span className="text-[9px] font-mono text-slate-600">
+                        {backtestResult.summary.regime_proxy_version || 'proxy'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {REGIME_ORDER.map((r) => {
+                        const b = backtestResult.summary.regime_breakdown[r] || { n: 0, win_rate: null, pnl_usd: 0 };
+                        const empty = !b.n;
+                        return (
+                          <div
+                            key={r}
+                            className={`rounded-lg px-3 py-2 border ${REGIME_STYLES[r]} ${empty ? 'opacity-40' : ''}`}
+                          >
+                            <div className="text-[10px] font-black uppercase tracking-wider">{r}</div>
+                            <div className="font-mono text-sm font-bold">
+                              {empty ? 'n=0' : (b.win_rate * 100).toFixed(1) + '% WR'}
+                            </div>
+                            <div className="font-mono text-[10px] opacity-80">
+                              n={b.n} · {b.pnl_usd >= 0 ? '+' : ''}${b.pnl_usd.toFixed(2)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 {/* PUSH AM47c — Effective Parameters Chip Row (transparency: what actually ran) */}
                 {backtestResult?.effective_parameters && (
                   <div className="bg-slate-950/60 border border-white/5 rounded-xl px-4 py-3 flex flex-wrap items-center gap-2 text-[10px] font-mono">
@@ -1510,6 +1607,7 @@ export default function StudioPage() {
                         <thead className="bg-slate-950/60 text-slate-400 border-b border-white/5">
                           <tr>
                             <th className="py-2.5 px-3">Side</th>
+                            <th className="py-2.5 px-3">Regime</th>
                             <th className="py-2.5 px-3">Entry Time</th>
                             <th className="py-2.5 px-3">Entry Price</th>
                             <th className="py-2.5 px-3">Exit Time</th>
@@ -1536,6 +1634,15 @@ export default function StudioPage() {
                                 >
                                   {t.side}
                                 </span>
+                              </td>
+                              <td className="py-2.5 px-3">
+                                {t.regime ? (
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${REGIME_STYLES[t.regime] || REGIME_STYLES.CHOP}`}>
+                                    {t.regime}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-600 text-[10px]">—</span>
+                                )}
                               </td>
                               <td className="py-2.5 px-3 text-slate-400">
                                 {new Date(t.entry_time * 1000).toLocaleString()}
