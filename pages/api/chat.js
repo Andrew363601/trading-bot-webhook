@@ -14,6 +14,9 @@ import { getActiveModel } from '../../lib/model-router';
 import { getBillingTier, hasStudioAccess } from '../../lib/entitlements.js';
 import { validateStrategyCode } from '../../lib/strategy-validator.js';
 import { runBacktestForTenant } from '../../lib/backtest-service.js';
+// 🟢 PUSH AM54 — shared tool-arg integrity helpers (string-parameters
+// normalization + identifier aliases). Pure, unit-tested.
+import { normalizeParametersArg, resolveStrategyIdentifier } from '../../lib/tool-arg-integrity.js';
 import jwt from 'jsonwebtoken';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -677,10 +680,19 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
             code: z.string().describe('Complete JavaScript strategy source code defining `run(macroCandles, triggerCandles, parameters)`. Required.'),
             description: z.string().optional().describe('Short description of the strategy thesis and rules.')
           }),
-          execute: async ({ name, code, description }) => {
+          execute: async (args) => {
+            const { code, description } = args || {};
             if (!tenantId) {
               return { success: false, error: 'Refused: no tenant context found.' };
             }
+            // 🟢 PUSH AM54 — identifier aliases: the model is primed by
+            // readStrategyLogic to send `strategy_name`, but this tool takes `name`.
+            // Accept both; an empty identifier is a PARAM error, never a lookup result.
+            const idRes = resolveStrategyIdentifier(args);
+            if (!idRes.ok) {
+              return { success: false, error: idRes.error };
+            }
+            const rawName = idRes.name;
             try {
               const currentTier = await getBillingTier(supabase, tenantId);
               if (!hasStudioAccess(currentTier)) {
@@ -690,7 +702,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
                 };
               }
 
-              const cleanName = (name || '').toString().trim().toLowerCase();
+              const cleanName = (rawName || '').toString().trim().toLowerCase();
               if (!/^[a-z0-9_]{3,64}$/.test(cleanName)) {
                 return {
                   success: false,
@@ -777,10 +789,18 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
             code: z.string().describe('Updated JavaScript strategy source code defining `run(macroCandles, triggerCandles, parameters)`. Required.'),
             change_note: z.string().optional().describe('Summary of modifications made in this version.')
           }),
-          execute: async ({ name, code, change_note }) => {
+          execute: async (args) => {
+            const { code, change_note } = args || {};
             if (!tenantId) {
               return { success: false, error: 'Refused: no tenant context found.' };
             }
+            // 🟢 PUSH AM54 — identifier aliases (see saveStrategyCode). Never emit
+            // "Strategy '' not found" — an empty identifier is a PARAM error.
+            const idRes = resolveStrategyIdentifier(args);
+            if (!idRes.ok) {
+              return { success: false, error: idRes.error };
+            }
+            const rawName = idRes.name;
             try {
               const currentTier = await getBillingTier(supabase, tenantId);
               if (!hasStudioAccess(currentTier)) {
@@ -790,7 +810,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
                 };
               }
 
-              const cleanName = (name || '').toString().trim().toLowerCase();
+              const cleanName = (rawName || '').toString().trim().toLowerCase();
               const { data: existing, error: checkError } = await supabase
                 .from('strategy_library')
                 .select('id, name, version, code')
@@ -870,7 +890,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
             end: z.string().optional().describe('End date (ISO date string or epoch seconds). Defaults to current time.'),
             parameters: z.record(z.any()).optional().describe('Optional runtime parameter overrides for the simulation.')
           }),
-          execute: async ({ strategy_name, product, macro_tf, trigger_tf, start, end, parameters, asset, symbol }) => {
+          execute: async ({ strategy_name, product, macro_tf, trigger_tf, start, end, parameters: args_parameters, asset, symbol }) => {
             if (!tenantId) {
               return { success: false, error: 'Refused: no tenant context found.' };
             }
@@ -879,6 +899,19 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
             // defensively; if still empty the service throws BAD_REQUEST loudly
             // (no silent BTC fallback).
             const resolvedProduct = product || asset || symbol;
+            // 🟢 PUSH AM54 — tool-arg integrity: the manual OpenRouter loop does NOT
+            // enforce zod, so `parameters` can arrive as a JSON STRING. A truthy string
+            // passes `parameters || {}`, the strategy's destructuring gets nothing, and
+            // the run silently replicates defaults byte-for-byte (the tuning channel
+            // appears dead). Normalize here and echo what we received so the model can
+            // self-correct in-turn.
+            const paramNorm = normalizeParametersArg(args_parameters);
+            if (!paramNorm.ok) {
+              return { success: false, error: paramNorm.error };
+            }
+            const parameters = paramNorm.parameters;
+            const parametersReceivedType = paramNorm.receivedType;
+            const parametersNormalizedFromString = paramNorm.normalizedFromString;
             try {
               const currentTier = await getBillingTier(supabase, tenantId);
               if (!hasStudioAccess(currentTier)) {
@@ -923,6 +956,10 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
                 // price scale before presenting numbers.
                 product: result.product,
                 first_close: result.first_close,
+                // 🟢 PUSH AM54 — echo exactly what the platform received for
+                // `parameters` so the model can self-correct in-turn.
+                parameters_received_type: parametersReceivedType,
+                parameters_normalized_from_string: parametersNormalizedFromString,
                 worst_trades,
                 best_trades,
                 studio_url: '/studio?strategy=' + cleanName + '&run=' + (result.run_id || ''),
