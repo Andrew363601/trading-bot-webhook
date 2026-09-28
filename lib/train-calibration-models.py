@@ -53,7 +53,11 @@ SHRINKAGE_K = 5
 # re-enter the dollar heads: one poisoned bucket shifts expected_pnl for every
 # geometry it shares. Applied to all three loaders (real trades, veto ledger,
 # archetype stats) so the three sample pools can never drift apart in era.
-CUTOFF = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+# 🟢 AM44 — Z-suffix (not isoformat's '+00:00'): the '+' decodes as a SPACE in a
+# URL query string, so the raw-interpolated PostgREST filter (sb_get appends
+# filters unquoted) hit Postgres 22007 -> HTTP 400 on every cron tick. Z is
+# ISO-8601, URL-safe, and accepted by timestamptz.
+CUTOFF = (datetime.now(timezone.utc) - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
 # ─────────────────────────────────────────────────────────────
