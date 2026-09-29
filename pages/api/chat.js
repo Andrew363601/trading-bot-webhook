@@ -17,6 +17,8 @@ import { runBacktestForTenant } from '../../lib/backtest-service.js';
 // 🟢 PUSH AM54 — shared tool-arg integrity helpers (string-parameters
 // normalization + identifier aliases). Pure, unit-tested.
 import { normalizeParametersArg, resolveStrategyIdentifier } from '../../lib/tool-arg-integrity.js';
+// 🟢 PUSH AM52b2 — shared tool-ticker formatter (post-hoc, both branches).
+import { formatToolTicker, dedupeTickerLines } from '../../lib/tool-ticker.js';
 import jwt from 'jsonwebtoken';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -34,6 +36,7 @@ const MANAGE_STRATEGY_DEDUPE_TTL_MS = 5000;
 // (streamText stopWhen and the manual OpenRouter fetch loop). One const so
 // future bumps can never fork the two branches again.
 const CHAT_MAX_STEPS = 20;
+
 function dedupeKey(tenantId, asset, strategy) {
   return `${tenantId}|${(asset || '').toUpperCase()}|${(strategy || '').toUpperCase()}`;
 }
@@ -1024,6 +1027,80 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
           }
         }),
 
+        readParamPriors: tool({
+          // PUSH AM51 — measured per-regime param priors from past backtests.
+          // CONTEXT-ONLY: these are evidence for tuning proposals, never a veto
+          // authority. Propose regime maps only with measured backing.
+          description: 'Reads measured per-regime parameter priors for a library strategy (from past backtest runs). Returns win rate / expectancy / profit factor per regime with sample size n. CONTEXT ONLY for tuning proposals — never a veto authority; propose regime maps only with measured backing. Requires PRO tier or higher.',
+          parameters: z.object({
+            strategy_name: z.string().describe('Canonical strategy slug in the strategy library. Required.'),
+            regime: z.string().optional().describe('Optional canon regime filter (TREND/CHOP/ACCUMULATION/DISTRIBUTION). Omit for all regimes.')
+          }),
+          execute: async ({ strategy_name, regime }) => {
+            if (!tenantId) {
+              return { success: false, error: 'Refused: no tenant context found.' };
+            }
+            try {
+              const currentTier = await getBillingTier(supabase, tenantId);
+              if (!hasStudioAccess(currentTier)) {
+                return { success: false, error: 'Strategy Studio requires PRO plan or higher. Upgrade at /plans' };
+              }
+
+              const cleanName = (strategy_name || '').toString().trim().toLowerCase();
+              const { data: strat, error: stratErr } = await supabase
+                .from('strategy_library')
+                .select('id, name, version')
+                .eq('name', cleanName)
+                .or('tenant_id.eq.' + tenantId + ',visibility.eq.public')
+                .order('updated_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+              if (stratErr) return { success: false, error: 'Database lookup error: ' + stratErr.message };
+              if (!strat) return { error: 'No library strategy named ' + cleanName + '.' };
+
+              const since = new Date(Date.now() - 90 * 86400 * 1000).toISOString();
+              let query = supabase
+                .from('strategy_param_priors')
+                .select('regime, params, metrics, n, source, regime_proxy_version, updated_at')
+                .eq('tenant_id', tenantId)
+                .eq('library_id', strat.id)
+                .gte('n', 10)
+                .gte('updated_at', since)
+                .order('n', { ascending: false });
+              if (regime) query = query.eq('regime', String(regime).toUpperCase());
+
+              const { data: priors, error } = await query;
+              if (error) return { success: false, error: 'Database lookup error: ' + error.message };
+              if (!priors || !priors.length) {
+                return {
+                  strategy_name: strat.name,
+                  priors: [],
+                  note: 'insufficient n — no regime has >= 10 measured samples in the last 90d.'
+                };
+              }
+
+              return {
+                strategy_name: strat.name,
+                library_version: strat.version,
+                priors: priors.map((p) => ({
+                  regime: p.regime,
+                  n: p.n,
+                  metrics: p.metrics,
+                  params: p.params,
+                  regime_proxy_version: p.regime_proxy_version,
+                  source: p.source,
+                  updated_at: p.updated_at
+                })),
+                note: 'Context only — never a veto authority. Propose maps only with measured backing.'
+              };
+            } catch (err) {
+              console.error('[CHAT readParamPriors ERROR]', err.message);
+              return { success: false, error: 'Exception reading param priors: ' + err.message };
+            }
+          }
+        }),
+
         readStrategyLogic: tool({
           // PUSH AM49b — reads built-in files OR library strategies (chat-created).
           description: 'Reads a strategy\'s source — built-in files or library strategies (chat-created). Always call this BEFORE updateStrategyCode so edits are surgical, not blind.',
@@ -1355,12 +1432,16 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
     };
 
     let fullText;
+    // PUSH AM52b2 — post-hoc tool ticker. Collect one line per tool call from
+    // whichever branch runs, then prepend to the final text.
+    const tickerLines = [];
     if (activeModel.provider === 'openrouter') {
       fullText = await callOpenRouterWithTools(
         activeModel,
         systemPrompt,
         safeMessages,
-        tools
+        tools,
+        tickerLines
       );
     } else {
       const google = createGoogleGenerativeAI({
@@ -1375,12 +1456,22 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         stopWhen: stepCountIs(CHAT_MAX_STEPS),
         timeout: { totalMs: 290000 },
         tools: tools,
+        onStepFinish: (step) => {
+          const calls = step?.toolCalls || [];
+          for (const tc of calls) {
+            // AI SDK v6: tool call args live on `input` (not `args`).
+            tickerLines.push(formatToolTicker(tc.toolName, tc.input));
+          }
+        }
       });
       fullText = await result.text;
     }
 
+    const ticker = dedupeTickerLines(tickerLines);
+    const body = ticker.length ? `${ticker.join('\n')}\n\n${fullText}` : fullText;
+
     res.setHeader('Content-Type', 'text/plain');
-    res.write(fullText);
+    res.write(body);
     res.end();
 
   } catch (err) {
@@ -1395,7 +1486,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
 }
 
 // ── OpenRouter Tool Loop ──
-async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tools) {
+async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tools, tickerLines = []) {
   const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
 
   // Convert Vercel AI SDK messages to OpenAI format
@@ -1493,6 +1584,8 @@ async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tool
         } catch {
           args = {};
         }
+        // PUSH AM52b2 — record the tool ticker line before execution.
+        tickerLines.push(formatToolTicker(tc.function.name, args));
         try {
           const result = await toolDef.execute(args);
           currentMessages.push({

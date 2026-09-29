@@ -47,7 +47,7 @@ for (const [want, candles] of Object.entries(suite)) {
   check(`mixed series reaches ${want}`, got === want, `got ${got}`);
 }
 check('all four labels reachable', new Set(Object.values(labels)).size === 4, Object.values(labels).join(','));
-check('version constant', REGIME_PROXY_VERSION === 'proxy_v1', REGIME_PROXY_VERSION);
+check('version constant', REGIME_PROXY_VERSION === 'proxy_v2', REGIME_PROXY_VERSION);
 
 let pass = 0;
 for (const r of results) { console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.extra ? '  [' + r.extra + ']' : ''}`); if (r.ok) pass++; }

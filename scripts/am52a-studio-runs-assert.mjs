@@ -85,7 +85,7 @@ if (row) {
   check('trades non-empty', trades.length > 0, `n=${trades.length}`);
   check('every trade has a regime', trades.length > 0 && trades.every(t => buckets.includes(t.regime)), JSON.stringify([...new Set(trades.map(t => t.regime))]));
   check('regime_breakdown has 4 buckets', buckets.every(b => rb[b] && typeof rb[b].n === 'number'), JSON.stringify(Object.keys(rb)));
-  check('regime_proxy_version = proxy_v1', row.regime_proxy_version === 'proxy_v1', String(row.regime_proxy_version));
+  check('regime_proxy_version = proxy_v2', row.regime_proxy_version === 'proxy_v2', String(row.regime_proxy_version));
   check('summary.total_trades matches trades.length', row.summary && row.summary.total_trades === trades.length, `summary=${row.summary?.total_trades} trades=${trades.length}`);
   check('summary has pnl_percent', row.summary && typeof row.summary.pnl_percent === 'number', String(row.summary?.pnl_percent));
   check('equity_curve present', Array.isArray(row.equity_curve) && row.equity_curve.length > 0, `n=${row.equity_curve?.length}`);

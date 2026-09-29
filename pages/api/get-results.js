@@ -1,37 +1,9 @@
 // pages/api/get-results.js
-import { createClient } from "@supabase/supabase-js";
-import { jwtVerify, createRemoteJWKSet } from 'jose';
+// PUSH AM52i — migrated to withTenantAuth (drops manual JWT parsing).
+import { withTenantAuth } from '../../lib/auth-middleware';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
-
-const supabase = createClient(
-  supabaseUrl,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
-
-export default async function handler(req, res) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing or invalid Authorization header' });
-  }
-
-  let tenantId;
-  try {
-    const token = authHeader.split(' ')[1];
-    const { payload } = await jwtVerify(token, JWKS, { algorithms: ['ES256'] });
-    
-    const { data: tenantUser } = await supabase
-      .from('tenant_users')
-      .select('tenant_id')
-      .eq('auth_user_id', payload.sub)
-      .single();
-    
-    if (!tenantUser) return res.status(401).json({ error: 'Tenant not found' });
-    tenantId = tenantUser.tenant_id;
-  } catch (err) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
+async function handler(req, res) {
+  const { tenantId, supabase } = req.tenant;
 
   const { data, error } = await supabase
     .from("backtest_results")
@@ -42,5 +14,8 @@ export default async function handler(req, res) {
 
   if (error) return res.status(500).json({ error });
 
-  res.status(200).json(data);
+  return res.status(200).json(data);
 }
+
+export default withTenantAuth(handler);
+

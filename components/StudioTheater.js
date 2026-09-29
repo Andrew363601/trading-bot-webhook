@@ -22,6 +22,18 @@ const pct = (v) => (v == null ? '—' : Math.round(v * 100) + '%');
 const arrow = (d) => (d > 0 ? '▲' : d < 0 ? '▼' : '');
 const arrowCls = (d) => (d > 0 ? 'text-emerald-400' : d < 0 ? 'text-rose-500' : 'text-slate-500');
 
+// PUSH AM52b2 — win_rate fraction -> rose (low) .. emerald (high) cell tint.
+function heatColor(wr) {
+  const t = Math.max(0, Math.min(1, wr));
+  const rose = [244, 63, 94];
+  const emerald = [16, 185, 129];
+  const c = rose.map((v, i) => Math.round(v + (emerald[i] - v) * t));
+  return `rgba(${c[0]}, ${c[1]}, ${c[2]}, 0.22)`;
+}
+
+// PUSH AM52b2 — episode grouping gap (distinct from the 5-min baseline pin).
+const EPISODE_GAP_MS = 30 * 60 * 1000;
+
 export default function StudioTheater({ session, visible }) {
   const [runs, setRuns] = useState([]);
   const [error, setError] = useState('');
@@ -87,6 +99,44 @@ export default function StudioTheater({ session, visible }) {
     return runs[runs.length - 1]; // no gap: whole window is one episode
   }, [runs]);
 
+  // PUSH AM52b2 — episode labels. Group runs by created_at gaps > 30min; the
+  // oldest run of each group is BASELINE, then C1, C2... (client-side only).
+  const episodeLabels = useMemo(() => {
+    const labels = {};
+    if (!runs.length) return labels;
+    const groups = [];
+    let current = [runs[0]];
+    for (let i = 1; i < runs.length; i++) {
+      const newer = new Date(runs[i - 1].created_at).getTime();
+      const older = new Date(runs[i].created_at).getTime();
+      if (Number.isFinite(newer) && Number.isFinite(older) && newer - older > EPISODE_GAP_MS) {
+        groups.push(current);
+        current = [runs[i]];
+      } else {
+        current.push(runs[i]);
+      }
+    }
+    groups.push(current);
+    for (const g of groups) {
+      const chrono = [...g].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      chrono.forEach((r, idx) => { labels[r.id] = idx === 0 ? 'BASELINE' : `C${idx}`; });
+    }
+    return labels;
+  }, [runs]);
+
+  // Newest episode = the group containing runs[0] (newest-first walk).
+  const newestEpisode = useMemo(() => {
+    if (!runs.length) return [];
+    const out = [runs[0]];
+    for (let i = 1; i < runs.length; i++) {
+      const newer = new Date(runs[i - 1].created_at).getTime();
+      const older = new Date(runs[i].created_at).getTime();
+      if (Number.isFinite(newer) && Number.isFinite(older) && newer - older > EPISODE_GAP_MS) break;
+      out.push(runs[i]);
+    }
+    return out;
+  }, [runs]);
+
   const isFresh = (r) => r && (now - new Date(r.created_at).getTime()) < EPISODE_FRESH_MS;
 
   return (
@@ -111,6 +161,48 @@ export default function StudioTheater({ session, visible }) {
       {!runs.length && (
         <div className="text-xs text-slate-500 font-mono bg-slate-900/40 border border-white/5 rounded-xl p-6 text-center">
           No runs yet — run a backtest or ask the agent to iterate.
+        </div>
+      )}
+
+      {/* PUSH AM52b2 — regime heatmap for the newest episode */}
+      {newestEpisode.length > 0 && (
+        <div className="bg-slate-900/40 border border-white/5 rounded-2xl p-3">
+          <div className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">
+            Regime heatmap · newest episode
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[10px] font-mono border-separate border-spacing-1">
+              <thead>
+                <tr>
+                  <th className="text-left text-slate-500 font-bold px-1">run</th>
+                  {REGIME_ORDER.map((r) => (
+                    <th key={r} className="text-center text-slate-500 font-bold px-1">{r.slice(0, 6)}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[...newestEpisode].reverse().map((run) => {
+                  const rb = run.regime_breakdown || {};
+                  return (
+                    <tr key={run.id}>
+                      <td className="text-slate-400 px-1 whitespace-nowrap">{episodeLabels[run.id] || '—'}</td>
+                      {REGIME_ORDER.map((r) => {
+                        const b = rb[r] || { n: 0, win_rate: null };
+                        const wr = b.win_rate;
+                        const bg = b.n === 0 || wr == null ? 'transparent' : heatColor(wr);
+                        return (
+                          <td key={r} className={`text-center rounded px-1 py-1 ${b.n === 0 ? 'opacity-30' : ''}`} style={{ backgroundColor: bg }}>
+                            <div className="font-bold">{wr == null ? '—' : Math.round(wr * 100) + '%'}</div>
+                            <div className="text-[8px] text-slate-400">n={b.n}</div>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -148,8 +240,10 @@ export default function StudioTheater({ session, visible }) {
                     <AlertCircle className="w-3 h-3" /> Mismatch
                   </span>
                 )}
-                {isBaseline && (
-                  <span className="ml-auto px-2 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-black uppercase text-[9px]">Baseline</span>
+                {episodeLabels[run.id] && (
+                  <span className={`ml-auto px-2 py-0.5 rounded font-black uppercase text-[9px] ${isBaseline ? 'bg-indigo-500/15 border border-indigo-500/30 text-indigo-300' : 'bg-slate-500/15 border border-slate-500/30 text-slate-300'}`}>
+                    {episodeLabels[run.id]}
+                  </span>
                 )}
               </div>
 

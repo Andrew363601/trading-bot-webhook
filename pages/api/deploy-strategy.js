@@ -167,11 +167,37 @@ async function handler(req, res) {
       ? `Please choose mode for ${strategy} on ${asset}: LIVE or PAPER? (LIVE requires Coinbase CDE futures and API keys)`
       : undefined;
     const responseUiPrompt = (source !== 'chat' && pendingState);
+
+    // 🟢 PUSH AM52i — version pinning visibility. Echo the deployed config
+    // version vs the library's latest version so callers can see drift.
+    let libraryLatestVersion = null;
+    try {
+      const cleanName = String(strategy || '').trim().toLowerCase();
+      const { data: libRow } = await supabase
+        .from('strategy_library')
+        .select('version')
+        .eq('name', cleanName)
+        .or('tenant_id.eq.' + tenantId + ',visibility.eq.public')
+        .order('version', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (libRow) libraryLatestVersion = libRow.version;
+    } catch (e) {
+      console.warn('[DEPLOY_STRATEGY] version echo lookup failed:', e.message);
+    }
+    const configVersion = Number(version) || null;
+    const inSync = libraryLatestVersion == null || configVersion == null
+      ? null
+      : configVersion === libraryLatestVersion;
+
     return res.status(200).json({
       message: `✅ Strategy ${strategy} deployed for ${asset} in ${responseMode} mode`,
       pending_mode: !!pendingState,
       chat_prompt: responseChatPrompt || null,
-      ui_prompt: responseUiPrompt || false
+      ui_prompt: responseUiPrompt || false,
+      config_version: configVersion,
+      library_latest_version: libraryLatestVersion,
+      in_sync: inSync
     })
   } catch (err) {
     console.error('❌ Promotion Error:', err.message)

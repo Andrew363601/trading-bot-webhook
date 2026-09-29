@@ -57,7 +57,7 @@ const check = (name, cond, extra = '') => results.push({ name, ok: !!cond, extra
 const trades = res.trades || [];
 check('trades produced', trades.length > 0, `n=${trades.length}`);
 check('every trade has a non-null regime', trades.every(t => ['TREND', 'CHOP', 'ACCUMULATION', 'DISTRIBUTION'].includes(t.regime)), JSON.stringify([...new Set(trades.map(t => t.regime))]));
-check('summary has regime_proxy_version', res.summary.regime_proxy_version === 'proxy_v1', res.summary.regime_proxy_version);
+check('summary has regime_proxy_version', res.summary.regime_proxy_version === 'proxy_v2', res.summary.regime_proxy_version);
 check('summary has all four buckets', ['TREND', 'CHOP', 'ACCUMULATION', 'DISTRIBUTION'].every(r => res.summary.regime_breakdown && r in res.summary.regime_breakdown), Object.keys(res.summary.regime_breakdown || {}).join(','));
 const sumN = Object.values(res.summary.regime_breakdown).reduce((a, b) => a + b.n, 0);
 check('bucket n sums to total_trades', sumN === trades.length, `${sumN} vs ${trades.length}`);

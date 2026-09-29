@@ -261,6 +261,17 @@ function getEvalIntervalMs(triggerTf) {
     return Math.min(Math.max(secs * 1000 / 6, 60000), 3600000);  // clamp [60s, 1h]
 }
 
+// 🟢 PUSH AM52i — newest CLOSED bar open time (ISO) for the trigger TF. The
+// sniper evaluates on a wall-clock cadence and treats the latest candle as
+// current, so this derives the boundary of the bar that has just closed:
+// floor(now / tfSec) * tfSec - tfSec. Pairs with AM52g dedup.
+function newestClosedBarOpenTime(triggerTf, nowMs = Date.now()) {
+    const secs = TF_SECONDS[(triggerTf || 'FIVE_MINUTE').toUpperCase()] || 300;
+    const nowSec = Math.floor(nowMs / 1000);
+    const closedOpenSec = Math.floor(nowSec / secs) * secs - secs;
+    return new Date(closedOpenSec * 1000).toISOString();
+}
+
 // 🟢 Shared microstructure helpers — used for BOTH the config-TF microstructure
 // and the FIXED-TF canon regime computation (Phase 0.11 Hazard 2/3).
 function computeCandleCvd(candles, window = 50) {
@@ -1226,7 +1237,8 @@ export async function startSniper(tenantId) {
                                     strategy: config.strategy,
                                     asset: config.asset,
                                     telemetry: preTelemetry,
-                                    status: 'HERMES_NOTIFIED'
+                                    status: 'HERMES_NOTIFIED',
+                                    evaluated_bar_time: newestClosedBarOpenTime(triggerTf)
                                 }])
                                 .select('id')
                                 .single();
@@ -1338,9 +1350,9 @@ export async function startSniper(tenantId) {
                 const finalStatus = decision.statusOverride || (decision.signal ? "RESONANT" : baseStatus);
                 
                 if (scanId) {
-                    await supabase.from('scan_results').update({ telemetry: decision.telemetry, status: finalStatus }).eq('id', scanId);
+                    await supabase.from('scan_results').update({ telemetry: decision.telemetry, status: finalStatus, evaluated_bar_time: newestClosedBarOpenTime(triggerTf) }).eq('id', scanId);
                 } else {
-                    await supabase.from('scan_results').insert([{ tenant_id: tenantId, strategy: config.strategy, asset: config.asset, telemetry: decision.telemetry, status: finalStatus }]);
+                    await supabase.from('scan_results').insert([{ tenant_id: tenantId, strategy: config.strategy, asset: config.asset, telemetry: decision.telemetry, status: finalStatus, evaluated_bar_time: newestClosedBarOpenTime(triggerTf) }]);
                 }
 
             } catch (e) {

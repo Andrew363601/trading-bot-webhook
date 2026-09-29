@@ -141,15 +141,36 @@ export default function StudioChat({ session, strategyName, onStrategyUpdated })
             key={m.id}
             className={`flex flex-col gap-1.5 ${m.role === 'user' ? 'items-end' : 'items-start'}`}
           >
-            <div
-              className={`max-w-[90%] rounded-xl px-3.5 py-2.5 whitespace-pre-wrap break-words leading-relaxed text-[11px] ${
-                m.role === 'user'
-                  ? 'bg-indigo-600/20 text-indigo-200 border border-indigo-500/30'
-                  : 'bg-slate-900/90 text-cyan-300 border border-white/5 shadow-sm'
-              }`}
-            >
-              {m.content}
-            </div>
+            {m.role === 'assistant' ? (
+              (() => {
+                // PUSH AM52b2 — split the post-hoc tool ticker (dim mono lines)
+                // from the assistant body.
+                const lines = String(m.content || '').split('\n');
+                const ticker = [];
+                let i = 0;
+                while (i < lines.length && lines[i].startsWith('[⟳')) { ticker.push(lines[i]); i++; }
+                while (i < lines.length && lines[i].trim() === '') i++;
+                const body = lines.slice(i).join('\n');
+                return (
+                  <>
+                    {ticker.length > 0 && (
+                      <div className="flex flex-col gap-0.5 max-w-[90%]">
+                        {ticker.map((t, idx) => (
+                          <span key={idx} className="text-[10px] font-mono text-slate-500/80 leading-tight">{t}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="max-w-[90%] rounded-xl px-3.5 py-2.5 whitespace-pre-wrap break-words leading-relaxed text-[11px] bg-slate-900/90 text-cyan-300 border border-white/5 shadow-sm">
+                      {body}
+                    </div>
+                  </>
+                );
+              })()
+            ) : (
+              <div className="max-w-[90%] rounded-xl px-3.5 py-2.5 whitespace-pre-wrap break-words leading-relaxed text-[11px] bg-indigo-600/20 text-indigo-200 border border-indigo-500/30">
+                {m.content}
+              </div>
+            )}
           </div>
         ))}
 
