@@ -1,5 +1,5 @@
 ﻿// components/StudioTheater.js
-// PUSH AM52b â€” Studio Episode Theater. Passive observer of the studio_runs
+// PUSH AM52b — Studio Episode Theater. Passive observer of the studio_runs
 // feed: polls every 2s, new run_id -> animated card at top; older cards
 // collapse to final frame + stats. Read-only; agent loop untouched.
 
@@ -18,8 +18,8 @@ const REGIME_STYLES = {
 const POLL_MS = 2000;
 const EPISODE_FRESH_MS = 30000;
 
-const pct = (v) => (v == null ? 'â€”' : Math.round(v * 100) + '%');
-const arrow = (d) => (d > 0 ? 'â–²' : d < 0 ? 'â–¼' : '');
+const pct = (v) => (v == null ? '—' : Math.round(v * 100) + '%');
+const arrow = (d) => (d > 0 ? '▲' : d < 0 ? '▼' : '');
 const arrowCls = (d) => (d > 0 ? 'text-emerald-400' : d < 0 ? 'text-rose-500' : 'text-slate-500');
 
 export default function StudioTheater({ session, visible }) {
@@ -71,7 +71,21 @@ export default function StudioTheater({ session, visible }) {
     return () => clearInterval(iv);
   }, []);
 
-  const baseline = runs[runs.length - 1] || null; // oldest landed run
+  // Baseline pinning (PUSH AM52c): the oldest of the last-10 runs drifts forward
+  // as runs accumulate, so instead pin to the first run after a >5-minute gap in
+  // created_at — i.e. the start of the current episode. Runs arrive newest-first.
+  const baseline = useMemo(() => {
+    if (!runs.length) return null;
+    const GAP_MS = 5 * 60 * 1000;
+    for (let i = 1; i < runs.length; i++) {
+      const newer = new Date(runs[i - 1].created_at).getTime();
+      const older = new Date(runs[i].created_at).getTime();
+      if (Number.isFinite(newer) && Number.isFinite(older) && newer - older > GAP_MS) {
+        return runs[i];
+      }
+    }
+    return runs[runs.length - 1]; // no gap: whole window is one episode
+  }, [runs]);
 
   const isFresh = (r) => r && (now - new Date(r.created_at).getTime()) < EPISODE_FRESH_MS;
 
@@ -96,16 +110,16 @@ export default function StudioTheater({ session, visible }) {
 
       {!runs.length && (
         <div className="text-xs text-slate-500 font-mono bg-slate-900/40 border border-white/5 rounded-xl p-6 text-center">
-          No runs yet â€” run a backtest or ask the agent to iterate.
+          No runs yet — run a backtest or ask the agent to iterate.
         </div>
       )}
 
       <div className="space-y-4">
-        {runs.map((run, idx) => {
+        {runs.map((run) => {
           const s = run.summary || {};
           const rb = run.regime_breakdown || {};
           const trades = run.trades || [];
-          const isBaseline = idx === runs.length - 1;
+          const isBaseline = !!baseline && run.id === baseline.id;
           const animate = animating[run.id];
 
           // deltas vs baseline (skip for baseline itself)
@@ -123,12 +137,12 @@ export default function StudioTheater({ session, visible }) {
               {/* Provenance strip */}
               <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400 flex-wrap">
                 <span className="text-cyan-400 font-bold">{run.product}</span>
-                <span>â€¢</span>
-                <span>first_close {run.first_close != null ? '$' + Number(run.first_close).toLocaleString() : 'â€”'}</span>
-                <span>â€¢</span>
-                <span>{run.run_window ? `${run.run_window.days}d` : 'â€”'} window</span>
-                <span>â€¢</span>
-                <span>{run.horizon || 'â€”'}</span>
+                <span>•</span>
+                <span>first_close {run.first_close != null ? '$' + Number(run.first_close).toLocaleString() : '—'}</span>
+                <span>•</span>
+                <span>{run.run_window ? `${run.run_window.days}d` : '—'} window</span>
+                <span>•</span>
+                <span>{run.horizon || '—'}</span>
                 {provenanceBad && (
                   <span className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded bg-rose-500/15 border border-rose-500/30 text-rose-300 font-black uppercase text-[9px]">
                     <AlertCircle className="w-3 h-3" /> Mismatch
@@ -147,18 +161,18 @@ export default function StudioTheater({ session, visible }) {
               {/* Stats + deltas */}
               <div className="grid grid-cols-4 gap-2 text-center">
                 {[
-                  { label: 'Trades', val: s.total_trades ?? 0, d: dTrades, fmt: (v) => v },
-                  { label: 'WR', val: pct(s.win_rate), d: dWr, fmt: () => pct(s.win_rate) + ' ' + arrow(dWr) },
-                  { label: 'PF', val: s.profit_factor ?? 'â€”', d: dPf, fmt: () => (s.profit_factor ?? 'â€”') + ' ' + arrow(dPf) },
-                  { label: 'PnL%', val: (s.pnl_percent ?? 0) + '%', d: dPnl, fmt: () => (s.pnl_percent ?? 0) + '%' }
+                  { label: 'Trades', val: s.total_trades ?? 0, d: dTrades, fmt: (v) => v, dfmt: (d) => String(Math.abs(d)) },
+                  { label: 'WR', val: pct(s.win_rate), d: dWr, fmt: () => pct(s.win_rate) + ' ' + arrow(dWr), dfmt: (d) => (Math.abs(d) * 100).toFixed(1) + '%' },
+                  { label: 'PF', val: s.profit_factor ?? '—', d: dPf, fmt: () => (s.profit_factor ?? '—') + ' ' + arrow(dPf), dfmt: (d) => Math.abs(d).toFixed(2) },
+                  { label: 'PnL%', val: (s.pnl_percent ?? 0) + '%', d: dPnl, fmt: () => (s.pnl_percent ?? 0) + '%', dfmt: (d) => Math.abs(d).toFixed(1) + '%' }
                 ].map((m) => (
                   <div key={m.label} className="bg-slate-950/60 rounded-lg px-1 py-2 border border-white/5">
                     <div className="text-[9px] font-black uppercase tracking-widest text-slate-500">{m.label}</div>
-                    <div className={`text-xs font-bold ${dTrades || dWr || dPf || dPnl ? '' : ''}`}>
+                    <div className="text-xs font-bold">
                       {m.fmt()}
                     </div>
                     {!isBaseline && m.d !== 0 && (
-                      <div className={`text-[9px] font-mono ${arrowCls(m.d)}`}>{arrow(m.d)} {Math.abs(m.d).toFixed(2)}</div>
+                      <div className={`text-[9px] font-mono ${arrowCls(m.d)}`}>{arrow(m.d)} {m.dfmt(m.d)}</div>
                     )}
                   </div>
                 ))}
