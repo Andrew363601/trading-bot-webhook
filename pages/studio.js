@@ -394,7 +394,7 @@ export default function StudioPage() {
   const isUnlocked = hasStudioAccess(billingTier);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white p-4 sm:p-8 font-sans">
+    <div className="min-h-screen bg-slate-950 text-white p-4 sm:p-8 font-sans overflow-x-hidden">
       <Head>
         <title>Nexus | Strategy Studio</title>
       </Head>
@@ -416,7 +416,7 @@ export default function StudioPage() {
           </div>
 
           {/* Tab Selector */}
-          <div className="flex items-center gap-1 bg-slate-900/60 p-1 rounded-xl border border-white/5">
+          <div className="flex flex-wrap items-center gap-1 bg-slate-900/60 p-1 rounded-xl border border-white/5">
             <button
               onClick={() => setActiveTab('LIBRARY')}
               className={`px-4 py-1.5 rounded-lg text-xs font-black uppercase tracking-widest transition-all flex items-center gap-2 ${
@@ -457,7 +457,7 @@ export default function StudioPage() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 xl:grid-cols-12 gap-6 items-start">
-          <div className="lg:col-span-8 xl:col-span-6 space-y-6">
+          <div className="lg:col-span-8 space-y-6">
             {/* Tier Gate Lock Banner */}
         {!isUnlocked && billingTier && (
           <div className="bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent border border-amber-500/20 p-5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -1125,6 +1125,9 @@ export default function StudioPage() {
               />
             </div>
 
+            {/* PUSH AM52e — Theater under the chart, full main-column width */}
+            <StudioTheater session={session} visible={activeTab === 'BACKTEST'} />
+
             {/* Backtest Results Display */}
             {backtestResult && backtestResult.summary && (
               <div className="space-y-6">
@@ -1436,7 +1439,7 @@ export default function StudioPage() {
           </div>
 
           {/* Desktop Right Panel: Embedded StudioChat (lg:w-96) */}
-          <div className="hidden lg:block lg:col-span-4 xl:col-span-3 sticky top-6">
+          <div className="hidden lg:block lg:col-span-4 sticky top-6">
             <div className="h-[760px]">
               <StudioChat
                 session={session}
@@ -1449,11 +1452,6 @@ export default function StudioPage() {
                 }}
               />
             </div>
-          </div>
-
-          {/* PUSH AM52b — Theater third column (xl beside chat, lg full-width below) */}
-          <div className="hidden lg:block lg:col-span-12 xl:col-span-3 xl:sticky xl:top-6 xl:max-h-[760px] xl:overflow-y-auto">
-            <StudioTheater session={session} visible={true} />
           </div>
         </div>
       </div>
