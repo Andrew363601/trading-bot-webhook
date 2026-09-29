@@ -153,7 +153,7 @@ export default withTenantAuth(async function handler(req, res) {
           .limit(1)
           .maybeSingle();
         if (tu?.email) {
-          await syncToBrevo(tu.email, tier, 'challenge');
+          await syncToBrevo(tu.email, req.tenant.tier, 'challenge');
         }
       } catch (e) {
         console.warn('[CHALLENGE_JOIN] Brevo tag failed:', e?.message);

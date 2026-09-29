@@ -380,10 +380,11 @@ async function sweepOpenTrades(tenantId) {
                     );
 
                     if (activePosition && entryOrderExists) {
+                        const activeQty = Math.abs(parseFloat(activePosition.number_of_contracts));
+                        const expectedQty = Math.abs(parseFloat(openTrade.qty) || 0);
                         // 🟢 LIVE TRADE CONFIRMED: First time we detect an active position on exchange
                         if (!heartbeatTracker[`${openTrade.id}_confirmed`]) {
                             heartbeatTracker[`${openTrade.id}_confirmed`] = true;
-                            const activeQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                             await sendDiscordAlert(tenantId, {
                                 title: `🟢 LIVE Trade Confirmed: ${asset}`,
                                 description: `**Position Size:** ${activeQty} contracts\n**Entry:** $${openTrade.entry_price || 'awaiting fill'}\n**Trade ID:** ${openTrade.id}`,

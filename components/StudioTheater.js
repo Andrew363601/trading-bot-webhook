@@ -157,8 +157,8 @@ export default function StudioTheater({ session, visible }) {
                     <div className={`text-xs font-bold ${dTrades || dWr || dPf || dPnl ? '' : ''}`}>
                       {m.fmt()}
                     </div>
-                    {!isBaseline && d !== 0 && (
-                      <div className={`text-[9px] font-mono ${arrowCls(d)}`}>{arrow(d)} {Math.abs(d).toFixed(2)}</div>
+                    {!isBaseline && m.d !== 0 && (
+                      <div className={`text-[9px] font-mono ${arrowCls(m.d)}`}>{arrow(m.d)} {Math.abs(m.d).toFixed(2)}</div>
                     )}
                   </div>
                 ))}

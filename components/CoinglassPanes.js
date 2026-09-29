@@ -109,12 +109,13 @@ function PaneChart({ chartRef, indicator, state }) {
 
     // --- Synchronization Logic ---
     const mainChart = chartRef?.current;
+    let syncMainToPane = null;
     
     // 🟢 ONE-WAY SYNC: Main chart → pane only.
     // Pane never syncs back to main chart. This prevents the zoom-out/reset loop.
     // Also defers sync until the pane actually has data (seriesRef.current is set).
     if (mainChart) {
-      const syncMainToPane = () => {
+      syncMainToPane = () => {
         if (!seriesRef.current) return;
         try {
           const mainRange = mainChart.timeScale().getVisibleRange();
@@ -147,7 +148,7 @@ function PaneChart({ chartRef, indicator, state }) {
     }
 
     return () => {
-      if (mainChart) {
+      if (mainChart && syncMainToPane) {
         mainChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncMainToPane);
       }
       chart.remove();

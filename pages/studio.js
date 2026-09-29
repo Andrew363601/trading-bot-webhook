@@ -103,6 +103,7 @@ export default function StudioPage() {
   const [simCooldown, setSimCooldown] = useState('30');
   const [simFee, setSimFee] = useState('0.08');
   const [selectedTradeIdx, setSelectedTradeIdx] = useState(null);
+  const handleTradeClick = (t, idx) => setSelectedTradeIdx(idx);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
 
   // 1. Fetch user billing tier
