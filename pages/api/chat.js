@@ -335,6 +335,8 @@ export default async function handler(req, res) {
       - Instead, explain: "Custom strategy creation is available on the Institutional plan. Would you like to upgrade or try one of our pre-built strategies?"
       - If they insist, politely redirect to the available pre-built strategies or suggest upgrading to Institutional.
 
+    BACKTEST EXITS: simulated exits are governed ONLY by parameters keys tp_percent, sl_percent (decimals), tripwire_percent, trail_step_percent, trail_activation_percent, veto_cooldown_minutes. Strategy-returned tpPrice/slPrice are inert (executor whitelist); ATR keys (tp_atr_mult/sl_atr_mult/min_tp_percent/min_sl_percent) are dead levers — never tune them.
+
     --- PROTOCOL 3: STRATEGY CODE GENERATION (HUMAN HANDOFF) ---
 NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingTier !== 'INSTITUTIONAL' ? 'The user is NOT on the Institutional plan — skip this section entirely.' : ''}
     If the user asks to design a NEW algorithm for a strategy:
@@ -345,29 +347,14 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
     import { /* YOUR INDICATORS */ } from 'technicalindicators';
 
     export async function run(macroCandles, triggerCandles, parameters) {
-        const { leverage = 10, market_type = 'FUTURES', tp_percent = 0.02, sl_percent = 0.01 } = parameters;
         if (!macroCandles || !triggerCandles || triggerCandles.length < 50) return { signal: null };
 
         let signal = null;
-        let entryPrice = triggerCandles[triggerCandles.length - 1].close;
 
         // ... logic ...
 
         const currentTelemetry = { metric_1: calculatedValue1 };
-        if (!signal) return { signal: null, telemetry: currentTelemetry };
-
-        const tpPrice = signal === 'LONG' ? entryPrice * (1 + tp_percent) : entryPrice * (1 - tp_percent);
-        const slPrice = signal === 'LONG' ? entryPrice * (1 - sl_percent) : entryPrice * (1 + sl_percent);
-
-        return {
-            signal: signal,
-            entryPrice: entryPrice,
-            leverage: leverage,
-            marketType: market_type,
-            tpPrice: parseFloat(tpPrice.toFixed(6)),
-            slPrice: parseFloat(slPrice.toFixed(6)),
-            telemetry: currentTelemetry 
-        };
+        return { signal, telemetry: currentTelemetry };
     }
     \`\`\`
     
@@ -674,7 +661,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         }), 
 
         saveStrategyCode: tool({
-          description: 'Saves new JavaScript strategy code to the tenant strategy library. Note: Saving does NOT deploy or activate the strategy. Users must backtest and deploy explicitly in Strategy Studio. Requires PRO tier or higher.',
+          description: 'Saves new JavaScript strategy code to the tenant strategy library. Note: Saving does NOT deploy or activate the strategy. Users must backtest and deploy explicitly in Strategy Studio. Engine contract: run() return is whitelisted to {signal, telemetry} — any tpPrice/slPrice/bracket fields you return are ignored by BOTH the backtester and live execution. Exits are governed by parameters (tp_percent/sl_percent/tripwire/trail), not by code-returned prices. Requires PRO tier or higher.',
           parameters: z.object({
             name: z.string().describe('Canonical strategy slug (3-64 chars, lowercase letters, numbers, and underscores, e.g. "btc_trend_follow_v1"). Required.'),
             code: z.string().describe('Complete JavaScript strategy source code defining `run(macroCandles, triggerCandles, parameters)`. Required.'),
@@ -783,7 +770,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
 
         updateStrategyCode: tool({
           // PUSH AM49b — blind-edit guard: read before write.
-          description: 'Updates existing JavaScript strategy code in the tenant strategy library, incrementing the version and preserving version history. You MUST call readStrategyLogic first for any library strategy — never rewrite code you haven\'t read. Note: This does NOT deploy or activate the strategy. Requires PRO tier or higher.',
+          description: 'Updates existing JavaScript strategy code in the tenant strategy library, incrementing the version and preserving version history. You MUST call readStrategyLogic first for any library strategy — never rewrite code you haven\'t read. Note: This does NOT deploy or activate the strategy. Engine contract: run() return is whitelisted to {signal, telemetry} — any tpPrice/slPrice/bracket fields you return are ignored by BOTH the backtester and live execution. Exits are governed by parameters (tp_percent/sl_percent/tripwire/trail), not by code-returned prices. Requires PRO tier or higher.',
           parameters: z.object({
             name: z.string().describe('Canonical strategy slug to update (must exist in library). Required.'),
             code: z.string().describe('Updated JavaScript strategy source code defining `run(macroCandles, triggerCandles, parameters)`. Required.'),
@@ -880,7 +867,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         runBacktest: tool({
           // PUSH AM49d — product is REQUIRED and passed verbatim; the tool
           // errors loudly if the symbol is unavailable. Never substitute assets.
-          description: 'Runs a closed-bar backtest simulation for a strategy from the tenant library. Summarize win_rate, total_pnl_usd, and max_drawdown honestly. Report regime_breakdown in your reply — per-regime win rate is the headline, not just the aggregate. Surface the full trade log link so the user can inspect entries/exits. Compare against previous latest_backtest if one exists. PROPOSE parameter or code changes based on results — NEVER claim deployment or live execution. Saving/running is library-scope only. product is REQUIRED and passed verbatim — echo the product name and first_close in your reply, and sanity-check the price scale matches the product class (BTC ~5 digits, ETH ~4 digits). If the requested symbol is not available the tool errors loudly — never substitute another asset. Requires PRO tier or higher.',
+          description: 'Runs a closed-bar backtest simulation for a strategy from the tenant library. Summarize win_rate, total_pnl_usd, and max_drawdown honestly. Report regime_breakdown in your reply — per-regime win rate is the headline, not just the aggregate. Surface the full trade log link so the user can inspect entries/exits. Compare against previous latest_backtest if one exists. PROPOSE parameter or code changes based on results — NEVER claim deployment or live execution. Saving/running is library-scope only. product is REQUIRED and passed verbatim — echo the product name and first_close in your reply, and sanity-check the price scale matches the product class (BTC ~5 digits, ETH ~4 digits). If the requested symbol is not available the tool errors loudly — never substitute another asset. When tuning exits, state which exit keys you changed and their old→new values in your reply. Requires PRO tier or higher.',
           parameters: z.object({
             strategy_name: z.string().describe('Canonical strategy slug in the strategy library (e.g. "btc_trend_follow_v1"). Required.'),
             product: z.string().describe('Target asset product (e.g. "BTC-USD", "DOGE-PERP-INTX"). Required.'),
@@ -888,7 +875,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
             trigger_tf: z.string().describe('Trigger timeframe enum: "ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE", "THIRTY_MINUTE", "ONE_HOUR", "TWO_HOUR", "SIX_HOUR", "ONE_DAY". Required.'),
             start: z.string().optional().describe('Start date (ISO date string or epoch seconds). Defaults to 30 days prior to end.'),
             end: z.string().optional().describe('End date (ISO date string or epoch seconds). Defaults to current time.'),
-            parameters: z.record(z.any()).optional().describe('Optional runtime parameter overrides for the simulation.')
+            parameters: z.record(z.any()).optional().describe('Optional runtime parameter overrides. EXIT GEOMETRY IS PARAMETER-GOVERNED — only these keys change simulated exits: tp_percent, sl_percent (DECIMALS: 0.03 = 3%), tripwire_percent, trail_step_percent, trail_activation_percent (defaults 0 = inactive), veto_cooldown_minutes (minutes). Strategy-returned tpPrice/slPrice are NOT consumed by the engine (executor passes signal+telemetry only), and ATR-bracket keys (tp_atr_mult, sl_atr_mult, min_tp_percent, min_sl_percent) are INERT dead levers — never tune them expecting exit changes.')
           }),
           execute: async ({ strategy_name, product, macro_tf, trigger_tf, start, end, parameters: args_parameters, asset, symbol }) => {
             if (!tenantId) {
