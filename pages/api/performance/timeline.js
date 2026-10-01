@@ -189,7 +189,13 @@ export default async function handler(req, res) {
     };
     const modelTrades = (modelTradesRes.data || []).filter(t => {
       if (bucketFilters.asset && t.symbol !== bucketFilters.asset) return false;
-      if (bucketFilters.strategy && t.strategy_id !== bucketFilters.strategy) return false;
+      // 🟢 PUSH AM57a — strategy compare is case-insensitive: calibration_models.strategy
+      // is UPPER (trainer-normalized, lib/train-calibration-models.py L187) while
+      // trade_logs.strategy_id is lower. 'ANY' is a wildcard (trainer's any_pool emits
+      // ANY rows across all strategies) → skip the strategy check entirely.
+      if (bucketFilters.strategy && bucketFilters.strategy.toUpperCase() !== 'ANY') {
+        if (String(t.strategy_id || '').toLowerCase() !== bucketFilters.strategy.toLowerCase()) return false;
+      }
       if (bucketFilters.regime && trainerRegime(t) !== bucketFilters.regime) return false;
       return true;
     }); // PUSH AF2
