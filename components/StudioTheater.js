@@ -34,7 +34,7 @@ function heatColor(wr) {
 // PUSH AM52b2 — episode grouping gap (distinct from the 5-min baseline pin).
 const EPISODE_GAP_MS = 30 * 60 * 1000;
 
-export default function StudioTheater({ session, visible }) {
+export default function StudioTheater({ session, visible, runId }) {
   const [runs, setRuns] = useState([]);
   const [error, setError] = useState('');
   const [now, setNow] = useState(() => Date.now());
@@ -43,6 +43,7 @@ export default function StudioTheater({ session, visible }) {
 
   // Poll feed every 2s while visible
   useEffect(() => {
+    if (runId) return; // PUSH AM57b — single-run mode: no feed polling
     if (!visible || !session?.access_token) return;
     let cancelled = false;
 
@@ -75,7 +76,30 @@ export default function StudioTheater({ session, visible }) {
     tick();
     const iv = setInterval(tick, POLL_MS);
     return () => { cancelled = true; clearInterval(iv); };
-  }, [visible, session?.access_token]);
+  }, [visible, session?.access_token, runId]);
+
+  // PUSH AM57b — single-run mode: fetch exactly one run and auto-render it.
+  // Skips the feed polling loop entirely; the derived baseline/labels memos
+  // treat the single row as BASELINE.
+  useEffect(() => {
+    if (!runId || !session?.access_token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/studio-runs?run_id=${encodeURIComponent(runId)}&limit=1`, {
+          headers: { Authorization: `Bearer ${session.access_token}` }
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setRuns(Array.isArray(data.runs) ? data.runs : []);
+        setError('');
+      } catch (err) {
+        if (!cancelled) setError(err.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [runId, session?.access_token]);
 
   // ticker for episode-fresh pulse
   useEffect(() => {

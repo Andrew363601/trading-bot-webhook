@@ -18,10 +18,19 @@ async function handler(req, res) {
   const limitRaw = parseInt(req.query.limit, 10);
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 50) : 10;
 
-  const { data, error } = await supabase
+  // PUSH AM57b — optional single-run filter (?run_id=). Tenant scope is still
+  // applied server-side; run_id is ANDed on top so a foreign tenant's run_id
+  // returns zero rows.
+  const runId = req.query.run_id ? String(req.query.run_id) : null;
+
+  let query = supabase
     .from('studio_runs')
     .select('id, run_id, created_at, product, horizon, first_close, run_window, parameters, effective_parameters, summary, regime_breakdown, regime_proxy_version, trades, equity_curve, trigger_candles')
-    .eq('tenant_id', tenantId)
+    .eq('tenant_id', tenantId);
+
+  if (runId) query = query.eq('run_id', runId);
+
+  const { data, error } = await query
     .order('created_at', { ascending: false })
     .limit(limit);
 

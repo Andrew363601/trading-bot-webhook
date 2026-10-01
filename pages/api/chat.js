@@ -442,7 +442,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
               'The user is viewing strategy "' + stratInfo.name + '" (v' + (stratInfo.version || 1) + ', status: ' + (stratInfo.status || 'draft') + ') in the Strategy Studio.\n' +
               'Description: ' + (stratInfo.description || 'N/A') + '\n' +
               'Latest Backtest Summary: ' + lbSummary + '\n' +
-              'CRITICAL INSTRUCTION: The user is viewing this strategy in the Strategy Studio. Results and code changes should reference the backtest loop: readBacktestResults -> propose changes -> updateStrategyCode -> runBacktest.\n';
+              'CRITICAL INSTRUCTION: The user is viewing this strategy in the Strategy Studio. Results and code changes should reference the backtest loop: readBacktestResults -> propose changes -> updateStrategyCode -> runBacktest. After every successful runBacktest your reply MUST: (1) LEAD with the headline numbers — trades n, win rate, profit factor, net $, max drawdown, and the per-regime breakdown (regime n / wr / pnl each); (2) include the studio_url link verbatim on its own line — the chat client auto-renders an animated replay card from it; (3) NEVER say you cannot show visuals or that the user must leave chat to see results. The replay renders in this chat.\n';
           }
         } catch (e) {
           console.warn('[CHAT] Studio context fetch error:', e.message);
@@ -1435,13 +1435,17 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
     // PUSH AM52b2 — post-hoc tool ticker. Collect one line per tool call from
     // whichever branch runs, then prepend to the final text.
     const tickerLines = [];
+    // PUSH AM57b — capture the runBacktest studio_url so the inline theater
+    // card renders even if the model forgets to echo the link.
+    const studioUrls = [];
     if (activeModel.provider === 'openrouter') {
       fullText = await callOpenRouterWithTools(
         activeModel,
         systemPrompt,
         safeMessages,
         tools,
-        tickerLines
+        tickerLines,
+        studioUrls
       );
     } else {
       const google = createGoogleGenerativeAI({
@@ -1462,13 +1466,28 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
             // AI SDK v6: tool call args live on `input` (not `args`).
             tickerLines.push(formatToolTicker(tc.toolName, tc.input));
           }
+          // PUSH AM57b — capture runBacktest studio_url (v6: `output`).
+          const results = step?.toolResults || [];
+          for (const tr of results) {
+            if (tr?.toolName === 'runBacktest') {
+              const out = tr.output ?? tr.result;
+              if (out?.studio_url) studioUrls.push(out.studio_url);
+            }
+          }
         }
       });
       fullText = await result.text;
     }
 
     const ticker = dedupeTickerLines(tickerLines);
-    const body = ticker.length ? `${ticker.join('\n')}\n\n${fullText}` : fullText;
+    // PUSH AM57b — guarantee the studio_url is present so the chat client can
+    // render the inline replay card.
+    let finalText = fullText;
+    const studioUrl = studioUrls.length ? studioUrls[studioUrls.length - 1] : null;
+    if (studioUrl && !finalText.includes(studioUrl)) {
+      finalText = `${finalText}\n\n${studioUrl}`;
+    }
+    const body = ticker.length ? `${ticker.join('\n')}\n\n${finalText}` : finalText;
 
     res.setHeader('Content-Type', 'text/plain');
     res.write(body);
@@ -1486,7 +1505,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
 }
 
 // ── OpenRouter Tool Loop ──
-async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tools, tickerLines = []) {
+async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tools, tickerLines = [], studioUrls = []) {
   const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
 
   // Convert Vercel AI SDK messages to OpenAI format
@@ -1588,6 +1607,10 @@ async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tool
         tickerLines.push(formatToolTicker(tc.function.name, args));
         try {
           const result = await toolDef.execute(args);
+          // PUSH AM57b — capture runBacktest studio_url for the inline card.
+          if (tc.function.name === 'runBacktest' && result?.studio_url) {
+            studioUrls.push(result.studio_url);
+          }
           currentMessages.push({
             role: 'tool',
             tool_call_id: tc.id,

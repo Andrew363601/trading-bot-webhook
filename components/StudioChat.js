@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Terminal as TerminalIcon, Send, RotateCw, Sparkles, AlertCircle } from 'lucide-react';
+import StudioTheater from './StudioTheater.js';
 
 export default function StudioChat({ session, strategyName, onStrategyUpdated }) {
   const [messages, setMessages] = useState([]);
@@ -163,6 +164,17 @@ export default function StudioChat({ session, strategyName, onStrategyUpdated })
                     <div className="max-w-[90%] rounded-xl px-3.5 py-2.5 whitespace-pre-wrap break-words leading-relaxed text-[11px] bg-slate-900/90 text-cyan-300 border border-white/5 shadow-sm">
                       {body}
                     </div>
+                    {/* PUSH AM57b — inline Episode Theater card when the reply
+                        carries a studio_url with a run id. */}
+                    {(() => {
+                      const match = String(m.content || '').match(/\/studio\?strategy=[a-z0-9_]+&run=([0-9a-fA-F-]{36})/);
+                      if (!match) return null;
+                      return (
+                        <div className="w-full max-w-[90%]">
+                          <StudioTheater session={session} runId={match[1]} visible={true} />
+                        </div>
+                      );
+                    })()}
                   </>
                 );
               })()
