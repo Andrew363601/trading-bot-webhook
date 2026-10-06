@@ -64,8 +64,10 @@ const newRes = await runNew({ ...common, parameters });
 const results = [];
 const check = (name, cond, extra = '') => results.push({ name, ok: !!cond, extra });
 
-// Compare trades ignoring the NEW exit_source field (additive).
-const strip = (t) => { const { exit_source, ...rest } = t; return rest; };
+// Compare trades ignoring additive/AM58 fields: exit_source (AM53c, additive)
+// and exit_reason (AM58 4a — level-based relabel; the flag-chain label is the
+// bug being fixed, so it is EXPECTED to differ).
+const strip = (t) => { const { exit_source, exit_reason, ...rest } = t; return rest; };
 check('trade count equal', oldRes.trades.length === newRes.trades.length, `${oldRes.trades.length} vs ${newRes.trades.length}`);
 check('trades byte-equal (ignoring additive exit_source)', JSON.stringify(oldRes.trades.map(strip)) === JSON.stringify(newRes.trades.map(strip)));
 check('equity_curve byte-equal', JSON.stringify(oldRes.equity_curve) === JSON.stringify(newRes.equity_curve));
