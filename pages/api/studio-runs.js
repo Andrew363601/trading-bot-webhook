@@ -22,13 +22,18 @@ async function handler(req, res) {
   // applied server-side; run_id is ANDed on top so a foreign tenant's run_id
   // returns zero rows.
   const runId = req.query.run_id ? String(req.query.run_id) : null;
+  // PUSH AM57c — optional strategy filter (?strategy=). ANDed with tenant_id
+  // like run_id; legacy rows with NULL strategy_name are excluded by the
+  // equality match, so they stay visible only in unscoped views.
+  const strategy = req.query.strategy ? String(req.query.strategy) : null;
 
   let query = supabase
     .from('studio_runs')
-    .select('id, run_id, created_at, product, horizon, first_close, run_window, parameters, effective_parameters, summary, regime_breakdown, regime_proxy_version, trades, equity_curve, trigger_candles')
+    .select('id, run_id, created_at, strategy_name, product, horizon, first_close, run_window, parameters, effective_parameters, summary, regime_breakdown, regime_proxy_version, trades, equity_curve, trigger_candles')
     .eq('tenant_id', tenantId);
 
   if (runId) query = query.eq('run_id', runId);
+  if (strategy) query = query.eq('strategy_name', strategy);
 
   const { data, error } = await query
     .order('created_at', { ascending: false })

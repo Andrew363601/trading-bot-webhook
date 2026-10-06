@@ -442,7 +442,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
               'The user is viewing strategy "' + stratInfo.name + '" (v' + (stratInfo.version || 1) + ', status: ' + (stratInfo.status || 'draft') + ') in the Strategy Studio.\n' +
               'Description: ' + (stratInfo.description || 'N/A') + '\n' +
               'Latest Backtest Summary: ' + lbSummary + '\n' +
-              'CRITICAL INSTRUCTION: The user is viewing this strategy in the Strategy Studio. Results and code changes should reference the backtest loop: readBacktestResults -> propose changes -> updateStrategyCode -> runBacktest. After every successful runBacktest your reply MUST: (1) LEAD with the headline numbers — trades n, win rate, profit factor, net $, max drawdown, and the per-regime breakdown (regime n / wr / pnl each); (2) include the studio_url link verbatim on its own line — the chat client auto-renders an animated replay card from it; (3) NEVER say you cannot show visuals or that the user must leave chat to see results. The replay renders in this chat.\n';
+              'CRITICAL INSTRUCTION: The user is viewing this strategy in the Strategy Studio. Results and code changes should reference the backtest loop: readBacktestResults -> propose changes -> updateStrategyCode -> runBacktest. After every successful runBacktest your reply MUST: (1) LEAD with the headline numbers — trades n, win rate, profit factor, net $, max drawdown, and the per-regime breakdown (regime n / wr / pnl each); (2) include the studio_url link verbatim on its own line — the chat client auto-renders an animated replay card from it; (3) NEVER say you cannot show visuals or that the user must leave chat to see results. The replay renders in this chat. During tuning episodes with multiple runBacktest calls, write ONE short line between runs (baseline: 7 trades PF 0.28. now testing C1 with CHOP map SL 1.2%) — the client renders your notes live and stacks one animated replay card per run, linked to its tool call. Never batch an episode into silent tool calls.\n';
           }
         } catch (e) {
           console.warn('[CHAT] Studio context fetch error:', e.message);
@@ -1480,12 +1480,14 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
     }
 
     const ticker = dedupeTickerLines(tickerLines);
-    // PUSH AM57b — guarantee the studio_url is present so the chat client can
-    // render the inline replay card.
+    // PUSH AM57b/AM57c — guarantee EVERY runBacktest studio_url is present so
+    // the chat client can render one inline replay card per run. The AM57b
+    // version appended only the last URL, so multi-run tuning episodes lost
+    // all but the final replay.
     let finalText = fullText;
-    const studioUrl = studioUrls.length ? studioUrls[studioUrls.length - 1] : null;
-    if (studioUrl && !finalText.includes(studioUrl)) {
-      finalText = `${finalText}\n\n${studioUrl}`;
+    const missingUrls = studioUrls.filter((u) => u && !finalText.includes(u));
+    if (missingUrls.length) {
+      finalText = `${finalText}\n\n${missingUrls.join('\n')}`;
     }
     const body = ticker.length ? `${ticker.join('\n')}\n\n${finalText}` : finalText;
 

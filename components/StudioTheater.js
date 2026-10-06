@@ -34,7 +34,7 @@ function heatColor(wr) {
 // PUSH AM52b2 — episode grouping gap (distinct from the 5-min baseline pin).
 const EPISODE_GAP_MS = 30 * 60 * 1000;
 
-export default function StudioTheater({ session, visible, runId }) {
+export default function StudioTheater({ session, visible, runId, strategyName }) {
   const [runs, setRuns] = useState([]);
   const [error, setError] = useState('');
   const [now, setNow] = useState(() => Date.now());
@@ -49,7 +49,11 @@ export default function StudioTheater({ session, visible, runId }) {
 
     const tick = async () => {
       try {
-        const res = await fetch('/api/studio-runs?limit=10', {
+        // PUSH AM57c — scope the feed to the selected strategy when provided.
+        const feedUrl = strategyName
+          ? `/api/studio-runs?limit=10&strategy=${encodeURIComponent(strategyName)}`
+          : '/api/studio-runs?limit=10';
+        const res = await fetch(feedUrl, {
           headers: { Authorization: `Bearer ${session.access_token}` }
         });
         if (!res.ok) return;
@@ -73,10 +77,15 @@ export default function StudioTheater({ session, visible, runId }) {
       }
     };
 
+    // PUSH AM57c — switching strategy must not animate the new feed's history
+    // as if it were a fresh run.
+    seenIdsRef.current = null;
+    setAnimating({});
+
     tick();
     const iv = setInterval(tick, POLL_MS);
     return () => { cancelled = true; clearInterval(iv); };
-  }, [visible, session?.access_token, runId]);
+  }, [visible, session?.access_token, runId, strategyName]);
 
   // PUSH AM57b — single-run mode: fetch exactly one run and auto-render it.
   // Skips the feed polling loop entirely; the derived baseline/labels memos
@@ -253,6 +262,11 @@ export default function StudioTheater({ session, visible, runId }) {
               {/* Provenance strip */}
               <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400 flex-wrap">
                 <span className="text-cyan-400 font-bold">{run.product}</span>
+                {run.strategy_name && (
+                  <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-[9px] font-bold">
+                    {run.strategy_name}
+                  </span>
+                )}
                 <span>•</span>
                 <span>first_close {run.first_close != null ? '$' + Number(run.first_close).toLocaleString() : '—'}</span>
                 <span>•</span>

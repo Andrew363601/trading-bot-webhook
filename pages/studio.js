@@ -1126,7 +1126,8 @@ export default function StudioPage() {
             </div>
 
             {/* PUSH AM52e — Theater under the chart, full main-column width */}
-            <StudioTheater session={session} visible={activeTab === 'BACKTEST'} />
+            {/* PUSH AM57c — scope the replay feed to the selected strategy */}
+            <StudioTheater session={session} strategyName={selectedStrategy?.name} visible={activeTab === 'BACKTEST'} />
 
             {/* Backtest Results Display */}
             {backtestResult && backtestResult.summary && (
