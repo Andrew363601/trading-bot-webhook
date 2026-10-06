@@ -36,8 +36,8 @@ const range = (lo, hi, step) => {
   return out;
 };
 const GRID = {
-  DISPLACEMENT_TREND: range(0.6, 2.0, 0.1),
-  RANGE_COMPRESSION: range(0.3, 1.2, 0.1),
+  DISPLACEMENT_TREND: range(0.2, 2.0, 0.1),
+  RANGE_COMPRESSION: range(0.1, 1.2, 0.1),
   POS_ACCUM_MAX: range(0.2, 0.45, 0.05),
   POS_DIST_MIN: range(0.55, 0.8, 0.05),
 };
@@ -217,8 +217,8 @@ for (const DISPLACEMENT_TREND of GRID.DISPLACEMENT_TREND)
       }
 
 scored.sort((a, b) => (b.overall - a.overall) || (b.minRate - a.minRate) || (b.meanRate - a.meanRate));
-console.log('\nTOP 5 COMBOS (overall agreement, then balanced per-regime):');
-for (const e of scored.slice(0, 5)) {
+console.log('\nTOP 15 COMBOS (overall agreement, then balanced per-regime):');
+for (const e of scored.slice(0, 15)) {
   const c = e.constants;
   console.log(`  ${(e.overall * 100).toFixed(2)}%  min=${(e.minRate * 100).toFixed(1)}%  D=${c.DISPLACEMENT_TREND} RC=${c.RANGE_COMPRESSION} PA=${c.POS_ACCUM_MAX} PD=${c.POS_DIST_MIN}`);
 }
