@@ -113,15 +113,19 @@ async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, o
         const { data: scanData } = await supabase.from('scan_results').select('telemetry').eq('asset', symbol).order('created_at', { ascending: false }).limit(1);
         if (scanData && scanData.length > 0) telemetry = scanData[0].telemetry || {};
 
-        // 🟢 PUBLIC CANDLE API: Use unauthenticated exchange API with spot symbol mapping
+        // 🟢 PUBLIC CANDLE API: unauthenticated public market endpoint (mirrors
+        // lib/candles.js — the proven pattern). AM58 7b: api.exchange.coinbase.com
+        // is geo-blocked (10s timeouts every sweep fed the pile-up).
         const end = Math.floor(Date.now() / 1000);
         const start = end - (300 * 50); 
         const publicProduct = getSpotSymbol(symbol);
-        const candleResp = await fetch(`https://api.exchange.coinbase.com/products/${publicProduct}/candles?start=${start}&end=${end}&granularity=300`, { signal: AbortSignal.timeout(10000) });
+        const candleResp = await fetch(`https://api.coinbase.com/api/v3/brokerage/market/products/${publicProduct}/candles?start=${start}&end=${end}&granularity=FIVE_MINUTE`, { signal: AbortSignal.timeout(10000) });
         let recentCandles = [];
         if (candleResp.ok) {
             const cData = await candleResp.json();
-            recentCandles = (cData || []).map(c => ({ open: parseFloat(c[3] || c[4]), high: parseFloat(c[2]), low: parseFloat(c[1]), close: parseFloat(c[4]) })).reverse() || [];
+            // Public market candles return OBJECTS {start,low,high,open,close,volume}
+            // (descending) — not the Exchange array format.
+            recentCandles = (cData?.candles || []).map(c => ({ open: parseFloat(c.open), high: parseFloat(c.high), low: parseFloat(c.low), close: parseFloat(c.close) })).reverse() || [];
         }
         
         return await buildRadarChartUrl({
@@ -161,6 +165,16 @@ const keyFetchCooldown = {}; // tenantId -> timestamp of last key-fetch warning
 const deployedSafetyNets = new Set(); // Track which assets already have Safety Net brackets deployed this sweep
 const closingNow = new Set(); // Track which assets are being closed this sweep to prevent duplicate closes
 let tripwireJustFired = false; // Flag to prevent trailing SL firing on same sweep as tripwire
+
+// AM58 7a — sweep overlap guard. A sweep that outlives the 5s interval must not
+// stack (receipt: 719 sweeps/hour = sweeps piling up when each takes longer than
+// the interval). Keyed by tenant; cleared in finally.
+const inFlight = new Set();
+// AM58 7c — dead-man switch state. lastSuccessfulSweep[tenant] = epoch ms of the
+// last fault-free sweep; livenessAlerted[tenant] = true once the alert has fired
+// (reset on the next successful sweep so it alerts ONCE per outage).
+const lastSuccessfulSweep = {};
+const livenessAlerted = {};
 
 /**
  * 🛡️ SCOPED CANCEL: Filters openOrders to only include orders that belong to the
@@ -215,15 +229,66 @@ export async function startWatchdog(tenantId) {
         }
     }, 5000);
     registerTimer(`watchdog:${tenantId}`, sweepTimer);
+
+    // AM58 7c — dead-man switch. Needs its OWN interval: the sweep is what goes
+    // silent, so it cannot be the thing that detects its own silence. If no
+    // successful sweep in 15min -> alert ONCE + in-process restart.
+    const livenessTimer = setInterval(() => {
+        const tick = watchdogLivenessTick(tenantId);
+        if (!tick.alert) return;
+        console.error(`[WATCHDOG-${tenantId}] liveness lost — no successful sweep in ${tick.mins} min. Restarting.`);
+        sendDiscordAlert(tenantId, {
+            title: `Watchdog liveness lost — ${tenantId}`,
+            description: `No successful sweep in ${tick.mins} min; tripwire/trail unprotected. Attempting in-process restart.`,
+            color: 15158332
+        }).catch(() => { /* best-effort */ });
+        // Restart: stop FIRST (else double-registered intervals), then start.
+        try { stopWatchdog(tenantId); } catch (e) { /* best-effort */ }
+        startWatchdog(tenantId).catch(e => console.error(`[WATCHDOG-${tenantId}] restart failed:`, e.message));
+    }, 60 * 1000);
+    registerTimer(`watchdog:${tenantId}`, livenessTimer);
 }
+
+// AM58 7c — pure liveness decision (exported for unit testing). Returns
+// { alert: true, mins } exactly ONCE per outage; re-armed by markSweepSuccess.
+export function watchdogLivenessTick(tenantId, nowMs = Date.now()) {
+    const last = lastSuccessfulSweep[tenantId];
+    if (last == null) return { alert: false, reason: 'no-baseline' };
+    const silenceMs = nowMs - last;
+    if (silenceMs > 15 * 60 * 1000 && !livenessAlerted[tenantId]) {
+        livenessAlerted[tenantId] = true;
+        return { alert: true, mins: Math.round(silenceMs / 60000) };
+    }
+    return { alert: false, silenceMs };
+}
+
+// AM58 7c — record a fault-free sweep and re-arm the dead-man alert.
+export function markSweepSuccess(tenantId, nowMs = Date.now()) {
+    lastSuccessfulSweep[tenantId] = nowMs;
+    livenessAlerted[tenantId] = false;
+}
+
+// AM58 7a — test surface for the overlap guard.
+export function isSweepInFlight(tenantId) { return inFlight.has(tenantId); }
+export function __setSweepInFlight(tenantId, v) { if (v) inFlight.add(tenantId); else inFlight.delete(tenantId); }
 
 // PUSH AM35 — teardown for lapsed tenants: clear janitor intervals.
 export function stopWatchdog(tenantId) {
     stopWorkerTimers(`watchdog:${tenantId}`);
 }
 
-async function sweepOpenTrades(tenantId) {
+// AM58 7a — exported for the overlap-guard unit test. The guard returns before
+// any I/O, so a test can drive it without a live Supabase client.
+export async function sweepOpenTrades(tenantId) {
+    // AM58 7a — overlap guard: if a sweep is already running for this tenant,
+    // skip (log + return). Cleared in finally so a fault never wedges the guard.
+    if (inFlight.has(tenantId)) {
+        console.log(`[WATCHDOG-${tenantId}] sweep skipped, in flight`);
+        return;
+    }
+    inFlight.add(tenantId);
     try {
+        try {
             // 🟢 Per-sweep reset of tracking state
             deployedSafetyNets.clear();
             closingNow.clear();
@@ -277,9 +342,10 @@ async function sweepOpenTrades(tenantId) {
                 let coinbaseProduct = asset.toUpperCase().trim();
                 if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP'); 
 
-                // 🟢 PUBLIC TICKER: Use unauthenticated exchange API with spot symbol mapping
+                // 🟢 PUBLIC TICKER: unauthenticated public market endpoint (mirrors
+                // lib/candles.js). AM58 7b: api.exchange.coinbase.com is geo-blocked.
                 const spotSymbol = getSpotSymbol(asset);
-                const tickerResp = await fetch(`https://api.exchange.coinbase.com/products/${spotSymbol}/ticker`, { signal: AbortSignal.timeout(10000) });
+                const tickerResp = await fetch(`https://api.coinbase.com/api/v3/brokerage/market/products/${spotSymbol}/ticker`, { signal: AbortSignal.timeout(10000) });
                 
                 let tickerData;
                 try {
@@ -289,7 +355,8 @@ async function sweepOpenTrades(tenantId) {
                     continue; 
                 }
                 
-                const currentPrice = parseFloat(tickerData.price || tickerData.bid || tickerData.ask);
+                // Public market ticker exposes best_bid/best_ask (not bid/ask).
+                const currentPrice = parseFloat(tickerData.price || tickerData.best_bid || tickerData.best_ask);
                 
                 if (!currentPrice || isNaN(currentPrice)) {
                     continue;
@@ -1591,10 +1658,16 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                     }
                 }
             } // end for
+            // AM58 7c — reached the end without a fault: mark a successful sweep
+            // and re-arm the dead-man alert for the next outage.
+            markSweepSuccess(tenantId);
         } catch (err) {
             console.error("[WATCHDOG FAULT]:", err.message);
             await logAgentActivity(tenantId, "Watchdog", "N/A", `WATCHDOG worker encountered a fault: ${err.message}`, "ERROR");
         }
+    } finally {
+        inFlight.delete(tenantId);
+    }
 } // end sweepOpenTrades
 
 async function logAgentActivity(tenant_id, agent_name, asset, log_message, log_type = 'INFO') {
