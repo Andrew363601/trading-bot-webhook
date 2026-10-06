@@ -123,12 +123,19 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
         const resp = await fetch(`https://api.coinbase.com${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, { headers: { 'Authorization': `Bearer ${token}` } });
         if (!resp.ok) throw new Error(`Coinbase HTTP ${resp.status}`); 
         const data = await resp.json();
-        const result = data.candles?.map(c => ({ open: c.open ? parseFloat(c.open) : parseFloat(c.close), close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
-        
+        const result = data.candles?.map(c => ({ time: Math.floor(Number(c.start)), open: c.open ? parseFloat(c.open) : parseFloat(c.close), close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
+
+        // 🟢 PUSH AM52g — closed-bar parity: drop the FORMING bar. The fetch uses
+        // end=now, so the newest candle is still in progress; the backtester only
+        // ever sees closed bars. Keep bars whose close time has passed (a missing
+        // `start` is kept rather than nuking the array).
+        const nowSec = Math.floor(Date.now() / 1000);
+        const closedResult = (result || []).filter(c => !Number.isFinite(c.time) || c.time + secondsPerCandle <= nowSec);
+
         // Cache the result
-        candleCache.set(cacheKey, { data: result, timestamp: Date.now() });
+        candleCache.set(cacheKey, { data: closedResult, timestamp: Date.now() });
         
-        resolve(result);
+        resolve(closedResult);
       } catch (err) { 
         reject(err); 
       }
@@ -689,7 +696,7 @@ const tenantRAM = new Map(); // tenantId => { configs, lastMathRun, isProcessing
 
 function getTenantState(tenantId) {
     if (!tenantRAM.has(tenantId)) {
-        tenantRAM.set(tenantId, { configs: [], lastMathRun: {}, isProcessingMath: {}, activeProductIds: [], trapLocks: new Map() });
+        tenantRAM.set(tenantId, { configs: [], lastMathRun: {}, isProcessingMath: {}, lastEvalBar: {}, activeProductIds: [], trapLocks: new Map() });
     }
     return tenantRAM.get(tenantId);
 }
@@ -996,8 +1003,17 @@ export async function startSniper(tenantId) {
 
             if (isProcessing || (now - lastRun < getEvalIntervalMs(triggerTf))) continue; 
 
+            // 🟢 PUSH AM52g — evaluate once per CLOSED trigger bar. The interval gate
+            // above is wall-clock (TF/6); this gate collapses intra-bar flicker so a
+            // single closed bar produces exactly one signal evaluation.
+            const tfSec = TF_SECONDS[(triggerTf || 'FIVE_MINUTE').toUpperCase()] || 300;
+            const nowSec = Math.floor(now / 1000);
+            const closedBarOpenSec = Math.floor(nowSec / tfSec) * tfSec - tfSec;
+            if (state.lastEvalBar[config.id] === closedBarOpenSec) continue;
+
             state.isProcessingMath[config.id] = true;
             state.lastMathRun[config.id] = now;
+            state.lastEvalBar[config.id] = closedBarOpenSec;
             await supabase.from('strategy_config').update({ is_processing: true }).eq('id', config.id).eq('tenant_id', tenantId);
             await logAgentActivity(tenantId, "Sniper", config.asset, `Starting strategy evaluation for ${config.strategy} on ${config.asset}.`, "STRATEGY_EVAL_START");
 
