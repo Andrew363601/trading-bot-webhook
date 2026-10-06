@@ -49,6 +49,24 @@ export default async function handler(req, res) {
 
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
 
+  // PUSH AM57c — live episode streaming. When the client opts in via
+  // Accept: application/x-ndjson we stream one JSON event per line so the chat
+  // can render tickers/notes/replay cards as they happen. Legacy clients (no
+  // Accept) keep the single res.write(body) path at the end of the handler.
+  const wantsNdjson = String(req.headers.accept || '').includes('application/x-ndjson');
+  let ndjsonStarted = false;
+  const emit = (obj) => {
+    if (!wantsNdjson) return;
+    if (!ndjsonStarted) {
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders?.();
+      ndjsonStarted = true;
+    }
+    res.write(JSON.stringify(obj) + '\n');
+  };
+
   try {
     let data = req.body;
     if (typeof data === 'string') {
@@ -1435,6 +1453,9 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
     // PUSH AM52b2 — post-hoc tool ticker. Collect one line per tool call from
     // whichever branch runs, then prepend to the final text.
     const tickerLines = [];
+    // PUSH AM57c — guardrail: mark each toolCallId emitted at tool-call START
+    // so onStepFinish never double-emits if experimental_onToolCallStart fires.
+    const emittedCallIds = new Set();
     // PUSH AM57b — capture the runBacktest studio_url so the inline theater
     // card renders even if the model forgets to echo the link.
     const studioUrls = [];
@@ -1445,7 +1466,8 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         safeMessages,
         tools,
         tickerLines,
-        studioUrls
+        studioUrls,
+        emit
       );
     } else {
       const google = createGoogleGenerativeAI({
@@ -1460,18 +1482,37 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
         stopWhen: stepCountIs(CHAT_MAX_STEPS),
         timeout: { totalMs: 290000 },
         tools: tools,
+        // PUSH AM57c — emit the ticker at tool-call START (before execution).
+        experimental_onToolCallStart: (event) => {
+          const tc = event?.toolCall;
+          if (!tc) return;
+          const line = formatToolTicker(tc.toolName, tc.input);
+          tickerLines.push(line);
+          if (tc.toolCallId) emittedCallIds.add(tc.toolCallId);
+          emit({ type: 'ticker', line, callId: tc.toolCallId || null });
+        },
         onStepFinish: (step) => {
           const calls = step?.toolCalls || [];
           for (const tc of calls) {
+            // PUSH AM57c — fallback: only emit post-hoc if the start callback
+            // did not already fire for this call (experimental_ APIs can be
+            // renamed/flaky between minor versions).
+            if (tc.toolCallId && emittedCallIds.has(tc.toolCallId)) continue;
             // AI SDK v6: tool call args live on `input` (not `args`).
-            tickerLines.push(formatToolTicker(tc.toolName, tc.input));
+            const line = formatToolTicker(tc.toolName, tc.input);
+            tickerLines.push(line);
+            emit({ type: 'ticker', line, callId: tc.toolCallId || null });
           }
           // PUSH AM57b — capture runBacktest studio_url (v6: `output`).
           const results = step?.toolResults || [];
           for (const tr of results) {
             if (tr?.toolName === 'runBacktest') {
               const out = tr.output ?? tr.result;
-              if (out?.studio_url) studioUrls.push(out.studio_url);
+              if (out?.studio_url) {
+                studioUrls.push(out.studio_url);
+                // PUSH AM57c — pair the replay card with its ticker chip.
+                emit({ type: 'run', url: out.studio_url, callId: tr.toolCallId || null });
+              }
             }
           }
         }
@@ -1489,16 +1530,32 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
     if (missingUrls.length) {
       finalText = `${finalText}\n\n${missingUrls.join('\n')}`;
     }
-    const body = ticker.length ? `${ticker.join('\n')}\n\n${finalText}` : finalText;
 
-    res.setHeader('Content-Type', 'text/plain');
-    res.write(body);
-    res.end();
+    if (wantsNdjson) {
+      // PUSH AM57c — tickers already streamed live; do NOT prepend them to the
+      // final text or the client renders them twice. Emit any run URLs the
+      // safety net added (covers runs whose tool result lacked a callId).
+      for (const u of missingUrls) emit({ type: 'run', url: u, callId: null });
+      emit({ type: 'final', text: finalText });
+      res.end();
+    } else {
+      const body = ticker.length ? `${ticker.join('\n')}\n\n${finalText}` : finalText;
+      res.setHeader('Content-Type', 'text/plain');
+      res.write(body);
+      res.end();
+    }
 
   } catch (err) {
     console.error("====== FULL CHAT FAULT ENCOUNTERED ======");
     console.error("MESSAGE:", err.message);
-    
+
+    // PUSH AM57c — once ndjson headers are sent we cannot switch to a JSON 500;
+    // emit an error event line instead.
+    if (ndjsonStarted) {
+      try { emit({ type: 'error', message: err.message }); } catch (e) {}
+      return res.end();
+    }
+
     return res.status(500).json({ 
       error: err.message, 
       details: err.cause ? String(err.cause) : "No underlying cause provided by SDK" 
@@ -1507,7 +1564,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
 }
 
 // ── OpenRouter Tool Loop ──
-async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tools, tickerLines = [], studioUrls = []) {
+async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tools, tickerLines = [], studioUrls = [], emit = () => {}) {
   const baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
 
   // Convert Vercel AI SDK messages to OpenAI format
@@ -1577,6 +1634,11 @@ async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tool
     const msg = choice.message;
 
     if (msg.tool_calls && msg.tool_calls.length > 0) {
+      // PUSH AM57c — an assistant message can carry BOTH content and tool_calls;
+      // that content is narration, not the final answer. Emit it as a note.
+      if (msg.content && String(msg.content).trim()) {
+        emit({ type: 'note', text: String(msg.content) });
+      }
       // Append assistant message with tool calls
       currentMessages.push({
         role: 'assistant',
@@ -1606,12 +1668,17 @@ async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tool
           args = {};
         }
         // PUSH AM52b2 — record the tool ticker line before execution.
-        tickerLines.push(formatToolTicker(tc.function.name, args));
+        const tickerLine = formatToolTicker(tc.function.name, args);
+        tickerLines.push(tickerLine);
+        // PUSH AM57c — emit the ticker at call start + pair by callId.
+        emit({ type: 'ticker', line: tickerLine, callId: tc.id || null });
         try {
           const result = await toolDef.execute(args);
           // PUSH AM57b — capture runBacktest studio_url for the inline card.
           if (tc.function.name === 'runBacktest' && result?.studio_url) {
             studioUrls.push(result.studio_url);
+            // PUSH AM57c — pair the replay card with its ticker chip.
+            emit({ type: 'run', url: result.studio_url, callId: tc.id || null });
           }
           currentMessages.push({
             role: 'tool',
@@ -1627,7 +1694,7 @@ async function callOpenRouterWithTools(activeModel, systemPrompt, messages, tool
         }
       }
     } else {
-      // Final text response
+      // PUSH AM57c — only a message with NO tool calls is the final answer.
       return msg.content || '';
     }
   }

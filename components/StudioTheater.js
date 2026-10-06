@@ -3,7 +3,7 @@
 // feed: polls every 2s, new run_id -> animated card at top; older cards
 // collapse to final frame + stats. Read-only; agent loop untouched.
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Activity, AlertCircle } from 'lucide-react';
 import BacktestChart from './BacktestChart.js';
 
@@ -34,12 +34,29 @@ function heatColor(wr) {
 // PUSH AM52b2 — episode grouping gap (distinct from the 5-min baseline pin).
 const EPISODE_GAP_MS = 30 * 60 * 1000;
 
-export default function StudioTheater({ session, visible, runId, strategyName }) {
+export default function StudioTheater({ session, visible, runId, strategyName, onPlayChange }) {
   const [runs, setRuns] = useState([]);
   const [error, setError] = useState('');
   const [now, setNow] = useState(() => Date.now());
   const seenIdsRef = useRef(null);
   const [animating, setAnimating] = useState({}); // runId -> true while card animates
+
+  // PUSH AM57c — tool↔replay coupling. BacktestChart has no play lifecycle, so
+  // we synthesize one: fire onPlayChange(runId) on the first animation of a feed
+  // card or on mount of a single-run (runId) card, then clear after ~4s. Once
+  // per mount; refs keep the callback out of effect deps.
+  const onPlayChangeRef = useRef(onPlayChange);
+  useEffect(() => { onPlayChangeRef.current = onPlayChange; }, [onPlayChange]);
+  const playedRef = useRef(false);
+  const playTimerRef = useRef(null);
+  const firePlay = useCallback((id) => {
+    const cb = onPlayChangeRef.current;
+    if (!cb || !id || playedRef.current) return;
+    playedRef.current = true;
+    cb(id);
+    playTimerRef.current = setTimeout(() => cb(null), 4000);
+  }, []);
+  useEffect(() => () => { if (playTimerRef.current) clearTimeout(playTimerRef.current); }, []);
 
   // Poll feed every 2s while visible
   useEffect(() => {
@@ -66,6 +83,7 @@ export default function StudioTheater({ session, visible, runId, strategyName })
         const newestId = incoming[0]?.id;
         if (newestId && seenIdsRef.current !== null && newestId !== seenIdsRef.current) {
           setAnimating((prev) => ({ ...prev, [newestId]: true }));
+          firePlay(newestId);
         }
         if (seenIdsRef.current === null && incoming[0]?.id) {
           seenIdsRef.current = incoming[0].id; // first poll: don't animate history
@@ -85,7 +103,7 @@ export default function StudioTheater({ session, visible, runId, strategyName })
     tick();
     const iv = setInterval(tick, POLL_MS);
     return () => { cancelled = true; clearInterval(iv); };
-  }, [visible, session?.access_token, runId, strategyName]);
+  }, [visible, session?.access_token, runId, strategyName, firePlay]);
 
   // PUSH AM57b — single-run mode: fetch exactly one run and auto-render it.
   // Skips the feed polling loop entirely; the derived baseline/labels memos
@@ -103,12 +121,14 @@ export default function StudioTheater({ session, visible, runId, strategyName })
         if (cancelled) return;
         setRuns(Array.isArray(data.runs) ? data.runs : []);
         setError('');
+        // PUSH AM57c — a single-run card is the "agent just ran this" moment.
+        firePlay(runId);
       } catch (err) {
         if (!cancelled) setError(err.message);
       }
     })();
     return () => { cancelled = true; };
-  }, [runId, session?.access_token]);
+  }, [runId, session?.access_token, firePlay]);
 
   // ticker for episode-fresh pulse
   useEffect(() => {

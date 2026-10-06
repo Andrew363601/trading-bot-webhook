@@ -7,6 +7,9 @@ export default function StudioChat({ session, strategyName, onStrategyUpdated })
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // PUSH AM57c — live episode state while an ndjson stream is in flight.
+  const [live, setLive] = useState(null); // { tickers:[{line,callId}], notes:[], runs:[{url,callId}], final }
+  const [activeRunId, setActiveRunId] = useState(null);
   const chatEndRef = useRef(null);
 
   // Auto-scroll on new message
@@ -36,6 +39,8 @@ export default function StudioChat({ session, strategyName, onStrategyUpdated })
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          // PUSH AM57c — opt into live ndjson episode streaming.
+          Accept: 'application/x-ndjson',
           Authorization: session?.access_token ? `Bearer ${session.access_token}` : ''
         },
         body: JSON.stringify({
@@ -49,12 +54,42 @@ export default function StudioChat({ session, strategyName, onStrategyUpdated })
         throw new Error(errData.error || `Chat error (${res.status})`);
       }
 
-      // Stream reader identical to dashboard chat
+      const contentType = res.headers.get('content-type') || '';
+      const isNdjson = contentType.includes('application/x-ndjson');
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
       let parsedContent = '';
 
-      if (reader) {
+      if (isNdjson && reader) {
+        // PUSH AM57c — render tickers/notes/replay cards as they arrive.
+        setLive({ tickers: [], notes: [], runs: [], final: '' });
+        let buf = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            let evt;
+            try { evt = JSON.parse(line); } catch { continue; }
+            if (evt.type === 'ticker') {
+              setLive((prev) => prev ? { ...prev, tickers: [...prev.tickers, { line: evt.line, callId: evt.callId }] } : prev);
+            } else if (evt.type === 'note') {
+              setLive((prev) => prev ? { ...prev, notes: [...prev.notes, evt.text] } : prev);
+            } else if (evt.type === 'run') {
+              setLive((prev) => prev ? { ...prev, runs: [...prev.runs, { url: evt.url, callId: evt.callId }] } : prev);
+            } else if (evt.type === 'final') {
+              parsedContent = evt.text || '';
+              setLive((prev) => prev ? { ...prev, final: parsedContent } : prev);
+            } else if (evt.type === 'error') {
+              throw new Error(evt.message || 'Chat stream error');
+            }
+          }
+        }
+      } else if (reader) {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -81,6 +116,8 @@ export default function StudioChat({ session, strategyName, onStrategyUpdated })
       setError(err.message || 'Chat request failed');
     } finally {
       setLoading(false);
+      setLive(null);
+      setActiveRunId(null);
     }
   };
 
@@ -164,16 +201,16 @@ export default function StudioChat({ session, strategyName, onStrategyUpdated })
                     <div className="max-w-[90%] rounded-xl px-3.5 py-2.5 whitespace-pre-wrap break-words leading-relaxed text-[11px] bg-slate-900/90 text-cyan-300 border border-white/5 shadow-sm">
                       {body}
                     </div>
-                    {/* PUSH AM57b — inline Episode Theater card when the reply
-                        carries a studio_url with a run id. */}
+                    {/* PUSH AM57b/AM57c — inline Episode Theater cards, one per
+                        run (global regex so multi-run episodes stack). */}
                     {(() => {
-                      const match = String(m.content || '').match(/\/studio\?strategy=[a-z0-9_]+&run=([0-9a-fA-F-]{36})/);
-                      if (!match) return null;
-                      return (
-                        <div className="w-full max-w-[90%]">
+                      const matches = [...String(m.content || '').matchAll(/\/studio\?strategy=[a-z0-9_]+&run=([0-9a-fA-F-]{36})/g)];
+                      if (!matches.length) return null;
+                      return matches.map((match, idx) => (
+                        <div key={idx} className="w-full max-w-[90%]">
                           <StudioTheater session={session} runId={match[1]} visible={true} />
                         </div>
-                      );
+                      ));
                     })()}
                   </>
                 );
@@ -185,6 +222,43 @@ export default function StudioChat({ session, strategyName, onStrategyUpdated })
             )}
           </div>
         ))}
+
+        {loading && live && (
+          <div className="flex flex-col gap-1.5 items-start">
+            {live.tickers.map((t, idx) => {
+              const run = live.runs.find((r) => r.callId && r.callId === t.callId);
+              const runUuid = run ? (String(run.url).match(/run=([0-9a-fA-F-]{36})/) || [])[1] : null;
+              const hot = activeRunId && runUuid && runUuid === activeRunId;
+              return (
+                <span
+                  key={idx}
+                  className={`text-[10px] font-mono leading-tight px-1 rounded ${hot ? 'text-cyan-300 border border-cyan-400/50 bg-cyan-500/10' : 'text-slate-500/80'}`}
+                >
+                  {t.line}
+                </span>
+              );
+            })}
+            {live.notes.map((n, idx) => (
+              <div key={idx} className="max-w-[90%] rounded-xl px-3.5 py-2.5 whitespace-pre-wrap break-words leading-relaxed text-[11px] bg-slate-900/90 text-cyan-300 border border-white/5 shadow-sm">
+                {n}
+              </div>
+            ))}
+            {live.runs.map((r, idx) => {
+              const m = String(r.url).match(/run=([0-9a-fA-F-]{36})/);
+              if (!m) return null;
+              return (
+                <div key={idx} className="w-full max-w-[90%]">
+                  <StudioTheater session={session} runId={m[1]} visible={true} onPlayChange={setActiveRunId} />
+                </div>
+              );
+            })}
+            {live.final && (
+              <div className="max-w-[90%] rounded-xl px-3.5 py-2.5 whitespace-pre-wrap break-words leading-relaxed text-[11px] bg-slate-900/90 text-cyan-300 border border-white/5 shadow-sm">
+                {live.final}
+              </div>
+            )}
+          </div>
+        )}
 
         {loading && (
           <div className="flex items-center gap-2 text-slate-500 text-[11px] italic">
