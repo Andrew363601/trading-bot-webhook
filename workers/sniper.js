@@ -26,6 +26,8 @@ import { getRegimeTransitions } from '../lib/regime-transitions.js';
 import { getMicrostructureChange, classifyArchetype } from '../lib/microstructure-detector.js';
 // 🟢 PUSH AM53 — regime-conditional execution params (pure resolver).
 import { resolveRegimeParams } from '../lib/regime-params.js';
+// 🟢 PUSH AM61 — repetition-aware mistake learning (pure helpers).
+import { rebalanceRecall, decayBonusPoints, normalizeTags, DESCRIPTIVE_ONLY_TAG } from '../lib/mistake-learning.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -554,25 +556,32 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
         const triggerTfFilter = triggerTf && String(triggerTf).toUpperCase() !== 'ANY'
             ? String(triggerTf).toUpperCase() : null;
 
-        let query = supabase
-            .from('hermes_core_memory')
-            .select('id, tenant_id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at, working_thesis, thesis_accurate, strategy_id, macro_tf, trigger_tf')
-            .eq('asset', asset)
-            .order('created_at', { ascending: false })
-            .limit(50);
+        const MEM_SELECT = 'id, tenant_id, win_loss, tools_used, lesson_learned, pnl, execution_mode, regime_at_close, created_at, working_thesis, thesis_accurate, strategy_id, macro_tf, trigger_tf';
+        const buildMemQuery = (select) => {
+            let q = supabase
+                .from('hermes_core_memory')
+                .select(select)
+                .eq('asset', asset)
+                .order('created_at', { ascending: false })
+                .limit(50);
+            // HARD regime filter — only when a canon regime label is available.
+            // (Trap path computes it at spring time — PUSH AM3 Option B.)
+            if (currentRegime) q = q.eq('regime_at_close', currentRegime);
+            if (stratFilter) q = q.eq('strategy_id', stratFilter);      // HARD
+            if (macroTfFilter) q = q.eq('macro_tf', macroTfFilter);     // HARD
+            if (triggerTfFilter) q = q.eq('trigger_tf', triggerTfFilter); // HARD
+            if (!shareMemory) q = q.eq('tenant_id', tenantId);
+            return q;
+        };
 
-        // HARD regime filter — only when a canon regime label is available.
-        // (Trap path computes it at spring time — PUSH AM3 Option B.)
-        if (currentRegime) query = query.eq('regime_at_close', currentRegime);
-        if (stratFilter) query = query.eq('strategy_id', stratFilter);      // HARD
-        if (macroTfFilter) query = query.eq('macro_tf', macroTfFilter);     // HARD
-        if (triggerTfFilter) query = query.eq('trigger_tf', triggerTfFilter); // HARD
-
-        if (!shareMemory) {
-            query = query.eq('tenant_id', tenantId);
+        // 🟢 AM61 — select `tags` for the descriptive-only penalty. Safety-net:
+        // if migration 058 is not applied yet, the column is rejected and the
+        // whole recall would silently empty — retry without `tags`.
+        let { data: rawMemories, error: memErr } = await buildMemQuery(`${MEM_SELECT}, tags`);
+        if (memErr && (memErr.code === '42703' || memErr.code === 'PGRST204' || /'tags'/.test(String(memErr.message || '')))) {
+            console.warn('[AM61] tags column rejected (migration 058 not applied?) — recall retrying without tags');
+            ({ data: rawMemories } = await buildMemQuery(MEM_SELECT));
         }
-
-        const { data: rawMemories } = await query;
         const allMemories = rawMemories || [];
 
         if (!allMemories || allMemories.length === 0) {
@@ -662,9 +671,18 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
             // 🟢 PUSH AM3: strategy + TF-pair match bonuses removed — both are
             // now HARD query filters above, not additive bonuses.
 
+            // 🟢 PUSH AM61 — decay the BONUS portion so a 3-week-old +50 loss
+            // lesson can't permanently outshout yesterday's lesson. Recency
+            // already decays; the flat bonuses (own/LIVE/loss/accuracy) now
+            // halve every BONUS_HALF_LIFE_DAYS. Descriptive-only lessons take a
+            // flat penalty so they sink below actionable rules.
+            const bonusRaw = thesisAccBonus + lossBonus + liveWt + ownBonus;
+            const bonusDecayed = decayBonusPoints(bonusRaw, m.created_at, now);
+            const descriptivePenalty = normalizeTags(m.tags).includes(DESCRIPTIVE_ONLY_TAG) ? 30 : 0;
+
             // 3i) Total = fully additive, all factors weighted independently
-            const total = recency + pnlImpact + thesisSim + thesisAccBonus
-                        + lossBonus + liveWt + ownBonus + shadowBonus;
+            const total = recency + pnlImpact + thesisSim + bonusDecayed
+                        + shadowBonus - descriptivePenalty;
 
             return { ...m, score: Math.round(total) };
         });
@@ -677,9 +695,13 @@ async function getScoredMemories(tenantId, asset, currentRegime, signalDirection
             m.score += Math.min(similarCount - 1, MAX_RECURRENCE) * 10;
         }
 
-        // Sort by score descending, take top 3
-        scored.sort((a, b) => b.score - a.score);
-        const top3 = scored.slice(0, 3);
+        // 🟢 PUSH AM61 — RECALL REBALANCE: reserve 1 of the 3 slots for the MOST
+        // RECENT same-regime lesson. Regime is already a HARD query filter (AM3),
+        // so the newest row in the filtered set IS the newest same-regime lesson.
+        const newestSameRegime = allMemories.length > 0
+            ? [...allMemories].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0]
+            : null;
+        const top3 = rebalanceRecall(scored, newestSameRegime);
         return {
             memories: top3,
             ids: top3.map(m => m.id),

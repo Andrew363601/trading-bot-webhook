@@ -5,6 +5,7 @@ import { buildRadarChartUrl } from './lib/discord-chart.js';
 import { createClient } from '@supabase/supabase-js'; 
 import { recordUsage } from './lib/usage-meter.js';
 import { getActiveModel } from './lib/model-router.js';
+import { MISTAKE_TAGS, DESCRIPTIVE_ONLY_TAG, normalizeTags, gradeLessonRule, buildRepeatedMistakeBlock, buildStreakBlock, REPEAT_WINDOW_DAYS } from './lib/mistake-learning.js';
 
 const app = express();
 app.use(express.json());
@@ -472,6 +473,84 @@ Output ONLY raw JSON. Include working_thesis explaining your market data analysi
         
         if (message.includes('CORE MEMORY (Past Lessons') && message.includes('Score:')) {
             instructionText += `\n\n--- SCORING CONTEXT ---\nThe 3 memories above are scored by an additive model: recency (0-100), PnL impact capped at $500 (0-100), thesis direction similarity (0-50), regime match (0 or 100), thesis accuracy (+40 correct / -15 wrong), loss bonus (+25 for losses), LIVE weight (+50), and own-tenant dominance (your memories get +50). The highest-score memory is the most relevant lesson for this exact moment. Use it as your primary reference when forming your thesis. Your own lessons dominate the rankings — cross-tenant lessons must be significantly more relevant to outrank them.\n\n`;
+        }
+
+        // 🟢 PUSH AM61 — REPETITION-AWARE INJECTION. After the top-3 recall, count
+        // lessons carrying the SAME mistake tag(s) within 14d and inject a
+        // REPEATED-MISTAKE block. Also run the STREAK GUARD on the last closed
+        // trades for this asset+regime. Both are CONTEXT ONLY — the agent still
+        // decides (AM8 doctrine held); we raise the approval bar, never block.
+        try {
+            const currentRegime = deriveRegime(marketState) || null;
+
+            // shareMemory is block-scoped to the fallback resolver above — re-read
+            // it here so the same-tag query honors the tenant's memory-sharing pref.
+            let shareMemory = true;
+            try {
+                const { data: memSettings } = await supabase
+                    .from('tenant_settings')
+                    .select('share_memory')
+                    .eq('tenant_id', tenant_id)
+                    .single();
+                if (memSettings && memSettings.share_memory === false) shareMemory = false;
+            } catch (e) { /* default shared */ }
+
+            // (a) Fetch the recalled rows' tags (brain only receives IDs).
+            let recalledRows = [];
+            if (resolvedMemoryIds.length > 0) {
+                const { data: rows } = await supabase
+                    .from('hermes_core_memory')
+                    .select('id, tags, win_loss, pnl, created_at, asset')
+                    .in('id', resolvedMemoryIds);
+                recalledRows = rows || [];
+            }
+
+            // (b) Same-tag lessons within the window (asset-scoped, tenant-aware).
+            const tagSet = new Set();
+            for (const r of recalledRows) {
+                for (const t of normalizeTags(r.tags)) {
+                    if (t !== DESCRIPTIVE_ONLY_TAG) tagSet.add(t);
+                }
+            }
+            let sameTagLessons = [];
+            if (tagSet.size > 0) {
+                const cutoff = new Date(Date.now() - REPEAT_WINDOW_DAYS * 86400000).toISOString();
+                let tq = supabase
+                    .from('hermes_core_memory')
+                    .select('id, tags, win_loss, pnl, created_at, asset')
+                    .eq('asset', asset)
+                    .gte('created_at', cutoff)
+                    .limit(50);
+                if (!shareMemory) tq = tq.eq('tenant_id', tenant_id);
+                const { data: tagRows } = await tq;
+                sameTagLessons = (tagRows || []).filter(r =>
+                    normalizeTags(r.tags).some(t => tagSet.has(t))
+                );
+            }
+            const repeatBlock = buildRepeatedMistakeBlock(sameTagLessons, Date.now());
+            if (repeatBlock) {
+                instructionText += repeatBlock.text + '\n';
+                await logAgentActivity(tenant_id, "Agent Cortex", asset, `AM61 repeated-mistake alert: ${repeatBlock.matches.map(m => `${m.tag}x${m.count}`).join(', ')}`, "REPEATED_MISTAKE");
+            }
+
+            // (c) STREAK GUARD — last N closed trades for asset+regime.
+            let sq = supabase
+                .from('trade_logs')
+                .select('symbol, pnl, exit_time, regime_at_entry, regime_at_close, strategy_id')
+                .eq('tenant_id', tenant_id)
+                .eq('symbol', asset)
+                .not('exit_price', 'is', null)
+                .order('exit_time', { ascending: false })
+                .limit(10);
+            if (currentRegime) sq = sq.eq('regime_at_entry', currentRegime);
+            const { data: recentClosed } = await sq;
+            const streakBlock = buildStreakBlock(recentClosed || []);
+            if (streakBlock) {
+                instructionText += streakBlock.text + '\n';
+                await logAgentActivity(tenant_id, "Agent Cortex", asset, `AM61 streak guard: ${streakBlock.streak} consecutive losses`, "STREAK_GUARD");
+            }
+        } catch (am61Err) {
+            console.warn('[AM61] repetition injection failed (non-fatal):', am61Err.message);
         }
         
         // Also inject contract cost analysis for ANY entry evaluation (new trades too)
@@ -1767,9 +1846,10 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
         Output raw JSON format exactly:
         {
           "tools_used": "Comma separated list of tools mentioned (e.g., Fibonacci, Fractals, Volume Nodes, Open Interest)",
-          "lesson_learned": "The specific quantitative rule extracted.",
+          "lesson_learned": "The specific quantitative rule extracted. MUST be an actionable rule of the form 'IF <condition> THEN <different action>' (or WHEN ... THEN ...). Descriptive-only observations are rejected.",
           "thesis_accurate": true or false,
           "thesis_summary": "One-line summary of what the thesis was trying to capture",
+          "mistake_tag": "For a LOSS, ONE structured mistake fingerprint from this list: ${MISTAKE_TAGS.join(' | ')}. Use null for a WIN or when no tag fits.",
           "param_recommendation": { "field": "trail_step_percent" or "tp_percent" or "sl_percent" or "tripwire_percent" or "be_buffer" or null, "direction": "increase" or "decrease" or null, "reason": "one sentence, bucket-specific", "dollar_evidence": 12.00 or null }
         }
         `;
@@ -1851,9 +1931,23 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
         const expectedCostUsd = (paramField && pr.dollar_evidence != null && isFinite(Number(pr.dollar_evidence)))
             ? Number(pr.dollar_evidence) : null;
 
-        console.log(`[AUTOPSY COMPLETE] ${asset} | Rule: ${autopsyJson.lesson_learned}${paramField ? ` | param: ${paramField} ${paramDirection}` : ''}`);
+        // 🟢 AM61 — mistake fingerprint + decision-rule gate. Real LOSS autopsies
+        // only (shadow/scratch keep their existing class prefixes and are NOT
+        // tagged). The grader assigns ONE structured tag; a lesson that states no
+        // actionable rule is downgraded to DESCRIPTIVE_ONLY so the recall scorer
+        // can penalize it and the repetition counter ignores it.
+        const lessonText = autopsyJson.lesson_learned || '';
+        const ruleGrade = gradeLessonRule(lessonText);
+        let mistakeTags = [];
+        if (!isShadow && !scratch && winLoss === 'LOSS') {
+            const assigned = normalizeTags(autopsyJson.mistake_tag);
+            mistakeTags = assigned.filter(t => t !== DESCRIPTIVE_ONLY_TAG);
+            if (ruleGrade.downgraded) mistakeTags.push(DESCRIPTIVE_ONLY_TAG);
+        }
 
-        const { error: insErr } = await supabase.from('hermes_core_memory').insert([{
+        console.log(`[AUTOPSY COMPLETE] ${asset} | Rule: ${autopsyJson.lesson_learned}${paramField ? ` | param: ${paramField} ${paramDirection}` : ''}${mistakeTags.length ? ` | tags: ${mistakeTags.join(',')}` : ''}`);
+
+        const memoryRow = {
             tenant_id: tenant_id,
             asset: asset,
             win_loss: winLoss,
@@ -1884,8 +1978,22 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
             param_field: paramField,
             param_direction: paramDirection,
             // 🟢 AM32 — claimed dollar cost of the miss (migration 050).
-            expected_cost_usd: expectedCostUsd
-        }]);
+            expected_cost_usd: expectedCostUsd,
+            // 🟢 AM61 — mistake fingerprint (migration 058). jsonb array; empty
+            // array for wins / shadow / scratch so the column is never null.
+            tags: mistakeTags
+        };
+
+        let { error: insErr } = await supabase.from('hermes_core_memory').insert([memoryRow]);
+
+        // 🟢 AM61 safety-net: if migration 058 has not been applied yet, the
+        // `tags` column is rejected — retry WITHOUT it so we never lose the
+        // lesson row over an additive audit field.
+        if (insErr && (insErr.code === '42703' || insErr.code === 'PGRST204' || /'tags'/.test(String(insErr.message || '')))) {
+            console.warn('[AM61] tags column rejected (migration 058 not applied?) — retrying insert without tags');
+            const { tags: _omit, ...rowNoTags } = memoryRow;
+            ({ error: insErr } = await supabase.from('hermes_core_memory').insert([rowNoTags]));
+        }
 
         // 🟢 PUSH U: race-guard. The AUTOPSKIP pre-check closes most duplicates,
         // but a double-POST within the same instant can still slip through —
