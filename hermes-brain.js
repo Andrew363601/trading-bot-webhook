@@ -1207,6 +1207,19 @@ output HOLD for an unfilled trap.`;
                 //   { error: '...' }                     ← step 2 must abort
                 // The MCP gateway wraps the response in { result: <executeTradeMCP return> }.
                 const closePayload = closeResult?.result || closeResult || {};
+                // 🟢 AM59 — close_failed = CLOSE-NOT-EXECUTED. The position is STILL LIVE,
+                // so the opposite leg must never open (that would net a double position).
+                if (closePayload.status === 'close_failed' || closePayload.close_failed === true) {
+                    console.error(`[AGENT CORTEX] 🛑 REVERSE step 1 returned close_failed — ${asset} position is STILL LIVE (unmanaged). Aborting step 2.`);
+                    await sendDiscordAlert(tenant_id, {
+                        title: `🚨 CLOSE FAILED — position live, unmanaged: ${asset}`,
+                        description: `REVERSE step 1 close did NOT execute. The ${activeOpenTrade.side} position is **still live on the exchange and unmanaged** — step 2 (open ${decisionJson.side}) was suppressed.
+**Engine status:** ${closePayload.reason || closePayload.error || 'unknown'}
+**Action:** Treat the position as OPEN. Retry the close or intervene manually.`,
+                        color: 15158332
+                    });
+                    return res.status(200).json({ status: 'REVERSE_ABORTED', close_failed: true, reason: closePayload.reason || closePayload.error || 'close_failed' });
+                }
                 const closeOk = closePayload.status === 'closed_position' || closePayload.status === 'already_closed_natively';
                 if (!closeOk) {
                     const reason = closePayload.error || closePayload.status || 'unknown';
@@ -1508,11 +1521,19 @@ output HOLD for an unfilled trap.`;
                         const execStatus = resultPayload.status;
                         const execReason = resultPayload.reason || resultPayload.message || 'No reason provided';
 
-                        const nonSuccessStatuses = ['duplicate_suppressed', 'strategy_not_active', 'risk_vetoed', 'rr_vetoed', 'ignored_already_open', 'already_closed_natively', 'duplicate', 'close_in_progress'];
-                        
-                        // 🟢 AM14 — a returned { error } is a FAILED execution (e.g. verified
-                        // close rejected by the exchange). It must NOT take the success branch.
-                        if (resultPayload.error) {
+                        const nonSuccessStatuses = ['duplicate_suppressed', 'strategy_not_active', 'risk_vetoed', 'rr_vetoed', 'ignored_already_open', 'already_closed_natively', 'duplicate', 'close_in_progress', 'close_failed'];
+
+                        // 🟢 AM59 — close_failed = CLOSE-NOT-EXECUTED: the fill never
+                        // confirmed, so the position is STILL LIVE. The agent must be told
+                        // this explicitly — never let it proceed believing the close landed.
+                        if (execStatus === 'close_failed' || resultPayload.close_failed === true) {
+                            console.error(`[AGENT CORTEX] 🚨 CLOSE NOT EXECUTED for ${asset} — position STILL LIVE (step=${resultPayload.step || 'unknown'}): ${resultPayload.reason || resultPayload.error || 'unknown'}`);
+                            await sendDiscordAlert(tenant_id, {
+                                title: `🚨 CLOSE FAILED — position live, unmanaged: ${asset}`,
+                                description: `**Action:** ${decisionJson.action}\n**The close did NOT execute** (no FILLED receipt after retries).\n**Position:** STILL LIVE on the exchange and unmanaged.\n**Step:** ${resultPayload.step || 'unknown'}\n**Reason:** ${resultPayload.reason || resultPayload.error || 'unknown'}\n**Truth:** Do NOT assume the position is closed — retry the close or intervene manually.`,
+                                color: 15158332
+                            });
+                        } else if (resultPayload.error) {
                             console.error(`[AGENT CORTEX] ❌ Execution error for ${asset}: ${resultPayload.error}`);
                             await sendDiscordAlert(tenant_id, {
                                 title: `❌ Trade Execution Failed: ${asset}`,
