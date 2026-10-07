@@ -84,6 +84,7 @@ const FUTURES_CODE_MAP = {
     AVP: 'AVAX',
     LNP: 'LINK',
     XPP: 'XRP',
+    BCP: 'BCH',
 };
 
 // Turn any product id (BTC, BTC-USD, BTC-PERP-INTX, BIP-20DEC30-CDE, …) into a

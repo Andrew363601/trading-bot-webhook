@@ -315,6 +315,7 @@ app.post('/mcp/execute', async (req, res) => {
                     SLP: 'SOL', DOP: 'DOGE',
                     LCP: 'LTC', AVP: 'AVAX',
                     LNP: 'LINK', XPP: 'XRP',
+                    BCP: 'BCH',
                 };
                 const CALL_MAP = { symbol: 1, asset: 1 };
                 const callArgs = paramNames.map(pn => {

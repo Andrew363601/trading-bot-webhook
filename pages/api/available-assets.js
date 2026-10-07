@@ -22,6 +22,7 @@ async function handler(req, res) {
     const topAssets = [
       'BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-INTX',
       'LINK-PERP-INTX', 'AVAX-PERP-INTX', 'LTC-PERP-INTX', 'BCH-PERP-INTX',
+      'BCP-20DEC30-CDE',
       'XRP-PERP-INTX', 'ADA-PERP-INTX', 'DOT-PERP-INTX', 'MATIC-PERP-INTX',
       'UNI-PERP-INTX', 'SHIB-PERP-INTX', 'NEAR-PERP-INTX'
     ];

@@ -212,6 +212,7 @@ export default function LandingPage() {
     SLP: 'SOL', DOP: 'DOGE',
     LCP: 'LTC', AVP: 'AVAX',
     LNP: 'LINK', XPP: 'XRP',
+    BCP: 'BCH',
   };
 
   const baseTicker = (symbol) => {

@@ -125,6 +125,7 @@ const getAssetMetrics = (symbol) => {
     else if (symbol.includes('LCP') || symbol.includes('LTC')) { multiplier = 1.0; tickSize = 0.01; }
     else if (symbol.includes('AVP') || symbol.includes('AVAX')) { multiplier = 1.0; tickSize = 0.01; }
     else if (symbol.includes('LNP') || symbol.includes('LINK')) { multiplier = 1.0; tickSize = 0.001; }
+    else if (symbol.includes('BCP') || symbol.includes('BCH')) { multiplier = 1.0; tickSize = 0.05; }
     return { multiplier, tickSize };
 };
 

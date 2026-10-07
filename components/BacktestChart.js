@@ -246,6 +246,13 @@ export default function BacktestChart({ data, mode = 'replay', height = 400, equ
     <div className="space-y-2" style={{ height: '100%' }}>
       <div style={{ height: typeof height === 'number' ? height + 'px' : height }} className="relative w-full">
         <div ref={chartContainerRef} className="w-full h-full" />
+        {(!data?.trigger_candles || data.trigger_candles.length === 0) && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <span className="text-xs font-mono text-slate-500">
+              No chart data{data?.product ? ` for ${data.product}` : ''}
+            </span>
+          </div>
+        )}
       </div>
       {showEquity && (
         <div style={{ height: typeof equityHeight === 'number' ? equityHeight + 'px' : equityHeight }} className="relative w-full">

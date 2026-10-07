@@ -179,7 +179,8 @@ function getSpotSymbol(symbol) {
     'LCP': 'LTC', 'LTC': 'LTC',
     'AVP': 'AVAX', 'AVAX': 'AVAX',
     'LNP': 'LINK', 'LINK': 'LINK',
-    'XPP': 'XRP', 'XRP': 'XRP'
+    'XPP': 'XRP', 'XRP': 'XRP',
+    'BCP': 'BCH', 'BCH': 'BCH'
   };
   return `${spotMap[base] || base}-USD`;
 }

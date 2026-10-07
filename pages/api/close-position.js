@@ -15,7 +15,7 @@ async function getCurrentMarketPrice(symbol) {
     const baseAsset = symbol.split('-')[0].toUpperCase();
     const spotMap = { 
       'ETP': 'ETH', 'BIT': 'BTC', 'BIP': 'BTC', 'SLP': 'SOL', 'DOP': 'DOGE',
-      'LCP': 'LTC', 'AVP': 'AVAX', 'LNP': 'LINK', 'XPP': 'XRP'
+      'LCP': 'LTC', 'AVP': 'AVAX', 'LNP': 'LINK', 'XPP': 'XRP', 'BCP': 'BCH', 'BCH': 'BCH'
     };
     const spotBase = spotMap[baseAsset] || baseAsset;
     

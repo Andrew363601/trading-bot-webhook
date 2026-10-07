@@ -80,7 +80,8 @@ function DashboardContent() {
   
   const [assetsList, setAssetsList] = useState([
     'BTC-PERP-INTX', 'ETH-PERP-INTX', 'SOL-PERP-INTX', 'DOGE-PERP-INTX',
-    'LINK-PERP-INTX', 'AVAX-PERP-INTX', 'LTC-PERP-INTX', 'BCH-PERP-INTX'
+    'LINK-PERP-INTX', 'AVAX-PERP-INTX', 'LTC-PERP-INTX', 'BCH-PERP-INTX',
+    'BCP-20DEC30-CDE'
   ]);
   
   const [livePrice, setLivePrice] = useState(0); 
@@ -177,6 +178,8 @@ function DashboardContent() {
   const seriesMarkersRef = useRef(null); 
   const priceLinesRef = useRef([]);
   const volumeLinesRef = useRef([]);
+  // 🟢 AM60 (ADD) — explicit empty-state flag for the main candle chart.
+  const [noChartData, setNoChartData] = useState(false);
   const [chartTimeframe, setChartTimeframe] = useState('1m');
   const [showMarkers, setShowMarkers] = useState(true);
   const [showPriceLines, setShowPriceLines] = useState(true);
@@ -1214,9 +1217,12 @@ function DashboardContent() {
                     volumeSeriesRef.current.setData([]);
                     allChartDataRef.current = [];
                     seriesMarkersRef.current.setMarkers([]);
+                    setNoChartData(true);
                 }
                 return;
             }
+
+            if (!isLiveTick) setNoChartData(false);
 
             if (isLiveTick) {
                 const latestCandle = data[data.length - 1];
@@ -2117,6 +2123,11 @@ function DashboardContent() {
                   ref={chartContainerRef}
                   className="absolute inset-0"
                 />
+                {noChartData && (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+                    <span className="text-xs font-mono text-slate-500">No chart data for {activeAsset}</span>
+                  </div>
+                )}
                 {/* Liquidation HEATMAP + Large Limit Orders — price-band heat gradient behind the
                     candles (legend.coinglass.com style). */}
                 <CoinglassHeatmap

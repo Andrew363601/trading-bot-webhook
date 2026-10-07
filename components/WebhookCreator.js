@@ -16,6 +16,7 @@ const CDE_ASSETS = [
   { label: 'Avalanche (AVAX CDE Futures)',code: 'AVP', ticker: 'AVAX' },
   { label: 'Chainlink (LINK CDE Futures)',code: 'LNP', ticker: 'LINK' },
   { label: 'XRP (XRP CDE Futures)',       code: 'XPP', ticker: 'XRP' },
+  { label: 'Bitcoin Cash (BCH CDE Futures)', code: 'BCP', ticker: 'BCH' },
   { label: 'Worldcoin (WLD CDE Futures)', code: 'WLD', ticker: 'WLD' },
 ];
 
