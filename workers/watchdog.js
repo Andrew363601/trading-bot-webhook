@@ -624,7 +624,14 @@ export async function sweepOpenTrades(tenantId) {
                                 macro_tf: params.macro_tf || 'ONE_HOUR',
                                 // 🟢 TF CANON (Phase 0.11): 5M default — matches sniper canon
                                 trigger_tf: params.trigger_tf || 'FIVE_MINUTE',
-                                previous_thesis: configData?.active_thesis
+                                previous_thesis: configData?.active_thesis,
+                                // 🟢 AM62 — GATE HONESTY: this wake carries the distinct
+                                // forced-risk-close authorization. The stop already did its
+                                // job (BE secured); a CLOSE here is a RISK action, so it is
+                                // exempt from the agent_open_trade_close agent-management
+                                // gate. The settings panel acknowledges this authorization.
+                                forced_risk_close: true,
+                                authorization: 'TRIPWIRE_RISK_CLOSE'
                             });
 
                             // 🟢 Set flag so trailing SL skips this sweep — it'll fire naturally on the next cycle

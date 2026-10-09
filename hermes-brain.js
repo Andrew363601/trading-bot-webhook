@@ -174,7 +174,13 @@ function deriveRegime(marketState) {
 
 // 🟢 THE WAKE ENDPOINT (Trade Origination & Management)
 app.post('/api/wake', async (req, res) => {
-    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id, calibrationPriors, modelPrediction, regimeTransition, microstructureChange, archetypeResult, telemetry, suggested_params } = req.body;
+    const { tenant_id, asset, mode, message, openTrade, candles, indicators, macro_tf, trigger_tf, execution_mode, strategy_id, version, previous_thesis, qty, memoryIds, scan_id, calibrationPriors, modelPrediction, regimeTransition, microstructureChange, archetypeResult, telemetry, suggested_params, forced_risk_close, authorization } = req.body;
+    // 🟢 AM62 — GATE HONESTY: a wake MAY carry a distinct forced-risk-close
+    // authorization (currently only the TRIPWIRE_HIT wake does). Such a CLOSE is
+    // a RISK action taken after the stop already secured capital, so it is
+    // exempt from the agent-management gate (agent_open_trade_close). Agent-
+    // INITIATED closes on the normal ENTRY re-eval path still honor the toggle.
+    const forcedRiskClose = forced_risk_close === true || authorization === 'TRIPWIRE_RISK_CLOSE';
     const wakeStartTime = new Date().toISOString();
     
     // Track Hermes API usage
@@ -1224,9 +1230,25 @@ output HOLD for an unfilled trap.`;
             });
         }
 
-        const isActionableExecution = decisionJson.action === "APPROVE" || decisionJson.action === "REVERSE" || decisionJson.action === "CLOSE" || decisionJson.action === "ADJUST_TP_SL" || decisionJson.action === "UPDATE_TRIPWIRE";
-        
-        if (!isActionableExecution) {
+        const isActionableExecution = decisionJson.action === "APPROVE" || decisionJson.action === "APPROVE_WITH_PARAMS" || decisionJson.action === "REVERSE" || decisionJson.action === "CLOSE" || decisionJson.action === "ADJUST_TP_SL" || decisionJson.action === "UPDATE_TRIPWIRE";
+
+        // 🟢 AM62 — GATE HONESTY (agent_open_trade_close). The setting gates
+        // AGENT-INITIATED closes only. A wake that carries the forced-risk-close
+        // authorization (TRIPWIRE_HIT — stop already moved to BE) may close
+        // regardless; that authorization is surfaced/acknowledged in the settings
+        // panel. Any other CLOSE with the toggle OFF is downgraded to HOLD rather
+        // than silently executing behind a setting that claims it is disabled.
+        let closeGateNote = null;
+        if (decisionJson.action === "CLOSE" && !forcedRiskClose && !tenantAgentSettings.agent_open_trade_close) {
+            closeGateNote = 'CLOSE GATED: agent_open_trade_close is OFF (no forced-risk-close authorization)';
+            console.warn(`[AM62] ${closeGateNote} — downgrading CLOSE to HOLD for ${asset}.`);
+            await logAgentActivity(tenant_id, "Agent Cortex", asset, closeGateNote, "CLOSE_GATE");
+            decisionJson.action = "HOLD";
+        }
+        const isGatedHold = decisionJson.action === "HOLD" && closeGateNote !== null;
+        if (isGatedHold) decisionJson.working_thesis = `${decisionJson.working_thesis || ''} [${closeGateNote}]`.trim();
+        const isActionableExecutionFinal = isGatedHold ? false : isActionableExecution;
+        if (!isActionableExecutionFinal) {
             console.log(`[AGENT CORTEX] Logging non-execution action (${decisionJson.action}) to UI Audit...`);
             
             let finalStatus = decisionJson.action;
@@ -1302,7 +1324,7 @@ output HOLD for an unfilled trap.`;
             }
         }
         
-        if (isActionableExecution || decisionJson.action === "ADJUST_TP_SL") {
+        if (isActionableExecutionFinal || decisionJson.action === "ADJUST_TP_SL") {
             console.log(`[AGENT CORTEX] Triggering execute_order tool for action: ${decisionJson.action}`);
             
             // 🟢 REVERSE: Two-step close → wait → open opposite
