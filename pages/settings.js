@@ -45,6 +45,7 @@ function SettingsContent() {
         openTradeClose: false,
         openTradeAdjustTpSl: false,
         openTradeTripwireAdjust: false,
+        openTradeEntryAdjust: false,
         takerFeeRate: '0.08'
     });
     const [agentSaving, setAgentSaving] = useState(false);
@@ -117,6 +118,7 @@ function SettingsContent() {
                         openTradeClose: tenantSettings.agent_open_trade_close || false,
                         openTradeAdjustTpSl: tenantSettings.agent_open_trade_adjust_tp_sl || false,
                         openTradeTripwireAdjust: tenantSettings.agent_open_trade_tripwire_adjust || false,
+                        openTradeEntryAdjust: tenantSettings.agent_open_trade_entry_adjust || false,
                         takerFeeRate: tenantSettings.agent_taker_fee_rate?.toString() || '0.08'
                     });
                 }
@@ -224,6 +226,7 @@ function SettingsContent() {
                     agent_open_trade_close: agentSettings.openTradeClose,
                     agent_open_trade_adjust_tp_sl: agentSettings.openTradeAdjustTpSl,
                     agent_open_trade_tripwire_adjust: agentSettings.openTradeTripwireAdjust,
+                    agent_open_trade_entry_adjust: agentSettings.openTradeEntryAdjust,
                     agent_taker_fee_rate: parseFloat(agentSettings.takerFeeRate) / 100 || 0.0008
                 })
             });
@@ -559,6 +562,14 @@ function SettingsContent() {
                                         className="toggle toggle-purple"
                                     />
                                 </label>
+                                {/* 🟢 PUSH AM62 — GATE HONESTY: the tripwire wake carries a
+                                    forced-risk-close authorization (the stop already moved to
+                                    break-even). Such a close is a RISK action and is exempt from
+                                    this toggle; this note makes that exemption explicit. */}
+                                <p className="text-[9px] text-slate-600 italic ml-1 -mt-1">
+                                    Note: a tripwire-hit wake may still CLOSE as a forced risk close
+                                    (stop already secured at break-even) even when this is off.
+                                </p>
                                 <label className="flex items-center justify-between cursor-pointer group">
                                     <span className="text-xs font-bold text-slate-400 group-hover:text-purple-300 transition-colors">Allow TP/SL Adjustment</span>
                                     <input
@@ -579,6 +590,24 @@ function SettingsContent() {
                                 </label>
                             </div>
                         )}
+
+                        {/* 🟢 PUSH AM62 — entry-geometry adjustment. INDEPENDENT of
+                            Active Trade Re-Evaluation: it applies to a FRESH entry, so
+                            it lives OUTSIDE the openTradeEnabled block. */}
+                        <label className="flex items-center justify-between cursor-pointer group">
+                            <span className="text-sm font-bold text-white group-hover:text-purple-300 transition-colors">
+                                Allow Entry Parameter Adjustment
+                                <span className="block text-[9px] text-slate-500 font-normal normal-case">
+                                    The agent may propose this entry TP/SL/tripwire/trail geometry (bounded)
+                                </span>
+                            </span>
+                            <input
+                                type="checkbox"
+                                checked={agentSettings.openTradeEntryAdjust}
+                                onChange={(e) => setAgentSettings(prev => ({ ...prev, openTradeEntryAdjust: e.target.checked }))}
+                                className="toggle toggle-purple"
+                            />
+                        </label>
                     </div>
 
                     <div className="space-y-2">

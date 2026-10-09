@@ -225,7 +225,20 @@ app.post('/api/wake', async (req, res) => {
     let activeOpenTrade = null;
     let isReEvaluation = false;
     let tenantAgentSettings = {};
-    
+
+    // 🟢 AM62 — fetch agent settings UNCONDITIONALLY (not only when a trade is
+    // open): agent_open_trade_entry_adjust governs a FRESH ENTRY, where there is
+    // no open trade yet, so gating this behind the open-trade check would always
+    // read `undefined` (the toggle would be silently ignored).
+    try {
+        const { data: agentCfg } = await supabase
+            .from('tenant_settings')
+            .select('agent_open_trade_enabled, agent_open_trade_reverse, agent_open_trade_close, agent_open_trade_adjust_tp_sl, agent_open_trade_tripwire_adjust, agent_open_trade_entry_adjust, agent_taker_fee_rate')
+            .eq('tenant_id', tenant_id)
+            .single();
+        tenantAgentSettings = agentCfg || {};
+    } catch (e) { console.warn('[AGENT CORTEX] tenant_settings fetch failed:', e?.message); }
+
     const { data: existingOpenTrades, error: openTradeError } = await supabase
         .from('trade_logs')
         .select('id, side, entry_price, tp_price, sl_price, qty, strategy_id, reason')
@@ -240,16 +253,7 @@ app.post('/api/wake', async (req, res) => {
 
     if (existingOpenTrades && existingOpenTrades.length > 0) {
         activeOpenTrade = existingOpenTrades[0];
-        
-        // Check if agent re-evaluation is enabled for this tenant
-        const { data: agentSettings } = await supabase
-            .from('tenant_settings')
-            .select('agent_open_trade_enabled, agent_open_trade_reverse, agent_open_trade_close, agent_open_trade_adjust_tp_sl, agent_open_trade_tripwire_adjust, agent_taker_fee_rate')
-            .eq('tenant_id', tenant_id)
-            .single();
-        
-        tenantAgentSettings = agentSettings || {};
-        
+
         if (tenantAgentSettings.agent_open_trade_enabled && mode === "ENTRY") {
             isReEvaluation = true;
             console.log(`[AGENT CORTEX] 🔄 Re-evaluation mode enabled for ${asset} open trade.`);
@@ -780,7 +784,7 @@ You retain override authority as risk manager: if live context (cascade, funding
         if (mode === "TRIPWIRE_HIT") {
             instructionText += `THE HARVEST PROTOCOL IS ACTIVE. You are currently in profit and your Stop Loss is secured at Break-Even. Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. If the momentum is explosive and the runway is clear, output action "HOLD". If OI is dropping, absorption is failing, or funding is extremely skewed against you, output action "CLOSE" to harvest the profit immediately. Output ONLY raw, valid JSON.`;
         } else {
-            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand. The system will update the strategy config and notify Discord. TRIPWIRE arms BE at entry±0.1% once; TRAIL_STEP is the standing stop after that. Wick-outs after arming are trail_step or BE-buffer sizing problems. If trainer priors are present, state in one sentence whether you follow or override them and the dollar reason. Your geometry is replayed and graded either way. Output ONLY raw, valid JSON.
+            instructionText += `Analyze the CVD, Level 2 Intent, and the Native Open Interest/Funding Rates in the derivatives_premium block. Do not let micro 5M absorption trick you. CRITICAL: If you already have an ACTIVE OPEN TRADE that matches the signal direction, output action "HOLD" to let it run and prevent double entries. Update your working thesis. Determine if you APPROVE, REVERSE, VETO, HOLD, CLOSE, or set a VIRTUAL_TRAP. Also review the CORE MEMORY block above. You MUST output sl_percent, tp_percent, tripwire_percent, and trail_step_percent values that match YOUR WORKING THESIS — the structured fields must match the analysis in your working_thesis text. Do not use strategy defaults; use what the market conditions demand.${tenantAgentSettings.agent_open_trade_entry_adjust ? ` ENTRY PARAMETER ADJUSTMENT IS ON: if the geometry that fits THIS bucket (model win rate, ATR, order-book walls, your own fee/accountant math) differs from the saved config, output action "APPROVE_WITH_PARAMS" instead of "APPROVE" and put your proposed tp_percent / sl_percent / tripwire_percent / trail_step_percent in the same JSON fields. Proposals are clamped to bounds and applied to THIS entry only — the saved config is NOT changed. Use "APPROVE" when the config geometry already fits.` : ''} The system will update the strategy config and notify Discord. TRIPWIRE arms BE at entry±0.1% once; TRAIL_STEP is the standing stop after that. Wick-outs after arming are trail_step or BE-buffer sizing problems. If trainer priors are present, state in one sentence whether you follow or override them and the dollar reason. Your geometry is replayed and graded either way. Output ONLY raw, valid JSON.
 
 DECISION LANE (PUSH AM8): This evaluation is a STRATEGY SIGNAL (Lane A) — the
 math fired, the signal IS the alpha. You are the RISK MANAGER, not a second
@@ -1059,6 +1063,46 @@ output HOLD for an unfilled trap.`;
             } catch (error) {
                 console.error(`[SUPABASE ERROR] Failed to update strategy_config for ${asset}:`, error.message);
             }
+
+            // 🟢 AM62 — APPROVE_WITH_PARAMS: the agent proposes THIS entry's exit
+            // geometry instead of persisting it to the strategy config. Only when
+            // the tenant toggle is ON. Bounded + clamped with a truthful message;
+            // the applied values ride on decisionJson._entry_adjust and are stamped
+            // into params_context by execute-trade-mcp. If the toggle is OFF the
+            // action is forced to a plain entry (no proposal) so the default path
+            // is untouched.
+            if (decisionJson.action === "APPROVE_WITH_PARAMS") {
+                if (!tenantAgentSettings.agent_open_trade_entry_adjust) {
+                    console.warn('[AM62] APPROVE_WITH_PARAMS received but agent_open_trade_entry_adjust is OFF — treating as plain entry.');
+                    decisionJson.action = "APPROVE";
+                } else {
+                    const { applied, details, agent_adjusted, clamped } = resolveEntryAdjust({
+                        tp_percent: decisionJson.tp_percent,
+                        sl_percent: decisionJson.sl_percent,
+                        tripwire_percent: decisionJson.tripwire_percent,
+                        trail_step_percent: decisionJson.trail_step_percent
+                    }, stratParams || {});
+                    if (!agent_adjusted) {
+                        decisionJson.action = "APPROVE";
+                    } else {
+                        decisionJson._entry_adjust = {
+                            agent_adjusted: true,
+                            proposed: {
+                                tp_percent: decisionJson.tp_percent ?? null,
+                                sl_percent: decisionJson.sl_percent ?? null,
+                                tripwire_percent: decisionJson.tripwire_percent ?? null,
+                                trail_step_percent: decisionJson.trail_step_percent ?? null
+                            },
+                            applied,
+                            clamped,
+                            details
+                        };
+                        console.log(`[AM62] APPROVE_WITH_PARAMS applied: ${JSON.stringify(applied)}${clamped ? ` (clamped: ${details.join('; ')})` : ''}`);
+                        await logAgentActivity(tenant_id, "Agent Cortex", asset,
+                            `APPROVE_WITH_PARAMS entry geometry ${JSON.stringify(applied)}${clamped ? ` (clamped)` : ''}`, "ENTRY_ADJUST");
+                    }
+                }
+            }
                 
             if (openTrade) {
                 const timeStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
@@ -1171,7 +1215,7 @@ output HOLD for an unfilled trap.`;
         }
 
         // �🟢 THE EVOLUTION: Mute 'APPROVED' notifications (keep onlySprung/Ghost/Veto/Close/Adjustments)
-        if (decisionJson.action !== "APPROVE" && decisionJson.action !== "ADJUST_TP_SL" && decisionJson.action !== "UPDATE_TRIPWIRE") {
+        if (decisionJson.action !== "APPROVE" && decisionJson.action !== "APPROVE_WITH_PARAMS" && decisionJson.action !== "ADJUST_TP_SL" && decisionJson.action !== "UPDATE_TRIPWIRE") {
             await sendDiscordAlert(tenant_id, {
                 title: alertTitle,
                 description: alertDescription,

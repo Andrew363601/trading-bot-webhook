@@ -27,6 +27,7 @@ async function handler(req, res) {
             agent_open_trade_close,
             agent_open_trade_adjust_tp_sl,
             agent_open_trade_tripwire_adjust,
+            agent_open_trade_entry_adjust,
             agent_taker_fee_rate,
             terms_accepted,
             jurisdiction,
@@ -71,6 +72,7 @@ async function handler(req, res) {
         if (agent_open_trade_close !== undefined) updateData.agent_open_trade_close = agent_open_trade_close;
         if (agent_open_trade_adjust_tp_sl !== undefined) updateData.agent_open_trade_adjust_tp_sl = agent_open_trade_adjust_tp_sl;
         if (agent_open_trade_tripwire_adjust !== undefined) updateData.agent_open_trade_tripwire_adjust = agent_open_trade_tripwire_adjust;
+        if (agent_open_trade_entry_adjust !== undefined) updateData.agent_open_trade_entry_adjust = agent_open_trade_entry_adjust;
         if (agent_taker_fee_rate !== undefined) updateData.agent_taker_fee_rate = agent_taker_fee_rate;
         if (terms_accepted !== undefined) updateData.terms_accepted = terms_accepted;
         if (jurisdiction !== undefined) updateData.jurisdiction = jurisdiction;
