@@ -5,7 +5,8 @@ import { buildRadarChartUrl } from './lib/discord-chart.js';
 import { createClient } from '@supabase/supabase-js'; 
 import { recordUsage } from './lib/usage-meter.js';
 import { getActiveModel } from './lib/model-router.js';
-import { MISTAKE_TAGS, DESCRIPTIVE_ONLY_TAG, normalizeTags, gradeLessonRule, buildRepeatedMistakeBlock, buildStreakBlock, REPEAT_WINDOW_DAYS } from './lib/mistake-learning.js';
+import { MISTAKE_TAGS, DESCRIPTIVE_ONLY_TAG, normalizeTags, gradeLessonRule, buildRepeatedMistakeBlock, buildStreakBlock, REPEAT_WINDOW_DAYS, computeLessonScore } from './lib/mistake-learning.js';
+import { resolveEntryAdjust } from './lib/entry-adjust.js';
 
 const app = express();
 app.use(express.json());
@@ -1981,7 +1982,18 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
             expected_cost_usd: expectedCostUsd,
             // 🟢 AM61 — mistake fingerprint (migration 058). jsonb array; empty
             // array for wins / shadow / scratch so the column is never null.
-            tags: mistakeTags
+            tags: mistakeTags,
+            // 🟢 AM62 — recall-score snapshot (migration 059) so the Learning
+            // Loop panel can bucket avg score per week without replaying the
+            // recall pipeline. Context-free subset of getScoredMemories.
+            lesson_score: computeLessonScore({
+                created_at: new Date().toISOString(),
+                pnl,
+                thesis_accurate: autopsyJson.thesis_accurate ?? null,
+                win_loss: winLoss,
+                execution_mode,
+                tags: mistakeTags
+            })
         };
 
         let { error: insErr } = await supabase.from('hermes_core_memory').insert([memoryRow]);
@@ -1993,6 +2005,16 @@ ${paramRecAllowed ? `PARAMETER RECOMMENDATION: This bucket has ${bucketN} closes
             console.warn('[AM61] tags column rejected (migration 058 not applied?) — retrying insert without tags');
             const { tags: _omit, ...rowNoTags } = memoryRow;
             ({ error: insErr } = await supabase.from('hermes_core_memory').insert([rowNoTags]));
+        }
+
+        // 🟢 AM62 safety-net: if migration 059 has not been applied yet, the
+        // `lesson_score` column is rejected — drop it (and tags, already known
+        // to be rejected or the prior retry would have cleared insErr) so the
+        // lesson row survives pre-059.
+        if (insErr && (insErr.code === '42703' || insErr.code === 'PGRST204' || /'lesson_score'/.test(String(insErr.message || '')))) {
+            console.warn('[AM62] lesson_score column rejected (migration 059 not applied?) — retrying insert without lesson_score');
+            const { lesson_score: _omitScore, ...rowNoScore } = memoryRow;
+            ({ error: insErr } = await supabase.from('hermes_core_memory').insert([rowNoScore]));
         }
 
         // 🟢 PUSH U: race-guard. The AUTOPSKIP pre-check closes most duplicates,

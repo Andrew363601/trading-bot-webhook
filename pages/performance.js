@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 // 🟢 THE FIX: Explicitly import AreaSeries for V5 compatibility
-import { createChart, AreaSeries, LineSeries, LineStyle } from 'lightweight-charts';
+// 🟢 PUSH AM62 — HistogramSeries (lessons/agent-adjusted bars) + createSeriesMarkers
+// (deploy-event markers) added for the Learning Loop panel.
+import { createChart, AreaSeries, LineSeries, LineStyle, HistogramSeries, createSeriesMarkers } from 'lightweight-charts';
 import { 
   BarChart3, Calendar, Target, TrendingUp, TrendingDown, Clock, BrainCircuit, LineChart, Lightbulb, Layers, Activity, ChevronDown, ChevronUp, Crosshair, ShieldAlert
 } from 'lucide-react';
@@ -314,6 +316,12 @@ function PerformanceLogContent() {
   const timelineChartRef = useRef(null);
   // 🟢 PUSH AM29 — shared-crosshair tooltip state (all series values at cursor)
   const [timelineTooltip, setTimelineTooltip] = useState(null);
+  // 🟢 PUSH AM62 — Learning Loop panel state (own refs; renders inside the SAME card,
+  // under the chart + totals strip). Never reuse the timeline refs/chart.
+  const loopContainerRef = useRef(null);
+  const loopChartRef = useRef(null);
+  const [loopHealth, setLoopHealth] = useState(null);
+  const [loopHealthLoading, setLoopHealthLoading] = useState(true);
   // AH2 — MODEL view: remember the last non-empty model series so a 0-trade
   // bucket does not silently blank the chart (explicit empty > silent vanish).
   const lastModelSeriesRef = useRef(null);
@@ -402,6 +410,30 @@ function PerformanceLogContent() {
     fetchTimeline();
     return () => { isCancelled = true; };
   }, [session?.access_token, modelView]);
+
+  // 🟢 PUSH AM62 — Fetch Learning Loop health (weekly realized vs predicted +
+  // lessons + agent-adjusted). Silent on failure — the panel degrades, never breaks.
+  useEffect(() => {
+    if (!session?.access_token) return;
+    let isCancelled = false;
+    const fetchLoopHealth = async () => {
+      try {
+        const res = await fetch('/api/performance/loop-health?weeks=12', {
+          headers: { 'Authorization': `Bearer ${session.access_token}` }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          if (!isCancelled) setLoopHealth(json);
+        }
+      } catch (err) {
+        console.error('[PERFORMANCE] Failed to load loop health:', err);
+      } finally {
+        if (!isCancelled) setLoopHealthLoading(false);
+      }
+    };
+    fetchLoopHealth();
+    return () => { isCancelled = true; };
+  }, [session?.access_token]);
 
   // Helper: format a Date as a local YYYY-MM-DD (avoids UTC off-by-one issues).
   // Declared BEFORE every memo that calls it (TDZ — plain const, not hoisted).
@@ -1004,6 +1036,96 @@ function PerformanceLogContent() {
     };
   }, [timelineSeries, isMounted, timelineTimeFormatter, calGranularity]);
 
+  // 🟢 PUSH AM62 — Learning Loop chart: predicted confidence (dashed) vs realized
+  // (solid) — the honesty gap — plus a rolling-20 line, lessons/agent-adjusted
+  // histograms on an overlay scale, and deploy-event markers. Own container/ref.
+  useEffect(() => {
+    if (!isMounted || !loopContainerRef.current || !loopHealth) return;
+    const points = loopHealth.series || {};
+    const hasLine = ['predicted', 'realized', 'rolling20'].some(k => (points[k] || []).length > 0);
+    if (!hasLine) return;
+
+    if (loopChartRef.current) {
+      try { loopChartRef.current.remove(); } catch (e) {}
+      loopChartRef.current = null;
+    }
+
+    const chart = createChart(loopContainerRef.current, {
+      width: loopContainerRef.current.clientWidth || 800,
+      height: loopContainerRef.current.clientHeight || 180,
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
+      grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
+      timeScale: { timeVisible: false, borderColor: 'rgba(255,255,255,0.1)' },
+      rightPriceScale: {
+        borderColor: 'rgba(255,255,255,0.1)',
+        priceFormat: { type: 'price', precision: 0, minMove: 1, formatter: (v) => `${Math.round(v)}%` },
+      },
+    });
+
+    const lineSpecs = [
+      { key: 'predicted', color: '#f59e0b', dashed: true },
+      { key: 'realized', color: '#10b981', dashed: false },
+      { key: 'rolling20', color: '#38bdf8', dashed: false },
+    ];
+    let firstLineSeries = null;
+    for (const s of lineSpecs) {
+      const data = points[s.key] || [];
+      if (data.length === 0) continue;
+      const series = chart.addSeries(LineSeries, {
+        color: s.color,
+        lineWidth: 2,
+        lineStyle: s.dashed ? LineStyle.Dashed : LineStyle.Solid,
+        priceLineVisible: false,
+        lastValueVisible: true,
+      });
+      series.setData(data);
+      if (!firstLineSeries) firstLineSeries = series;
+    }
+
+    // Lessons + agent-adjusted as histogram bars on a separate overlay scale.
+    for (const h of [{ key: 'lessons', color: 'rgba(139,92,246,0.55)' }, { key: 'agentAdjusted', color: 'rgba(249,115,22,0.65)' }]) {
+      const data = points[h.key] || [];
+      if (data.length === 0) continue;
+      const series = chart.addSeries(HistogramSeries, {
+        color: h.color,
+        priceScaleId: 'loop-counts',
+        priceLineVisible: false,
+        lastValueVisible: false,
+      });
+      series.setData(data);
+    }
+    try { chart.priceScale('loop-counts').applyOptions({ scaleMargins: { top: 0.72, bottom: 0 } }); } catch (e) {}
+
+    // Deploy-event markers (AM62 config constant list) — best-effort only.
+    try {
+      const times = new Set((points.realized || []).map(p => p.time).concat((points.predicted || []).map(p => p.time)));
+      const markers = (loopHealth.events || [])
+        .filter(ev => times.has(ev.time))
+        .map(ev => ({ time: ev.time, position: 'aboveBar', color: '#94a3b8', shape: 'circle', text: ev.label }));
+      if (firstLineSeries && markers.length > 0) createSeriesMarkers(firstLineSeries, markers);
+    } catch (e) { /* decorative — never fail the panel over a marker */ }
+
+    chart.timeScale().fitContent();
+    loopChartRef.current = chart;
+
+    const handleResize = () => {
+      if (loopContainerRef.current && loopChartRef.current) {
+        loopChartRef.current.applyOptions({
+          width: loopContainerRef.current.clientWidth || 800,
+          height: loopContainerRef.current.clientHeight || 180,
+        });
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (loopChartRef.current) {
+        try { loopChartRef.current.remove(); } catch (e) {}
+        loopChartRef.current = null;
+      }
+    };
+  }, [loopHealth, isMounted]);
+
   const displayLogs = useMemo(() => {
       const reversed = [...globalFilteredTrades].reverse(); 
       return reversed.filter(t => {
@@ -1403,6 +1525,73 @@ function PerformanceLogContent() {
                 <span className="text-slate-600"> (config-true sim)</span>
               </span>
             )}
+          </div>
+
+          {/* 🟢 PUSH AM62 — Learning Loop: weekly realized vs model-predicted truth,
+              rolling-20, lessons written + agent-adjusted entries. Same card, under
+              the totals strip. Server-derived (pages/api/performance/loop-health). */}
+          <div className="mt-5 pt-4 border-t border-white/5">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <h4 className="text-[9px] md:text-[10px] font-black uppercase text-slate-500 tracking-widest flex items-center gap-2">
+                <Lightbulb size={13}/> Learning Loop
+                {loopHealth?.totals?.honesty_gap != null && (
+                  <span className={`px-2 py-0.5 rounded-full text-[8px] ${loopHealth.totals.honesty_gap > 0 ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                    honesty gap {loopHealth.totals.honesty_gap > 0 ? '+' : ''}{loopHealth.totals.honesty_gap} pts
+                  </span>
+                )}
+                {loopHealth?.truncated && (
+                  <span className="px-2 py-0.5 rounded-full text-[8px] bg-amber-500/20 text-amber-300" title="A row cap was hit — weekly sums may under-count older rows">window truncated</span>
+                )}
+                {loopHealth && loopHealth.totals?.trades === 0 && (
+                  <span className="px-2 py-0.5 rounded-full text-[8px] bg-slate-500/20 text-slate-400">no closed trades in window</span>
+                )}
+              </h4>
+              <span className="text-[9px] font-black uppercase tracking-widest text-slate-600">
+                {loopHealth ? `last ${loopHealth.window?.weeks ?? 12}w · predicted vs realized` : loopHealthLoading ? 'loading loop health…' : 'loop health unavailable'}
+              </span>
+            </div>
+
+            {(() => {
+              const lh = loopHealth;
+              const hasData = !!lh && (lh.totals?.trades ?? 0) > 0;
+              if (!hasData) {
+                return (
+                  <div className="flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest" style={{ height: '180px' }}>
+                    {loopHealthLoading ? 'loading loop health…' : 'no closed trades in window — nothing to grade yet'}
+                  </div>
+                );
+              }
+              const points = lh.series || {};
+              const loopSeries = [
+                { key: 'predicted', color: '#f59e0b', label: 'predicted conf' },
+                { key: 'realized', color: '#10b981', label: 'realized win %' },
+                { key: 'rolling20', color: '#38bdf8', label: 'rolling-20' },
+              ].filter(s => (points[s.key] || []).length > 0);
+              return (
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                  <div className="lg:col-span-2">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-1 px-1 text-[8px] font-black uppercase tracking-widest font-mono">
+                      {loopSeries.map(s => (
+                        <span key={s.key} className="flex items-center gap-1.5" style={{ color: s.color }}>
+                          <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />{s.label}
+                        </span>
+                      ))}
+                      <span className="flex items-center gap-1.5 text-violet-400"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: 'rgba(139,92,246,0.6)' }} />lessons/wk</span>
+                      <span className="flex items-center gap-1.5 text-orange-400"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: 'rgba(249,115,22,0.7)' }} />agent adj./wk</span>
+                    </div>
+                    <div ref={loopContainerRef} className="w-full" style={{ height: '180px' }} />
+                  </div>
+                  <div className="flex flex-col justify-center gap-2 text-[9px] md:text-[10px] font-mono uppercase tracking-widest">
+                    <div className="flex items-center justify-between"><span className="text-slate-500">trades</span><span className="text-slate-200">{lh.totals.trades}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-slate-500">realized</span><span className="text-emerald-400">{lh.totals.win_rate != null ? `${lh.totals.win_rate}%` : '—'}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-slate-500">predicted</span><span className="text-amber-400">{lh.totals.predicted_prob != null ? `${lh.totals.predicted_prob}%` : '—'}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-slate-500">lessons</span><span className="text-violet-400">{lh.totals.lessons}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-slate-500">agent adj.</span><span className="text-orange-400">{lh.totals.agent_adjusted}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-slate-500">pnl</span><span className="text-slate-200">${Number(lh.totals.pnl || 0).toFixed(2)}</span></div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}
