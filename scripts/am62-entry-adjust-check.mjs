@@ -3,6 +3,8 @@
 // Run: node scripts/am62-entry-adjust-check.mjs
 import { resolveEntryAdjust, clampEntryProposal, ABS_MIN, ABS_MAX, ENTRY_ADJUST_FIELDS } from '../lib/entry-adjust.js';
 import { computeLessonScore } from '../lib/mistake-learning.js';
+// 🟢 AM62b — the resolver is now a pure lib (no more hand-mirror).
+import { deriveStructureDirection } from '../lib/structure-direction.js';
 
 let pass = 0, fail = 0;
 function ok(name, cond) {
@@ -10,17 +12,13 @@ function ok(name, cond) {
   else { fail++; console.error(`  ❌ ${name}`); }
 }
 
-// Mirror of the derivation in lib/execute-trade-mcp.js (kept in sync by hand;
-// the endpoint/lib has no exported copy so we re-assert the contract here).
-function deriveStructureDirection(regime, cvd) {
-  const r = String(regime || '').toUpperCase();
-  const regimeBias = (r === 'TREND' || r === 'ACCUMULATION') ? 'LONG'
-    : (r === 'DISTRIBUTION') ? 'SHORT' : null;
-  const c = parseFloat(cvd);
-  const cvdBias = Number.isFinite(c) && c !== 0 ? (c > 0 ? 'LONG' : 'SHORT') : null;
-  if (regimeBias && cvdBias) return regimeBias === cvdBias ? regimeBias : 'NEUTRAL';
-  return regimeBias || cvdBias || 'NEUTRAL';
-}
+// 🟢 AM62b — structure_direction is now derived from macro-TF PRICE STRUCTURE
+// (lib/structure-direction.js); CVD is a tiebreak vote only. The full unit suite
+// lives in scripts/am62b-structure-check.mjs — this section keeps the contract
+// assertions that used to live here.
+const up = Array.from({ length: 80 }, (_, i) => ({ close: 100 + i * 0.5 }));
+const down = Array.from({ length: 80 }, (_, i) => ({ close: 200 - i * 0.5 }));
+const flat = Array.from({ length: 80 }, () => ({ close: 100 }));
 
 console.log('\n[1] resolveEntryAdjust — OFF (no proposals) is inert');
 {
@@ -66,15 +64,15 @@ console.log('\n[4] clampEntryProposal — config min/max override absolute limit
   ok('absent proposal -> null', clampEntryProposal('tp_percent', undefined) === null);
 }
 
-console.log('\n[5] structure_direction derivation');
+console.log('\n[5] structure_direction derivation (AM62b — price structure)');
 {
-  ok('TREND + positive CVD -> LONG', deriveStructureDirection('TREND', '120') === 'LONG');
-  ok('DISTRIBUTION + negative CVD -> SHORT', deriveStructureDirection('DISTRIBUTION', '-50') === 'SHORT');
-  ok('TREND + negative CVD -> conflict -> NEUTRAL', deriveStructureDirection('TREND', '-50') === 'NEUTRAL');
-  ok('ACCUMULATION + positive -> LONG', deriveStructureDirection('ACCUMULATION', '5') === 'LONG');
-  ok('CHOP + positive -> CVD bias LONG', deriveStructureDirection('CHOP', '5') === 'LONG');
-  ok('CHOP + zero -> NEUTRAL', deriveStructureDirection('CHOP', '0') === 'NEUTRAL');
-  ok('EVALUATING + null -> NEUTRAL', deriveStructureDirection('EVALUATING', null) === 'NEUTRAL');
+  ok('uptrend -> LONG', deriveStructureDirection(up, null) === 'LONG');
+  ok('downtrend -> SHORT', deriveStructureDirection(down, null) === 'SHORT');
+  ok('flat -> NEUTRAL', deriveStructureDirection(flat, null) === 'NEUTRAL');
+  ok('flat + positive CVD -> LONG (tiebreak)', deriveStructureDirection(flat, '5') === 'LONG');
+  ok('flat + negative CVD -> SHORT (tiebreak)', deriveStructureDirection(flat, '-5') === 'SHORT');
+  ok('flat + zero CVD -> NEUTRAL', deriveStructureDirection(flat, '0') === 'NEUTRAL');
+  ok('insufficient structure -> NEUTRAL', deriveStructureDirection([], null) === 'NEUTRAL');
   ok('never null for a new row', deriveStructureDirection(null, null) === 'NEUTRAL');
 }
 

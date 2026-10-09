@@ -54,12 +54,23 @@ export default async function handler(req, res) {
 
   const { tenantId, supabase } = tenantContext;
 
-  // ?weeks= clamp 4..52 (default 12)
-  let weeks = parseInt(req.query.weeks, 10);
-  if (isNaN(weeks) || weeks < 4) weeks = DEFAULT_WEEKS;
-  if (weeks > MAX_WEEKS) weeks = MAX_WEEKS;
-  const since = new Date(Date.now() - weeks * WEEK_MS).toISOString();
-  const windowMeta = { weeks, start: since, end: new Date().toISOString() };
+  // 🟢 AM62b — granularity: 'week' (default, ISO weeks) | 'day' (UTC days). The
+  // panel's own DAY/WEEK toggle drives this; the window param follows it
+  // (?weeks= 4..52 for week, ?days= 7..365 for day).
+  const granularity = req.query.granularity === 'day' ? 'day' : 'week';
+  let windowMeta;
+  if (granularity === 'day') {
+    let days = parseInt(req.query.days, 10);
+    if (isNaN(days) || days < 7) days = 30;
+    if (days > 365) days = 365;
+    windowMeta = { granularity, days, start: new Date(Date.now() - days * DAY_MS).toISOString(), end: new Date().toISOString() };
+  } else {
+    let weeks = parseInt(req.query.weeks, 10);
+    if (isNaN(weeks) || weeks < 4) weeks = DEFAULT_WEEKS;
+    if (weeks > MAX_WEEKS) weeks = MAX_WEEKS;
+    windowMeta = { granularity, weeks, start: new Date(Date.now() - weeks * WEEK_MS).toISOString(), end: new Date().toISOString() };
+  }
+  const since = windowMeta.start;
 
   try {
     // ── Trades query (with structure_direction; safety-net retry without it) ──
@@ -112,13 +123,14 @@ export default async function handler(req, res) {
       lessons: lessons.length >= ROW_CAP,
     };
 
-    const { weeks: weekRows, series, totals } = deriveLoopHealth(trades, lessons);
+    const { weeks: weekRows, series, totals } = deriveLoopHealth(trades, lessons, { granularity });
 
     return res.status(200).json({
       weeks: weekRows,
       series,
       events: DEPLOY_EVENTS,
       totals,
+      granularity,
       window: windowMeta,
       truncated: Object.values(truncatedBy).some(Boolean),
       truncatedBy,

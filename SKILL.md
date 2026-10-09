@@ -133,6 +133,32 @@ settings panel states this explicitly. If you emit CLOSE on any other wake while
 the toggle is OFF, the close is gated (downgraded to HOLD and logged), never
 executed silently behind a disabled setting.
 
+### MARKET-STRUCTURE DIRECTION (AM62b)
+`trade_logs.structure_direction` (LONG | SHORT | NEUTRAL) is DERIVED FROM PRICE
+STRUCTURE on the macro TF — EMA50 vs the last close plus a 10-bar slope — with
+CVD as a TIEBREAK vote only. It is NOT a regime-label-vs-CVD coin flip:
+- Structure wins when the two structural reads agree; a disagreement (or fewer
+  than 51 macro bars) is honestly NEUTRAL.
+- CVD only decides when structure is flat: positive → LONG, negative → SHORT,
+  zero/absent → NEUTRAL.
+- NEUTRAL means "flat / insufficient structure", never "the label disagreed".
+- Direction is read on the macro TF the STRATEGY declared (`macro_tf`); the
+  sniper's canon structure is always 6H/5M, so a row whose `macro_tf` differs
+  carries structure computed on that other window.
+- Candles come from the unauthenticated CDP market endpoint via `lib/candles.js`
+  (the old Exchange host + seconds granularity was geo-blocked AND the wrong
+  format). The 5M series is CHART-ONLY; structure uses a separate macro-TF fetch
+  (short TTL cache). At close the value is re-derived (an intentional entry→close
+  drift signal). Feeds the AM61 COUNTER_TREND_SCALP tag class, the priors, and
+  the Learning Loop panel.
+
+### LEARNING LOOP GRANULARITY (AM62b)
+`pages/api/performance/loop-health` accepts `?granularity=day|week` (default
+`week`) with `?days=` (7..365, default 30) for day and `?weeks=` (4..52, default
+12) for week. The panel's OWN DAY/WEEK toggle drives it (independent of the PnL
+Calendar control) and refetches, since the derivation is server-side. The weekly
+path is byte-identical to pre-AM62b.
+
 ### SYSTEM ARCHITECTURE: MULTI-DIMENSIONAL QUANTUM CONFLUENCE ARCHITECTURE
 You operate within a Multi-Dimensional Quantum Confluence Architecture, systematically evaluating market conditions through a 5-Tier Telemetry Matrix:
 *   **Tier 1: Macro Cycle & Institutional Flows (The Gravity Well):** Tracks ETF net flows, exchange balance trends, and secular cycles (e.g., Bitcoin Profitable Days) to define the inescapable macroeconomic pull and structural supply constraints.

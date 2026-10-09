@@ -322,6 +322,9 @@ function PerformanceLogContent() {
   const loopChartRef = useRef(null);
   const [loopHealth, setLoopHealth] = useState(null);
   const [loopHealthLoading, setLoopHealthLoading] = useState(true);
+  // 🟢 AM62b — the loop panel's OWN DAY/WEEK granularity (independent of the PnL
+  // Calendar's calGranularity). Derivation is server-side → changing it refetches.
+  const [loopGranularity, setLoopGranularity] = useState('WEEK');
   // AH2 — MODEL view: remember the last non-empty model series so a 0-trade
   // bucket does not silently blank the chart (explicit empty > silent vanish).
   const lastModelSeriesRef = useRef(null);
@@ -417,8 +420,12 @@ function PerformanceLogContent() {
     if (!session?.access_token) return;
     let isCancelled = false;
     const fetchLoopHealth = async () => {
+      setLoopHealthLoading(true);
       try {
-        const res = await fetch('/api/performance/loop-health?weeks=12', {
+        const params = new URLSearchParams({ granularity: loopGranularity.toLowerCase() });
+        if (loopGranularity === 'DAY') params.set('days', '30');
+        else params.set('weeks', '12');
+        const res = await fetch(`/api/performance/loop-health?${params.toString()}`, {
           headers: { 'Authorization': `Bearer ${session.access_token}` }
         });
         if (res.ok) {
@@ -433,7 +440,7 @@ function PerformanceLogContent() {
     };
     fetchLoopHealth();
     return () => { isCancelled = true; };
-  }, [session?.access_token]);
+  }, [session?.access_token, loopGranularity]);
 
   // Helper: format a Date as a local YYYY-MM-DD (avoids UTC off-by-one issues).
   // Declared BEFORE every memo that calls it (TDZ — plain const, not hoisted).
@@ -1546,9 +1553,28 @@ function PerformanceLogContent() {
                   <span className="px-2 py-0.5 rounded-full text-[8px] bg-slate-500/20 text-slate-400">no closed trades in window</span>
                 )}
               </h4>
-              <span className="text-[9px] font-black uppercase tracking-widest text-slate-600">
-                {loopHealth ? `last ${loopHealth.window?.weeks ?? 12}w · predicted vs realized` : loopHealthLoading ? 'loading loop health…' : 'loop health unavailable'}
-              </span>
+              <div className="flex items-center gap-2">
+                {/* 🟢 AM62b — loop panel's OWN DAY | WEEK granularity (server-side
+                    re-derivation; independent of the PnL Calendar control). */}
+                <div className="flex items-center gap-1">
+                  {['DAY', 'WEEK'].map(g => (
+                    <button
+                      key={g}
+                      onClick={() => setLoopGranularity(g)}
+                      className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-lg border transition-all ${
+                        loopGranularity === g ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300' : 'border-white/5 text-slate-500 hover:bg-white/5'
+                      }`}
+                    >{g}</button>
+                  ))}
+                </div>
+                <span className="text-[9px] font-black uppercase tracking-widest text-slate-600">
+                  {loopHealth
+                    ? (loopHealth.granularity === 'day'
+                        ? `last ${loopHealth.window?.days ?? 30}d · predicted vs realized`
+                        : `last ${loopHealth.window?.weeks ?? 12}w · predicted vs realized`)
+                    : loopHealthLoading ? 'loading loop health…' : 'loop health unavailable'}
+                </span>
+              </div>
             </div>
 
             {(() => {
@@ -1576,8 +1602,8 @@ function PerformanceLogContent() {
                           <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: s.color }} />{s.label}
                         </span>
                       ))}
-                      <span className="flex items-center gap-1.5 text-violet-400"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: 'rgba(139,92,246,0.6)' }} />lessons/wk</span>
-                      <span className="flex items-center gap-1.5 text-orange-400"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: 'rgba(249,115,22,0.7)' }} />agent adj./wk</span>
+                      <span className="flex items-center gap-1.5 text-violet-400"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: 'rgba(139,92,246,0.6)' }} />{loopHealth?.granularity === 'day' ? 'lessons/day' : 'lessons/wk'}</span>
+                      <span className="flex items-center gap-1.5 text-orange-400"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: 'rgba(249,115,22,0.7)' }} />{loopHealth?.granularity === 'day' ? 'agent adj./day' : 'agent adj./wk'}</span>
                     </div>
                     <div ref={loopContainerRef} className="w-full" style={{ height: '180px' }} />
                   </div>
