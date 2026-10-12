@@ -1059,7 +1059,8 @@ function PerformanceLogContent() {
 
     const chart = createChart(loopContainerRef.current, {
       width: loopContainerRef.current.clientWidth || 800,
-      height: loopContainerRef.current.clientHeight || 180,
+      // 🟢 AM62c — 300px to match the timeline chart (was 180).
+      height: loopContainerRef.current.clientHeight || 300,
       layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#94a3b8' },
       grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
       timeScale: { timeVisible: false, borderColor: 'rgba(255,255,255,0.1)' },
@@ -1119,7 +1120,8 @@ function PerformanceLogContent() {
       if (loopContainerRef.current && loopChartRef.current) {
         loopChartRef.current.applyOptions({
           width: loopContainerRef.current.clientWidth || 800,
-          height: loopContainerRef.current.clientHeight || 180,
+          // 🟢 AM62c — resize fallback matches the 300px container.
+          height: loopContainerRef.current.clientHeight || 300,
         });
       }
     };
@@ -1582,7 +1584,7 @@ function PerformanceLogContent() {
               const hasData = !!lh && (lh.totals?.trades ?? 0) > 0;
               if (!hasData) {
                 return (
-                  <div className="flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest" style={{ height: '180px' }}>
+                  <div className="flex items-center justify-center text-slate-600 font-mono text-[9px] md:text-[10px] uppercase tracking-widest" style={{ height: '300px' }}>
                     {loopHealthLoading ? 'loading loop health…' : 'no closed trades in window — nothing to grade yet'}
                   </div>
                 );
@@ -1605,7 +1607,8 @@ function PerformanceLogContent() {
                       <span className="flex items-center gap-1.5 text-violet-400"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: 'rgba(139,92,246,0.6)' }} />{loopHealth?.granularity === 'day' ? 'lessons/day' : 'lessons/wk'}</span>
                       <span className="flex items-center gap-1.5 text-orange-400"><span className="inline-block w-2 h-2 rounded-sm" style={{ backgroundColor: 'rgba(249,115,22,0.7)' }} />{loopHealth?.granularity === 'day' ? 'agent adj./day' : 'agent adj./wk'}</span>
                     </div>
-                    <div ref={loopContainerRef} className="w-full" style={{ height: '180px' }} />
+                    {/* 🟢 AM62c — 300px (was 180) so the loop chart matches the timeline chart. */}
+                    <div ref={loopContainerRef} className="w-full" style={{ height: '300px' }} />
                   </div>
                   <div className="flex flex-col justify-center gap-2 text-[9px] md:text-[10px] font-mono uppercase tracking-widest">
                     <div className="flex items-center justify-between"><span className="text-slate-500">trades</span><span className="text-slate-200">{lh.totals.trades}</span></div>
