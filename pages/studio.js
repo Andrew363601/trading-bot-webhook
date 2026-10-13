@@ -1127,7 +1127,17 @@ export default function StudioPage() {
 
             {/* PUSH AM52e — Theater under the chart, full main-column width */}
             {/* PUSH AM57c — scope the replay feed to the selected strategy */}
-            <StudioTheater session={session} strategyName={selectedStrategy?.name} visible={activeTab === 'BACKTEST'} />
+            {/* 🟢 AM62c — no strategy selected: hide the tenant-wide feed and
+                prompt for a selection instead of showing unrelated episodes. */}
+            {selectedStrategy ? (
+              <StudioTheater session={session} strategyName={selectedStrategy.name} visible={activeTab === 'BACKTEST'} />
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-2 rounded-2xl border border-white/5 bg-slate-900/40 py-12 text-center">
+                <BarChart2 className="w-6 h-6 text-slate-600" />
+                <p className="text-sm font-bold text-slate-400">Select a strategy to see its backtest episodes</p>
+                <p className="text-xs text-slate-600">Pick one from the Library tab to scope the replay feed.</p>
+              </div>
+            )}
 
             {/* Backtest Results Display */}
             {backtestResult && backtestResult.summary && (
