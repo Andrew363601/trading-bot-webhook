@@ -42,17 +42,22 @@ async function computeChallenge() {
   }
   if (!entries || entries.length === 0) return null;
 
-  const windowStart = entries[0].window_start;
-  const windowEnd = entries[0].window_end;
+  // 🟢 AM62c — evergreen: each entry has its OWN 30-day window (window_start =
+  // join time), so score every tenant against its own window, not a shared one.
+  const tenantIds = entries.map(e => e.tenant_id);
+  const minStart = entries.reduce((m, e) => (e.window_start < m ? e.window_start : m), entries[0].window_start);
+  const maxEnd = entries.reduce((m, e) => (e.window_end > m ? e.window_end : m), entries[0].window_end);
 
-  // Trades within the challenge window (paper, closed only)
+  // Trades within the overall challenge span (paper, closed only); per-entry
+  // windowing is applied in JS below.
   const { data: cTrades, error: cTradeErr } = await supabase
     .from('trade_logs')
     .select('tenant_id, pnl, created_at')
+    .in('tenant_id', tenantIds)
     .not('exit_price', 'is', null)
     .eq('execution_mode', 'PAPER')
-    .gte('created_at', windowStart)
-    .lt('created_at', windowEnd);
+    .gte('created_at', minStart)
+    .lt('created_at', maxEnd);
 
   if (cTradeErr) {
     console.error('[LEADERBOARD_API] Challenge trades error:', cTradeErr);
@@ -72,9 +77,13 @@ async function computeChallenge() {
   }
   const activeTenants = new Set((recent || []).map(r => r.tenant_id));
 
-  // Aggregate per tenant
+  // Aggregate per tenant WITHIN that tenant's own window
+  const entryByTenant = new Map(entries.map(e => [e.tenant_id, e]));
   const perTenant = new Map();
   (cTrades || []).forEach(t => {
+    const e = entryByTenant.get(t.tenant_id);
+    if (!e) return;
+    if (t.created_at < e.window_start || t.created_at >= e.window_end) return;
     if (!perTenant.has(t.tenant_id)) {
       perTenant.set(t.tenant_id, { pnl: 0, trades: 0, wins: 0, grossProfit: 0, grossLoss: 0 });
     }
@@ -103,8 +112,8 @@ async function computeChallenge() {
   top.sort((a, b) => b.balance - a.balance);
 
   return {
-    window_start: windowStart,
-    window_end: windowEnd,
+    window_start: minStart,
+    window_end: maxEnd,
     total_entries: entries.length,
     top: top.slice(0, 50)
   };

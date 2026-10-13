@@ -7,12 +7,9 @@
 import { withTenantAuth } from '../../lib/auth-middleware';
 import { syncToBrevo } from '../../lib/brevo';
 
-const CHALLENGE_START = '2026-09-16T00:00:00Z';   // relaunched live 2026-09-16
-// 🟢 PUSH AM23 — entries stay open until the challenge ENDS (Oct 16). The
-// coupon guard in create-checkout-session still validates the promo, so late
-// joiners get a working checkout. Trial math unchanged: the joiner's 30d
-// window (window_start + 30d) naturally ends with or after the event.
-const ENTRY_CUTOFF = '2026-10-16T00:00:00Z';      // challenge end — entries open until Oct 16
+// 🟢 AM62c — evergreen challenge: no fixed start/cutoff. Each joiner gets their
+// OWN 30-day window starting at join time, so windows open continuously and
+// entries never close. (Was: fixed 2026-09-16 start + 2026-10-16 cutoff.)
 const CHALLENGE_DAYS = 30;
 
 function sanitizeAlias(email) {
@@ -77,14 +74,9 @@ export default withTenantAuth(async function handler(req, res) {
       return res.status(409).json({ error: 'Already entered' });
     }
 
-    // 🟢 PUSH O (AM23-updated): entry closes at challenge end — prevents broken
-    // checkouts after the event (create-checkout would 400 on a dead promotion_code).
-    if (new Date() >= new Date(ENTRY_CUTOFF)) {
-      return res.status(403).json({ error: 'Entries open until Oct 16 — this challenge has ended.' });
-    }
-
-    // 3. Fixed window. If now < window_start, status='active' anyway (entry held, scoring starts Friday).
-    const windowStart = new Date(CHALLENGE_START);
+    // 3. 🟢 AM62c — per-joiner window: starts now, runs 30 days. Evergreen —
+    // no cutoff, so a new window opens with every join.
+    const windowStart = new Date();
     const windowEnd = new Date(windowStart.getTime() + CHALLENGE_DAYS * 24 * 60 * 60 * 1000);
 
     // 4. Insert row.

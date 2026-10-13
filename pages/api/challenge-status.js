@@ -29,7 +29,10 @@ export default async function handler(req, res) {
     }
 
     const first = (entries || [])[0];
-    const windowStart = first?.window_start || '2026-09-16T00:00:00Z';
+    // 🟢 AM62c — evergreen: windows are per-joiner, so there is no single fixed
+    // window. Fall back to a rolling 30-day window when no active entry exists.
+    const nowIso = new Date().toISOString();
+    const windowStart = first?.window_start || nowIso;
     const windowEnd =
       first?.window_end ||
       new Date(new Date(windowStart).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
