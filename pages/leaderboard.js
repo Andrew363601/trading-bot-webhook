@@ -20,6 +20,19 @@ const PODIUM = {
 const fmtPnl = (v) => (v >= 0 ? `+$${v.toFixed(2)}` : `-$${Math.abs(v).toFixed(2)}`);
 const pnlColor = (v) => (v >= 0 ? 'text-emerald-400' : 'text-rose-400');
 
+// 🟢 AM62c — challenge popup dismissal, keyed by the challenge window_end so a
+// dismissed popup stays dismissed for the whole window and auto-clears when a
+// new window starts. localStorage is best-effort (private mode → no-op).
+const CHALLENGE_POPUP_DISMISS_KEY = 'challenge_popup_dismissed_window';
+function isChallengePopupDismissed(windowEnd) {
+  if (!windowEnd) return false;
+  try { return localStorage.getItem(CHALLENGE_POPUP_DISMISS_KEY) === String(windowEnd); } catch { return false; }
+}
+function dismissChallengePopup(windowEnd) {
+  if (!windowEnd) return;
+  try { localStorage.setItem(CHALLENGE_POPUP_DISMISS_KEY, String(windowEnd)); } catch { /* best-effort */ }
+}
+
 const CHALLENGE_RULES = [
   '30-day fixed window — no extensions, no restarts',
   '$100,000 simulated paper start for every entrant',
@@ -48,7 +61,7 @@ export default function Leaderboard() {
   const [error, setError] = useState(null);
   const session = useSession();
   const supabase = useSupabaseClient();
-  const [challengeState, setChallengeState] = useState({ entered: false, status: null, daysRemaining: null, joining: false, joined: false });
+  const [challengeState, setChallengeState] = useState({ entered: false, status: null, daysRemaining: null, windowEnd: null, joining: false, joined: false });
   const [checkoutOpen, setCheckoutOpen] = useState(false);
 
   const PodiumIcon = ({ name }) => name === 'crown'
@@ -204,11 +217,16 @@ export default function Leaderboard() {
 
   // 🟢 PUSH V: pending entrants get their next-steps moment — auto-open the
   // popup once the status fetch reports an unpaid entry.
+  // 🟢 AM62c — fail-open + dismissible: only a CONFIRMED unpaid status opens the
+  // popup, and an explicit close persists for the whole challenge window (keyed
+  // by window_end) so it never re-opens in a loop.
   useEffect(() => {
-    if (session?.access_token && challengeState.status === 'pending_payment' && !checkoutOpen) {
-      setCheckoutOpen(true);
-    }
-  }, [session?.access_token, challengeState.status, checkoutOpen]);
+    if (!session?.access_token) return;
+    if (challengeState.status !== 'pending_payment') return;
+    if (checkoutOpen) return;
+    if (challengeState.windowEnd && isChallengePopupDismissed(challengeState.windowEnd)) return;
+    setCheckoutOpen(true);
+  }, [session?.access_token, challengeState.status, challengeState.windowEnd, checkoutOpen]);
 
   // Challenge status (personal, only when authed) — hoisted so the popup close
   // handler can refresh immediately (banner flips to "Complete checkout").
@@ -221,7 +239,7 @@ export default function Leaderboard() {
       if (!res.ok) return;
       const json = await res.json();
       if (json.entered) {
-        setChallengeState(s => ({ ...s, entered: true, status: json.status || 'active', daysRemaining: json.days_remaining }));
+        setChallengeState(s => ({ ...s, entered: true, status: json.status || 'active', daysRemaining: json.days_remaining, windowEnd: json.window_end || s.windowEnd }));
       }
     } catch { /* non-blocking */ }
   };
@@ -614,7 +632,13 @@ export default function Leaderboard() {
 
       {checkoutOpen && (
         <ChallengeCheckout
-          onClose={() => { setCheckoutOpen(false); refreshChallengeStatus(); }}
+          onClose={() => {
+            // 🟢 AM62c — explicit close persists for the whole window: record the
+            // dismissal BEFORE refreshing so the status re-fetch can't re-open it.
+            if (challengeState.windowEnd) dismissChallengePopup(challengeState.windowEnd);
+            setCheckoutOpen(false);
+            refreshChallengeStatus();
+          }}
           onEntered={() => setChallengeState(s => ({ ...s, entered: true, status: 'active' }))}
         />
       )}
