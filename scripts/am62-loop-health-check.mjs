@@ -38,6 +38,11 @@ console.log('\n[2] deriveLoopHealth — weekly buckets, wins, predicted, agent_a
   ok('w1 agent_adjusted 1', r.weeks[0].agent_adjusted_count === 1);
   ok('w1 cumulative_pnl 5', r.weeks[0].cumulative_pnl === 5);
   ok('w2 cumulative_pnl 25', r.weeks[1].cumulative_pnl === 25);
+  // 🟢 AM62c — bucket pnl + totals.pnl must be real numbers (regression: the
+  // week object omitted `pnl`, so totals.pnl summed undefined → NaN → $0.00).
+  ok('w1 pnl 5', r.weeks[0].pnl === 5);
+  ok('w2 pnl 20', r.weeks[1].pnl === 20);
+  ok('totals pnl 25 (not NaN)', r.totals.pnl === 25);
   ok('w1 lessons 1 avg 80', r.weeks[0].lessons_written === 1 && r.weeks[0].avg_score === 80);
   ok('w2 lessons 1 avg 60', r.weeks[1].lessons_written === 1 && r.weeks[1].avg_score === 60);
   ok('structure tallies', r.weeks[0].structure.LONG === 1 && r.weeks[0].structure.SHORT === 1);
