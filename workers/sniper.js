@@ -1,7 +1,6 @@
 // workers/sniper.js
 import { createClient } from '@supabase/supabase-js';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+import { cbRequest, generateCoinbaseToken } from '../lib/providers/coinbase.js';
 import WebSocket from 'ws'; 
 
 class ResilientWebSocket extends WebSocket {
@@ -37,15 +36,6 @@ const supabase = createClient(
     realtime: { transport: ResilientWebSocket }
   }
 );
-
-function generateCoinbaseToken(method, path, apiKey, apiSecret) {
-    const privateKey = crypto.createPrivateKey({ key: apiSecret.replace(/\\n/g, '\n'), format: 'pem' });
-    const uriPath = path.split('?')[0];
-    return jwt.sign(
-        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `${method} api.coinbase.com${uriPath}` },
-        privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
-    );
-}
 
 const getAssetMetrics = (symbol) => {
     let multiplier = 1.0;
@@ -123,7 +113,7 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
         const start = end - (secondsPerCandle * 300); 
         const token = generateCoinbaseToken('GET', path, apiKey, secret);
 
-        const resp = await fetch(`https://api.coinbase.com${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const resp = await cbRequest({ token: `${token}`, method: 'GET', path: `${path}?start=${start}&end=${end}&granularity=${safeGranularity}` });
         if (!resp.ok) throw new Error(`Coinbase HTTP ${resp.status}`); 
         const data = await resp.json();
         const result = data.candles?.map(c => ({ time: Math.floor(Number(c.start)), open: c.open ? parseFloat(c.open) : parseFloat(c.close), close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();
@@ -445,7 +435,7 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
         if (apiKey && secret) {
             try {
                 const bookPath = `/api/v3/brokerage/product_book?product_id=${coinbaseProduct}&limit=50`;
-                const bookResp = await fetch(`https://api.coinbase.com${bookPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', bookPath, apiKey, secret)}` } });
+                const bookResp = await cbRequest({ token: `${generateCoinbaseToken('GET', bookPath, apiKey, secret)}`, method: 'GET', path: `${bookPath}` });
                 if (bookResp.ok) {
                     const bookJson = await bookResp.json();
                     const bids = bookJson.pricebook?.bids || []; const asks = bookJson.pricebook?.asks || [];
@@ -472,7 +462,7 @@ async function fetchMicrostructure(asset, triggerCandles, macroCandles, apiKey, 
 
             try {
                 const productPath = `/api/v3/brokerage/products/${spotProduct}`;
-                const productResp = await fetch(`https://api.coinbase.com${productPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', productPath, apiKey, secret)}` } });
+                const productResp = await cbRequest({ token: `${generateCoinbaseToken('GET', productPath, apiKey, secret)}`, method: 'GET', path: `${productPath}` });
                 if (productResp.ok) {
                     const productJson = await productResp.json();
                     spotPrice = parseFloat(productJson.price || currentPrice);

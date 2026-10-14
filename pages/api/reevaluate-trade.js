@@ -3,8 +3,7 @@ export const maxDuration = 300;
 
 import { createClient } from '@supabase/supabase-js';
 import { executeTradeMCP } from '../../lib/execute-trade-mcp.js';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+import { cbRequest, generateCoinbaseToken } from '../../lib/providers/coinbase.js';
 import { evaluateTradeIdea } from '../../lib/trade-oracle.js';
 import { buildRadarChartUrl } from '../../lib/discord-chart.js';
 
@@ -38,15 +37,6 @@ async function sendDiscordAlert(title, description, color, imageUrl = null) {
             console.error(`[DISCORD ALERT ERROR]: webhook returned ${resp.status}: ${body.slice(0, 200)}`);
         }
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
-}
-
-function generateCoinbaseToken(method, path, apiKey, apiSecret) {
-    const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
-    const uriPath = path.split('?')[0]; 
-    return jwt.sign(
-        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `${method} api.coinbase.com${uriPath}` },
-        privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
-    );
 }
 
 export default async function handler(req, res) {
@@ -290,10 +280,9 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
         let lookbackSeconds = secondsPerCandle * 300; 
         const start = end - lookbackSeconds; 
         
-        const privateKey = crypto.createPrivateKey({ key: secret, format: 'pem' });
-        const token = jwt.sign({ iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `GET api.coinbase.com${path}` }, privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } });
+        const token = generateCoinbaseToken('GET', path, apiKey, secret);
 
-        const resp = await fetch(`https://api.coinbase.com${path}?start=${start}&end=${end}&granularity=${safeGranularity}`, { headers: { 'Authorization': `Bearer ${token}` } });
+        const resp = await cbRequest({ token, method: 'GET', path: `${path}?start=${start}&end=${end}&granularity=${safeGranularity}` });
         if (!resp.ok) throw new Error(`Coinbase HTTP ${resp.status}`);
         const data = await resp.json();
         return data.candles?.map(c => ({ close: parseFloat(c.close), high: parseFloat(c.high), low: parseFloat(c.low), volume: parseFloat(c.volume) })).reverse();

@@ -28,8 +28,7 @@ class ResilientWebSocket extends WebSocket {
   }
 }
 
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+import { cbRequest, generateCoinbaseToken } from '../lib/providers/coinbase.js';
 import { retrieveAPIKey } from '../lib/secrets-manager.js';
 import { registerTimer, firstSweepDelayMs } from '../lib/worker-registry.js';
 
@@ -156,15 +155,6 @@ async function fetchWithBackoff(url, options, logTag) {
   return resp;
 }
 
-function generateCoinbaseToken(method, path, apiKey, apiSecret) {
-    const privateKey = crypto.createPrivateKey({ key: apiSecret.replace(/\\n/g, '\n'), format: 'pem' });
-    const uriPath = path.split('?')[0];
-    return jwt.sign(
-        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `${method} api.coinbase.com${uriPath}` },
-        privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
-    );
-}
-
 /**
  * Maps asset symbols to their public spot equivalent.
  * Same pattern as watchdog.js getSpotSymbol() (line 70-83).
@@ -243,17 +233,13 @@ async function fetchCounterfactualCandles(symbol, startTime, hours = 6, tenantId
 
     // 🟢 AM24 — 429 backoff applied per format attempt (ISO ladder first, then
     // epoch ladder on format fallback). Non-429 failures fall through instantly.
-    let resp = await fetchWithBackoff(`https://api.coinbase.com${isoPath}`, {
-      headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', isoPath, apiKey, apiSecret)}` }
-    }, spotSymbol);
+    let resp = await cbRequest({ token: `${generateCoinbaseToken('GET', isoPath, apiKey, apiSecret)}`, method: 'GET', path: `${isoPath}`, fetchImpl: (u, o) => fetchWithBackoff(u, o, spotSymbol) });
     const isoStatus = resp.status;
     if (!resp.ok) {
       const isoBody = await resp.text().catch(() => '');
       console.error(`[SHADOW] Candle fetch ${spotSymbol}: ISO FAILED ${isoStatus} ${isoBody.slice(0, 200)} — ${paramsSuffix()}`);
       const epochPathStr = epochPath;
-      resp = await fetchWithBackoff(`https://api.coinbase.com${epochPathStr}`, {
-        headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', epochPathStr, apiKey, apiSecret)}` }
-      }, spotSymbol);
+      resp = await cbRequest({ token: `${generateCoinbaseToken('GET', epochPathStr, apiKey, apiSecret)}`, method: 'GET', path: `${epochPathStr}`, fetchImpl: (u, o) => fetchWithBackoff(u, o, spotSymbol) });
       console.error(`[SHADOW] Candle fetch ${spotSymbol}: ISO→${isoStatus}, epoch→${resp.status}`);
       if (!resp.ok) {
         const body = await resp.text().catch(() => '');

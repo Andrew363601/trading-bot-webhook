@@ -2,24 +2,12 @@
 import { createClient } from '@supabase/supabase-js';
 import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
-import crypto from 'crypto';
-import jwt from 'jsonwebtoken';
+import { cbRequest, generateCoinbaseToken } from '../../lib/providers/coinbase.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-// Helper: sign a Coinbase Advanced Trade API request.
-function signCoinbase(method, path, apiKey, apiSecret) {
-  const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
-  const uriPath = path.split('?')[0];
-  return jwt.sign(
-    { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `${method} api.coinbase.com${uriPath}` },
-    privateKey,
-    { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
-  );
-}
 
 async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method Not Allowed' });
@@ -58,9 +46,7 @@ async function handler(req, res) {
       for (const oid of order_ids) {
         if (!oid) continue;
         const lookupPath = `/api/v3/brokerage/orders/historical/${oid}`;
-        const lookupResp = await fetch(`https://api.coinbase.com${lookupPath}`, {
-          headers: { 'Authorization': `Bearer ${signCoinbase('GET', lookupPath, apiKeyName, apiSecret)}` }
-        });
+        const lookupResp = await cbRequest({ token: `${generateCoinbaseToken('GET', lookupPath, apiKeyName, apiSecret)}`, method: 'GET', path: `${lookupPath}` });
         if (!lookupResp.ok) continue; // can't classify → fall through to default behavior
         const lookupData = await lookupResp.json();
         const order = lookupData.order;
@@ -74,9 +60,7 @@ async function handler(req, res) {
         const productId = order.product_id;
         if (!productId) continue;
         const posPath = '/api/v3/brokerage/cfm/positions';
-        const posResp = await fetch(`https://api.coinbase.com${posPath}`, {
-          headers: { 'Authorization': `Bearer ${signCoinbase('GET', posPath, apiKeyName, apiSecret)}` }
-        });
+          const posResp = await cbRequest({ token: `${generateCoinbaseToken('GET', posPath, apiKeyName, apiSecret)}`, method: 'GET', path: `${posPath}` });
         if (posResp.ok) {
           const posData = await posResp.json();
           const livePos = posData.positions?.find(p => p.product_id === productId);
@@ -102,16 +86,9 @@ async function handler(req, res) {
     }
 
     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-    const coinbaseToken = signCoinbase('POST', cancelPath, apiKeyName, apiSecret);
+    const coinbaseToken = generateCoinbaseToken('POST', cancelPath, apiKeyName, apiSecret);
 
-    const response = await fetch(`https://api.coinbase.com${cancelPath}`, {
-        method: 'POST',
-        headers: { 
-            'Authorization': `Bearer ${coinbaseToken}`, 
-            'Content-Type': 'application/json' 
-        },
-        body: JSON.stringify({ order_ids })
-    });
+    const response = await cbRequest({ token: `${coinbaseToken}`, method: 'POST', path: `${cancelPath}`, body: { order_ids } });
 
     const data = await response.json();
     console.log(`[CANCEL-ORDER API] Orders canceled for tenant ${tenantId}:`, order_ids);

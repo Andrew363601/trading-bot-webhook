@@ -6,8 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { getActiveModel } from '../../lib/model-router';
 import { z } from 'zod';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+import { cbRequest, generateCoinbaseToken } from '../../lib/providers/coinbase.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -138,12 +137,9 @@ export default async function handler(req, res) {
             const currentStart = currentEnd - (batchSize * lookbackSeconds);
             const query = `?start=${currentStart}&end=${currentEnd}&granularity=${triggerTf}`;
 
-            const token = jwt.sign({
-                iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
-                sub: apiKeyName, uri: `GET api.coinbase.com${apiPath}`,
-            }, apiSecret, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
+            const token = generateCoinbaseToken('GET', apiPath, apiKeyName, apiSecret);
 
-            const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
+            const resp = await cbRequest({ token, method: 'GET', path: `${apiPath}${query}` });
             if (!resp.ok) break;
             const data = await resp.json();
             if (!data.candles || data.candles.length === 0) break;

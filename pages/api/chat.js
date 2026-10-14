@@ -19,11 +19,10 @@ import { runBacktestForTenant } from '../../lib/backtest-service.js';
 import { normalizeParametersArg, resolveStrategyIdentifier } from '../../lib/tool-arg-integrity.js';
 // 🟢 PUSH AM52b2 — shared tool-ticker formatter (post-hoc, both branches).
 import { formatToolTicker, dedupeTickerLines } from '../../lib/tool-ticker.js';
-import jwt from 'jsonwebtoken';
+import { cbRequest, generateCoinbaseToken } from '../../lib/providers/coinbase.js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
-import crypto from 'crypto';
 
 // 🛡️ Short-lived in-memory dedupe for manageStrategy. The AI sometimes calls the
 // tool twice within a single turn (e.g. v1.0 stage + v1.1 activate). Within a 5s
@@ -1228,19 +1227,14 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
               let currentEnd = Math.floor(Date.now() / 1000);
               let candlesLeft = resolvedLookback;
 
-              const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
-
               while (candlesLeft > 0) {
                 const batchSize = Math.min(candlesLeft, 300);
                 const currentStart = currentEnd - (batchSize * lookbackSeconds);
                 const query = `?start=${currentStart}&end=${currentEnd}&granularity=${resolvedGranularity}`;
 
-                const token = jwt.sign({
-                  iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120,
-                  sub: apiKeyName, uri: `GET api.coinbase.com${apiPath}`,
-                }, privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } });
+                const token = generateCoinbaseToken('GET', apiPath, apiKeyName, apiSecret);
 
-                const resp = await fetch(`https://api.coinbase.com${apiPath}${query}`, { headers: { 'Authorization': `Bearer ${token}` } });
+                const resp = await cbRequest({ token, method: 'GET', path: `${apiPath}${query}` });
                 const data = await resp.json();
                 
                 if (!resp.ok) throw new Error(`Coinbase API Error: ${JSON.stringify(data)}`);
@@ -1334,21 +1328,11 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
                 return { error: 'No API keys configured. Ask the user to enter their balance manually.' };
               }
               
-              const formattedSecret = apiSecret.replace(/\\n/g, '\n');
-              const privateKey = crypto.createPrivateKey({ key: formattedSecret, format: 'pem' });
-              
-              const generateToken = (method, path) => {
-                return jwt.sign(
-                  { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${path}` },
-                  privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
-                );
-              };
+              const generateToken = (method, path) => generateCoinbaseToken(method, path, apiKeyName, apiSecret);
 
               // Fetch CFM futures balance
               const cfmPath = '/api/v3/brokerage/cfm/balance_summary';
-              const cfmResp = await fetch(`https://api.coinbase.com${cfmPath}`, {
-                headers: { 'Authorization': `Bearer ${generateToken('GET', cfmPath)}` }
-              });
+              const cfmResp = await cbRequest({ token: `${generateToken('GET', cfmPath)}`, method: 'GET', path: `${cfmPath}` });
 
               if (cfmResp.ok) {
                 const cfmData = await cfmResp.json();
@@ -1362,9 +1346,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
 
               // Fallback: fetch spot USD balance
               const spotPath = '/api/v3/brokerage/accounts';
-              const spotResp = await fetch(`https://api.coinbase.com${spotPath}`, {
-                headers: { 'Authorization': `Bearer ${generateToken('GET', spotPath)}` }
-              });
+              const spotResp = await cbRequest({ token: `${generateToken('GET', spotPath)}`, method: 'GET', path: `${spotPath}` });
 
               if (spotResp.ok) {
                 const spotData = await spotResp.json();

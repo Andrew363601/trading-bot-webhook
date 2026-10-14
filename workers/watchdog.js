@@ -1,7 +1,6 @@
 // workers/watchdog.js
 import { createClient } from '@supabase/supabase-js';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+import { cbRequest, generateCoinbaseToken } from '../lib/providers/coinbase.js';
 import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
 import { cleanupOldScanResults } from '../lib/cleanup-scan-results.js'; 
 import { cleanupOldAgentLogs } from '../lib/cleanup-agent-logs.js';
@@ -65,15 +64,6 @@ async function sendDiscordAlert(tenant_id, { title, description, color, fields =
             console.error(`[DISCORD ALERT ERROR]: webhook returned ${resp.status}: ${body.slice(0, 200)}`);
         }
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
-}
-
-function generateCoinbaseToken(method, path, apiKey, apiSecret) {
-    const privateKey = crypto.createPrivateKey({ key: apiSecret.replace(/\\n/g, '\n'), format: 'pem' });
-    const uriPath = path.split('?')[0];
-    return jwt.sign(
-        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKey, uri: `${method} api.coinbase.com${uriPath}` },
-        privateKey, { algorithm: 'ES256', header: { kid: apiKey, nonce: crypto.randomBytes(16).toString('hex') } }
-    );
 }
 
 const getAssetMetrics = (symbol) => {
@@ -374,7 +364,7 @@ export async function sweepOpenTrades(tenantId) {
                          const { retrieveAPIKey } = await import('../lib/secrets-manager.js');
                          const healSecrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
                          if (healSecrets.apiKey && healSecrets.apiSecret) {
-                             const fillResp = await fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, healSecrets.apiKey, healSecrets.apiSecret)}` } });
+                             const fillResp = await cbRequest({ token: `${generateCoinbaseToken('GET', fillPath, healSecrets.apiKey, healSecrets.apiSecret)}`, method: 'GET', path: `${fillPath}` });
                              if (fillResp.ok) {
                                  const fillData = await fillResp.json();
                                  const entryOrder = fillData.orders?.find(o => o.client_order_id === `nx_entry_${openTrade.id}`);
@@ -426,8 +416,8 @@ export async function sweepOpenTrades(tenantId) {
                     const orderPath = `/api/v3/brokerage/orders/historical/batch?order_status=OPEN&product_id=${coinbaseProduct}`;
                     
                     const [posResp, orderResp] = await Promise.all([
-                        fetch(`https://api.coinbase.com${posPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', posPath, liveApiKey, liveApiSecret)}` }, signal: AbortSignal.timeout(10000) }),
-                        fetch(`https://api.coinbase.com${orderPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', orderPath, liveApiKey, liveApiSecret)}` }, signal: AbortSignal.timeout(10000) })
+                        cbRequest({ token: `${generateCoinbaseToken('GET', posPath, liveApiKey, liveApiSecret)}`, method: 'GET', path: `${posPath}`, timeoutMs: 10000 }),
+                        cbRequest({ token: `${generateCoinbaseToken('GET', orderPath, liveApiKey, liveApiSecret)}`, method: 'GET', path: `${orderPath}`, timeoutMs: 10000 })
                     ]);
 
                     if (posResp.ok) {
@@ -465,7 +455,7 @@ export async function sweepOpenTrades(tenantId) {
                             const targetOrder = openOrders.find(o => o.client_order_id === entryClientId || (o.side.toUpperCase() === openTrade.side.toUpperCase() && Math.abs(parseFloat(o.order_configuration?.limit_limit_gtc?.limit_price || 0) - parseFloat(openTrade.entry_price)) < (tickSize * 2)));
                             if (targetOrder) {
                                 const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
-                                await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: [targetOrder.order_id] }) });
+                                await cbRequest({ token: `${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, method: 'POST', path: `${cancelPath}`, body: { order_ids: [targetOrder.order_id] } });
                             }
                             const updatedReason = `${openTrade.reason || ''}\n\n[PARTIAL FILL]: Market moved. Remaining ${expectedQty - activeQty} contracts canceled.`;
                             await supabase.from('trade_logs').update({ qty: activeQty, reason: updatedReason }).eq('id', openTrade.id);
@@ -526,7 +516,7 @@ export async function sweepOpenTrades(tenantId) {
                                 if (scopedOrderIds.length > 0) {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                     console.log(`[TRIPWIRE SCOPED CANCEL] Cancelling ${scopedOrderIds.length} trade-specific orders for trade ${openTrade.id} (filtered from ${openOrders.length} total open)`);
-                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: scopedOrderIds }) });
+                                    await cbRequest({ token: `${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, method: 'POST', path: `${cancelPath}`, body: { order_ids: scopedOrderIds } });
                                 }
                                 openOrders = []; 
                             }
@@ -539,7 +529,7 @@ export async function sweepOpenTrades(tenantId) {
                             let tripwireQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                             try {
                                 const liveQtyPath = '/api/v3/brokerage/cfm/positions';
-                                const liveQtyResp = await fetch(`https://api.coinbase.com${liveQtyPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', liveQtyPath, liveApiKey, liveApiSecret)}` } });
+                                const liveQtyResp = await cbRequest({ token: `${generateCoinbaseToken('GET', liveQtyPath, liveApiKey, liveApiSecret)}`, method: 'GET', path: `${liveQtyPath}` });
                                 if (liveQtyResp.ok) {
                                     const liveQtyData = await liveQtyResp.json();
                                     const livePos = liveQtyData.positions?.find(p => p.product_id === coinbaseProduct);
@@ -562,7 +552,7 @@ export async function sweepOpenTrades(tenantId) {
                                     order_configuration: { trigger_bracket_gtc: { limit_price: tripwireTpStr, stop_trigger_price: tripwireSlStr, base_size: tripwireQty.toString() } }
                                 };
                                 try {
-                                    const twResp = await fetch(`https://api.coinbase.com${tripwirePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', tripwirePath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tripwirePayload) });
+                                    const twResp = await cbRequest({ token: `${generateCoinbaseToken('POST', tripwirePath, liveApiKey, liveApiSecret)}`, method: 'POST', path: `${tripwirePath}`, body: tripwirePayload });
                                     const twResult = await twResp.json();
                                     if (!twResp.ok || twResult.success === false) {
                                         const twErr = twResult.error_response?.preview_failure_reason || twResult.error_response?.error || JSON.stringify(twResult);
@@ -671,7 +661,7 @@ export async function sweepOpenTrades(tenantId) {
                                     if (scopedOrderIds.length > 0) {
                                         const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                         console.log(`[TRAIL SCOPED CANCEL] Cancelling ${scopedOrderIds.length} trade-specific orders for trade ${openTrade.id} (filtered from ${openOrders.length} total open)`);
-                                        await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: scopedOrderIds }) });
+                                        await cbRequest({ token: `${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, method: 'POST', path: `${cancelPath}`, body: { order_ids: scopedOrderIds } });
                                     }
                                     openOrders = []; 
                                 }
@@ -681,7 +671,7 @@ export async function sweepOpenTrades(tenantId) {
                                 let trailQty = Math.abs(parseFloat(activePosition.number_of_contracts));
                                 try {
                                     const tQtyPath = '/api/v3/brokerage/cfm/positions';
-                                    const tQtyResp = await fetch(`https://api.coinbase.com${tQtyPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', tQtyPath, liveApiKey, liveApiSecret)}` } });
+                                    const tQtyResp = await cbRequest({ token: `${generateCoinbaseToken('GET', tQtyPath, liveApiKey, liveApiSecret)}`, method: 'GET', path: `${tQtyPath}` });
                                     if (tQtyResp.ok) {
                                         const tQtyData = await tQtyResp.json();
                                         const livePos = tQtyData.positions?.find(p => p.product_id === coinbaseProduct);
@@ -703,7 +693,7 @@ export async function sweepOpenTrades(tenantId) {
                                         order_configuration: { trigger_bracket_gtc: { limit_price: trailTpStr, stop_trigger_price: trailSlStr, base_size: trailQty.toString() } }
                                     };
                                     try {
-                                        const trResp = await fetch(`https://api.coinbase.com${trailPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', trailPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(trailPayload) });
+                                        const trResp = await cbRequest({ token: `${generateCoinbaseToken('POST', trailPath, liveApiKey, liveApiSecret)}`, method: 'POST', path: `${trailPath}`, body: trailPayload });
                                         const trResult = await trResp.json();
                                         if (!trResp.ok || trResult.success === false) {
                                             const trErr = trResult.error_response?.preview_failure_reason || trResult.error_response?.error || JSON.stringify(trResult);
@@ -796,8 +786,8 @@ export async function sweepOpenTrades(tenantId) {
                         const fillPath = `/api/v3/brokerage/orders/historical/batch?order_status=FILLED&product_id=${coinbaseProduct}`;
                         
                         const [histResp, fillResp] = await Promise.all([
-                            fetch(`https://api.coinbase.com${histPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', histPath, liveApiKey, liveApiSecret)}` }, signal: AbortSignal.timeout(10000) }),
-                            fetch(`https://api.coinbase.com${fillPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', fillPath, liveApiKey, liveApiSecret)}` }, signal: AbortSignal.timeout(10000) })
+                            cbRequest({ token: `${generateCoinbaseToken('GET', histPath, liveApiKey, liveApiSecret)}`, method: 'GET', path: `${histPath}`, timeoutMs: 10000 }),
+                            cbRequest({ token: `${generateCoinbaseToken('GET', fillPath, liveApiKey, liveApiSecret)}`, method: 'GET', path: `${fillPath}`, timeoutMs: 10000 })
                         ]);
 
                         if (histResp.ok) {
@@ -946,9 +936,7 @@ export async function sweepOpenTrades(tenantId) {
                                         const fillOrderId = targetFill.order_id;
                                         if (fillOrderId) {
                                             const singlePath = `/api/v3/brokerage/orders/historical/${fillOrderId}`;
-                                            const singleResp = await fetch(`https://api.coinbase.com${singlePath}`, {
-                                                headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', singlePath, liveApiKey, liveApiSecret)}` }
-                                            });
+                                            const singleResp = await cbRequest({ token: `${generateCoinbaseToken('GET', singlePath, liveApiKey, liveApiSecret)}`, method: 'GET', path: `${singlePath}` });
                                             if (singleResp.ok) {
                                                 const singleData = await singleResp.json();
                                                 const refetchOrder = singleData?.order;
@@ -1094,7 +1082,7 @@ export async function sweepOpenTrades(tenantId) {
                             // exit_price against a live position.
                             try {
                                 const finalPosPath = '/api/v3/brokerage/cfm/positions';
-                                const finalPosResp = await fetch(`https://api.coinbase.com${finalPosPath}`, { headers: { 'Authorization': `Bearer ${generateCoinbaseToken('GET', finalPosPath, liveApiKey, liveApiSecret)}` } });
+                                const finalPosResp = await cbRequest({ token: `${generateCoinbaseToken('GET', finalPosPath, liveApiKey, liveApiSecret)}`, method: 'GET', path: `${finalPosPath}` });
                                 if (finalPosResp.ok) {
                                     const finalPosData = await finalPosResp.json();
                                     const livePos = finalPosData.positions?.find(p => p.product_id === coinbaseProduct);
@@ -1124,7 +1112,7 @@ export async function sweepOpenTrades(tenantId) {
                                                 order_configuration: { trigger_bracket_gtc: { limit_price: safeTpStr, stop_trigger_price: safeSlStr, base_size: liveQty.toString() } }
                                             };
                                             try {
-                                                const rResp = await fetch(`https://api.coinbase.com${restorePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', restorePath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(restorePayload) });
+                                                const rResp = await cbRequest({ token: `${generateCoinbaseToken('POST', restorePath, liveApiKey, liveApiSecret)}`, method: 'POST', path: `${restorePath}`, body: restorePayload });
                                                 const rResult = await rResp.json();
                                                 if (!rResp.ok || rResult.success === false) {
                                                     const rErr = rResult.error_response?.preview_failure_reason || rResult.error_response?.error || JSON.stringify(rResult);
@@ -1152,7 +1140,7 @@ export async function sweepOpenTrades(tenantId) {
                                 if (scopedOrderIds.length > 0) {
                                     const cancelPath = '/api/v3/brokerage/orders/batch_cancel';
                                     console.log(`[EXIT SCOPED CANCEL] Cancelling ${scopedOrderIds.length} trade-specific orders for trade ${openTrade.id} (filtered from ${openOrders.length} total open)`);
-                                    await fetch(`https://api.coinbase.com${cancelPath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_ids: scopedOrderIds }) });
+                                    await cbRequest({ token: `${generateCoinbaseToken('POST', cancelPath, liveApiKey, liveApiSecret)}`, method: 'POST', path: `${cancelPath}`, body: { order_ids: scopedOrderIds } });
                                 }
                             }
 
@@ -1285,10 +1273,10 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                 const executePathTpOnly = '/api/v3/brokerage/orders';
                                 const tpOnlyId = `nx_wd_tp_${openTrade.id}_${Date.now()}`;
                                 try {
-                                    const tpOnlyResp = await fetch(`https://api.coinbase.com${executePathTpOnly}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePathTpOnly, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify({
+                                    const tpOnlyResp = await cbRequest({ token: `${generateCoinbaseToken('POST', executePathTpOnly, liveApiKey, liveApiSecret)}`, method: 'POST', path: `${executePathTpOnly}`, body: {
                                         client_order_id: tpOnlyId, product_id: coinbaseProduct, side: closingSide,
                                         order_configuration: { limit_limit_gtc: { limit_price: safeTpPrice, base_size: orderQty.toString() } }
-                                    }) });
+                                    } });
                                     const tpOnlyResult = await tpOnlyResp.json();
                                     if (tpOnlyResp.ok && tpOnlyResult.success !== false) {
                                         console.log(`[WATCHDOG RE-ARM] TP-only bracket deployed for ${asset} at $${safeTpPrice}.`);
@@ -1318,7 +1306,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                             };
                             
                             try {
-                                const ocoResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(ocoPayload) });
+                                const ocoResp = await cbRequest({ token: `${generateCoinbaseToken('POST', executePath, liveApiKey, liveApiSecret)}`, method: 'POST', path: `${executePath}`, body: ocoPayload });
                                 
                                 let ocoResult;
                                 try {
@@ -1354,7 +1342,7 @@ const chartUrl = await buildWatchdogChart(asset, currentPrice, liveApiKey, liveA
                                                 side: closingSide,
                                                 order_configuration: { limit_limit_gtc: { limit_price: safeTpPrice, base_size: orderQty.toString() } }
                                             };
-                                            const tpResp = await fetch(`https://api.coinbase.com${executePath}`, { method: 'POST', headers: { 'Authorization': `Bearer ${generateCoinbaseToken('POST', executePath, liveApiKey, liveApiSecret)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(tpOnlyPayload) });
+                                            const tpResp = await cbRequest({ token: `${generateCoinbaseToken('POST', executePath, liveApiKey, liveApiSecret)}`, method: 'POST', path: `${executePath}`, body: tpOnlyPayload });
                                             const tpResult = await tpResp.json();
                                             if (tpResp.ok && tpResult.success !== false) {
                                                 console.log(`[SAFETY NET CIRCUIT BREAKER] TP-only bracket deployed for ${asset} at $${safeTpPrice}.`);

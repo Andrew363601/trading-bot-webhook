@@ -1,7 +1,6 @@
 // pages/api/portfolio.js
 import { createClient } from '@supabase/supabase-js';
-import jwt from 'jsonwebtoken';
-import crypto from 'crypto';
+import { cbRequest, generateCoinbaseToken } from '../../lib/providers/coinbase.js';
 import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 
@@ -62,16 +61,10 @@ async function handler(req, res) {
             // Try fetching via Advanced Trade API first if we have keys (more accurate for PERPs)
             if (apiKeyName && apiSecret) {
                 try {
-                    const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
                     const path = `/api/v3/brokerage/products/${asset}`;
-                    const token = jwt.sign(
-                        { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `GET api.coinbase.com/api/v3/brokerage/products/${asset}` },
-                        privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
-                    );
+                    const token = generateCoinbaseToken('GET', path, apiKeyName, apiSecret);
 
-                    const priceResp = await fetch(`https://api.coinbase.com${path}`, {
-                        headers: { 'Authorization': `Bearer ${token}` }
-                    });
+                    const priceResp = await cbRequest({ token, method: 'GET', path });
 
                     if (priceResp.ok) {
                         const productData = await priceResp.json();
@@ -99,18 +92,11 @@ async function handler(req, res) {
     // Fetch LIVE Balance from Coinbase (Spot + CFM Futures)
     try {
         if (apiKeyName && apiSecret) {
-          const privateKey = crypto.createPrivateKey({ key: apiSecret, format: 'pem' });
-
-          const generateToken = (method, path) => {
-              return jwt.sign(
-                { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${path}` }, 
-                privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
-              );
-          };
+          const generateToken = (method, path) => generateCoinbaseToken(method, path, apiKeyName, apiSecret);
 
           // A. Fetch Spot USD/USDC Balance
           const spotPath = '/api/v3/brokerage/accounts';
-          const spotResp = await fetch(`https://api.coinbase.com${spotPath}`, { headers: { 'Authorization': `Bearer ${generateToken('GET', spotPath)}` } });
+          const spotResp = await cbRequest({ token: generateToken('GET', spotPath), method: 'GET', path: spotPath });
           
           if (spotResp.ok) {
               const data = await spotResp.json();
@@ -120,7 +106,7 @@ async function handler(req, res) {
 
           // B. THE FIX: Fetch CFM (Futures) Vault Balance
           const cfmPath = '/api/v3/brokerage/cfm/balance_summary';
-          const cfmResp = await fetch(`https://api.coinbase.com${cfmPath}`, { headers: { 'Authorization': `Bearer ${generateToken('GET', cfmPath)}` } });
+          const cfmResp = await cbRequest({ token: generateToken('GET', cfmPath), method: 'GET', path: cfmPath });
           
           if (cfmResp.ok) {
               const cfmData = await cfmResp.json();

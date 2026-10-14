@@ -1,7 +1,6 @@
 // pages/api/available-assets.js
-import crypto from 'crypto';
-import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
+import { cbRequest, generateCoinbaseToken } from '../../lib/providers/coinbase.js';
 import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 
@@ -76,29 +75,25 @@ async function handler(req, res) {
       if (apiSecret.startsWith('"') && apiSecret.endsWith('"')) apiSecret = apiSecret.slice(1, -1);
       
       if (apiKeyName && apiSecret) {
-        let privateKey;
+        // Parse-guard: a bad PEM must skip the authenticated fetch, not throw.
+        let keyOk = false;
         try {
-          privateKey = crypto.createPrivateKey({ key: apiSecret.trim(), format: 'pem' });
+          generateCoinbaseToken('GET', '/api/v3/brokerage/products', apiKeyName, apiSecret);
+          keyOk = true;
         } catch (cryptoErr) {
           console.error("[AVAILABLE ASSETS ERROR]: Failed to parse private key (CFM fetch will be skipped):", cryptoErr.message);
         }
         
-        if (privateKey) {
+        if (keyOk) {
           // Fetch both FUTURE and PERPETUAL_FUTURE for better coverage and pricing
           const productTypes = ['FUTURE', 'PERPETUAL_FUTURE'];
           
           for (const type of productTypes) {
             try {
               const path = `/api/v3/brokerage/products?product_type=${type}`;
-              const uriPath = path.split('?')[0];
-              const cbToken = jwt.sign(
-                  { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `GET api.coinbase.com${uriPath}` },
-                  privateKey, { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
-              );
+              const cbToken = generateCoinbaseToken('GET', path, apiKeyName, apiSecret);
 
-              const cfmResponse = await fetch(`https://api.coinbase.com${path}`, {
-                headers: { 'Authorization': `Bearer ${cbToken}` }
-              });
+              const cfmResponse = await cbRequest({ token: cbToken, method: 'GET', path });
 
               if (cfmResponse.ok) {
                 const cfmData = await cfmResponse.json();

@@ -1,6 +1,5 @@
 // pages/api/coinbase-sync.js
-import crypto from 'crypto';
-import jwt from 'jsonwebtoken';
+import { cbRequest, generateCoinbaseToken } from '../../lib/providers/coinbase.js';
 import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 import { createClient } from '@supabase/supabase-js';
@@ -36,31 +35,22 @@ async function handler(req, res) {
         if (!apiKeyName || !apiSecret) return res.status(401).json({ error: 'Missing API Keys' });
 
         const formattedSecret = apiSecret.replace(/\\n/g, '\n').trim();
-        
-        let privateKey;
+
+        // Parse-guard: keep the existing "environment restriction" early-return on a bad PEM.
         try {
-            privateKey = crypto.createPrivateKey({ key: formattedSecret, format: 'pem' });
+            generateCoinbaseToken('GET', '/api/v3/brokerage/accounts', apiKeyName, formattedSecret);
         } catch (e) {
             console.warn("[SYNC CRYPTO WARN]: Private key creation unsupported in this environment.");
             return res.status(200).json({ positions: [], orders: [], warning: "Environment restriction" });
         }
 
-        const generateToken = (method, path) => {
-            const uriPath = path.split('?')[0]; 
-            return jwt.sign(
-                { iss: 'cdp', nbf: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 120, sub: apiKeyName, uri: `${method} api.coinbase.com${uriPath}` },
-                privateKey,
-                { algorithm: 'ES256', header: { kid: apiKeyName, nonce: crypto.randomBytes(16).toString('hex') } }
-            );
-        };
+        const generateToken = (method, path) => generateCoinbaseToken(method, path, apiKeyName, formattedSecret);
 
         // 1. Fetch Unfilled Orders
         const orderPath = '/api/v3/brokerage/orders/historical/batch?order_status=OPEN';
         let orderData = { orders: [] };
         try {
-            const orderResp = await fetch(`https://api.coinbase.com${orderPath}`, {
-                headers: { 'Authorization': `Bearer ${generateToken('GET', orderPath)}` }
-            });
+            const orderResp = await cbRequest({ token: generateToken('GET', orderPath), method: 'GET', path: orderPath });
             if (orderResp.ok) orderData = await orderResp.json();
         } catch (e) { console.error("Order fetch failed:", e.message); }
 
@@ -68,9 +58,7 @@ async function handler(req, res) {
         const posPath = '/api/v3/brokerage/cfm/positions'; 
         let posData = { positions: [] };
         try {
-            const posResp = await fetch(`https://api.coinbase.com${posPath}`, {
-                headers: { 'Authorization': `Bearer ${generateToken('GET', posPath)}` }
-            });
+            const posResp = await cbRequest({ token: generateToken('GET', posPath), method: 'GET', path: posPath });
             
             if (posResp.ok) {
                 const rawData = await posResp.json();
