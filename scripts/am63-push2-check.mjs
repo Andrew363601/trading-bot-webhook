@@ -27,9 +27,9 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // ─────────────────────────── Commit A → B switch ───────────────────────────
-// Commit A ships this gate REPORT-ONLY (it inspects Commit B's wiring, which does
-// not exist yet). Commit B sets this to false and the gate enforces.
-const REPORT_ONLY = true;
+// Commit A shipped this gate REPORT-ONLY (it inspects Commit B's wiring, which did
+// not exist yet). Commit B flips this to false and the gate enforces.
+const REPORT_ONLY = false;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXCLUDE_DIRS = new Set(['node_modules', '.next', '.git', '.vercel', 'scripts']);
@@ -132,9 +132,9 @@ if (!exists(EXEC)) {
   const delCount = (src.match(/delete without\.exchange/g) || []).length;
   check('both safety nets delete without.exchange', delCount >= 2, `found ${delCount}, need 2`);
   // The blind spot: the stratCfg select (the cfgRow lookup) MUST cover exchange.
-  // Anchor on the unique `cfgRow` destructuring so we never match an unrelated
+  // Anchor on the `cfgRow` destructuring so we never match an unrelated
   // strategy_config select elsewhere in the file.
-  const selMatch = src.match(/const \{ data: cfgRow \} = await supabase\s*\.from\('strategy_config'\)\s*\.select\('([^']*)'\)/);
+  const selMatch = src.match(/data: cfgRow[\s\S]{0,120}?\.from\('strategy_config'\)\s*\.select\('([^']*)'\)/);
   check("stratCfg select covers 'exchange'",
     !!selMatch && /\bexchange\b/.test(selMatch[1]),
     selMatch ? `select = '${selMatch[1]}'` : 'stratCfg cfgRow select not found');

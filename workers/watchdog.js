@@ -1,6 +1,8 @@
 // workers/watchdog.js
 import { createClient } from '@supabase/supabase-js';
 import { cbRequest, generateCoinbaseToken } from '../lib/providers/coinbase.js';
+// 🟢 AM63 (Push 2) — per-trade venue assert.
+import { assertExchangeSupported } from '../lib/exchange-router.js';
 import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
 import { cleanupOldScanResults } from '../lib/cleanup-scan-results.js'; 
 import { cleanupOldAgentLogs } from '../lib/cleanup-agent-logs.js';
@@ -290,6 +292,16 @@ export async function sweepOpenTrades(tenantId) {
             if (!openTrades || openTrades.length === 0) return;
 
             for (const openTrade of openTrades) {
+                // 🟢 AM63 (Push 2) — route per open trade. Undefined/legacy rows
+                // normalize to 'coinbase' inside the router; an unsupported venue
+                // throws and is caught HERE, so one bad venue row can never kill the
+                // sweep (per-trade isolation — the watchdog never dies over one row).
+                try {
+                    assertExchangeSupported(openTrade.exchange);
+                } catch (e) {
+                    console.warn(`[AM63] tenant ${tenantId} trade ${openTrade.id} on unsupported venue '${openTrade.exchange}' — sweep skipped for this trade`);
+                    continue;
+                }
                 const asset = openTrade.symbol;
 
                 // Fetch latest scan telemetry for this asset — provides the real
