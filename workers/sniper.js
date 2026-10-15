@@ -27,6 +27,12 @@ import { getMicrostructureChange, classifyArchetype } from '../lib/microstructur
 import { resolveRegimeParams } from '../lib/regime-params.js';
 // 🟢 PUSH AM61 — repetition-aware mistake learning (pure helpers).
 import { rebalanceRecall, decayBonusPoints, normalizeTags, DESCRIPTIVE_ONLY_TAG } from '../lib/mistake-learning.js';
+// 🟢 AM63 (Push 5) — Kraken Futures (apiv3) REST marks + the shared candle bridge.
+// The sniper is venue-blind (Coinbase WS hot-wire + Coinbase candles/book only), so
+// non-Coinbase venues never tick. This push adds a REST polling lane for KRF ids and
+// a LOUD skip for KRX ids (no scanner data exists yet). NO WebSocket for KRF this push.
+import { getKrakenTickers, resolveKrakenFuturesProduct } from '../lib/providers/kraken-futures.js';
+import { fetchCandles, resolveGranularity } from '../lib/candles.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -136,6 +142,137 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     
     processRequestQueue();
   });
+}
+
+// 🟢 AM63 (Push 5) — venue lane detection. The sniper's Coinbase WS hot-wire only
+// ever ticks Coinbase product ids, so a non-Coinbase strategy is dormant forever.
+// These helpers let the sweep source candles/marks from the RIGHT venue.
+const isKrakenFuturesId = (asset) => String(asset || '').toUpperCase().includes('-PERP-KRF');
+const isKrakenId = (asset) => String(asset || '').toUpperCase().includes('-PERP-KRX');
+
+// 🟢 AM63 (Push 5) — KRF candles via the EXISTING lib/candles.js bridge (it already
+// routes -PERP-KRF ids to real Kraken OHLC — do NOT duplicate the backend). Returns
+// the SAME { time, open, high, low, close, volume } shape fetchCoinbaseData returns,
+// with the SAME closed-bar parity filter (drop the forming bar).
+async function fetchKrakenFuturesCandles(asset, granularity) {
+    const { granularitySeconds } = resolveGranularity(granularity || 'ONE_HOUR');
+    const end = Math.floor(Date.now() / 1000);
+    const start = end - granularitySeconds * 300;
+    let candles = [];
+    try {
+        candles = await fetchCandles({ product: asset, granularitySeconds, startEpoch: start, endEpoch: end });
+    } catch (e) {
+        console.warn(`[AM63] KRF candle fetch failed for ${asset} @${granularitySeconds}s: ${e.message}`);
+        return [];
+    }
+    const nowSec = Math.floor(Date.now() / 1000);
+    return (candles || []).filter(c => !Number.isFinite(c.time) || c.time + granularitySeconds <= nowSec);
+}
+
+// 🟢 AM63 (Push 5) — KRF marks (bid/ask/last) via REST polling. NO WebSocket this
+// push (the socket stack ships with the live push). Never blocks a sweep: any
+// failure returns null and the caller skips the asset LOUD.
+async function fetchKrakenFuturesMark(asset) {
+    try {
+        const product = await resolveKrakenFuturesProduct(String(asset).toUpperCase().trim());
+        if (!product || product.error) {
+            console.warn(`[AM63] KRF product unresolved for ${asset}: ${product?.error || 'no product'}`);
+            return null;
+        }
+        const tickers = await getKrakenTickers({ symbols: [product.nativeSymbol] });
+        const row = tickers ? tickers[product.nativeSymbol] : null;
+        if (!row) return null;
+        const last = parseFloat(row.markPrice ?? row.last);
+        if (!Number.isFinite(last) || last <= 0) return null;
+        return {
+            last,
+            bid: Number.isFinite(parseFloat(row.bid)) ? parseFloat(row.bid) : null,
+            ask: Number.isFinite(parseFloat(row.ask)) ? parseFloat(row.ask) : null,
+            nativeSymbol: product.nativeSymbol,
+        };
+    } catch (e) {
+        console.warn(`[AM63] KRF mark fetch failed for ${asset}: ${e.message}`);
+        return null;
+    }
+}
+
+// 🟢 AM63 (Push 5) — KRF microstructure from venue candles + the venue mark. There
+// is no Coinbase order book for a Kraken Futures id, so the book fields are honest
+// zeros (the canon classifier is CHOP-safe at bidAskRatio 0) and best_bid/best_ask
+// come from the REST ticker. Mirrors the shape fetchMicrostructure returns.
+async function fetchKrakenFuturesMicrostructure(asset, triggerCandles, macroCandles) {
+    try {
+        let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = []; let cvd = 0;
+        const cvdCandles = triggerCandles.slice(-50);
+        for (let i = 0; i < cvdCandles.length; i++) {
+            const c = cvdCandles[i]; const range = c.high - c.low;
+            let openPrice = c.open;
+            if (isNaN(openPrice) || openPrice === undefined) { openPrice = i > 0 ? cvdCandles[i - 1].close : c.close; }
+            if (range > 0) { cvd += c.volume * ((c.close - openPrice) / range); }
+        }
+        for (let i = 1; i < triggerCandles.length; i++) {
+            const c = triggerCandles[i]; const prev = triggerCandles[i - 1];
+            typicalPriceVolume += ((c.high + c.low + c.close) / 3) * c.volume; totalVolume += c.volume;
+            trueRanges.push(Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close)));
+        }
+        const vwap = totalVolume > 0 ? typicalPriceVolume / totalVolume : triggerCandles[triggerCandles.length - 1].close;
+        const atr = trueRanges.length > 0 ? trueRanges.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, trueRanges.length) : 0;
+        const currentPrice = triggerCandles[triggerCandles.length - 1].close;
+
+        let macro_cvd = 0; const macroCvdCandles = macroCandles.slice(-50);
+        for (let i = 0; i < macroCvdCandles.length; i++) {
+            const c = macroCvdCandles[i]; const range = c.high - c.low;
+            let openPrice = c.open;
+            if (isNaN(openPrice) || openPrice === undefined) { openPrice = i > 0 ? macroCvdCandles[i - 1].close : c.close; }
+            if (range > 0) { macro_cvd += c.volume * ((c.close - openPrice) / range); }
+        }
+
+        let minPrice = Infinity; let maxPrice = -Infinity; const pocCandles = macroCandles.slice(-150);
+        pocCandles.forEach(c => { if (c.low < minPrice) minPrice = c.low; if (c.high > maxPrice) maxPrice = c.high; });
+        const numBuckets = 50; const bucketSize = (maxPrice - minPrice) / numBuckets;
+        const volumeProfile = new Array(numBuckets).fill(0);
+        pocCandles.forEach(c => {
+            const typicalPrice = (c.high + c.low + c.close) / 3;
+            let bucketIndex = Math.floor((typicalPrice - minPrice) / bucketSize);
+            if (bucketIndex >= numBuckets) bucketIndex = numBuckets - 1;
+            if (bucketIndex < 0) bucketIndex = 0;
+            volumeProfile[bucketIndex] += c.volume;
+        });
+        let peaks = [];
+        for (let i = 1; i < numBuckets - 1; i++) {
+            if (volumeProfile[i] > volumeProfile[i - 1] && volumeProfile[i] > volumeProfile[i + 1]) {
+                peaks.push({ price: minPrice + (i * bucketSize) + (bucketSize / 2), volume: volumeProfile[i] });
+            }
+        }
+        peaks.sort((a, b) => b.volume - a.volume);
+        const macro_poc = peaks.length > 0 ? peaks[0].price : currentPrice;
+        let upper_macro_node = null; let lower_macro_node = null;
+        const upperPeaks = peaks.filter(p => p.price > currentPrice);
+        if (upperPeaks.length > 0) upper_macro_node = upperPeaks[0].price;
+        const lowerPeaks = peaks.filter(p => p.price < currentPrice);
+        if (lowerPeaks.length > 0) lower_macro_node = lowerPeaks[0].price;
+
+        // Venue mark for best_bid/best_ask (REST ticker — no book this push).
+        const mark = await fetchKrakenFuturesMark(asset);
+        const bestBid = mark?.bid ?? null;
+        const bestAsk = mark?.ask ?? null;
+
+        return {
+            macro_regime: 'CHOP',
+            indicators: {
+                current_vwap: vwap.toFixed(2), current_atr: atr.toFixed(2), current_cvd: cvd.toFixed(2),
+                macro_cvd: macro_cvd.toFixed(2), macro_poc: macro_poc.toFixed(2),
+                upper_macro_node: upper_macro_node ? upper_macro_node.toFixed(2) : "None", lower_macro_node: lower_macro_node ? lower_macro_node.toFixed(2) : "None"
+            },
+            crossAsset: { sp500: null, dxy: null },
+            best_bid: bestBid ? bestBid.toFixed(2) : null, best_ask: bestAsk ? bestAsk.toFixed(2) : null,
+            orderBook: { status: "Unavailable (Kraken Futures — no book this push)", bids_50_levels: "0.00", asks_50_levels: "0.00", imbalance: "NEUTRAL", largest_bid_walls: [], largest_ask_walls: [] },
+            derivativesData: { spot_price: currentPrice.toFixed(2), futures_price: currentPrice.toFixed(2), basis_premium_percent: "0.0000" }
+        };
+    } catch (e) {
+        console.warn(`[AM63] KRF microstructure failed for ${asset}: ${e.message}`);
+        return { indicators: {}, crossAsset: {}, orderBook: {}, derivativesData: {}, best_bid: null, best_ask: null };
+    }
 }
 
 // 🟢 Helper functions required by the Sniper
@@ -779,15 +916,10 @@ export async function startSniper(tenantId) {
         }
     });
 
-    ws.on('message', async (data) => {
-        const message = JSON.parse(data);
-        if (message.channel !== 'ticker' || !message.events) return;
-        const tick = message.events[0].tickers[0];
-        if (!tick) return;
-
-        const currentPrice = parseFloat(tick.price);
-        const wsAsset = tick.product_id;
-
+    // AM63 (Push 5) — per-tick evaluation body, extracted so BOTH the Coinbase
+    // WebSocket AND the Kraken Futures REST lane drive the SAME logic. The Coinbase
+    // path is byte-identical (same body; the for loop stays inside so `continue` works).
+    const processTick = async (wsAsset, currentPrice) => {
         const activeAssetConfigs = state.configs.filter(c => {
             let p = c.asset.toUpperCase().trim();
             if (!p.includes('-')) p = p.replace('PERP', '-PERP').replace('USD', '-USD');
@@ -796,6 +928,15 @@ export async function startSniper(tenantId) {
 
         for (const config of activeAssetConfigs) {
             const params = config.parameters || {};
+
+            // AM63 (Push 5) — Bitnomial (KRX) has NO scanner data (no intraday OHLC;
+            // the market WS is a live-push artifact). Skip the asset LOUD — never a
+            // Coinbase substitute. The strategy stays dormant until the market-data push.
+            if (isKrakenId(config.asset)) {
+                console.warn(`[AM63] no scanner data for Bitnomial ids yet — strategy dormant until market-data push (${config.asset}).`);
+                await logAgentActivity(tenantId, "Sniper", config.asset, `[AM63] no scanner data for Bitnomial ids yet — strategy dormant until market-data push.`, "KRAKEN_NO_SCANNER_DATA");
+                continue;
+            }
 
             if (config.trap_side && config.trap_price && config.trap_expires_at) {
                 // 🔒 TRAP LOCK: Prevent double-trigger from rapid WebSocket ticks
@@ -1039,14 +1180,22 @@ export async function startSniper(tenantId) {
                 const lastVeto = config.last_veto_time ? new Date(config.last_veto_time).getTime() : 0;
                 const isCooldownActive = (Date.now() - lastVeto) < (cooldownMins * 60000);
 
+                // AM63 (Push 5) — venue-aware candle source. KRF ids use the shared
+                // candle bridge (real Kraken OHLC); every other venue keeps the
+                // byte-identical Coinbase path.
+                const kfLane = isKrakenFuturesId(config.asset);
+                const fetchCandlesFor = (tf) => kfLane
+                    ? fetchKrakenFuturesCandles(config.asset, tf)
+                    : fetchCoinbaseData(config.asset, tf, apiKeyName, apiSecret);
+
                 const [macroCandles, triggerCandles, candles15M, candles30M, candles6H, candles5M, candles1H] = await Promise.all([
-                    fetchCoinbaseData(config.asset, macroTf, apiKeyName, apiSecret),
-                    fetchCoinbaseData(config.asset, triggerTf, apiKeyName, apiSecret),
-                    fetchCoinbaseData(config.asset, 'FIFTEEN_MINUTE', apiKeyName, apiSecret).catch(() => []),
-                    fetchCoinbaseData(config.asset, 'THIRTY_MINUTE', apiKeyName, apiSecret).catch(() => []),
-                    fetchCoinbaseData(config.asset, 'SIX_HOUR', apiKeyName, apiSecret).catch(() => []),
-                    triggerTf === 'FIVE_MINUTE' ? Promise.resolve(null) : fetchCoinbaseData(config.asset, 'FIVE_MINUTE', apiKeyName, apiSecret).catch(() => []),
-                    macroTf === 'ONE_HOUR' ? Promise.resolve(null) : fetchCoinbaseData(config.asset, 'ONE_HOUR', apiKeyName, apiSecret).catch(() => [])
+                    fetchCandlesFor(macroTf),
+                    fetchCandlesFor(triggerTf),
+                    fetchCandlesFor('FIFTEEN_MINUTE').catch(() => []),
+                    fetchCandlesFor('THIRTY_MINUTE').catch(() => []),
+                    fetchCandlesFor('SIX_HOUR').catch(() => []),
+                    triggerTf === 'FIVE_MINUTE' ? Promise.resolve(null) : fetchCandlesFor('FIVE_MINUTE').catch(() => []),
+                    macroTf === 'ONE_HOUR' ? Promise.resolve(null) : fetchCandlesFor('ONE_HOUR').catch(() => [])
                 ]);
 
                 if (!macroCandles || !triggerCandles) continue;
@@ -1062,7 +1211,11 @@ export async function startSniper(tenantId) {
                     '6H_Seq': getCVDSequence(candles6H, 5)
                 };
 
-                const microstructure = await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
+                // AM63 (Push 5) — KRF has no Coinbase order book; build microstructure
+                // from venue candles + the venue mark (bid/ask from the REST ticker).
+                const microstructure = kfLane
+                    ? await fetchKrakenFuturesMicrostructure(config.asset, triggerCandles, macroCandles)
+                    : await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
 
                 const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).eq('tenant_id', tenantId).is('exit_price', null).limit(1);
                 const openTrade = openTrades?.[0];
@@ -1392,7 +1545,50 @@ export async function startSniper(tenantId) {
                 await supabase.from('strategy_config').update({ is_processing: false }).eq('id', config.id).eq('tenant_id', tenantId);
             }
         }
+    };
+
+    // AM63 (Push 5) — Coinbase WebSocket lane (byte-identical to before the
+    // extraction): parse the ticker, then drive processTick.
+    ws.on('message', async (data) => {
+        const message = JSON.parse(data);
+        if (message.channel !== 'ticker' || !message.events) return;
+        const tick = message.events[0].tickers[0];
+        if (!tick) return;
+        const currentPrice = parseFloat(tick.price);
+        const wsAsset = tick.product_id;
+        await processTick(wsAsset, currentPrice);
     });
+
+    // AM63 (Push 5) — Kraken Futures (apiv3) REST lane. The Coinbase WS never ticks
+    // a -PERP-KRF id, so KRF strategies would be dormant forever. This polls the
+    // venue mark on the SAME cadence as the config sync and drives processTick.
+    // NO WebSocket this push (the socket stack ships with the live push). Never
+    // blocks a sweep: a failed mark fetch skips the asset LOUD.
+    const kfPoll = async () => {
+        try {
+            const kfConfigs = (state.configs || []).filter(c => isKrakenFuturesId(c.asset));
+            if (kfConfigs.length === 0) return;
+            const seen = new Set();
+            for (const config of kfConfigs) {
+                const asset = String(config.asset).toUpperCase().trim();
+                if (seen.has(asset)) continue;
+                seen.add(asset);
+                const mark = await fetchKrakenFuturesMark(asset);
+                if (!mark) {
+                    console.warn(`[AM63] KRF mark unavailable for ${asset} — skipping this poll.`);
+                    await logAgentActivity(tenantId, "Sniper", asset, `[AM63] KRF mark unavailable — skipped this poll.`, "KRF_MARK_UNAVAILABLE");
+                    continue;
+                }
+                await processTick(asset, mark.last);
+            }
+        } catch (e) {
+            console.error(`[SNIPER-${tenantId}] KRF poll fault:`, e.message);
+        }
+    };
+    const firstKfPoll = setTimeout(() => { kfPoll().catch(e => console.error('[SNIPER] first KRF poll fault:', e.message)); }, firstSweepDelayMs());
+    registerTimer(`sniper:${tenantId}`, firstKfPoll);
+    const kfPollTimer = setInterval(kfPoll, 30000);
+    registerTimer(`sniper:${tenantId}`, kfPollTimer);
 
     ws.on('close', () => {
         // PUSH AM35 — don't auto-reconnect after an intentional teardown

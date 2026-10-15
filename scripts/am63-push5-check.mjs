@@ -268,6 +268,24 @@ if (exists(DEPLOY)) {
   check('deploy-strategy.js exists', false, DEPLOY + ' not found');
 }
 
+// Sniper venue lane (Push 5 fix): KRF REST polling + KRX loud skip.
+const SNIPER = 'workers/sniper.js';
+if (exists(SNIPER)) {
+  const src = read(SNIPER);
+  check('sniper imports the KRF provider + candle bridge',
+    /providers\/kraken-futures\.js/.test(src) && /from '\.\.\/lib\/candles\.js'/.test(src));
+  check('sniper has a KRF REST lane (getKrakenTickers, NO WebSocket)',
+    /getKrakenTickers\(/.test(src) && /kfPoll/.test(src));
+  check('sniper KRF candles route through the shared bridge (fetchCandles)',
+    /fetchCandles\(\{ product: asset/.test(src));
+  check('sniper skips Bitnomial (KRX) ids LOUD (no scanner data)',
+    /no scanner data for Bitnomial ids yet/.test(src) && /KRAKEN_NO_SCANNER_DATA/.test(src));
+  check('sniper KRF lane is additive (Coinbase path byte-identical)',
+    /fetchCoinbaseData\(config\.asset, tf, apiKeyName, apiSecret\)/.test(src));
+} else {
+  check('sniper.js exists', false, SNIPER + ' not found');
+}
+
 // Migration 062 shape.
 const MIG = 'supabase/migrations/062-favorites-venue.sql';
 if (exists(MIG)) {
