@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import { cbRequest, generateCoinbaseToken } from '../lib/providers/coinbase.js';
 // 🟢 AM63 (Push 2) — per-trade venue assert.
 import { assertExchangeSupported } from '../lib/exchange-router.js';
+// 🟢 AM63 (Push 4) — kraken (Bitnomial) venue-mark pricing (paper-only).
+import { getMarketStats, resolveKrakenProduct } from '../lib/providers/kraken-bitnomial.js';
 import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
 import { cleanupOldScanResults } from '../lib/cleanup-scan-results.js'; 
 import { cleanupOldAgentLogs } from '../lib/cleanup-agent-logs.js';
@@ -68,7 +70,18 @@ async function sendDiscordAlert(tenant_id, { title, description, color, fields =
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
 
-const getAssetMetrics = (symbol) => {
+const getAssetMetrics = (symbol, krakenProduct = null) => {
+    // 🟢 AM63 (Push 4) — kraken (Bitnomial) venue branch: the multiplier is the
+    // contract_size resolved from the id (USD-correct). A silent Coinbase-table
+    // fallback would misprice a KRX id (BTC by 1000x, the two BTC contracts by 100x).
+    if (krakenProduct) {
+        const size = parseFloat(krakenProduct.contractSize);
+        const inc = parseFloat(krakenProduct.priceIncrement);
+        return {
+            multiplier: (Number.isFinite(size) && size > 0) ? size : 1.0,
+            tickSize: (Number.isFinite(inc) && inc > 0) ? inc : 0.01
+        };
+    }
     let multiplier = 1.0; let tickSize = 0.01;
     if (symbol.includes('ETP') || symbol.includes('ETH')) { multiplier = 0.1; tickSize = 0.50; }
     else if (symbol.includes('BIT') || symbol.includes('BIP') || symbol.includes('BTC')) { multiplier = 0.01; tickSize = 5.00; }
@@ -102,6 +115,13 @@ const getSpotSymbol = (symbol) => {
 
 async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, openTrade = null, tpPrice = null, slPrice = null) {
     try {
+        // 🟢 AM63 (Push 4) — kraken has no intraday candles; return the honest
+        // empty state (no chart) rather than fetching Coinbase candles for a KRX
+        // id (the invisible-fallback trap). Covers every call site.
+        if (String(symbol).toUpperCase().includes('-PERP-KRX-')) {
+            console.warn(`[AM63] no chart for kraken symbol ${symbol} (no venue OHLC).`);
+            return null;
+        }
         let telemetry = {};
         const { data: scanData } = await supabase.from('scan_results').select('telemetry').eq('asset', symbol).order('created_at', { ascending: false }).limit(1);
         if (scanData && scanData.length > 0) telemetry = scanData[0].telemetry || {};
@@ -345,27 +365,58 @@ export async function sweepOpenTrades(tenantId) {
                 let coinbaseProduct = asset.toUpperCase().trim();
                 if (!coinbaseProduct.includes('-')) coinbaseProduct = coinbaseProduct.replace('PERP', '-PERP'); 
 
-                // 🟢 PUBLIC TICKER: unauthenticated public market endpoint (mirrors
-                // lib/candles.js). AM58 7b: api.exchange.coinbase.com is geo-blocked.
-                const spotSymbol = getSpotSymbol(asset);
-                const tickerResp = await fetch(`https://api.coinbase.com/api/v3/brokerage/market/products/${spotSymbol}/ticker`, { signal: AbortSignal.timeout(10000) });
-                
-                let tickerData;
-                try {
-                    tickerData = await tickerResp.json();
-                } catch (jsonErr) {
-                    console.error(`[WATCHDOG API FAULT] Coinbase returned non-JSON data for ${asset}. Skipping tick...`);
-                    continue; 
-                }
-                
-                // Public market ticker exposes best_bid/best_ask (not bid/ask).
-                const currentPrice = parseFloat(tickerData.price || tickerData.best_bid || tickerData.best_ask);
-                
-                if (!currentPrice || isNaN(currentPrice)) {
-                    continue;
+                // 🟢 AM63 (Push 4) — KRAKEN (Bitnomial) lane: price from the VENUE
+                // mark, never a Coinbase ticker/candle. One getMarketStats call
+                // serves the whole sweep (>=15s cache). A null payload OR a MISSING
+                // ROW for the resolved product is the SAME loud failure — skip this
+                // trade + CONTINUE (catch-and-continue). A silent Coinbase substitute
+                // would misprice a KRX id at USD spot.
+                const isKrakenTrade = String(openTrade.exchange || '').toLowerCase() === 'kraken';
+                let currentPrice = null;
+                let krakenAsset = null;
+
+                if (isKrakenTrade) {
+                    const product = await resolveKrakenProduct(asset);
+                    if (product && !product.error) {
+                        const stats = await getMarketStats({ productIds: [product.productId] });
+                        const row = stats ? stats[product.productId] : null;
+                        const mark = row ? (row.mark_price ?? row.last_price) : null;
+                        const markPrice = parseFloat(mark);
+                        if (row && Number.isFinite(markPrice) && markPrice > 0) {
+                            currentPrice = markPrice;
+                            krakenAsset = product;
+                        }
+                    }
+                    if (!currentPrice) {
+                        console.warn(`[AM63] kraken stats unavailable for ${asset} (trade ${openTrade.id}) — skipping pricing this sweep.`);
+                        await logAgentActivity(tenantId, "Watchdog", asset, `[AM63] kraken stats unavailable — skipped pricing for trade ${openTrade.id}.`, "KRAKEN_STATS_UNAVAILABLE");
+                        continue;
+                    }
+                } else {
+                    // 🟢 PUBLIC TICKER: unauthenticated public market endpoint (mirrors
+                    // lib/candles.js). AM58 7b: api.exchange.coinbase.com is geo-blocked.
+                    const spotSymbol = getSpotSymbol(asset);
+                    const tickerResp = await fetch(`https://api.coinbase.com/api/v3/brokerage/market/products/${spotSymbol}/ticker`, { signal: AbortSignal.timeout(10000) });
+                    
+                    let tickerData;
+                    try {
+                        tickerData = await tickerResp.json();
+                    } catch (jsonErr) {
+                        console.error(`[WATCHDOG API FAULT] Coinbase returned non-JSON data for ${asset}. Skipping tick...`);
+                        continue; 
+                    }
+                    
+                    // Public market ticker exposes best_bid/best_ask (not bid/ask).
+                    currentPrice = parseFloat(tickerData.price || tickerData.best_bid || tickerData.best_ask);
+                    
+                    if (!currentPrice || isNaN(currentPrice)) {
+                        continue;
+                    }
                 }
 
-                const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct);
+                // 🟢 AM63 (Push 4) — getAssetMetrics branches on venue (kraken →
+                // contract_size from the resolved product).
+                const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct, isKrakenTrade ? krakenAsset : null);
 
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
                     if (openTrade.execution_mode === 'LIVE') {

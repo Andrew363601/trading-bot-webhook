@@ -54,6 +54,16 @@ export default async function handler(req, res) {
         if (tradeErr || !trades || trades.length === 0) throw new Error("Trade not found");
         const trade = trades[0];
 
+        // 🟢 AM63 (Push 4) — kraken (Bitnomial) has NO intraday candles and
+        // cross-venue proxies are forbidden, so this oracle path cannot price a
+        // kraken trade. Refuse LOUD before ANY fetch (never a silent Coinbase
+        // substitute). Kraken closes still work: the agent/close-position paths
+        // book at the venue mark without candles.
+        if ((trade.exchange || '').toLowerCase() === 'kraken') {
+            console.warn(`[AM63] reevaluate refused for kraken trade ${trade.id} (${trade.symbol}).`);
+            return res.status(400).json({ error: '[AM63] reevaluate oracle unavailable for kraken (no charts until venue OHLC)' });
+        }
+
         if (trade.exit_price) return res.status(400).json({ error: "Trade is already closed." });
 
         // 2. Get Strategy Config for Timeframes & MUTEX LOCK

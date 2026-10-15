@@ -96,13 +96,21 @@ if (!exists(ROUTER)) {
     }
 
     if (hasAssert) {
-      let threwUnknown = false, threwKnown = false, threwUndef = false;
-      try { mod.assertExchangeSupported('kraken'); } catch { threwUnknown = true; }
+      // 🟢 AM63 (Push 4) — 'kraken' gained a provider, so the allowlist widened
+      // and the assert now ACCEPTS it. The negative control (a real unknown still
+      // throws) is kept deliberately — that is what makes the widened allowlist a
+      // contract, not a loosening. Behaviour evolves in the same commit as the
+      // router body change (same doctrine as the .toLowerCase() tolerance fix).
+      let threwUnknown = false, threwKnown = false, threwUndef = false, threwKraken = false;
+      try { mod.assertExchangeSupported('bybit'); } catch { threwUnknown = true; }
       try { mod.assertExchangeSupported('coinbase'); } catch { threwKnown = true; }
       try { mod.assertExchangeSupported(undefined); } catch { threwUndef = true; }
-      check('assertExchangeSupported throws for unknown, passes for coinbase/undefined',
+      try { mod.assertExchangeSupported('kraken'); } catch { threwKraken = true; }
+      check('assertExchangeSupported throws for a real unknown, passes for coinbase/undefined',
         threwUnknown && !threwKnown && !threwUndef);
-      const msg = (() => { try { mod.assertExchangeSupported('kraken'); return ''; } catch (e) { return e.message; } })();
+      check("assertExchangeSupported ACCEPTS 'kraken' (Push 4 widened allowlist)",
+        !threwKraken);
+      const msg = (() => { try { mod.assertExchangeSupported('bybit'); return ''; } catch (e) { return e.message; } })();
       check('assertExchangeSupported message is the AM63 loud refusal',
         /\[AM63\]/.test(msg) && /not supported yet/.test(msg));
     }

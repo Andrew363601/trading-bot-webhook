@@ -884,6 +884,15 @@ async function processUnlabeledVetos() {
       const asset = scan.asset;
       const vetoTime = scan.created_at;
 
+      // 🟢 AM63 (Push 4) — shadow is a Coinbase lane. A kraken (Bitnomial) id has
+      // no Coinbase candles and no cross-venue proxy is allowed, so skip LOUD —
+      // full parity is deferred. This guarantees nothing fetches Coinbase candles
+      // for a KRX id in this path.
+      if (String(asset).toUpperCase().includes('-PERP-KRX-')) {
+        console.warn(`[AM63] shadow is a Coinbase lane — kraken strategy ${asset} skipped, full parity deferred.`);
+        continue;
+      }
+
       // 🟢 AM26 — for-body scope: BOTH Path A (computeAdmitted excludeId) and
       // Path B (AM7b debug, AM21 heal, resolution merge) reference pendingRow.
       const pendingRow = pendingByScanId.get(scan.id) || null;

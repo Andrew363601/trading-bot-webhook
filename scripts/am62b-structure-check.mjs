@@ -99,7 +99,11 @@ console.log('\n[5] wiring — execute-trade-mcp (fetch fix + macro structure)');
   ok('chart fetch via lib/candles (5m)', /fetchCandles\(\{ product: coinbaseProduct, granularitySeconds: 'FIVE_MINUTE'/.test(exec));
   ok('macro TTL cache present', /macroCandleCache/.test(exec));
   ok('entry derives from macro candles', /deriveStructureDirection\(\s*entryMacroCandles/.test(exec));
-  ok('close derives from macro candles', /structure_direction: deriveStructureDirection\(\s*await fetchStructureCandles/.test(exec));
+  // AM63 (Push 4) hoisted the close derive into `closeStructureDirection` so the
+  // kraken lane can DECLINE it (no intraday candles). Intent preserved: the close
+  // still derives from macro-TF price structure, and the field is still written.
+  ok('close derives from macro candles', /closeStructureDirection = krakenLane \? null : deriveStructureDirection\(\s*await fetchStructureCandles/.test(exec));
+  ok('close structure_direction is written', /structure_direction: closeStructureDirection/.test(exec));
   ok('params_context mirror kept', /entryParamsContext\.structure_direction = structureDirection/.test(exec));
   ok('retry guard kept', /delete without\.structure_direction/.test(exec));
 }

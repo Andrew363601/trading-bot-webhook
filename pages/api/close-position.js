@@ -2,6 +2,8 @@
 // Secure endpoint for closing/liquidating positions with session validation
 import { createClient } from '@supabase/supabase-js';
 import { executeTradeMCP } from '../../lib/execute-trade-mcp.js';
+// 🟢 AM63 (Push 4) — venue-aware pricing via the Bitnomial provider (kraken).
+import { getMarketStats, resolveKrakenProduct } from '../../lib/providers/kraken-bitnomial.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -9,8 +11,29 @@ const supabase = createClient(
 );
 
 // Helper to fetch current market price from Coinbase public API
-async function getCurrentMarketPrice(symbol) {
+async function getCurrentMarketPrice(symbol, exchange = null) {
   try {
+    // 🟢 AM63 (Push 4) — a kraken (Bitnomial) trade prices from the VENUE mark.
+    // Never a Coinbase substitute: on any failure (null payload OR a MISSING ROW
+    // inside a present payload) return null so the caller falls back to the
+    // user-provided price instead of a fabricated number.
+    if ((exchange || '').toLowerCase() === 'kraken') {
+      const product = await resolveKrakenProduct(symbol);
+      if (!product || product.error) {
+        console.warn(`[AM63] close-position kraken product unresolved for ${symbol}: ${product?.error || 'no product'}`);
+        return null;
+      }
+      const stats = await getMarketStats({ productIds: [product.productId] });
+      const row = stats ? stats[product.productId] : null;
+      const mark = row ? (row.mark_price ?? row.last_price) : null;
+      const price = parseFloat(mark);
+      if (!row || !Number.isFinite(price) || price <= 0) {
+        console.warn(`[AM63] close-position kraken mark unavailable for ${symbol} (product ${product.productId}).`);
+        return null;
+      }
+      console.log(`[CLOSE-POSITION] Kraken venue mark for ${symbol}: $${price}`);
+      return price;
+    }
     // Normalize symbol (e.g., "ETH-PERP-INTX" → "ETH" for spot ticker)
     const baseAsset = symbol.split('-')[0].toUpperCase();
     const spotMap = { 
@@ -119,7 +142,7 @@ export default async function handler(req, res) {
     // Fetch current market price if not provided by user
     let exitPrice = price;
     if (!exitPrice || exitPrice === 0) {
-      const currentPrice = await getCurrentMarketPrice(symbol);
+      const currentPrice = await getCurrentMarketPrice(symbol, trade?.exchange);
       if (currentPrice) {
         exitPrice = currentPrice;
         console.log(`[CLOSE-POSITION API] Using market price: $${exitPrice} for ${symbol}`);

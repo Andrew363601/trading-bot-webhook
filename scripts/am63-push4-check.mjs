@@ -29,9 +29,9 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 
 // ─────────────────────────── Commit A → B switch ───────────────────────────
-// Commit A ships this gate REPORT-ONLY (it inspects Commit B's wiring, which does
+// Commit A shipped this gate REPORT-ONLY (it inspects Commit B's wiring, which did
 // not exist yet). Commit B flips this to false and the gate enforces.
-const REPORT_ONLY = true;
+const REPORT_ONLY = false;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXCLUDE_DIRS = new Set(['node_modules', '.next', '.git', '.vercel', 'scripts']);
@@ -143,7 +143,7 @@ if (exists(PROVIDER)) {
     /https:\/\/bitnomial\.com/.test(src) && !/coinbase\.com/.test(src));
 }
 
-// ── 6. Commit A INERT: no behavior file imports the provider ────────────────
+// ── 6. Commit A INERT ↔ Commit B BOUND (the A→B switch) ─────────────────────
 const providerImporters = [];
 for (const f of files) {
   const file = rel(f);
@@ -151,9 +151,18 @@ for (const f of files) {
   const s = readFileSync(f, 'utf8');
   if (/kraken-bitnomial/.test(s)) providerImporters.push(file);
 }
-check('INERT: no behavior-bearing file imports the provider (Commit A)',
-  providerImporters.length === 0,
-  providerImporters.length ? `imported by: ${providerImporters.join(', ')}` : '');
+if (REPORT_ONLY) {
+  check('INERT (Commit A): no behavior-bearing file imports the provider',
+    providerImporters.length === 0,
+    providerImporters.length ? `imported by: ${providerImporters.join(', ')}` : '');
+} else {
+  // Commit B: the provider is bound at every pricing seam it must own.
+  const need = ['lib/execute-trade-mcp.js', 'workers/watchdog.js', 'pages/api/close-position.js'];
+  const missing = need.filter((f) => !providerImporters.includes(f));
+  check('BOUND (Commit B): provider imported by execute-trade + watchdog + close-position',
+    missing.length === 0,
+    missing.length ? `missing: ${missing.join(', ')}` : '');
+}
 
 // ── 7b. R2-style: no bitnomial host fetch outside the provider ──────────────
 // EXCEPTION: pages/api/available-assets.js is the Push 3 PUBLIC catalogue fetch
@@ -187,7 +196,7 @@ if (exists(EXEC)) {
 const WD = 'workers/watchdog.js';
 if (exists(WD)) {
   const src = read(WD);
-  check('watchdog branches kraken pricing (exchange === \'kraken\')', /exchange\s*===\s*'kraken'/.test(src));
+  check('watchdog branches kraken pricing (exchange === \'kraken\')', /\.exchange[\s\S]{0,60}===\s*'kraken'/.test(src));
   check('watchdog uses getMarketStats for the kraken mark', /getMarketStats\(/.test(src) && /mark_price/.test(src));
   check('watchdog loud [AM63] kraken stats unavailable (catch-and-continue)',
     /\[AM63\] kraken stats unavailable/.test(src));
