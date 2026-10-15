@@ -1,6 +1,6 @@
 // pages/api/chart-data.js
 import { buildRadarChartUrl } from '../../lib/discord-chart.js';
-import { normalizeProduct, SECONDS_TO_GRANULARITY } from '../../lib/candles.js';
+import { normalizeProduct, SECONDS_TO_GRANULARITY, fetchCandles } from '../../lib/candles.js';
 
 export default async function handler(req, res) {
     const { asset, granularity, start, end, tp_price, sl_price, entry_price, trap_price, trap_side } = req.query;
@@ -24,6 +24,11 @@ export default async function handler(req, res) {
     const baseCode = upperAsset.split('-')[0];
     const isFuturesProduct = /-CDE$/.test(upperAsset) && !assetMap[baseCode];
 
+    // 🟢 AM63 (Push 5) — a Kraken Futures (apiv3) id routes to the venue's REAL OHLC
+    // backend (lib/candles.js → provider). This is the piece that makes the dashboard
+    // matrix feel real instead of names-on-a-list. Detection is on the RAW id.
+    const isKrakenFuturesProduct = upperAsset.includes('-PERP-KRF');
+
     let baseAsset = asset.split('-')[0].replace('PERP', '').trim();
     baseAsset = assetMap[baseAsset] || baseAsset;
     
@@ -36,7 +41,20 @@ export default async function handler(req, res) {
         let currentEnd = end ? parseInt(end) : Math.floor(Date.now() / 1000);
         let remaining = Math.min(requestedLimit, 1500); // Hard cap for safety
 
-        if (isFuturesProduct) {
+        if (isKrakenFuturesProduct) {
+            // --- Kraken Futures (apiv3) REAL OHLC (lib/candles.js → provider) ---
+            // fetchCandles returns the normalized {time,open,high,low,close,volume}
+            // shape directly; map it into the shared tuple shape below.
+            const kfCandles = await fetchCandles({
+                product: upperAsset,
+                granularitySeconds: tfGranularity,
+                startEpoch: start ? parseInt(start) : (currentEnd - (requestedLimit * tfGranularity)),
+                endEpoch: currentEnd,
+            });
+            for (const c of kfCandles) {
+                allData.push([c.time, c.low, c.high, c.open, c.close, c.volume]);
+            }
+        } else if (isFuturesProduct) {
             // --- CDP public market candles (unmapped -CDE futures, e.g. BCP-20DEC30-CDE) ---
             const product = normalizeProduct(upperAsset); // hyphenated id passes through intact
             const enumGran = SECONDS_TO_GRANULARITY[tfGranularity] || 'ONE_HOUR';

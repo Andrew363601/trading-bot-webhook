@@ -6,6 +6,8 @@ import { executeTradeMCP } from '../../lib/execute-trade-mcp.js';
 import { cbRequest, generateCoinbaseToken } from '../../lib/providers/coinbase.js';
 import { evaluateTradeIdea } from '../../lib/trade-oracle.js';
 import { buildRadarChartUrl } from '../../lib/discord-chart.js';
+// 🟢 AM63 (Push 5) — krakenfutures REAL venue OHLC via the shared candle bridge.
+import { fetchCandles, resolveGranularity } from '../../lib/candles.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -64,6 +66,14 @@ export default async function handler(req, res) {
             return res.status(400).json({ error: '[AM63] reevaluate oracle unavailable for kraken (no charts until venue OHLC)' });
         }
 
+        // 🟢 AM63 (Push 5) — krakenfutures (apiv3) DOES have real venue OHLC. The
+        // build-time probe proved 1m/5m/15m/30m/1h/4h/1d exist, so the oracle runs on
+        // REAL Kraken candles (a first for the multi-venue program) — no Coinbase
+        // substitute. If the strategy's TF is one the venue lacks (2h/6h), the candle
+        // fetch returns an honest empty and the oracle path fails LOUD below.
+        const isKrakenFutures = (trade.exchange || '').toLowerCase() === 'krakenfutures'
+            || String(trade.symbol || '').toUpperCase().includes('-PERP-KRF');
+
         if (trade.exit_price) return res.status(400).json({ error: "Trade is already closed." });
 
         // 2. Get Strategy Config for Timeframes & MUTEX LOCK
@@ -79,12 +89,21 @@ export default async function handler(req, res) {
         const triggerTf = config.parameters?.trigger_tf || 'FIVE_MINUTE';
 
         // 3. Fetch Data
+        // 🟢 AM63 (Push 5) — krakenfutures trades fetch REAL venue OHLC (via the
+        // candle bridge); every other venue keeps the byte-identical Coinbase path.
+        const fetchData = isKrakenFutures
+            ? (tf) => fetchKrakenFuturesData(trade.symbol, tf)
+            : (tf) => fetchCoinbaseData(trade.symbol, tf, apiKeyName, apiSecret);
         const [macroCandles, triggerCandles] = await Promise.all([
-            fetchCoinbaseData(trade.symbol, macroTf, apiKeyName, apiSecret),
-            fetchCoinbaseData(trade.symbol, triggerTf, apiKeyName, apiSecret)
+            fetchData(macroTf),
+            fetchData(triggerTf)
         ]);
-        
-        if (!macroCandles || !triggerCandles) throw new Error("Failed to fetch market data from Coinbase");
+
+        if (!macroCandles || !triggerCandles || triggerCandles.length === 0) {
+            throw new Error(isKrakenFutures
+                ? "Failed to fetch market data from Kraken Futures (venue OHLC)"
+                : "Failed to fetch market data from Coinbase");
+        }
         const currentPrice = triggerCandles[triggerCandles.length - 1].close;
         const pnlPercent = trade.side === 'BUY' ? (currentPrice - trade.entry_price) / trade.entry_price : (trade.entry_price - currentPrice) / trade.entry_price;
 
@@ -265,6 +284,21 @@ export default async function handler(req, res) {
 }
 
 // Data Helpers
+// 🟢 AM63 (Push 5) — krakenfutures REAL venue OHLC via the shared candle bridge.
+// Returns the SAME { close, high, low, volume } shape fetchCoinbaseData returns.
+async function fetchKrakenFuturesData(asset, granularity) {
+    const { granularitySeconds } = resolveGranularity(granularity || 'ONE_HOUR');
+    const end = Math.floor(Date.now() / 1000);
+    const start = end - granularitySeconds * 300;
+    const candles = await fetchCandles({
+        product: String(asset).toUpperCase().trim(),
+        granularitySeconds,
+        startEpoch: start,
+        endEpoch: end,
+    });
+    return candles.map(c => ({ close: c.close, high: c.high, low: c.low, volume: c.volume }));
+}
+
 async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
     try {
         const safeGranularity = (granularity || 'ONE_HOUR').toUpperCase().replace(' ', '_');

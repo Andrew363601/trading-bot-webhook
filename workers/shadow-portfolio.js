@@ -893,6 +893,13 @@ async function processUnlabeledVetos() {
         continue;
       }
 
+      // 🟢 AM63 (Push 5) — same Coinbase-lane skip for krakenfutures (apiv3) ids.
+      // The venue HAS real OHLC, but shadow parity is deferred (a separate scoping).
+      if (String(asset).toUpperCase().includes('-PERP-KRF')) {
+        console.warn(`[AM63] shadow is a Coinbase lane — krakenfutures strategy ${asset} skipped, full parity deferred.`);
+        continue;
+      }
+
       // 🟢 AM26 — for-body scope: BOTH Path A (computeAdmitted excludeId) and
       // Path B (AM7b debug, AM21 heal, resolution merge) reference pendingRow.
       const pendingRow = pendingByScanId.get(scan.id) || null;

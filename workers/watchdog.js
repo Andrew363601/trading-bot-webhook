@@ -5,6 +5,10 @@ import { cbRequest, generateCoinbaseToken } from '../lib/providers/coinbase.js';
 import { assertExchangeSupported } from '../lib/exchange-router.js';
 // 🟢 AM63 (Push 4) — kraken (Bitnomial) venue-mark pricing (paper-only).
 import { getMarketStats, resolveKrakenProduct } from '../lib/providers/kraken-bitnomial.js';
+// 🟢 AM63 (Push 5) — Kraken Futures (apiv3) venue-mark pricing + REAL venue OHLC.
+import { getKrakenTickers, resolveKrakenFuturesProduct } from '../lib/providers/kraken-futures.js';
+// 🟢 AM63 (Push 5) — the shared candle bridge (routes -PERP-KRF to venue OHLC).
+import { fetchCandles } from '../lib/candles.js';
 import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
 import { cleanupOldScanResults } from '../lib/cleanup-scan-results.js'; 
 import { cleanupOldAgentLogs } from '../lib/cleanup-agent-logs.js';
@@ -70,13 +74,24 @@ async function sendDiscordAlert(tenant_id, { title, description, color, fields =
     } catch (e) { console.error("Discord Alert Failed:", e.message); }
 }
 
-const getAssetMetrics = (symbol, krakenProduct = null) => {
+const getAssetMetrics = (symbol, krakenProduct = null, krakenFuturesProduct = null) => {
     // 🟢 AM63 (Push 4) — kraken (Bitnomial) venue branch: the multiplier is the
     // contract_size resolved from the id (USD-correct). A silent Coinbase-table
     // fallback would misprice a KRX id (BTC by 1000x, the two BTC contracts by 100x).
     if (krakenProduct) {
         const size = parseFloat(krakenProduct.contractSize);
         const inc = parseFloat(krakenProduct.priceIncrement);
+        return {
+            multiplier: (Number.isFinite(size) && size > 0) ? size : 1.0,
+            tickSize: (Number.isFinite(inc) && inc > 0) ? inc : 0.01
+        };
+    }
+    // 🟢 AM63 (Push 5) — krakenfutures (apiv3) venue branch: multiplier = the
+    // instrument's contractSize, tick = the instrument's OWN tickSize (never a
+    // Coinbase-table tick — the KRX polish gap must not repeat here).
+    if (krakenFuturesProduct) {
+        const size = parseFloat(krakenFuturesProduct.contractSize);
+        const inc = parseFloat(krakenFuturesProduct.tickSize);
         return {
             multiplier: (Number.isFinite(size) && size > 0) ? size : 1.0,
             tickSize: (Number.isFinite(inc) && inc > 0) ? inc : 0.01
@@ -121,6 +136,32 @@ async function buildWatchdogChart(symbol, currentPrice, apiKeyName, apiSecret, o
         if (String(symbol).toUpperCase().includes('-PERP-KRX-')) {
             console.warn(`[AM63] no chart for kraken symbol ${symbol} (no venue OHLC).`);
             return null;
+        }
+        // 🟢 AM63 (Push 5) — krakenfutures HAS real venue OHLC (probe-proven
+        // 1m/5m/15m/30m/1h/4h/1d). Build the chart from REAL Kraken candles via the
+        // shared bridge — never a Coinbase substitute. An empty result (e.g. an
+        // unsupported TF) returns the honest empty state.
+        if (String(symbol).toUpperCase().includes('-PERP-KRF')) {
+            const end = Math.floor(Date.now() / 1000);
+            const start = end - (300 * 50);
+            let kfCandles = [];
+            try {
+                kfCandles = await fetchCandles({ product: symbol, granularitySeconds: 300, startEpoch: start, endEpoch: end });
+            } catch (e) {
+                console.warn(`[AM63] krakenfutures chart candles failed for ${symbol}: ${e.message}`);
+            }
+            if (!kfCandles || kfCandles.length === 0) {
+                console.warn(`[AM63] no chart for krakenfutures symbol ${symbol} (empty venue OHLC).`);
+                return null;
+            }
+            return await buildRadarChartUrl({
+                asset: symbol,
+                candles: kfCandles.slice(-50),
+                currentPrice,
+                tpPrice,
+                slPrice,
+                openTrade: openTrade ? { entry_price: openTrade.entry_price } : null
+            });
         }
         let telemetry = {};
         const { data: scanData } = await supabase.from('scan_results').select('telemetry').eq('asset', symbol).order('created_at', { ascending: false }).limit(1);
@@ -372,10 +413,33 @@ export async function sweepOpenTrades(tenantId) {
                 // trade + CONTINUE (catch-and-continue). A silent Coinbase substitute
                 // would misprice a KRX id at USD spot.
                 const isKrakenTrade = String(openTrade.exchange || '').toLowerCase() === 'kraken';
+                // 🟢 AM63 (Push 5) — KRAKEN FUTURES (apiv3) lane: price from the VENUE
+                // mark (getKrakenTickers), never a Coinbase ticker/candle. A null
+                // payload OR a MISSING ROW is the SAME loud failure — skip + CONTINUE.
+                const isKrakenFuturesTrade = String(openTrade.exchange || '').toLowerCase() === 'krakenfutures'
+                    || String(asset).toUpperCase().includes('-PERP-KRF');
                 let currentPrice = null;
                 let krakenAsset = null;
+                let krakenFuturesAsset = null;
 
-                if (isKrakenTrade) {
+                if (isKrakenFuturesTrade) {
+                    const product = await resolveKrakenFuturesProduct(asset);
+                    if (product && !product.error) {
+                        const tickers = await getKrakenTickers({ symbols: [product.nativeSymbol] });
+                        const row = tickers ? tickers[product.nativeSymbol] : null;
+                        const mark = row ? (row.markPrice ?? row.last) : null;
+                        const markPrice = parseFloat(mark);
+                        if (row && Number.isFinite(markPrice) && markPrice > 0) {
+                            currentPrice = markPrice;
+                            krakenFuturesAsset = product;
+                        }
+                    }
+                    if (!currentPrice) {
+                        console.warn(`[AM63] krakenfutures stats unavailable for ${asset} (trade ${openTrade.id}) — skipping pricing this sweep.`);
+                        await logAgentActivity(tenantId, "Watchdog", asset, `[AM63] krakenfutures stats unavailable — skipped pricing for trade ${openTrade.id}.`, "KRF_STATS_UNAVAILABLE");
+                        continue;
+                    }
+                } else if (isKrakenTrade) {
                     const product = await resolveKrakenProduct(asset);
                     if (product && !product.error) {
                         const stats = await getMarketStats({ productIds: [product.productId] });
@@ -416,7 +480,13 @@ export async function sweepOpenTrades(tenantId) {
 
                 // 🟢 AM63 (Push 4) — getAssetMetrics branches on venue (kraken →
                 // contract_size from the resolved product).
-                const { multiplier, tickSize } = getAssetMetrics(coinbaseProduct, isKrakenTrade ? krakenAsset : null);
+                // 🟢 AM63 (Push 5) — krakenfutures → contractSize + the instrument's
+                // OWN tickSize from the resolved product.
+                const { multiplier, tickSize } = getAssetMetrics(
+                    coinbaseProduct,
+                    isKrakenTrade ? krakenAsset : null,
+                    isKrakenFuturesTrade ? krakenFuturesAsset : null
+                );
 
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
                     if (openTrade.execution_mode === 'LIVE') {

@@ -366,9 +366,12 @@ function SettingsContent() {
                                 ('COINBASE' legacy rows; 'KRAKEN'). Routing columns
                                 (strategy_config / trade_logs) stay lowercase canonical.
                                 This asymmetry is BY DESIGN — do NOT "unify" them. Push 4's
-                                adapter reads the vault with 'KRAKEN'. */}
+                                adapter reads the vault with 'KRAKEN'.
+                                🟢 PUSH AM63 (Push 5) — 'KRAKENFUTURES' (real Kraken
+                                Futures apiv3) added; stored now, execution arrives Push 6. */}
                             <option value="COINBASE">Coinbase Advanced Trade</option>
                             <option value="KRAKEN">Kraken Derivatives US (Bitnomial perps)</option>
+                            <option value="KRAKENFUTURES">Kraken Futures (apiv3)</option>
                         </select>
                     </div>
 
@@ -378,12 +381,18 @@ function SettingsContent() {
                         </p>
                     )}
 
+                    {exchange === 'KRAKENFUTURES' && (
+                        <p className="text-[11px] text-amber-300/80 leading-relaxed font-medium">
+                            Kraken Futures (apiv3) keys are stored now — live execution arrives with Push 6. The venue runs paper-only until then.
+                        </p>
+                    )}
+
                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">{exchange === 'KRAKEN' ? 'Connection ID' : 'API Key (Name)'}</label>
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">{exchange === 'KRAKEN' ? 'Connection ID' : exchange === 'KRAKENFUTURES' ? 'API Key (apiv3)' : 'API Key (Name)'}</label>
                         <input
                             type="text"
                             required
-                            placeholder={exchange === 'KRAKEN' ? '3f1a...9c (hex Connection ID)' : 'organizations/...'}
+                            placeholder={exchange === 'KRAKEN' ? '3f1a...9c (hex Connection ID)' : exchange === 'KRAKENFUTURES' ? 'apiv3 public key' : 'organizations/...'}
                             value={apiKey}
                             onChange={(e) => setApiKey(e.target.value)}
                             className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
@@ -391,11 +400,11 @@ function SettingsContent() {
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">{exchange === 'KRAKEN' ? 'Auth Token' : 'API Secret (Private Key)'}</label>
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">{exchange === 'KRAKEN' ? 'Auth Token' : exchange === 'KRAKENFUTURES' ? 'API Secret (base64)' : 'API Secret (Private Key)'}</label>
                         <textarea
                             required
                             rows={exchange === 'KRAKEN' ? 2 : 4}
-                            placeholder={exchange === 'KRAKEN' ? '64-char hex Auth Token' : '-----BEGIN ANY PRIVATE KEY-----'}
+                            placeholder={exchange === 'KRAKEN' ? '64-char hex Auth Token' : exchange === 'KRAKENFUTURES' ? 'base64 private key (apiv3)' : '-----BEGIN ANY PRIVATE KEY-----'}
                             value={apiSecret}
                             onChange={(e) => setApiSecret(e.target.value)}
                             className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"

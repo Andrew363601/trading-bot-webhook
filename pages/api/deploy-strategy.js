@@ -26,7 +26,9 @@ async function handler(req, res) {
   // 🟢 PUSH AM63 (Push 3) — venue stamp. strategy_config.exchange is a canonical
   // LOWERCASE routing column. Normalize the caller's venue and refuse an unknown
   // one LOUDLY (same shape as the router) rather than silently writing coinbase.
-  const KNOWN_EXCHANGES = ['coinbase', 'kraken'];
+  // 🟢 PUSH AM63 (Push 5) — 'krakenfutures' (real Kraken Futures apiv3) admitted so
+  // Studio can deploy the KRF universe (paper-only until Push 6).
+  const KNOWN_EXCHANGES = ['coinbase', 'kraken', 'krakenfutures'];
   const deployExchange = (req.body.exchange || 'coinbase').toString().toLowerCase();
   if (!KNOWN_EXCHANGES.includes(deployExchange)) {
     return res.status(400).json({ error: `[AM63] unsupported exchange '${deployExchange}'` });

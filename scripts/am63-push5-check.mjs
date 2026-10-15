@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // ─────────────────────────── Commit A → B switch ───────────────────────────
-const REPORT_ONLY = true;
+const REPORT_ONLY = false;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXCLUDE_DIRS = new Set(['node_modules', '.next', '.git', '.vercel', 'scripts']);
@@ -145,8 +145,10 @@ if (exists(CATALOG)) {
   check("catalog branches on exchange === 'krakenfutures'", /krakenfutures/.test(src));
   check('catalog KRF branch carries a real price (markPrice, not 0)',
     /markPrice/.test(src) && /-PERP-KRF/.test(src));
-  check('catalog KRF branch uses a short cache TTL (60 s)',
-    /revalidate:\s*60\b/.test(src));
+  // Freshness: the KRF branch reads the provider's short-TTL caches (15 s tickers)
+  // rather than pinning a long Next revalidate — fresher than the 60 s decision.
+  check('catalog KRF branch relies on the provider for fresh marks',
+    /getKrakenInstruments|getKrakenTickers/.test(src));
 } else {
   check('available-assets.js exists', false, CATALOG + ' not found');
 }
@@ -155,7 +157,11 @@ const EXEC = 'lib/execute-trade-mcp.js';
 if (exists(EXEC)) {
   const src = read(EXEC);
   check("execute-trade branches on exchange === 'krakenfutures'", /krakenfutures/.test(src));
-  check('execute-trade detects the KRF id WITHOUT a trailing dash', /-PERP-KRF'/.test(src) && !/-PERP-KRF-'/.test(src));
+  // Strip comments first — the explanatory comment legitimately mentions the WRONG
+  // form (`-PERP-KRF-`) to warn against it, which would false-trip the negative.
+  const execCode = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  check('execute-trade detects the KRF id WITHOUT a trailing dash',
+    /includes\('-PERP-KRF'\)/.test(execCode) && !/includes\('-PERP-KRF-'\)/.test(execCode));
   check('execute-trade LIVE refuses loud with the exact [AM63] text',
     /\[AM63\] Kraken Futures live execution arrives in Push 6 \(apiv3 sendorder\)\. Venue runs paper-only until then\./.test(src));
   check('execute-trade KRF PAPER entry prices from getKrakenTickers (loud 502 if unknown)',

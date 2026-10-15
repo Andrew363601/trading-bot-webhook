@@ -29,6 +29,11 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   const [liveWarning, setLiveWarning] = useState(null); // { reason, strategy } — LIVE eligibility popup
   const [hasCoinbaseKeys, setHasCoinbaseKeys] = useState(null); // null = unknown, true/false once checked
   const [tenantId, setTenantId] = useState(null); // Cache tenant_id to avoid repeated queries
+  // 🟢 PUSH AM63 (Push 5) — ONE venue selector drives the WHOLE matrix. Values are
+  // the lowercase routing literals ('coinbase' | 'kraken' | 'krakenfutures').
+  const [venue, setVenue] = useState('coinbase');
+  // Last venue we fetched (per-venue cache). Replaces the once-per-session boolean.
+  const fetchedVenueRef = useRef(null);
   const tabBarRef = useRef(null); // Ref for mobile touch-drag scrolling on tab bar
   const tabDragState = useRef({ isDragging: false, startX: 0, scrollLeft: 0 });
 
@@ -72,22 +77,36 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     }
   }, [currentAsset, allAssets, selectedAsset]);
 
-  // Fetch all available FUTURES assets
+  // Fetch all available FUTURES assets for the CURRENT venue.
+  // 🟢 PUSH AM63 (Push 5) — venue-keyed fetch with a stale-race guard (mirrors the
+  // Studio pattern). A venue swap invalidates the previous matrix: we clear the
+  // selection + favorites view so a Coinbase id can NEVER be carried into a Kraken
+  // menu (and vice versa).
   useEffect(() => {
     const fetchAssets = async () => {
       if (!token) return;
+      const v = venue; // capture BEFORE await (stale-race guard)
+      if (fetchedVenueRef.current === v) return; // already fetched this venue
+      fetchedVenueRef.current = v;
+      // Invalidate the prior venue's matrix the moment the venue changes.
+      setAllAssets([]);
+      setSelectedAsset(null);
+      setAvailableStrategies([]);
       try {
-        const res = await fetch('/api/available-assets', {
+        const res = await fetch(`/api/available-assets?exchange=${v}`, {
           headers: { Authorization: `Bearer ${token}` }
         });
         const data = await res.json();
+        // A fast double-swap must not land the previous venue's payload.
+        if (fetchedVenueRef.current !== v) return;
         setAllAssets(data.products || []);
       } catch (err) {
         console.error('Failed to fetch assets:', err);
+        if (fetchedVenueRef.current === v) fetchedVenueRef.current = null; // allow retry
       }
     };
     fetchAssets();
-  }, [token]);
+  }, [token, venue]);
 
   // Load tenant_id once and cache it
   useEffect(() => {
@@ -112,14 +131,15 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     loadTenantId();
   }, [token, session, supabase]);
 
-  // Load favorites from DB
+  // Load favorites from DB — scoped to the CURRENT venue (migration 062).
   const loadFavorites = useCallback(async () => {
     if (!token || !tenantId) return;
     try {
       const { data: favAssets, error } = await supabase
         .from('favorite_assets')
         .select('asset')
-        .eq('tenant_id', tenantId);
+        .eq('tenant_id', tenantId)
+        .eq('venue', venue);
 
       if (error) {
         console.error('Failed to load favorites from DB:', error);
@@ -130,7 +150,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     } catch (err) {
       console.error('Failed to load favorites:', err);
     }
-  }, [token, tenantId, supabase]);
+  }, [token, tenantId, supabase, venue]);
 
   useEffect(() => {
     loadFavorites();
@@ -188,12 +208,13 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     setFavoritesLoading(prev => ({ ...prev, [assetName]: true }));
     try {
       if (favorites.includes(assetName)) {
-        // Delete favorite
+        // Delete favorite (scoped to the CURRENT venue — migration 062).
         const { error } = await supabase
           .from('favorite_assets')
           .delete()
           .eq('tenant_id', tenantId)
-          .eq('asset', assetName);
+          .eq('asset', assetName)
+          .eq('venue', venue);
 
         if (error) {
           console.error('Failed to remove favorite:', error);
@@ -204,10 +225,10 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
           await loadFavorites();
         }
       } else {
-        // Add favorite
+        // Add favorite (stamped with the CURRENT venue — migration 062).
         const { data, error } = await supabase
           .from('favorite_assets')
-          .insert([{ tenant_id: tenantId, asset: assetName }])
+          .insert([{ tenant_id: tenantId, asset: assetName, venue }])
           .select();
 
         if (error) {
@@ -269,7 +290,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
         body: JSON.stringify({
           asset: selectedAsset.id,
           strategy: strategy.id,
-          exchange: 'coinbase',
+          exchange: venue,
           product_type: 'FUTURES',
           force_replace: forceReplace,
           parameters: {
@@ -318,7 +339,10 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
       );
       if (!assetHasActiveStrategy) return false;
     }
-    if (activeTab === 'PERPS' && !a.id.includes('PERP')) return false;
+    // 🟢 PUSH AM63 (Push 5) — venue-aware tabs. PERPS matches any venue's perp id
+    // (`-PERP-` covers -PERP-INTX / -PERP-KRX- / -PERP-KRF). FUTURES (-CDE) is a
+    // Coinbase-only product family — on a kraken venue the tab is empty (honest).
+    if (activeTab === 'PERPS' && !a.id.includes('-PERP-')) return false;
     if (activeTab === 'FUTURES' && !a.id.includes('-CDE')) return false;
     // 2. Search filtering (using normalized ID)
     if (searchTerm && !normalizedId.includes(searchTerm.toUpperCase())) return false;
@@ -337,6 +361,24 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
       className="bg-slate-950/50 rounded-2xl p-3 space-y-4 max-h-[calc(100vh-180px)] md:max-h-[520px] md:h-[520px] overflow-y-auto overflow-x-hidden custom-scrollbar"
       style={{ touchAction: 'pan-y' }}
     >
+      {/* 🟢 PUSH AM63 (Push 5) — VENUE SELECT FIRST. Swapping the venue repopulates
+          the WHOLE matrix (assets, favorites, selection, deploy panel). Values are
+          the lowercase routing literals. */}
+      <div className="flex items-center gap-2">
+        <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 shrink-0">
+          Venue
+        </label>
+        <select
+          value={venue}
+          onChange={(e) => setVenue(e.target.value)}
+          className="flex-1 bg-slate-950 border border-white/10 rounded-xl px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+        >
+          <option value="coinbase">Coinbase</option>
+          <option value="kraken">Kraken US (Bitnomial)</option>
+          <option value="krakenfutures">Kraken Futures</option>
+        </select>
+      </div>
+
       {/* Tabs.
           • Mobile: a draggable strip — only the tabs move (drag the bar below to scroll
             through them); no page-level horizontal scrollbar.

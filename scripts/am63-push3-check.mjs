@@ -101,8 +101,11 @@ if (!exists(DEP)) {
     /exchange[\s\S]{0,60}\.toLowerCase\(\)/.test(src));
   check("deploy-strategy stamps exchange into the upsert payload",
     /exchange\s*[:,]/.test(src) && /payload/.test(src));
-  check('deploy-strategy venue allowlist [coinbase, kraken]',
-    /coinbase['"]?,?\s*['"]kraken/.test(src) || /\[\s*'coinbase'\s*,\s*'kraken'\s*\]/.test(src));
+  // 🟢 AM63 (Push 5) — the allowlist widened to admit 'krakenfutures' (real Kraken
+  // Futures apiv3). The assertion now requires BOTH 'kraken' AND 'krakenfutures' so
+  // the push3 contract (kraken admitted) is preserved while push5 extends it.
+  check('deploy-strategy venue allowlist includes coinbase + kraken + krakenfutures',
+    /\[\s*'coinbase'\s*,\s*'kraken'\s*,\s*'krakenfutures'\s*\]/.test(src));
 }
 
 // ── 5. settings.js — KRAKEN option, placeholders, vault query fix ───────────
@@ -167,8 +170,11 @@ if (!exists(MS)) {
   // The strategy_config WRITE path is lowercase; the vault read is the ONLY place a
   // 'COINBASE' literal may remain.
   const coinbaseLiterals = (src.match(/'COINBASE'/g) || []).length;
-  check("MarketScanner writes lowercase 'coinbase' to strategy_config",
-    /exchange:\s*'coinbase'/.test(src));
+  // 🟢 AM63 (Push 5) — the write is now `exchange: venue` (the venue state holds the
+  // lowercase routing literal from the venue select). The push3 intent — a lowercase
+  // canonical write — is preserved; accept either the literal or the venue state.
+  check("MarketScanner writes a lowercase canonical exchange to strategy_config",
+    /exchange:\s*'coinbase'/.test(src) || /exchange:\s*venue\b/.test(src));
   check("MarketScanner's only 'COINBASE' literal is the VAULT read",
     coinbaseLiterals === 1 && /\.eq\('exchange',\s*'COINBASE'\)/.test(src),
     `found ${coinbaseLiterals} 'COINBASE' literal(s), want exactly 1 (the vault read)`);

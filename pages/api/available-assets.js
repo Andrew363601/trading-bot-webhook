@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import { cbRequest, generateCoinbaseToken } from '../../lib/providers/coinbase.js';
 import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
+// 🟢 PUSH AM63 (Push 5) — Kraken Futures (apiv3) catalogue via the provider (public).
+import { getKrakenInstruments, getKrakenTickers } from '../../lib/providers/kraken-futures.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -20,9 +22,13 @@ async function handler(req, res) {
   // (byte-identical: CFM fallback, top-rank map, dedupe, 100-cap). `kraken` → the
   // Bitnomial US perps catalogue. Any OTHER venue is refused LOUD — a caller that
   // names a venue must get that venue or an error (never a silent Coinbase fallback).
+  // 🟢 PUSH AM63 (Push 5) — `krakenfutures` → the REAL Kraken Futures (apiv3) perps.
   const exchange = String(req.query.exchange || 'coinbase').toLowerCase();
   if (exchange === 'kraken') {
     return handleKraken(res);
+  }
+  if (exchange === 'krakenfutures') {
+    return handleKrakenFutures(res);
   }
   if (exchange !== 'coinbase') {
     return res.status(400).json({ error: `[AM63] unsupported exchange '${exchange}'` });
@@ -229,6 +235,58 @@ async function handleKraken(res) {
   } catch (e) {
     console.error('[AVAILABLE ASSETS ERROR][exchange=kraken]:', e.message);
     return res.status(502).json({ error: `[AM63] Kraken catalog fetch exception: ${e.message}` });
+  }
+}
+
+// 🟢 PUSH AM63 (Push 5) — Kraken Futures (apiv3) catalogue. Public, no auth.
+//
+// IDENTITY: id = `${BASE}-PERP-KRF` (e.g. BTC-PERP-KRF). apiv3 has ONE perp per base,
+// so there is NO size suffix (unlike Bitnomial's -KRX-<size>). The provider owns the
+// host + the PF_ filter; this handler only shapes the payload for the venue matrix.
+//
+// PRICE: unlike Bitnomial's specs, Kraken carries REAL marks — the matrix shows live
+// prices (markPrice primary, last fallback). ALL PF_ instruments are surfaced (crypto,
+// equities, commodities, indices, pre-IPO) — the matrix is venue-truthful.
+//
+// CACHE: 60 s (NOT the 3600 s the Coinbase/kraken branches use) — these are live marks.
+async function handleKrakenFutures(res) {
+  try {
+    const [instruments, tickers] = await Promise.all([
+      getKrakenInstruments(),
+      getKrakenTickers(),
+    ]);
+
+    if (!instruments) {
+      console.error('[AVAILABLE ASSETS ERROR][exchange=krakenfutures]: instruments unavailable');
+      return res.status(502).json({ error: '[AM63] Kraken Futures catalog unavailable (instruments)' });
+    }
+
+    const products = Object.values(instruments).map((inst) => {
+      const t = tickers ? tickers[inst.nativeSymbol] : null;
+      const mark = t ? (t.markPrice ?? t.last) : null;
+      const price = parseFloat(mark);
+      const vol = t ? parseFloat(t.vol24h) : NaN;
+      return {
+        id: inst.id,
+        name: inst.id,
+        base: inst.base,
+        price: Number.isFinite(price) ? price : 0,   // venue mark (real, unlike KRX)
+        volume_24h: Number.isFinite(vol) ? vol : 0,
+        price_percentage_change_24h: 0,              // not in the tickers payload
+        native_symbol: inst.nativeSymbol,
+        contract_size: inst.contractSize,
+        tick_size: inst.tickSize,
+        exchange: 'krakenfutures',
+      };
+    })
+      // Sort by 24 h volume desc (real venue liquidity), then id asc for stability.
+      .sort((a, b) => (b.volume_24h - a.volume_24h) || a.id.localeCompare(b.id))
+      .slice(0, 100);
+
+    return res.status(200).json({ count: products.length, products });
+  } catch (e) {
+    console.error('[AVAILABLE ASSETS ERROR][exchange=krakenfutures]:', e.message);
+    return res.status(502).json({ error: `[AM63] Kraken Futures catalog fetch exception: ${e.message}` });
   }
 }
 

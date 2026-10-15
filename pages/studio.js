@@ -806,6 +806,7 @@ export default function StudioPage() {
                   >
                     <option value="coinbase">Coinbase</option>
                     <option value="kraken">Kraken (US Perps)</option>
+                    <option value="krakenfutures">Kraken Futures</option>
                   </select>
                 </div>
 
@@ -829,7 +830,9 @@ export default function StudioPage() {
                   <p className="text-[9px] text-slate-500 mt-1">
                     {assetExchange === 'coinbase'
                       ? 'Coinbase futures (e.g. ETP-20DEC30-CDE) when listed.'
-                      : 'Bitnomial US perpetuals — pricing/history arrives with Push 4.'}
+                      : assetExchange === 'krakenfutures'
+                        ? 'Kraken Futures (apiv3) perpetuals — real venue OHLC. Paper-only until Push 6.'
+                        : 'Bitnomial US perpetuals — pricing/history arrives with Push 4.'}
                   </p>
                 </div>
 
