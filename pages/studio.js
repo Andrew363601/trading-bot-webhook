@@ -79,7 +79,12 @@ export default function StudioPage() {
 
   // PUSH AM49d — asset matrix dropdown (replaces free-text input)
   const [availableAssets, setAvailableAssets] = useState([]);
-  const assetsFetchedRef = useRef(false);
+  // 🟢 PUSH AM63 (Push 3) — ONE venue selector drives the whole asset menu.
+  // Values are lowercase canonical ('coinbase'|'kraken'); they double as the
+  // ?exchange= query param AND the deploy body's `exchange`.
+  const [assetExchange, setAssetExchange] = useState('coinbase');
+  // Last venue we fetched (per-venue cache). Replaces the once-per-session boolean.
+  const fetchedVenueRef = useRef(null);
 
   // PUSH AM50 — timestamp of the currently rendered backtest run, so the tab
   // auto-sync can avoid clobbering a fresher locally-run result.
@@ -244,6 +249,7 @@ export default function StudioPage() {
           strategy_id: selectedStrategy.id,
           name: selectedStrategy.name,
           product: backtestProduct,
+          exchange: assetExchange,
           macro_tf: macroTf,
           trigger_tf: triggerTf,
           start: startEpoch,
@@ -283,24 +289,34 @@ export default function StudioPage() {
     }
   };
 
-  // PUSH AM49d — fetch the tradeable asset matrix once per session (cached)
+  // PUSH AM49d / AM63 (Push 3) — fetch the tradeable asset matrix for the CURRENT venue.
+  // A venue swap invalidates the previous menu: we clear availableAssets AND
+  // backtestProduct so a Coinbase product id can NEVER be carried into a Kraken menu
+  // (or vice versa) — the fallback effect then repopulates from the new list.
   useEffect(() => {
-    if (activeTab !== 'BACKTEST' || assetsFetchedRef.current) return;
-    assetsFetchedRef.current = true;
+    if (activeTab !== 'BACKTEST') return;
+    const venue = assetExchange; // capture BEFORE await (stale-race guard)
+    if (fetchedVenueRef.current === venue) return; // already fetched this venue
+    fetchedVenueRef.current = venue;
+    // Invalidate the prior venue's menu the moment the venue changes.
+    setAvailableAssets([]);
+    setBacktestProduct('');
     (async () => {
       try {
-        const res = await fetch('/api/available-assets', {
+        const res = await fetch(`/api/available-assets?exchange=${venue}`, {
           headers: { Authorization: `Bearer ${session?.access_token}` }
         });
         const data = await res.json();
+        // A fast double-swap must not land the previous venue's payload.
+        if (fetchedVenueRef.current !== venue) return;
         const products = Array.isArray(data.products) ? data.products : [];
         setAvailableAssets(products.map(p => p.id).filter(Boolean));
       } catch (err) {
         console.error('Available assets fetch error:', err);
-        assetsFetchedRef.current = false; // allow retry on next tab mount
+        if (fetchedVenueRef.current === venue) fetchedVenueRef.current = null; // allow retry
       }
     })();
-  }, [activeTab, session]);
+  }, [activeTab, session, assetExchange]);
 
   // PUSH AM49d — keep manual entry if it matches a listed option; else fall
   // back to the strategy's latest_backtest.product, else the first listed product.
@@ -371,6 +387,7 @@ export default function StudioPage() {
           version: 'v' + selectedStrategy.version + '.0',
           config: backtestResult.effective_parameters,
           asset: backtestProduct,
+          exchange: assetExchange,
           execution_mode: 'PAPER'
         })
       });
@@ -776,7 +793,22 @@ export default function StudioPage() {
               </div>
 
               {/* Form Row */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 pt-1">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 pt-1">
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                    Venue
+                  </label>
+                  {/* PUSH AM63 (Push 3) — ONE venue selector; swaps the ENTIRE asset menu. */}
+                  <select
+                    value={assetExchange}
+                    onChange={(e) => setAssetExchange(e.target.value)}
+                    className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="coinbase">Coinbase</option>
+                    <option value="kraken">Kraken (US Perps)</option>
+                  </select>
+                </div>
+
                 <div>
                   <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
                     Asset / Product
@@ -795,7 +827,9 @@ export default function StudioPage() {
                     ))}
                   </select>
                   <p className="text-[9px] text-slate-500 mt-1">
-                    CDE futures (e.g. ETP-20DEC30-CDE) are included when listed on Coinbase.
+                    {assetExchange === 'coinbase'
+                      ? 'Coinbase futures (e.g. ETP-20DEC30-CDE) when listed.'
+                      : 'Bitnomial US perpetuals — pricing/history arrives with Push 4.'}
                   </p>
                 </div>
 

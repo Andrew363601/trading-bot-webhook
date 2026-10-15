@@ -30,7 +30,7 @@ import path from 'node:path';
 // ─────────────────────────── Commit A → B switch ───────────────────────────
 // Commit A ships this gate REPORT-ONLY (it inspects Commit B's Studio/deploy/settings
 // wiring, which does not exist yet). Commit B flips this to false and the gate enforces.
-const REPORT_ONLY = true;
+const REPORT_ONLY = false;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => readFileSync(path.join(ROOT, rel), 'utf8');

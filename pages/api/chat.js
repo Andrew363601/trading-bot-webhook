@@ -941,9 +941,29 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
               const actualEnd = end || nowIso;
               const actualStart = start || defaultStartIso;
 
+              // 🟢 PUSH AM63 (Push 3) — resolve the config's venue so the Coinbase-only
+              // guard INFORMS (loud refusal in the reply) rather than silently running.
+              // The select MUST include `exchange` — a select that omits it treats every
+              // config as coinbase (the exact silent-stamp bug Push 2 shipped). Fresh
+              // query by strategy_name + tenant_id; default 'coinbase' when absent.
+              let configExchange = 'coinbase';
+              try {
+                const { data: cfgRow } = await supabase
+                  .from('strategy_config')
+                  .select('exchange')
+                  .eq('tenant_id', tenantId)
+                  .eq('strategy', cleanName)
+                  .limit(1)
+                  .maybeSingle();
+                if (cfgRow?.exchange) configExchange = String(cfgRow.exchange).toLowerCase();
+              } catch (e) {
+                console.warn('[CHAT runBacktest] exchange lookup failed:', e.message);
+              }
+
               const result = await runBacktestForTenant(supabase, tenantId, {
                 strategy_name: cleanName,
                 product: resolvedProduct,
+                exchange: configExchange,
                 macro_tf,
                 trigger_tf,
                 start: actualStart,

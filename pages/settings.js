@@ -82,14 +82,20 @@ function SettingsContent() {
                 }
                 setIsAdmin(userIsAdmin);
 
+                // 🟢 PUSH AM63 (Push 3) — a tenant may hold MULTIPLE venue rows
+                // (COINBASE + KRAKEN). `.single()` silently breaks the moment a second
+                // row exists (PGRST116 is tolerated below, so prefill simply dies).
+                // Fetch the array and prefill from the row matching the selected venue
+                // (default COINBASE). Scope: this vault query ONLY — the tenant_users /
+                // tenants / tenant_settings queries below are legitimately single-row.
                 const { data: apiKeys, error: keysError } = await supabase
                     .from('api_keys_vault')
                     .select('exchange, key_encrypted, secret_encrypted')
-                    .eq('tenant_id', actualTenantId)
-                    .single();
+                    .eq('tenant_id', actualTenantId);
                 if (keysError && keysError.code !== 'PGRST116') throw keysError;
-                if (apiKeys) {
-                    setExchange(apiKeys.exchange);
+                if (Array.isArray(apiKeys) && apiKeys.length) {
+                    const preferred = apiKeys.find(k => k.exchange === 'COINBASE') || apiKeys[0];
+                    setExchange(preferred.exchange);
                 }
 
                 // Fetch Tenant Settings for webhook URL + risk profile
@@ -356,16 +362,28 @@ function SettingsContent() {
                             onChange={(e) => setExchange(e.target.value)}
                             className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all"
                         >
+                            {/* 🟢 PUSH AM63 (Push 3) — vault venue values stay UPPERCASE
+                                ('COINBASE' legacy rows; 'KRAKEN'). Routing columns
+                                (strategy_config / trade_logs) stay lowercase canonical.
+                                This asymmetry is BY DESIGN — do NOT "unify" them. Push 4's
+                                adapter reads the vault with 'KRAKEN'. */}
                             <option value="COINBASE">Coinbase Advanced Trade</option>
+                            <option value="KRAKEN">Kraken Derivatives US (Bitnomial perps)</option>
                         </select>
                     </div>
 
+                    {exchange === 'KRAKEN' && (
+                        <p className="text-[11px] text-amber-300/80 leading-relaxed font-medium">
+                            Your venue is KRAKEN until Push 4 switches trading on — keys are stored now, execution comes later.
+                        </p>
+                    )}
+
                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">API Key (Name)</label>
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">{exchange === 'KRAKEN' ? 'Connection ID' : 'API Key (Name)'}</label>
                         <input
                             type="text"
                             required
-                            placeholder="organizations/..."
+                            placeholder={exchange === 'KRAKEN' ? '3f1a...9c (hex Connection ID)' : 'organizations/...'}
                             value={apiKey}
                             onChange={(e) => setApiKey(e.target.value)}
                             className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
@@ -373,11 +391,11 @@ function SettingsContent() {
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">API Secret (Private Key)</label>
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">{exchange === 'KRAKEN' ? 'Auth Token' : 'API Secret (Private Key)'}</label>
                         <textarea
                             required
-                            rows={4}
-                            placeholder="-----BEGIN ANY PRIVATE KEY-----"
+                            rows={exchange === 'KRAKEN' ? 2 : 4}
+                            placeholder={exchange === 'KRAKEN' ? '64-char hex Auth Token' : '-----BEGIN ANY PRIVATE KEY-----'}
                             value={apiSecret}
                             onChange={(e) => setApiSecret(e.target.value)}
                             className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"

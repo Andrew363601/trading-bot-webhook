@@ -23,6 +23,15 @@ async function handler(req, res) {
     return res.status(400).json({ error: 'Missing strategy, version, asset, or config' });
   }
 
+  // 🟢 PUSH AM63 (Push 3) — venue stamp. strategy_config.exchange is a canonical
+  // LOWERCASE routing column. Normalize the caller's venue and refuse an unknown
+  // one LOUDLY (same shape as the router) rather than silently writing coinbase.
+  const KNOWN_EXCHANGES = ['coinbase', 'kraken'];
+  const deployExchange = (req.body.exchange || 'coinbase').toString().toLowerCase();
+  if (!KNOWN_EXCHANGES.includes(deployExchange)) {
+    return res.status(400).json({ error: `[AM63] unsupported exchange '${deployExchange}'` });
+  }
+
   // Validate config is an object
   if (typeof config !== 'object' || Array.isArray(config)) {
     return res.status(400).json({ error: 'Config must be a valid JSON object' });
@@ -102,6 +111,7 @@ async function handler(req, res) {
       version,
       parameters: config,
       asset,
+      exchange: deployExchange,
       execution_mode: modeToPersist,
       is_active: true,
       last_updated: nowIso
