@@ -145,7 +145,11 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
           .from('api_keys_vault')
           .select('id')
           .eq('tenant_id', tenantId)
-          .eq('exchange', 'coinbase')
+          // VAULT reads match the UPPERCASE literal (secrets-manager normalizes
+          // with exchange.toUpperCase() on BOTH write and read). ROUTING columns
+          // (strategy_config/trade_logs) stay lowercase canonical — the asymmetry
+          // is by design, do NOT unify.
+          .eq('exchange', 'COINBASE')
           .eq('is_active', true)
           .maybeSingle();
         setHasCoinbaseKeys(!!data);

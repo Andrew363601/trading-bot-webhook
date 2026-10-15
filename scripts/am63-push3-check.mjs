@@ -13,7 +13,8 @@
 //   5  settings.js has the KRAKEN option + both placeholder variants + the vault
 //      query is NOT a bare .single() (two-venue tenants would otherwise break prefill).
 //   6  studio.js has the venue selector + ?exchange= fetch key + stale-race guard.
-//   7  subscribe-strategy.js + MarketScanner.js converge exchange to lowercase.
+//   7  subscribe-strategy.js writes lowercase; MarketScanner.js WRITE is lowercase
+//      while its VAULT READ stays 'COINBASE' (secrets-manager normalizes toUpperCase).
 //   8  chat.js runBacktest config select COVERS exchange (the Push 2 blind spot).
 //   9  lib/exchange-router.js still exports exactly the 2 known symbols (no drift).
 //  10  migration 061 is present with the shape-convergence statements.
@@ -159,9 +160,18 @@ if (!exists(MS)) {
   check('MarketScanner.js exists', false, MS + ' not found');
 } else {
   const src = read(MS);
-  check("MarketScanner reads vault with lowercase 'coinbase'", /\.eq\('exchange',\s*'coinbase'\)/.test(src));
-  check("MarketScanner writes lowercase 'coinbase'", /exchange:\s*'coinbase'/.test(src));
-  check("MarketScanner no longer uses 'COINBASE'", !/'COINBASE'/.test(src));
+  // The VAULT keeps its OWN uppercase convention — secrets-manager.js normalizes with
+  // exchange.toUpperCase() on BOTH write and read, so the read MUST use 'COINBASE'.
+  check("MarketScanner reads the VAULT with 'COINBASE' (uppercase by design)",
+    /\.eq\('exchange',\s*'COINBASE'\)/.test(src));
+  // The strategy_config WRITE path is lowercase; the vault read is the ONLY place a
+  // 'COINBASE' literal may remain.
+  const coinbaseLiterals = (src.match(/'COINBASE'/g) || []).length;
+  check("MarketScanner writes lowercase 'coinbase' to strategy_config",
+    /exchange:\s*'coinbase'/.test(src));
+  check("MarketScanner's only 'COINBASE' literal is the VAULT read",
+    coinbaseLiterals === 1 && /\.eq\('exchange',\s*'COINBASE'\)/.test(src),
+    `found ${coinbaseLiterals} 'COINBASE' literal(s), want exactly 1 (the vault read)`);
 }
 
 // ── 8. chat.js — runBacktest config select COVERS exchange ──────────────────
@@ -203,7 +213,8 @@ if (!exists(MIG)) {
   check('061 migration exists', false, MIG + ' not found');
 } else {
   const sql = read(MIG).replace(/\s+/g, ' ');
-  check('061 normalizes exchange to lowercase (idempotent)',
+  check('061 normalizes exchange to canonical coinbase (idempotent)',
+    /where lower\(exchange\) <> 'coinbase'/i.test(sql) ||
     /set exchange = lower\(exchange\)/i.test(sql));
   check("061 pins default 'coinbase'",
     /alter column exchange set default 'coinbase'/i.test(sql));

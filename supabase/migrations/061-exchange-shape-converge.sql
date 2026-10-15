@@ -27,10 +27,13 @@
 -- canonical. Push 4's adapter reads the vault with 'KRAKEN'. Do NOT "unify" these.
 
 -- ── (1) Normalize casing to canonical lowercase (idempotent) ────────────────
+-- ⚠️ ONE-WAY DOOR: this forces any non-'coinbase' value to 'coinbase'. Safe TODAY
+--    (0 kraken rows exist — every routing row is coinbase), but it MUST NEVER be
+--    re-run once Kraken strategy_config rows exist: it would silently rewrite a
+--    'kraken' venue to 'coinbase'. Operators: paste once, BEFORE Kraken configs.
 update strategy_config
-   set exchange = lower(exchange)
- where exchange is not null
-   and exchange <> lower(exchange);
+   set exchange = 'coinbase'
+ where lower(exchange) <> 'coinbase';
 
 -- ── (2) Pin the DEFAULT ─────────────────────────────────────────────────────
 alter table strategy_config
