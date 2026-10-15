@@ -123,7 +123,9 @@ if (!exists(EXEC)) {
   check('both payloads stamp exchange: resolvedExchange', stampCount >= 2,
     `found ${stampCount} stamp(s), need 2 (liveInsertPayload + paperInsertPayload)`);
   check('resolvedExchange is resolved from stratCfg',
-    /const\s+resolvedExchange\s*=\s*stratCfg\?\.exchange/.test(src));
+    // AM63 Push 3 wraps this in .toLowerCase() for shape convergence; the check
+    // tolerates the wrapper so the push2 gate does not trip on the push3 bundle.
+    /const\s+resolvedExchange\s*=\s*\(?\s*stratCfg\?\.exchange/.test(src));
   // Safety nets: the shared regex must include `exchange`.
   const netRegexes = src.match(/\/\((?:[^)]*)\)\/i\.test\(insertError[^)]*\)/g) || [];
   const exchangeNets = netRegexes.filter((r) => /exchange/.test(r)).length;

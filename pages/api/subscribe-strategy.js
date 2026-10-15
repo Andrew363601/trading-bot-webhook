@@ -19,7 +19,11 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const { asset, strategy, exchange = 'COINBASE', product_type = 'FUTURES', parameters = {}, force_replace = false } = req.body;
+  const { asset, strategy, exchange = 'coinbase', product_type = 'FUTURES', parameters = {}, force_replace = false } = req.body;
+  // 🟢 PUSH AM63 (Push 3) — writer convergence. This endpoint writes `exchange`
+  // into strategy_config (canonical lowercase routing column). Normalize whatever
+  // the body sends ('COINBASE' legacy callers) so the column never re-diverges.
+  const normalizedExchange = String(exchange || 'coinbase').toLowerCase();
 
   if (!asset || !strategy) {
     return res.status(400).json({ error: 'Missing asset or strategy' });
@@ -215,7 +219,7 @@ export default async function handler(req, res) {
         tenant_id: actualTenantId,
         asset,
         strategy,
-        exchange,
+        exchange: normalizedExchange,
         product_type,
         parameters: mergedParameters,
         execution_mode: executionMode,

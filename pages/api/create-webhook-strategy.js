@@ -73,7 +73,7 @@ export default async function handler(req, res) {
         veto_cooldown_minutes: 10
       },
       config: {
-        exchange: 'COINBASE',
+        exchange: 'coinbase',
         product_type: 'FUTURES',
         source: 'webhook_creator'
       },

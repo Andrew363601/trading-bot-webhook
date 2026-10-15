@@ -145,7 +145,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
           .from('api_keys_vault')
           .select('id')
           .eq('tenant_id', tenantId)
-          .eq('exchange', 'COINBASE')
+          .eq('exchange', 'coinbase')
           .eq('is_active', true)
           .maybeSingle();
         setHasCoinbaseKeys(!!data);
@@ -265,7 +265,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
         body: JSON.stringify({
           asset: selectedAsset.id,
           strategy: strategy.id,
-          exchange: 'COINBASE',
+          exchange: 'coinbase',
           product_type: 'FUTURES',
           force_replace: forceReplace,
           parameters: {

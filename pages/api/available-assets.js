@@ -16,6 +16,18 @@ async function handler(req, res) {
 
   const { tenantId } = req.tenant;
 
+  // 🟢 PUSH AM63 (Push 3) — venue switch. Absent/`coinbase` → the EXISTING path
+  // (byte-identical: CFM fallback, top-rank map, dedupe, 100-cap). `kraken` → the
+  // Bitnomial US perps catalogue. Any OTHER venue is refused LOUD — a caller that
+  // names a venue must get that venue or an error (never a silent Coinbase fallback).
+  const exchange = String(req.query.exchange || 'coinbase').toLowerCase();
+  if (exchange === 'kraken') {
+    return handleKraken(res);
+  }
+  if (exchange !== 'coinbase') {
+    return res.status(400).json({ error: `[AM63] unsupported exchange '${exchange}'` });
+  }
+
   try {
     // Top 15 Perpetual Futures assets (Hardcoded fallback for speed)
     const topAssets = [
@@ -52,7 +64,7 @@ async function handler(req, res) {
             }));
         }
       } catch (publicErr) {
-        console.error("[AVAILABLE ASSETS WARN]: Public product fetch failed:", publicErr.message);
+        console.error(`[AVAILABLE ASSETS WARN][exchange=${exchange}]: Public product fetch failed:`, publicErr.message);
       }
 
       // 2. Fetch authenticated US Regulated Futures (CFM -CDE)
@@ -67,7 +79,7 @@ async function handler(req, res) {
             apiSecret = secrets.apiSecret;
           }
         } catch (e) {
-          console.log("[AVAILABLE ASSETS WARN]: Could not load tenant API key for CFM fetch. Falling back to global.");
+          console.log(`[AVAILABLE ASSETS WARN][exchange=${exchange}]: Could not load tenant API key for CFM fetch. Falling back to global.`);
         }
       }
 
@@ -81,7 +93,7 @@ async function handler(req, res) {
           generateCoinbaseToken('GET', '/api/v3/brokerage/products', apiKeyName, apiSecret);
           keyOk = true;
         } catch (cryptoErr) {
-          console.error("[AVAILABLE ASSETS ERROR]: Failed to parse private key (CFM fetch will be skipped):", cryptoErr.message);
+          console.error(`[AVAILABLE ASSETS ERROR][exchange=${exchange}]: Failed to parse private key (CFM fetch will be skipped):`, cryptoErr.message);
         }
         
         if (keyOk) {
@@ -120,16 +132,16 @@ async function handler(req, res) {
                     futuresProducts.push(newP);
                   }
                 });
-                console.log(`[AVAILABLE ASSETS INFO]: Fetched ${cfmProducts.length} ${type} products via Advanced Trade API.`);
+                console.log(`[AVAILABLE ASSETS INFO][exchange=${exchange}]: Fetched ${cfmProducts.length} ${type} products via Advanced Trade API.`);
               }
             } catch (innerErr) {
-              console.error(`[AVAILABLE ASSETS ERROR]: Failed to fetch ${type} products:`, innerErr.message);
+              console.error(`[AVAILABLE ASSETS ERROR][exchange=${exchange}]: Failed to fetch ${type} products:`, innerErr.message);
             }
           }
         }
       }
     } catch (e) {
-      console.error('[AVAILABLE ASSETS ERROR]: Coinbase fetch exception:', e.message);
+      console.error(`[AVAILABLE ASSETS ERROR][exchange=${exchange}]: Coinbase fetch exception:`, e.message);
     }
 
     // Combine and deduplicate. Mark our priority list so we can guarantee it
@@ -160,8 +172,63 @@ async function handler(req, res) {
       products: finalSelection
     });
   } catch (error) {
-    console.error('[AVAILABLE ASSETS FATAL ERROR]: Uncaught error in available-assets API:', error.message);
+    console.error(`[AVAILABLE ASSETS FATAL ERROR][exchange=${exchange}]: Uncaught error in available-assets API:`, error.message);
     return res.status(500).json({ error: error.message });
+  }
+}
+
+// 🟢 PUSH AM63 (Push 3) — Kraken (Bitnomial US perps) catalogue. Public, no auth.
+// Mirrors the Coinbase public path's 1-hour cache (Bitnomial limit: 200 req / 5 min).
+//
+// IDENTITY: id = `${BASE}-PERP-KRX-${contract_size}` (e.g. BTC-PERP-KRX-0.01).
+//   - `base` comes from contract_size_unit — base_symbol is POLLUTED with the size
+//     letter ('BTCUC', 'ADAUK'), so it is NOT the coin.
+//   - Every base lists exactly 2 contract sizes, so the numeric contract_size suffix
+//     is REQUIRED for uniqueness.
+//   - This id is the STABLE, venue-qualified identity that Push 4's adapter resolves
+//     to the CURRENT native Bitnomial symbol (e.g. PBTCUCZ50). NEVER store native
+//     expiry-suffixed symbols as ids.
+async function handleKraken(res) {
+  try {
+    const response = await fetch('https://bitnomial.com/exchange/api/v1/prod/product/specs/?active=true', {
+      headers: { 'User-Agent': 'Nexus-Terminal' },
+      next: { revalidate: 3600 } // Cache for 1 hour
+    });
+
+    if (!response.ok) {
+      console.error(`[AVAILABLE ASSETS ERROR][exchange=kraken]: Bitnomial specs fetch failed: HTTP ${response.status}`);
+      return res.status(502).json({ error: `[AM63] Kraken catalog unavailable (Bitnomial HTTP ${response.status})` });
+    }
+
+    const allProducts = await response.json();
+    const products = (Array.isArray(allProducts) ? allProducts : [])
+      .filter(p => p.type === 'perpetual' && p.product_status === 'active')
+      .map(p => {
+        const base = p.contract_size_unit;                 // clean coin ('BTC', 'ADA', …)
+        const id = `${base}-PERP-KRX-${p.contract_size}`;  // stable venue-qualified identity
+        return {
+          id,
+          name: id,
+          base,
+          price: 0,                        // specs carries NO prices (no 2nd endpoint)
+          volume_24h: 0,
+          price_percentage_change_24h: 0,
+          native_symbol: p.symbol,         // current native symbol Push 4 resolves from `id`
+          contract_size: p.contract_size,
+          contract_size_unit: p.contract_size_unit,
+          price_increment: p.price_increment,
+          product_id: p.product_id,
+          exchange: 'kraken'
+        };
+      })
+      // No volume on the specs payload → sort by symbol/id asc for a stable order.
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .slice(0, 100);
+
+    return res.status(200).json({ count: products.length, products });
+  } catch (e) {
+    console.error('[AVAILABLE ASSETS ERROR][exchange=kraken]:', e.message);
+    return res.status(502).json({ error: `[AM63] Kraken catalog fetch exception: ${e.message}` });
   }
 }
 
