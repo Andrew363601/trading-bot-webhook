@@ -3,8 +3,9 @@
 //
 // Enforces the Push 7 contract:
 //   1  lib/providers/kraken-futures.js gains the PRIVATE layer: kfSign (HMAC-SHA512
-//      over SHA256(urlencoded-postData + nonce + endpointPath), key = base64-DECODED
-//      secret — the ONE construction, NO jwt.sign anywhere), kfPrivateRequest (creds
+//      over SHA256(urlencoded-postData + hashPath), key = base64-DECODED
+//      secret — the ONE construction, NO jwt.sign anywhere; HOTFIX 6: hashPath
+//      EXCLUDES the /derivatives prefix and NO Nonce header is sent), kfPrivateRequest (creds
 //      resolved ITSELF via retrieveAPIKey('krakenfutures'); retry ONLY on 429),
 //      placeKrakenFuturesOrder (the phantom result:'success' trap is a GUARD — the
 //      inner sendStatus.status carries the truth), pollKrakenFuturesFill (AM59
@@ -89,21 +90,23 @@ if (!exists(PROVIDER)) {
     check('limiter grew acquireWeighted', typeof mod.kfRateLimiter?.acquireWeighted === 'function');
     check('limiter keeps the plain acquire (backward compat)', typeof mod.kfRateLimiter?.acquire === 'function');
 
-    // KNOWN-VECTOR SIGNER PIN — the exact concatenation order (postData + nonce +
-    // endpointPath) is pinned by a stable vector. If the demo host rejects at the
-    // soak, flip BOTH this vector and the provider in the same commit.
+    // KNOWN-VECTOR SIGNER PIN — HOTFIX 6: the prehash endpointPath EXCLUDES the
+    // /derivatives prefix and the nonce is DROPPED (docs: "Nonce is not required";
+    // ccxt signs '/api/v3/'+path with no nonce). The old vector (full path + nonce
+    // '1700000000000' → 'WoZzGyk…') produced authenticationError on the PROD host.
     try {
       const v = mod.kfSign({
-        endpointPath: '/derivatives/api/v3/sendorder',
+        endpointPath: '/api/v3/sendorder',
         postDataEncoded: 'symbol=PF_XBTUSD&side=buy&size=1',
-        nonce: '1700000000000',
+        nonce: '',
         apiSecretB64: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
       });
-      check('kfSign known-vector (pins postData+nonce+endpointPath order)',
-        v.Authent === 'WoZzGykTJ1ztTJZ5RNcR2kMgMH9HOEYXw+TFXowSzWw65sVwwpLR/Lm3wNmlmOVad7Qvlr1wRZh1UdUMzk+6QQ==',
+      check('kfSign known-vector (pins postData+hashPath order, NO /derivatives, nonce dropped)',
+        v.Authent === 'FtBUEMFJBVslU4c4oxs8XvOb4XBFjE8PKQ7BxuCpAleEK8+UUcS9ErKFU/wo2QJPVyPthKDiJO7H/WnT0UUt3A=='
+        && !/derivatives/.test('/api/v3/sendorder'),
         v.Authent);
     } catch (e) {
-      check('kfSign known-vector (pins postData+nonce+endpointPath order)', false, e.message);
+      check('kfSign known-vector (pins postData+hashPath order, NO /derivatives, nonce dropped)', false, e.message);
     }
     try {
       // Node's base64 decoder is LENIENT ('not-base64!!' decodes to garbage bytes),
@@ -118,8 +121,8 @@ if (!exists(PROVIDER)) {
   const src = read(PROVIDER);
   const code = stripComments(src);
   // Signer shape: HMAC-SHA512, base64-DECODED secret as key, SHA256 over the
-  // urlencoded postData + nonce + endpointPath. This is HMAC — jwt.sign must NOT
-  // appear anywhere in this file (seam doctrine).
+  // urlencoded postData + hashPath (HOTFIX 6: nonce dropped). This is HMAC —
+  // jwt.sign must NOT appear anywhere in this file (seam doctrine).
   check('kfSign uses createHmac sha512 with a base64-DECODED secret key',
     /createHmac\('sha512',\s*secretKey\)/.test(code) && /Buffer\.from\(String\(apiSecretB64 \|\| ''\), 'base64'\)/.test(code));
   check('kfSign hashes SHA256 over postData + nonce + endpointPath',
@@ -128,10 +131,27 @@ if (!exists(PROVIDER)) {
     !/jwt\.sign/.test(code));
   check('kfPrivateRequest resolves creds ITSELF via retrieveAPIKey krakenfutures',
     /retrieveAPIKey\(supabase,\s*tenantId,\s*'krakenfutures'\)/.test(code));
-  check('kfPrivateRequest sends the APIKey/Authent/Nonce header trio',
-    /'APIKey'/.test(code) && /'Authent'/.test(code) && /'Nonce'/.test(code));
+  // 🟢 HOTFIX 6 — the Nonce header is GONE (docs: "Nonce is not required"; ccxt
+  // ships none). The APIKey/Authent pair remains.
+  check('kfPrivateRequest sends the APIKey/Authent header pair (NO Nonce header)',
+    /'APIKey'/.test(code) && /'Authent'/.test(code) && !/'Nonce'/.test(code));
+  // 🟢 HOTFIX 6 — BOTH sides pinned: the SIGN path strips /derivatives (the prehash
+  // path) while the FETCH URL keeps the FULL path. Stripping only one side would
+  // either break the signature or hit a 404.
+  check('kfPrivateRequest signs the hashPath (strips /derivatives) AND fetches the FULL path',
+    /const hashPath = path\.startsWith\('\/derivatives'\) \? path\.slice\('\/derivatives'\.length\) : path;/.test(code)
+    && /kfSign\(\{ endpointPath: hashPath, postDataEncoded, nonce: '', apiSecretB64: creds\.apiSecret \}\)/.test(code)
+    && /`\$\{KF_HOST\}\$\{path\}`/.test(code));
   check('private egress goes through kfFetch (limiter FIRST, 429 backoff)',
     /await kfFetch\(url, init\)/.test(code) && /acquireWeighted\(resolvedCost\)/.test(code));
+  // 🟢 HOTFIX 5 — fetch diagnostics + public negative cache.
+  check('kfFetch logs method + URL path + status on every non-2xx (no query strings, no headers)',
+    /Kraken Futures fetch \$\{method\} \$\{urlPath\} → HTTP \$\{resp\.status\}/.test(code)
+    && /new URL\(url\)\.pathname/.test(code));
+  check('kfFetch public negative cache: 15s on 5xx/429, private calls NEVER cached',
+    /KF_PUBLIC_NEGATIVE_CACHE_TTL_MS = 15 \* 1000/.test(code)
+    && /kfPublicNegativeCache\.set\(url, Date\.now\(\) \+ KF_PUBLIC_NEGATIVE_CACHE_TTL_MS\)/.test(code)
+    && /const isPrivate = init\?\.headers && Object\.prototype\.hasOwnProperty\.call\(init\.headers, 'APIKey'\)/.test(code));
   check('private layer pins the sendorder path', /\/derivatives\/api\/v3\/sendorder/.test(code));
   check('private layer pins the dead-man path (cancelallordersafter)',
     /\/derivatives\/api\/v3\/cancelallordersafter/.test(code));
@@ -288,6 +308,21 @@ if (!REPORT_ONLY) {
 }
 
 // ── 4. Prior-push invariants intact ─────────────────────────────────────────
+// 🟢 HOTFIX 6 — the OLD Authent vector (full-path + nonce construction) must
+// appear NOWHERE in the repo: any surviving copy would mean a stale signer
+// reference that could be resurrected by a careless merge.
+{
+  let staleHits = [];
+  for (const f of files) {
+    const file = rel(f);
+    if (file === 'scripts/am63-push7-check.mjs') continue; // this pin itself
+    const s = readFileSync(f, 'utf8');
+    if (s.includes('WoZzGykTJ1ztTJZ5RNcR2kMgMH9HOEYXw+TFXowSzWw65sVwwpLR/Lm3wNmlmOVad7Qvlr1wRZh1UdUMzk+6QQ==')) staleHits.push(file);
+  }
+  check('HOTFIX 6: the OLD Authent vector (WoZzGyk…) appears NOWHERE in the repo',
+    staleHits.length === 0,
+    staleHits.length ? `found in: ${staleHits.join(', ')}` : '');
+}
 if (exists(COINBASE_PROVIDER)) {
   const src = read(COINBASE_PROVIDER);
   check('seam invariant: jwt.sign still lives ONLY in the coinbase provider',
