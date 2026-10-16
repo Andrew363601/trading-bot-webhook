@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // ─────────────────────────── Commit A → B switch ───────────────────────────
-const REPORT_ONLY = true;
+const REPORT_ONLY = false;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXCLUDE_DIRS = new Set(['node_modules', '.next', '.git', '.vercel', 'scripts']);

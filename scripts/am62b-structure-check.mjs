@@ -102,7 +102,12 @@ console.log('\n[5] wiring — execute-trade-mcp (fetch fix + macro structure)');
   // AM63 (Push 4) hoisted the close derive into `closeStructureDirection` so the
   // kraken lane can DECLINE it (no intraday candles). Intent preserved: the close
   // still derives from macro-TF price structure, and the field is still written.
-  ok('close derives from macro candles', /closeStructureDirection = krakenLane \? null : deriveStructureDirection\(\s*await fetchStructureCandles/.test(exec));
+  // 🟢 Push 7 evolution: the KRF LIVE close ALSO declines (receipt-verified path —
+  // no Coinbase structure fetch on the hot close path), so the ternary widened to
+  // `(krakenLane || (krakenFuturesLane && !isPaper))`. Either form is valid.
+  ok('close derives from macro candles',
+    /closeStructureDirection = krakenLane \? null : deriveStructureDirection\(\s*await fetchStructureCandles/.test(exec)
+    || /closeStructureDirection = \(krakenLane \|\| \(krakenFuturesLane && !isPaper\)\) \? null : deriveStructureDirection\(\s*await fetchStructureCandles/.test(exec));
   ok('close structure_direction is written', /structure_direction: closeStructureDirection/.test(exec));
   ok('params_context mirror kept', /entryParamsContext\.structure_direction = structureDirection/.test(exec));
   ok('retry guard kept', /delete without\.structure_direction/.test(exec));
