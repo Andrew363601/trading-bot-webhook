@@ -224,6 +224,35 @@ if (!REPORT_ONLY) {
       /nx_krf_/.test(code));
     check('execute-trade: LIVE risk validator gets the KRF contract_size override',
       /contract_size:\s*kfMultiplier/.test(code));
+    // 🟢 Push 7 hotfix 2 — the generic credential throw + formattedSecret assignment
+    // are Coinbase-only: they must live INSIDE the `else if (tenantId)` Coinbase
+    // branch so they are structurally unreachable when krakenFuturesLane is true.
+    check('execute-trade: credential throw + formattedSecret are inside the Coinbase branch (unreachable on the KRF lane)',
+      (() => {
+        const m = code.match(/if \(krakenFuturesLane\) \{[\s\S]*?\} else if \(tenantId\) \{[\s\S]*?\n      \}/);
+        if (!m) return false;
+        const branch = m[0];
+        return /Missing Coinbase API credentials\./.test(branch)
+          && /formattedSecret = apiSecret\.replace/.test(branch)
+          && branch.indexOf('Missing Coinbase API credentials.') > branch.indexOf("retrieveAPIKey(supabase, tenantId, 'COINBASE')");
+      })());
+    // The KRF lane must reach placeKrakenFuturesOrder WITHOUT touching a Coinbase
+    // endpoint: the Coinbase order POST, PHASE C fallback, rejection handler,
+    // AM59 STEP 1-2, PHASE D, and bracket cleanup are all lane-gated.
+    check('execute-trade: Coinbase order POST is lane-gated (KRF never touches a Coinbase endpoint)',
+      /if \(!krakenFuturesLane\) \{\s*\n\s*resp = await cbRequest\(/.test(code));
+    check('execute-trade: AM59 STEP 1-2 close verification is lane-gated',
+      /isClosing && !isPaper && openTrade && !krakenFuturesLane/.test(code));
+    check('execute-trade: PHASE D flat check is lane-gated',
+      /isClosing && !isPaper && orderType === 'MARKET' && !krakenFuturesLane/.test(code));
+    check('execute-trade: bracket cleanup is lane-gated',
+      /isClosing && !isPaper && closeFillConfirmed && !krakenFuturesLane/.test(code));
+    check('execute-trade: AM14 close prep is lane-gated',
+      /if \(isClosing && !krakenFuturesLane\) \{/.test(code));
+    check('execute-trade: cfm balance check is lane-gated',
+      /marketType !== 'SPOT' && !krakenFuturesLane/.test(code));
+    check('execute-trade: generateToken POST call is lane-gated (no PEM parse on undefined creds)',
+      /const token = krakenFuturesLane \? null : generateToken\('POST', path\)/.test(code));
   } else {
     check('execute-trade-mcp.js exists', false, EXEC + ' not found');
   }
