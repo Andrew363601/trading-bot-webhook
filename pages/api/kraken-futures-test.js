@@ -37,8 +37,9 @@ async function handler(req, res) {
             ok: false,
             error: verdict.error || 'unknown_error',
             errorMessage: verdict.errorMessage || null,
+            hint: verdict.hint || null,
             host: verdict.host,
-            message: `Kraken Futures rejected the probe: ${verdict.error || 'unknown_error'}${verdict.errorMessage ? ` — ${verdict.errorMessage}` : ''}`,
+            message: `Kraken Futures rejected the probe: ${verdict.error || 'unknown_error'}${verdict.errorMessage ? ` — ${verdict.errorMessage}` : ''}${verdict.hint ? `\n\n${verdict.hint}` : ''}`,
         });
     } catch (error) {
         console.error('[KRF_TEST_ERROR]', error.message);

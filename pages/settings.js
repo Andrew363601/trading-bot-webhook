@@ -434,8 +434,7 @@ function SettingsContent() {
                                     {krfTestResult.ok ? (
                                         <>✓ {krfTestResult.message} <span className="text-slate-500">(host: {krfTestResult.host})</span></>
                                     ) : (
-                                        <>✗ {krfTestResult.message}{krfTestResult.host ? <span className="text-slate-500"> (host: {krfTestResult.host})</span> : null}<br />
-                                        <span className="text-slate-500">Check the API key/secret pair, and that the key matches the host above (demo keys fail on prod and vice versa).</span></>
+                                        <>✗ {krfTestResult.message}{krfTestResult.host ? <span className="text-slate-500"> (host: {krfTestResult.host})</span> : null}{krfTestResult.hint ? <><br /><span className="text-amber-300/80">{krfTestResult.hint}</span></> : null}</>
                                     )}
                                 </div>
                             )}

@@ -320,7 +320,8 @@ if (exists(PROVIDER)) {
   check('provider: kfAuthProbe returns { ok, error, errorMessage, host }',
     /ok: true, error: null, errorMessage: null, host: KF_HOST/.test(code)
     && /ok: false, error: diag\.error \|\| `HTTP \$\{resp\.status\}`/.test(code)
-    && /ok: false, error: e\.message, errorMessage: null, host: KF_HOST/.test(code));
+    // 🟢 hotfix 4 — the catch return may carry the auth hint between errorMessage and host.
+    && /ok: false, error: e\.message, errorMessage: null(, hint: null)?, host: KF_HOST/.test(code));
   check('provider: kfRejectDiagnostics logs method + endpointPath + host (no params, no key material)',
     /Kraken Futures reject: \$\{method\} \$\{path\} host=\$\{KF_HOST\}/.test(code));
   check('provider: sendorder verdict carries the verbatim errorMessage + host',
@@ -402,6 +403,47 @@ if (exists(DEMO_FEED)) {
     && /shedOrder = \['toolCalls', 'logs', 'scans', 'shadowTrades', 'memories', 'configs', 'trades'\]/.test(code));
   check('demo-feed: edge cache raised to 30s + SWR 60 (fast route, not a per-poll dump)',
     /s-maxage=30, stale-while-revalidate=60/.test(code));
+}
+
+// ── 4c. Push 7 HOTFIX 4 — key-material forensics + venue-cap + resolver noise ──
+const RISK_VAL = 'lib/risk-validator.js';
+if (exists(PROVIDER)) {
+  const src = read(PROVIDER);
+  const code = stripComments(src);
+  check('provider: kfPrivateRequest logs MASKED fingerprints on every private call (last-4 + lengths, never values)',
+    /KRF auth \$\{kfKeyFingerprint\(creds\.apiKey, creds\.apiSecret\)\} label=\$\{label\} host=\$\{KF_HOST\}/.test(code)
+    && /function kfKeyFingerprint\(apiKey, apiSecretB64\)/.test(code)
+    && /key\.slice\(-4\)/.test(code)
+    && /Buffer\.from\(String\(apiSecretB64 \|\| ''\), 'base64'\)\.length/.test(code));
+  check('provider: kfAuthHint covers the known failure modes (spot-vs-futures key, demo/prod swap, missing scope)',
+    /function kfAuthHint\(errCode, errMessage\)/.test(code)
+    && /SPOT key pasted instead of a FUTURES/.test(code)
+    && /DEMO key on the PROD host/.test(code)
+    && /lacks the trading scope/.test(code));
+  check('provider: the hint rides the reject diagnostics (log + return)',
+    /const hint = kfAuthHint\(errCode, errMessage\);/.test(code)
+    && /HINT: \$\{hint\}/.test(code)
+    && /return \{ host: KF_HOST, error: errCode, errorMessage: errMessage, hint \};/.test(code));
+  check('provider: kfAuthProbe returns the hint on the reject path',
+    /hint: diag\.hint \|\| null, host: diag\.host/.test(code));
+}
+if (exists(RISK_VAL)) {
+  const src = read(RISK_VAL);
+  const code = stripComments(src);
+  check('risk-validator: the LIVE real-balance cap is VENUE-AWARE (KRF ids cap against krakenfutures, not coinbase)',
+    /const isKrfLive = typeof symbol === 'string' && symbol\.includes\('-PERP-KRF'\);/.test(code)
+    && /const balanceVenue = isKrfLive \? 'krakenfutures' : 'coinbase';/.test(code)
+    && /getRealBalance\(tenantId, balanceVenue\)/.test(code)
+    && !/getRealBalance\(tenantId, 'coinbase'\)/.test(code));
+  check('risk-validator: a failed KRF balance read falls back to the CONFIGURED balance LOUDLY (never a Coinbase cap)',
+    /falling back to the CONFIGURED balance, NOT a Coinbase cap/.test(code));
+}
+if (exists(RESOLVER)) {
+  const src = read(RESOLVER);
+  const code = stripComments(src);
+  check('asset-resolver: venue ids skip the Coinbase specs ladder early (no dead 404/401 calls)',
+    /normalizedSymbol\.includes\('-PERP-KRF'\) \|\| normalizedSymbol\.includes\('-PERP-KRX'\)/.test(code)
+    && /_venue_id: true/.test(code));
 }
 
 // ── 5. IMPORT-GRAPH SMOKE (the battery gap this hotfix closed) ──────────────
