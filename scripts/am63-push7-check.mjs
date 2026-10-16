@@ -277,6 +277,77 @@ if (exists(PUSH5)) {
     /kfPoll/.test(src) && /getKrakenTickers/.test(src));
 }
 
+// ── 5. IMPORT-GRAPH SMOKE (the battery gap this hotfix closed) ──────────────
+// node --check is syntax-only and next build EXCLUDES workers/ — neither can catch
+// a missing cross-module export. The Push 7 hotfix shipped OPENORDERS_PATH /
+// OPENPOSITIONS_PATH / FILLS_PATH as non-exported consts while workers/watchdog.js
+// imported them → hermes-multi-tenant.js crash-looped on Render at import
+// ("does not provide an export named 'FILLS_PATH'"). This smoke runs a CHILD
+// PROCESS that dynamically imports EVERY module the worker service boots; any
+// import failure (missing export, unresolved specifier, top-level throw) = FAIL.
+// process.exit(0) fires immediately after the imports resolve so timers the module
+// code registers (setInterval sweeps, realtime sockets) never keep the child alive.
+const WORKER_GRAPH = [
+  'hermes-multi-tenant.js',
+  'hermes-brain.js',
+  'workers/watchdog.js',
+  'workers/sniper.js',
+  'workers/shadow-portfolio.js',
+];
+if (!REPORT_ONLY) {
+  const smokeScript = `
+    import { pathToFileURL } from 'node:url';
+    import path from 'node:path';
+    const ROOT = ${JSON.stringify(ROOT)};
+    const mods = ${JSON.stringify(WORKER_GRAPH)};
+    const failures = [];
+    for (const m of mods) {
+      try {
+        await import(pathToFileURL(path.join(ROOT, m)).href);
+        console.log('  SMOKE OK   ' + m);
+      } catch (e) {
+        failures.push(m + ': ' + e.message);
+        console.log('  SMOKE FAIL ' + m + ' — ' + e.message);
+      }
+    }
+    if (failures.length > 0) {
+      console.error('IMPORT-GRAPH SMOKE FAILED: ' + failures.length + ' module(s): ' + failures.join(' | '));
+      process.exit(1);
+    }
+    console.log('IMPORT-GRAPH SMOKE OK: all ' + mods.length + ' worker-service modules import cleanly.');
+    process.exit(0);
+  `;
+  try {
+    const { execFileSync } = await import('node:child_process');
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', smokeScript], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 60000,
+      env: {
+        ...process.env,
+        // Dummy env so module-top Supabase clients construct (asset-resolver and
+        // friends throw 'supabaseUrl is required' without them — an import-graph
+        // failure we DO want to catch, but not an env-dependent false positive).
+        NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://dummy.supabase.co',
+        SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY || 'dummy-service-role-key',
+        MASTER_ENCRYPTION_KEY: process.env.MASTER_ENCRYPTION_KEY || 'dummy-master-key',
+      },
+    });
+    const smokeOk = !/SMOKE FAIL/.test(out) && /IMPORT-GRAPH SMOKE OK/.test(out);
+    check('import-graph smoke: every worker-service module imports cleanly',
+      smokeOk,
+      smokeOk ? WORKER_GRAPH.join(', ') : out.trim().split('\n').filter((l) => /SMOKE FAIL|FAILED/.test(l)).join(' | '));
+  } catch (e) {
+    const out = (e.stdout || '') + (e.stderr || '');
+    const failLines = out.split('\n').filter((l) => /SMOKE FAIL|FAILED/.test(l)).join(' | ');
+    check('import-graph smoke: every worker-service module imports cleanly',
+      false,
+      failLines || e.message);
+  }
+} else {
+  check('import-graph smoke: skipped in REPORT_ONLY (Commit A)', true);
+}
+
 // ─────────────────────────────────── report ────────────────────────────────
 const failed = results.filter((r) => !r.ok);
 console.log('AM63 Push 7 check' + (REPORT_ONLY ? ' (REPORT-ONLY — Commit A)' : ''));
