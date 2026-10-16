@@ -82,13 +82,21 @@ if (exists(PROVIDER)) {
   const src = read(PROVIDER);
   check('provider host is futures.kraken.com', /https:\/\/futures\.kraken\.com/.test(src));
   check('provider has a demo host override knob', /demo-futures\.kraken\.com/.test(src) && /KRAKEN_FUTURES_(HOST|DEMO)/.test(src));
-  // Strip comments first — the header legitimately DOCUMENTS the Push 6 HMAC layer,
+  // Strip comments first — the header legitimately DOCUMENTS the private layer,
   // so a raw scan would false-positive on the word "HMAC-SHA512"/"Authent".
+  // 🟢 Push 7 evolution: the provider now HAS the private layer (kfSign +
+  // kfPrivateRequest), so the old "NO credentials" pin evolved to "NO HARDCODED
+  // secret material" — creds must flow ONLY through retrieveAPIKey, and the signer
+  // must be HMAC (createHmac), never jwt.sign.
   const srcCode = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-  check('provider has NO credentials (public-only until Push 6)',
-    !/retrieveAPIKey|apiSecret|apiKey|createHmac|Authent/i.test(srcCode));
-  check('provider documents the Push 6 private layer as out of scope',
-    /Push 6/.test(src) && /sendorder|HMAC-SHA512/.test(src));
+  check('provider has NO hardcoded secret material (creds flow only via retrieveAPIKey)',
+    !/apiSecret\s*[:=]\s*['"](?!\s*$)/.test(srcCode) || /retrieveAPIKey/.test(srcCode));
+  check('provider creds resolve ONLY via retrieveAPIKey (no inline secrets)',
+    /retrieveAPIKey\(supabase,\s*tenantId,\s*'krakenfutures'\)/.test(srcCode));
+  check('provider signer is HMAC (createHmac), never jwt.sign',
+    /createHmac\('sha512'/.test(srcCode) && !/jwt\.sign/.test(srcCode));
+  check('provider carries the Push 7 private layer (kfSign + sendorder)',
+    /kfSign/.test(srcCode) && /sendorder/.test(srcCode));
   check('kfRateLimiter is a shared singleton instance', /export const kfRateLimiter = new KfRateLimiter\(/.test(src));
   check('the egress helper acquires a limiter slot FIRST', /await kfRateLimiter\.acquire\(\)/.test(src));
   check('the egress helper resolves globalThis.fetch AT CALL TIME', /const doFetch = globalThis\.fetch;/.test(src));
@@ -162,8 +170,15 @@ if (exists(EXEC)) {
   const execCode = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   check('execute-trade detects the KRF id WITHOUT a trailing dash',
     /includes\('-PERP-KRF'\)/.test(execCode) && !/includes\('-PERP-KRF-'\)/.test(execCode));
-  check('execute-trade LIVE refuses loud with the exact [AM63] text',
-    /\[AM63\] Kraken Futures live execution arrives in Push 6 \(apiv3 sendorder\)\. Venue runs paper-only until then\./.test(src));
+  // 🟢 Push 7 evolution: Commit A keeps the Push 6 refusal; Commit B REMOVES it and
+  // binds the LIVE lane (placeKrakenFuturesOrder + the nx_krf_ cliOrdId convention).
+  // Either state is valid — what must NEVER happen is the refusal gone WITHOUT the
+  // lane bound (a silent Coinbase fallback).
+  const push7RefusalGone = !/Kraken Futures live execution arrives in Push 6/.test(src);
+  const push7LaneBound = /placeKrakenFuturesOrder/.test(src) && /nx_krf_/.test(src);
+  check('execute-trade KRF LIVE: refusal present (pre-Push-7) OR lane bound (Push 7)',
+    !push7RefusalGone || push7LaneBound,
+    push7RefusalGone && !push7LaneBound ? 'refusal removed but no KRF LIVE lane found' : '');
   check('execute-trade KRF PAPER entry prices from getKrakenTickers (loud 502 if unknown)',
     /getKrakenTickers\(/.test(src) && /502/.test(src));
   check('execute-trade KRF tick comes from the instrument (not a coinbase default)',
