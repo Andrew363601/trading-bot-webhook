@@ -25,6 +25,37 @@ function SettingsContent() {
     const [loading, setLoading] = useState(false);
     const [status, setStatus] = useState(null);
 
+    // 🟢 Push 7 hotfix 3 — "Test Connection" state for the Kraken Futures card.
+    // One click proves/proves-not the vault row before any entry order depends on
+    // it: the route runs an authenticated GET /accounts probe and returns the
+    // apiv3 error code + the venue's VERBATIM errorMessage + the host actually
+    // used (prod vs demo). No key material ever crosses the wire.
+    const [krfTesting, setKrfTesting] = useState(false);
+    const [krfTestResult, setKrfTestResult] = useState(null);
+
+    const handleTestKrakenFutures = async () => {
+        setKrfTesting(true);
+        setKrfTestResult(null);
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error('No active session');
+            const response = await fetch('/api/kraken-futures-test', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${session.access_token}`
+                }
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Test connection failed');
+            setKrfTestResult(result);
+        } catch (err) {
+            setKrfTestResult({ ok: false, error: err.message, message: err.message });
+        } finally {
+            setKrfTesting(false);
+        }
+    };
+
     // Risk profile state
     const [riskFields, setRiskFields] = useState({
         accountBalance: '',
@@ -385,6 +416,30 @@ function SettingsContent() {
                         <p className="text-[11px] text-amber-300/80 leading-relaxed font-medium">
                             Kraken Futures (apiv3) keys are stored now — live execution arrives with Push 6. The venue runs paper-only until then.
                         </p>
+                    )}
+
+                    {exchange === 'KRAKENFUTURES' && (
+                        <div className="space-y-2">
+                            <button
+                                type="button"
+                                onClick={handleTestKrakenFutures}
+                                disabled={krfTesting}
+                                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black py-3 rounded-xl transition-all flex items-center justify-center gap-2 uppercase text-xs tracking-widest"
+                            >
+                                {krfTesting ? <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Shield className="w-4 h-4" />}
+                                Test Connection
+                            </button>
+                            {krfTestResult && (
+                                <div className={`p-3 rounded-xl border text-[11px] leading-relaxed font-medium ${krfTestResult.ok ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' : 'bg-red-500/10 border-red-500/20 text-red-300'}`}>
+                                    {krfTestResult.ok ? (
+                                        <>✓ {krfTestResult.message} <span className="text-slate-500">(host: {krfTestResult.host})</span></>
+                                    ) : (
+                                        <>✗ {krfTestResult.message}{krfTestResult.host ? <span className="text-slate-500"> (host: {krfTestResult.host})</span> : null}<br />
+                                        <span className="text-slate-500">Check the API key/secret pair, and that the key matches the host above (demo keys fail on prod and vice versa).</span></>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     )}
 
                     <div className="space-y-2">

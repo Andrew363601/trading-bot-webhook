@@ -306,6 +306,104 @@ if (exists(PUSH5)) {
     /kfPoll/.test(src) && /getKrakenTickers/.test(src));
 }
 
+// ── 4b. Push 7 HOTFIX 3 — auth diagnostic surface + demo-feed flood cap ─────
+// (a) PROVIDER: every apiv3 reject surfaces the verbatim errorMessage + the host
+//     actually used; kfRejectDiagnostics logs method + endpointPath ONLY (never
+//     params, never key material); kfAuthProbe is the one-click vault proof.
+const PROBE_ROUTE = 'pages/api/kraken-futures-test.js';
+const DEMO_FEED = 'pages/api/demo-feed.js';
+if (exists(PROVIDER)) {
+  const src = read(PROVIDER);
+  const code = stripComments(src);
+  check('provider: kfAuthProbe exists (one-click GET /accounts vault proof)',
+    /export async function kfAuthProbe\(/.test(code));
+  check('provider: kfAuthProbe returns { ok, error, errorMessage, host }',
+    /ok: true, error: null, errorMessage: null, host: KF_HOST/.test(code)
+    && /ok: false, error: diag\.error \|\| `HTTP \$\{resp\.status\}`/.test(code)
+    && /ok: false, error: e\.message, errorMessage: null, host: KF_HOST/.test(code));
+  check('provider: kfRejectDiagnostics logs method + endpointPath + host (no params, no key material)',
+    /Kraken Futures reject: \$\{method\} \$\{path\} host=\$\{KF_HOST\}/.test(code));
+  check('provider: sendorder verdict carries the verbatim errorMessage + host',
+    /errorMessage: diag\.errorMessage, host: diag\.host, raw: json/.test(code)
+    && /errorMessage: placed \? null : \(sendStatus\.errorMessage \|\| json\?\.errorMessage \|\| null\)/.test(code));
+  check('provider: accounts error path carries errorMessage + host (additive)',
+    /Kraken Futures accounts error: \$\{json\?\.error \|\| 'unknown shape'\}`, errorMessage: diag\.errorMessage, host: diag\.host/.test(code));
+}
+if (exists(EXEC)) {
+  const src = read(EXEC);
+  const code = stripComments(src);
+  check('execute-trade: entry reject surfaces the verbatim errorMessage + host (log + veto row + Discord)',
+    /Kraken Futures rejected the entry order: \$\{kfEntryVerdict\.rejectReason\}/.test(code)
+    && /kfEntryVerdict\.errorMessage/.test(code)
+    && /\(host \$\{kfEntryVerdict\.host \|\| 'n\/a'\}\)/.test(code)
+    && /Venue message:/.test(code));
+  check('execute-trade: close reject surfaces the verbatim errorMessage + host',
+    /krakenfutures close reject: \$\{kfCloseVerdict\.rejectReason\}/.test(code)
+    && /kfCloseVerdict\.errorMessage/.test(code));
+  check('execute-trade: ADJUST TP/SL rejects surface the verbatim errorMessage + host',
+    /ADJUST TP reject: \$\{tpVerdict\.rejectReason\}\$\{tpVerdict\.errorMessage/.test(code)
+    && /ADJUST SL reject: \$\{slVerdict\.rejectReason\}\$\{slVerdict\.errorMessage/.test(code));
+}
+// (b) PROBE ROUTE: withTenantAuth + tenant-scoped vault read + role gate.
+if (exists(PROBE_ROUTE)) {
+  const src = read(PROBE_ROUTE);
+  const code = stripComments(src);
+  check('probe route: withTenantAuth wraps the handler (tenant derived server-side)',
+    /import \{ withTenantAuth \} from '\.\.\/\.\.\/lib\/auth-middleware'/.test(code)
+    && /export default withTenantAuth\(handler\)/.test(code));
+  check('probe route: role gate (ADMIN/TRADER/TRIAL only)',
+    /role !== 'ADMIN' && role !== 'TRADER' && role !== 'TRIAL'/.test(code));
+  check('probe route: calls kfAuthProbe with the SESSION tenant (never request params)',
+    /kfAuthProbe\(\{ supabase, tenantId \}\)/.test(code)
+    && /const \{ tenantId, supabase, role \} = req\.tenant/.test(code));
+  check('probe route: response carries ok/error/errorMessage/host (no key material)',
+    /ok: false,\s*\n\s*error: verdict\.error/.test(code)
+    && /errorMessage: verdict\.errorMessage \|\| null/.test(code)
+    && /host: verdict\.host/.test(code));
+}
+// (c) SETTINGS CARD: the Test Connection button is wired to the probe route.
+const SETTINGS_PAGE = 'pages/settings.js';
+if (exists(SETTINGS_PAGE)) {
+  const src = read(SETTINGS_PAGE);
+  check('settings: Test Connection button wired to the probe route (KRF card only)',
+    /fetch\('\/api\/kraken-futures-test', \{/.test(src)
+    && /Test Connection/.test(src)
+    && /exchange === 'KRAKENFUTURES' && \(\s*\n\s*<div className="space-y-2">/.test(src));
+}
+// (d) DEMO-FLOOD: every demo-feed select is capped + trimmed; the telemetry blob
+//     and select('*') on memories are structurally gone; the hard cap exists.
+if (exists(DEMO_FEED)) {
+  const src = read(DEMO_FEED);
+  const code = stripComments(src);
+  check('demo-feed: trade_logs capped at 40 (was 500 — the flood)',
+    /trades: 40,\s*\/\/ trade_logs \(was 500/.test(code)
+    && /\.limit\(FEED_CAPS\.trades\)/.test(code));
+  check('demo-feed: agent_session_logs capped (60) + log_message trimmed',
+    /logs: 60/.test(code) && /\.limit\(FEED_CAPS\.logs\)/.test(code)
+    && /log_message: trim\(l\.log_message, TEXT_TRIM\.logMessage\)/.test(code));
+  check('demo-feed: strategy_config capped at 40 (was UNBOUNDED)',
+    /configs: 40/.test(code) && /\.limit\(FEED_CAPS\.configs\)/.test(code));
+  check('demo-feed: shadow_portfolio capped at 40 (was 200)',
+    /shadow: 40/.test(code) && /\.limit\(FEED_CAPS\.shadow\)/.test(code));
+  check('demo-feed: agent_tool_calls capped at 120 (was 300) + response_summary trimmed',
+    /toolCalls: 120/.test(code) && /\.limit\(FEED_CAPS\.toolCalls\)/.test(code)
+    && /response_summary: trim\(tc\.response_summary, TEXT_TRIM\.responseSummary\)/.test(code));
+  check('demo-feed: scan_results is a SUMMARY feed (no telemetry blob)',
+    /select\('id, strategy, asset, status, created_at'\)/.test(code)
+    && /\.limit\(FEED_CAPS\.scans\)/.test(code)
+    && !/from\('scan_results'\)[\s\S]{0,200}select\('\*'/.test(code));
+  check('demo-feed: hermes_core_memory selects DISPLAY COLUMNS ONLY (never select(*))',
+    /select\('id, trade_log_id, win_loss, regime_at_close, pnl, thesis_accurate, lesson_learned, working_thesis'\)/.test(code)
+    && !/hermes_core_memory'\)\.select\('\*'/.test(code));
+  check('demo-feed: trade_logs.reason trimmed (the 10KB oracle text never rides the public wire whole)',
+    /reason: trim\(t\.reason, TEXT_TRIM\.reason\)/.test(code));
+  check('demo-feed: hard total cap ~1MB with tail-shedding',
+    /HARD_TOTAL_CAP_BYTES = 1024 \* 1024/.test(code)
+    && /shedOrder = \['toolCalls', 'logs', 'scans', 'shadowTrades', 'memories', 'configs', 'trades'\]/.test(code));
+  check('demo-feed: edge cache raised to 30s + SWR 60 (fast route, not a per-poll dump)',
+    /s-maxage=30, stale-while-revalidate=60/.test(code));
+}
+
 // ── 5. IMPORT-GRAPH SMOKE (the battery gap this hotfix closed) ──────────────
 // node --check is syntax-only and next build EXCLUDES workers/ — neither can catch
 // a missing cross-module export. The Push 7 hotfix shipped OPENORDERS_PATH /

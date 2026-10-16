@@ -11,6 +11,18 @@
 // expose ONLY the demo tenant's data through this server-side endpoint using the
 // service role. The demo tenant id is read from server env and never accepted
 // from the client, so no arbitrary tenant data can be requested.
+//
+// 🟢 PUSH 7 HOTFIX 3 — THE 4MB FLOOD. This route used to select trade_logs with
+// limit(500) (each row carrying the FULL oracle `reason` text) and
+// hermes_core_memory with select('*') — unbounded selects that flooded the Vercel
+// logs with 4MB+ responses on every landing-page poll. The route is now a FAST
+// feed, not a table dump:
+//   - every list is capped (FEED_CAPS) and every free-text column is trimmed
+//     (TEXT_TRIM) to what the landing page actually renders,
+//   - hermes_core_memory selects ONLY the display columns (never select('*')),
+//   - scan_results rides along as a SUMMARY-only list (no telemetry blob),
+//   - a hard total cap (~1MB) sheds the tail of the heaviest lists if the payload
+//     ever grows toward the cap — growth below the cap returns a compact payload.
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -23,34 +35,64 @@ const supabase = createClient(
 const DEMO_TENANT_ID =
   process.env.DEMO_TENANT_ID || process.env.NEXT_PUBLIC_DEMO_TENANT_ID;
 
+// 🟢 Push 7 hotfix 3 — per-list row caps. The landing page renders at most ~50
+// cards per section; anything past these caps is dead weight on the wire.
+const FEED_CAPS = {
+  logs: 60,        // agent_session_logs (was 30 — raised + trimmed per row)
+  trades: 40,      // trade_logs (was 500 — THE flood)
+  configs: 40,     // strategy_config (was UNBOUNDED)
+  shadow: 40,      // shadow_portfolio (was 200)
+  toolCalls: 120,  // agent_tool_calls (was 300)
+  scans: 40,       // scan_results — summary fields ONLY (new; no telemetry blob)
+  memoryChunk: 50, // per-chunk hermes_core_memory fetch (chunking unchanged)
+};
+
+// �� Push 7 hotfix 3 — free-text trim points. The landing page line-clamps every
+// one of these; the full text lives in the DB and in the authenticated views.
+const TEXT_TRIM = {
+  logMessage: 300,      // agent_session_logs.log_message
+  reason: 600,          // trade_logs.reason (oracle reasoning can be 10KB+ per row)
+  responseSummary: 200, // agent_tool_calls.response_summary
+  lessonLearned: 400,   // hermes_core_memory.lesson_learned
+  workingThesis: 400,   // hermes_core_memory.working_thesis
+};
+
+// 🟢 Push 7 hotfix 3 — the hard total cap. Under normal operation the caps above
+// keep the payload well under 300KB; this is the belt-and-braces ceiling so the
+// route can NEVER regress into a table dump.
+const HARD_TOTAL_CAP_BYTES = 1024 * 1024; // ~1MB
+
+const trim = (s, n) => (typeof s === 'string' && s.length > n ? `${s.slice(0, n)}…` : (s ?? null));
+
 export default async function handler(req, res) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Method Not Allowed' });
 
   if (!DEMO_TENANT_ID) {
     // No demo tenant configured — let the client fall back to synthetic data.
-    return res.status(200).json({ configured: false, logs: [], trades: [], configs: [], memories: [], shadowTrades: [] });
+    return res.status(200).json({ configured: false, logs: [], trades: [], configs: [], memories: [], shadowTrades: [], scans: [] });
   }
 
   try {
-    const [logsRes, tradesRes, configsRes, shadowRes] = await Promise.all([
+    const [logsRes, tradesRes, configsRes, shadowRes, scansRes] = await Promise.all([
       supabase
         .from('agent_session_logs')
         .select('agent_name, log_message, log_type, timestamp')
         .eq('tenant_id', DEMO_TENANT_ID)
         .order('timestamp', { ascending: false })
-        .limit(30),
+        .limit(FEED_CAPS.logs),
       supabase
         .from('trade_logs')
         .select('id, symbol, side, strategy_id, entry_price, exit_price, pnl, exit_time, reason, execution_mode, created_at, influencing_memory_ids')
         .eq('tenant_id', DEMO_TENANT_ID)
         .order('created_at', { ascending: false })
-        .limit(500),
+        .limit(FEED_CAPS.trades),
       supabase
         .from('strategy_config')
         .select('strategy, asset, is_active, execution_mode, last_updated')
         .eq('tenant_id', DEMO_TENANT_ID)
         .eq('is_active', true)   // Only currently-running strategies surface on the landing page.
-        .order('last_updated', { ascending: false }),
+        .order('last_updated', { ascending: false })
+        .limit(FEED_CAPS.configs),
       // 🟢 PUSH AM36 — shadow ledger rows for the demo tenant. Same safe-column
       // whitelist as pages/api/shadow-trades.js (service-role bypasses RLS, so
       // this list is the only guard). Mapped to the SAME trade-card shape the
@@ -64,11 +106,26 @@ export default async function handler(req, res) {
         `)
         .eq('tenant_id', DEMO_TENANT_ID)
         .order('created_at', { ascending: false })
-        .limit(200),
+        .limit(FEED_CAPS.shadow),
+      // 🟢 Push 7 hotfix 3 — scan_results as a SUMMARY feed: id/strategy/asset/
+      // status/created_at ONLY. The telemetry jsonb (the multi-KB blob) NEVER
+      // crosses this route — the landing page does not render it and the
+      // authenticated audit view remains the place to dissect it.
+      supabase
+        .from('scan_results')
+        .select('id, strategy, asset, status, created_at')
+        .eq('tenant_id', DEMO_TENANT_ID)
+        .order('created_at', { ascending: false })
+        .limit(FEED_CAPS.scans),
     ]);
 
-    // Fetch linked core memories for all returned trades
-    const trades = tradesRes.data || [];
+    // Fetch linked core memories for all returned trades — DISPLAY COLUMNS ONLY
+    // (🟢 Push 7 hotfix 3: this used to be select('*'), pulling every wide text
+    // column of hermes_core_memory into a public payload).
+    const trades = (tradesRes.data || []).map((t) => ({
+      ...t,
+      reason: trim(t.reason, TEXT_TRIM.reason),
+    }));
     const allMemoryIds = new Set();
     const allTradeIds = new Set();
     trades.forEach(t => {
@@ -83,18 +140,18 @@ export default async function handler(req, res) {
       const tradeIds = [...allTradeIds];
       const memoryQueries = [];
       if (ids.length > 0) {
-        for (let i = 0; i < ids.length; i += 50) {
-          const chunk = ids.slice(i, i + 50);
+        for (let i = 0; i < ids.length; i += FEED_CAPS.memoryChunk) {
+          const chunk = ids.slice(i, i + FEED_CAPS.memoryChunk);
           memoryQueries.push(
-            supabase.from('hermes_core_memory').select('*').in('id', chunk).limit(50)
+            supabase.from('hermes_core_memory').select('id, trade_log_id, win_loss, regime_at_close, pnl, thesis_accurate, lesson_learned, working_thesis').in('id', chunk).limit(FEED_CAPS.memoryChunk)
           );
         }
       }
       if (tradeIds.length > 0) {
-        for (let i = 0; i < tradeIds.length; i += 50) {
-          const chunk = tradeIds.slice(i, i + 50);
+        for (let i = 0; i < tradeIds.length; i += FEED_CAPS.memoryChunk) {
+          const chunk = tradeIds.slice(i, i + FEED_CAPS.memoryChunk);
           memoryQueries.push(
-            supabase.from('hermes_core_memory').select('*').in('trade_log_id', chunk).limit(50)
+            supabase.from('hermes_core_memory').select('id, trade_log_id, win_loss, regime_at_close, pnl, thesis_accurate, lesson_learned, working_thesis').in('trade_log_id', chunk).limit(FEED_CAPS.memoryChunk)
           );
         }
       }
@@ -102,6 +159,11 @@ export default async function handler(req, res) {
       memResults.forEach(r => {
         if (r.data) memories = memories.concat(r.data);
       });
+      memories = memories.map(m => ({
+        ...m,
+        lesson_learned: trim(m.lesson_learned, TEXT_TRIM.lessonLearned),
+        working_thesis: trim(m.working_thesis, TEXT_TRIM.workingThesis),
+      }));
     }
 
     // Fetch tool calls for the demo tenant (all recent — the client joins them
@@ -114,8 +176,8 @@ export default async function handler(req, res) {
     // so open trade cards showed zero tool calls.
     let toolCalls = [];
     {
-      const { data } = await supabase.from('agent_tool_calls').select('id, trade_id, tool_name, response_summary, duration_ms, status, created_at').eq('tenant_id', DEMO_TENANT_ID).order('created_at', { ascending: false }).limit(300);
-      if (data) toolCalls = data;
+      const { data } = await supabase.from('agent_tool_calls').select('id, trade_id, tool_name, response_summary, duration_ms, status, created_at').eq('tenant_id', DEMO_TENANT_ID).order('created_at', { ascending: false }).limit(FEED_CAPS.toolCalls);
+      if (data) toolCalls = data.map(tc => ({ ...tc, response_summary: trim(tc.response_summary, TEXT_TRIM.responseSummary) }));
     }
 
     // 🟢 PUSH AM36 — map shadow rows to the shadow-trades.js trade-card shape
@@ -141,20 +203,46 @@ export default async function handler(req, res) {
       };
     });
 
-    // Cache at the edge for 10s to keep the landing page snappy and cheap.
-    res.setHeader('Cache-Control', 's-maxage=10, stale-while-revalidate=30');
-
-    return res.status(200).json({
+    const payload = {
       configured: true,
-      logs: logsRes.data || [],
+      logs: (logsRes.data || []).map(l => ({ ...l, log_message: trim(l.log_message, TEXT_TRIM.logMessage) })),
       trades,
       configs: configsRes.data || [],
       memories,
       toolCalls,
       shadowTrades,
-    });
+      scans: scansRes.data || [],
+    };
+
+    // 🟢 Push 7 hotfix 3 — the HARD TOTAL CAP. If the payload ever grows past
+    // ~1MB (a new wide column, a pathological row), shed the tail of the
+    // heaviest list until it fits. Deterministic order: trades are shed LAST —
+    // they drive the landing-page stats. Bounded loop (each pass halves one
+    // list), floor of 5 rows per list so the page never renders empty.
+    let body = JSON.stringify(payload);
+    if (Buffer.byteLength(body) > HARD_TOTAL_CAP_BYTES) {
+      const shedOrder = ['toolCalls', 'logs', 'scans', 'shadowTrades', 'memories', 'configs', 'trades'];
+      for (let guard = 0; guard < 24 && Buffer.byteLength(body) > HARD_TOTAL_CAP_BYTES; guard++) {
+        let biggest = null;
+        let biggestLen = 0;
+        for (const key of shedOrder) {
+          const len = Array.isArray(payload[key]) ? payload[key].length : 0;
+          if (len > biggestLen) { biggest = key; biggestLen = len; }
+        }
+        if (!biggest || biggestLen <= 5) break;
+        payload[biggest] = payload[biggest].slice(0, Math.max(5, Math.floor(biggestLen / 2)));
+        body = JSON.stringify(payload);
+      }
+      console.warn(`[DEMO_FEED] payload exceeded the ${HARD_TOTAL_CAP_BYTES}B hard cap — shed to ${Buffer.byteLength(body)}B.`);
+    }
+
+    // Cache at the edge (30s + SWR) so the landing page stays snappy and the
+    // route is invoked far less often — a fast feed, not a per-poll table dump.
+    res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
+
+    return res.status(200).send(body);
   } catch (e) {
     console.error('[DEMO_FEED] Error:', e.message);
-    return res.status(200).json({ configured: true, logs: [], trades: [], configs: [], memories: [], shadowTrades: [], error: e.message });
+    return res.status(200).json({ configured: true, logs: [], trades: [], configs: [], memories: [], shadowTrades: [], scans: [], error: e.message });
   }
 }
