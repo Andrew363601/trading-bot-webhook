@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 // ─────────────────────────── Commit A → B switch ───────────────────────────
-const REPORT_ONLY = true;
+const REPORT_ONLY = false;
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXCLUDE_DIRS = new Set(['node_modules', '.next', '.git', '.vercel', 'scripts']);
@@ -177,15 +177,19 @@ if (REPORT_ONLY) {
 } else {
   const need = {
     [MARKET_STATE]: 'get-market-state',
-    [ATR]: 'atr-levels',
     [GATEWAY]: 'mcp-gateway',
     [CG_ROUTE]: 'coinglass route',
     [SNIPER]: 'sniper',
   };
   const missing = Object.keys(need).filter((f) => !consumers.includes(f));
-  check('BOUND (Commit B): all five seams consume the new symbols',
+  check('BOUND (Commit B): market-state/gateway/route/sniper consume the new symbols',
     missing.length === 0,
     missing.length ? `missing: ${missing.map((f) => need[f]).join(', ')}` : '');
+  // atr-levels binds via the candle bridge (fetchCandles), not the new symbols —
+  // its venue wiring is asserted separately below.
+  const atrSrc = exists(ATR) ? read(ATR) : '';
+  check('BOUND (Commit B): atr-levels binds via the candle bridge (fetchCandles)',
+    /fetchCandles/.test(atrSrc));
 }
 
 // ── 4. Commit B wiring (guarded) ────────────────────────────────────────────

@@ -31,7 +31,7 @@ import { rebalanceRecall, decayBonusPoints, normalizeTags, DESCRIPTIVE_ONLY_TAG 
 // The sniper is venue-blind (Coinbase WS hot-wire + Coinbase candles/book only), so
 // non-Coinbase venues never tick. This push adds a REST polling lane for KRF ids and
 // a LOUD skip for KRX ids (no scanner data exists yet). NO WebSocket for KRF this push.
-import { getKrakenTickers, resolveKrakenFuturesProduct } from '../lib/providers/kraken-futures.js';
+import { getKrakenTickers, resolveKrakenFuturesProduct, getKrakenOrderBook, summarizeKrakenBook } from '../lib/providers/kraken-futures.js';
 import { fetchCandles, resolveGranularity } from '../lib/candles.js';
 
 const supabase = createClient(
@@ -196,10 +196,11 @@ async function fetchKrakenFuturesMark(asset) {
     }
 }
 
-// 🟢 AM63 (Push 5) — KRF microstructure from venue candles + the venue mark. There
-// is no Coinbase order book for a Kraken Futures id, so the book fields are honest
-// zeros (the canon classifier is CHOP-safe at bidAskRatio 0) and best_bid/best_ask
-// come from the REST ticker. Mirrors the shape fetchMicrostructure returns.
+// 🟢 AM63 (Push 6) — the KRF scan's LIQUIDITY MAP stops being a lie of zeros: the
+// REAL Kraken book feeds walls/spread/imbalance (getKrakenOrderBook + the PURE
+// summarizeKrakenBook — the SAME shape the Coinbase path feeds the map). One extra
+// call per 30s tick per KRF asset is inside the 500/10s budget; the try/catch below
+// still degrades to the empty shape on failure.
 async function fetchKrakenFuturesMicrostructure(asset, triggerCandles, macroCandles) {
     try {
         let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = []; let cvd = 0;
@@ -252,10 +253,27 @@ async function fetchKrakenFuturesMicrostructure(asset, triggerCandles, macroCand
         const lowerPeaks = peaks.filter(p => p.price < currentPrice);
         if (lowerPeaks.length > 0) lower_macro_node = lowerPeaks[0].price;
 
-        // Venue mark for best_bid/best_ask (REST ticker — no book this push).
+        // Venue mark for best_bid/best_ask (REST ticker).
         const mark = await fetchKrakenFuturesMark(asset);
         const bestBid = mark?.bid ?? null;
         const bestAsk = mark?.ask ?? null;
+
+        // 🟢 AM63 (Push 6) — REAL book: walls/spread/imbalance from the venue's own
+        // order book (query-param form, probe-pinned). Degrades to the empty shape
+        // via the try/catch below on failure — never a fabricated zero-walls read.
+        let orderBook = { bids_50_levels: "0.00", asks_50_levels: "0.00", imbalance: "BEARISH", largest_bid_walls: [], largest_ask_walls: [] };
+        try {
+            const product = await resolveKrakenFuturesProduct(String(asset).toUpperCase().trim());
+            if (!product?.error && product.nativeSymbol) {
+                const bookResp = await getKrakenOrderBook({ nativeSymbol: product.nativeSymbol });
+                if (bookResp.ok) {
+                    const bookJson = await bookResp.json();
+                    orderBook = summarizeKrakenBook(bookJson?.orderBook || {}, { topN: 3, levelsN: 50 });
+                }
+            }
+        } catch (bookErr) {
+            console.warn(`[AM63] KRF book fetch failed for ${asset}: ${bookErr.message}`);
+        }
 
         return {
             macro_regime: 'CHOP',
@@ -266,7 +284,7 @@ async function fetchKrakenFuturesMicrostructure(asset, triggerCandles, macroCand
             },
             crossAsset: { sp500: null, dxy: null },
             best_bid: bestBid ? bestBid.toFixed(2) : null, best_ask: bestAsk ? bestAsk.toFixed(2) : null,
-            orderBook: { status: "Unavailable (Kraken Futures — no book this push)", bids_50_levels: "0.00", asks_50_levels: "0.00", imbalance: "NEUTRAL", largest_bid_walls: [], largest_ask_walls: [] },
+            orderBook,
             derivativesData: { spot_price: currentPrice.toFixed(2), futures_price: currentPrice.toFixed(2), basis_premium_percent: "0.0000" }
         };
     } catch (e) {

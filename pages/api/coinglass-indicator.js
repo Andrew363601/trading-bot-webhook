@@ -16,6 +16,12 @@
 //                 avoid bloat — overlays remain visible.
 
 import { withTenantAuth } from '../../lib/auth-middleware.js';
+// 🟢 AM63 (Push 6) — venue-id normalization for Coinglass lookups. Coinglass keys on
+// the UNDERLYING symbol, so venue ids (XRP-PERP-KRF, DOGE-PERP-KRX-5000) strip to
+// base BEFORE the CDE→base rewrite. The base code NEVER leaks into UI payloads that
+// previously carried the venue id (the echoed `symbol` here was already normalized
+// base — unchanged contract).
+import { normalizeVenueAssetId } from '../../lib/asset-resolver.js';
 
 // Lazy-import each indicator so we don't load 30 files unless requested.
 // `series: true`  => the loader accepts an `interval` (chart timeframe) and
@@ -87,14 +93,12 @@ const FUTURES_CODE_MAP = {
     BCP: 'BCH',
 };
 
-// Turn any product id (BTC, BTC-USD, BTC-PERP-INTX, BIP-20DEC30-CDE, …) into a
-// clean Coinglass base ticker (BTC, ETH, …).
+// Turn any product id (BTC, BTC-USD, BTC-PERP-INTX, BIP-20DEC30-CDE,
+// XRP-PERP-KRF, DOGE-PERP-KRX-5000, …) into a clean Coinglass base ticker
+// (BTC, ETH, …). Venue suffixes strip via the shared normalizer; the CDE→base
+// rewrite stays HERE (FUTURES_CODE_MAP) — the normalizer keeps CDE codes.
 function normalizeBaseTicker(symbol) {
-    let base = String(symbol || '').toUpperCase().trim();
-    // Strip known perp/quote/expiry suffixes.
-    base = base.replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '');
-    // Take the leading segment (handles dated futures like BIP-20DEC30).
-    base = base.split('-')[0];
+    const base = normalizeVenueAssetId(symbol);
     return FUTURES_CODE_MAP[base] || base;
 }
 

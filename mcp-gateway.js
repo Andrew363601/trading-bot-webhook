@@ -5,6 +5,10 @@ import { executeTradeMCP } from './lib/execute-trade-mcp.js';
 import { getMarketStateMCP } from './lib/get-market-state-mcp.js';
 import { getAtrLevels } from './lib/get-atr-levels-mcp.js';
 import { getDailyPnlMCP } from './lib/get-daily-pnl-mcp.js';
+// 🟢 AM63 (Push 6) — venue-id normalization for Coinglass lookups. Coinglass keys on
+// the UNDERLYING symbol (XRP, DOGE, …), so venue ids (XRP-PERP-KRF, DOGE-PERP-KRX-5000)
+// must strip to base BEFORE the CDE→base rewrite. The base code NEVER leaks into UI.
+import { normalizeVenueAssetId } from './lib/asset-resolver.js';
 
 const app = express();
 app.use(express.json());
@@ -321,9 +325,9 @@ app.post('/mcp/execute', async (req, res) => {
                 const callArgs = paramNames.map(pn => {
                     let val = args?.[pn];
                     if (CALL_MAP[pn] && val && tool.startsWith('coinglass_')) {
-                        let base = String(val).toUpperCase().trim()
-                            .replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '')
-                            .split('-')[0];
+                        // 🟢 AM63 (Push 6) — venue ids (XRP-PERP-KRF, DOGE-PERP-KRX-5000)
+                        // strip to base via the shared normalizer BEFORE the CDE rewrite.
+                        let base = normalizeVenueAssetId(val);
                         val = CDE_TO_BASE[base] || base;
                         // v4 history endpoints need "ETHUSDT" not bare "ETH"
                         if (pn === 'symbol' && !val.includes('USDT')) val = `${val}USDT`;
@@ -338,9 +342,8 @@ app.post('/mcp/execute', async (req, res) => {
                     const assetIdx = paramNames.indexOf('asset');
                     const raw = symIdx !== -1 ? args?.symbol : assetIdx !== -1 ? args?.asset : null;
                     if (!raw) return null;
-                    let base = String(raw).toUpperCase().trim()
-                        .replace(/(-PERP-INTX|-PERP|-INTX|-CDE|-USDT|-USDC|-USD)/g, '')
-                        .split('-')[0];
+                    // 🟢 AM63 (Push 6) — SAME normalization as callArgs (shared normalizer).
+                    let base = normalizeVenueAssetId(raw);
                     return CDE_TO_BASE[base] || base;
                 })();
                 const negKey = negKeyBase ? `${tool}:${negKeyBase}` : null;
