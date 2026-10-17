@@ -47,6 +47,21 @@ const REGIME_STYLES = {
   DISTRIBUTION: 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
 };
 
+// 🟢 PUSH AM64 — notional preview math. THE formula (stated identically in
+// components/MarketScanner.js — one formula, two render sites). qty × contract_size
+// × price, formatted with Intl.NumberFormat USD. Returns null when the price is
+// absent/0 — the caller HIDES the line (never fakes it).
+function computeNotional(qty, contractSize, price) {
+  const q = parseFloat(qty);
+  const cs = contractSize != null ? parseFloat(contractSize) : 1;
+  const px = parseFloat(price);
+  if (!Number.isFinite(q) || q <= 0 || !Number.isFinite(px) || px <= 0) return null;
+  const notional = q * (Number.isFinite(cs) && cs > 0 ? cs : 1) * px;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency', currency: 'USD', maximumFractionDigits: 2,
+  }).format(notional);
+}
+
 export default function StudioPage() {
   const router = useRouter();
   const session = useSession();
@@ -79,6 +94,10 @@ export default function StudioPage() {
 
   // PUSH AM49d — asset matrix dropdown (replaces free-text input)
   const [availableAssets, setAvailableAssets] = useState([]);
+  // 🟢 PUSH AM64 — id → enriched product facts (contract_size, price, margin,
+  // settlement) for the venue-honest sizing language + notional line. availableAssets
+  // stays id-strings (no downstream churn); this map carries the rest.
+  const [assetFacts, setAssetFacts] = useState({});
   // 🟢 PUSH AM63 (Push 3) — ONE venue selector drives the whole asset menu.
   // Values are lowercase canonical ('coinbase'|'kraken'); they double as the
   // ?exchange= query param AND the deploy body's `exchange`.
@@ -300,6 +319,7 @@ export default function StudioPage() {
     fetchedVenueRef.current = venue;
     // Invalidate the prior venue's menu the moment the venue changes.
     setAvailableAssets([]);
+    setAssetFacts({});
     setBacktestProduct('');
     (async () => {
       try {
@@ -311,6 +331,10 @@ export default function StudioPage() {
         if (fetchedVenueRef.current !== venue) return;
         const products = Array.isArray(data.products) ? data.products : [];
         setAvailableAssets(products.map(p => p.id).filter(Boolean));
+        // 🟢 PUSH AM64 — carry the enriched facts alongside the id list.
+        const facts = {};
+        products.forEach(p => { if (p?.id) facts[p.id] = p; });
+        setAssetFacts(facts);
       } catch (err) {
         console.error('Available assets fetch error:', err);
         if (fetchedVenueRef.current === venue) fetchedVenueRef.current = null; // allow retry
@@ -950,6 +974,21 @@ export default function StudioPage() {
                             onChange={(e) => setSimQty(e.target.value)}
                             className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
                           />
+                          {/* 🟢 PUSH AM64 — notional preview line. Same formula as the
+                              scanner's Instrument Card: qty × contract_size × price.
+                              Hidden when the price is absent/0 (KRX) — never faked. */}
+                          {(() => {
+                            const facts = assetFacts[backtestProduct];
+                            const notional = facts
+                              ? computeNotional(simQty, facts.contract_size, facts.price)
+                              : null;
+                            if (!notional) return null;
+                            return (
+                              <p className="text-[9px] font-mono text-indigo-300 mt-1">
+                                ≈ {notional} notional
+                              </p>
+                            );
+                          })()}
                         </div>
                       ) : (
                         <div>
@@ -967,8 +1006,15 @@ export default function StudioPage() {
                       )}
 
                       <div>
+                        {/* 🟢 PUSH AM64 — venue-honest margin language (was hardcoded
+                            'Leverage (1-10x)'). Data comes from the enriched
+                            available-assets payload via assetFacts. */}
                         <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                          Leverage (1-10x)
+                          {assetExchange === 'krakenfutures'
+                            ? `Margin (venue min ${assetFacts[backtestProduct]?.initial_margin != null ? `${(assetFacts[backtestProduct].initial_margin * 100).toFixed(1)}%` : '—'} initial)`
+                            : assetExchange === 'kraken'
+                              ? `Margin (USD${assetFacts[backtestProduct]?.settlement_method ? `, ${assetFacts[backtestProduct].settlement_method}` : ''})`
+                              : 'Leverage (1-10x)'}
                         </label>
                         <input
                           type="number"

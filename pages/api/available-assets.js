@@ -123,9 +123,32 @@ async function handler(req, res) {
                     base: p.base_currency_id,
                     price: parseFloat(p.price) || 0,
                     volume_24h: parseFloat(p.volume_24h) || 0,
-                    price_percentage_change_24h: parseFloat(p.price_percentage_change_24h) || 0
+                    price_percentage_change_24h: parseFloat(p.price_percentage_change_24h) || 0,
+                    // 🟢 PUSH AM64 — venue-native contract facts (Instrument Card).
+                    // Mapped DEFENSIVELY from the authed v3 record: any field the
+                    // payload does not carry stays undefined (honest-absent — the UI
+                    // renders '—', never a fabricated default). PROBE-FIRST: the first
+                    // PERPETUAL_FUTURE record is logged once below so the field list
+                    // can be verified against this map (spec validation step).
+                    contract_size: p.contract_size != null ? parseFloat(p.contract_size) : undefined,
+                    contract_root_unit: p.contract_root_unit,
+                    contract_expiry_type: p.contract_expiry_type,
+                    product_venue: p.product_venue,
+                    base_increment: p.base_increment != null ? parseFloat(p.base_increment) : undefined,
+                    quote_increment: p.quote_increment != null ? parseFloat(p.quote_increment) : undefined,
+                    min_market_base_size: p.min_market_base_size != null ? parseFloat(p.min_market_base_size) : undefined,
+                    max_market_base_size: p.max_market_base_size != null ? parseFloat(p.max_market_base_size) : undefined
                   }));
-                
+
+                // 🟢 PUSH AM64 — PROBE-FIRST receipt (spec §1): log ONE raw record per
+                // product_type ONCE per process so the field list can be diffed against
+                // the map above. Never logs secrets; the record is public product data.
+                const probeSample = (cfmData.products || [])[0];
+                if (probeSample && !globalThis.__AM64_PRODUCT_PROBE_LOGGED__) {
+                  globalThis.__AM64_PRODUCT_PROBE_LOGGED__ = true;
+                  console.log(`[AM64 PROBE][exchange=${exchange}][type=${type}] raw product record:`, JSON.stringify(probeSample));
+                }
+
                 // Merge and deduplicate
                 cfmProducts.forEach(newP => {
                   const existingIdx = futuresProducts.findIndex(p => p.id === newP.id);
@@ -224,6 +247,21 @@ async function handleKraken(res) {
           contract_size_unit: p.contract_size_unit,
           price_increment: p.price_increment,
           product_id: p.product_id,
+          // 🟢 PUSH AM64 — venue-native contract facts (Instrument Card). Forwarded
+          // from the SAME specs record — no second fetch. Absent → undefined
+          // (honest-absent; the UI renders '—', never a fabricated default).
+          margin_unit: p.margin_unit,                    // 'USD' — collateral basis
+          settlement_method: p.settlement_method,        // 'Cash Settled'
+          max_order_quantity: p.max_order_quantity,
+          min_block_size: p.min_block_size,
+          price_limit_percentage: p.price_limit_percentage, // % move band (0.5 = 0.5%)
+          funding_interval_hours: p.funding_interval_hours,
+          funding_rate_upper_bound: p.funding_rate_upper_bound,
+          funding_rate_lower_bound: p.funding_rate_lower_bound,
+          daily_open_time: p.daily_open_time,
+          daily_settle_time: p.daily_settle_time,
+          price_quotation_unit: p.price_quotation_unit,  // 'USD per SOL' — notional line
+          product_status: p.product_status,              // 'active' (already filtered)
           exchange: 'kraken'
         };
       })
@@ -276,6 +314,17 @@ async function handleKrakenFutures(res) {
         native_symbol: inst.nativeSymbol,
         contract_size: inst.contractSize,
         tick_size: inst.tickSize,
+        // 🟢 PUSH AM64 — venue-native contract facts (Instrument Card). Tier-0
+        // marginLevels (initialMargin 0.01 = 1% = 100× at base tier) is the retail
+        // display source. funding_interval_hours: the apiv3 instruments payload does
+        // NOT carry an interval — 8h is the KRF standard for flexible perps, hardcoded
+        // per spec (ONLY field allowed a default; bounds stay honest-absent).
+        initial_margin: inst.initialMargin,            // 0.01 = 1% (tier 0)
+        maintenance_margin: inst.maintenanceMargin,    // 0.005 = 0.5% (tier 0)
+        max_position_size: inst.maxPositionSize,
+        funding_interval_hours: 8,
+        max_relative_funding_rate: inst.maxRelativeFundingRate,
+        category: inst.category,                       // 'Layer 1' — grouping
         exchange: 'krakenfutures',
       };
     })

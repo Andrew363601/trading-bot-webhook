@@ -63,21 +63,32 @@ async function handler(req, res) {
     return res.status(500).json({ error: `Strategy resolution failed: ${e.message}` });
   }
 
-  // 🔒 LIVE MODE GATE: Check if tenant has Coinbase API keys before allowing LIVE deployment
+  // 🔒 LIVE MODE GATE: Check if the tenant has the venue's API keys before allowing
+  // LIVE deployment. 🟢 PUSH AM64 — venue-aware: coinbase → COINBASE vault row;
+  // krakenfutures → KRAKENFUTURES vault row (apiv3, KRF LIVE lane shipped Push 7);
+  // kraken → refused below (PAPER-only until Push 8). The vault venue literal is
+  // UPPERCASE (secrets-manager normalizes with toUpperCase on read) — do NOT
+  // lowercase; the asymmetry with routing columns is by design.
   if (execution_mode === 'LIVE') {
+    if (deployExchange === 'kraken') {
+      return res.status(400).json({
+        error: 'Bitnomial live execution arrives in Push 8. Use PAPER mode for this venue.'
+      });
+    }
+    const vaultVenue = deployExchange === 'krakenfutures' ? 'KRAKENFUTURES' : 'COINBASE';
     try {
       // Verify keys exist in vault AND that MASTER_ENCRYPTION_KEY can decrypt them
-      const secrets = await retrieveAPIKey(supabase, tenantId, 'COINBASE');
+      const secrets = await retrieveAPIKey(supabase, tenantId, vaultVenue);
       if (!secrets.apiKey || !secrets.apiSecret) {
         return res.status(400).json({
-          error: 'LIVE trading requires Coinbase API keys. Please configure them in Settings first, or switch to PAPER mode to start simulated trading.'
+          error: `LIVE trading requires ${vaultVenue} API keys. Please configure them in Settings first, or switch to PAPER mode to start simulated trading.`
         });
       }
     } catch (e) {
       const isKeyConfig = e.message.includes('Keys not found') || e.message.includes('Empty keys');
       return res.status(400).json({
         error: isKeyConfig
-          ? 'LIVE trading requires Coinbase API keys. Please configure them in Settings first, or switch to PAPER mode to start simulated trading.'
+          ? `LIVE trading requires ${vaultVenue} API keys. Please configure them in Settings first, or switch to PAPER mode to start simulated trading.`
           : `Cannot decrypt API keys: ${e.message}. MASTER_ENCRYPTION_KEY may be missing from server environment.`
       });
     }
@@ -96,11 +107,13 @@ async function handler(req, res) {
       setPendingMode(tenantId, asset, 'PAPER');
     }
     // If LIVE requested but asset is not a CDE, reject with guidance
-    if (execution_mode === 'LIVE' && !isCDEAsset) {
+    // 🟢 PUSH AM64 — CDE restriction is COINBASE-scoped (krakenfutures LIVE is
+    // allowed; kraken was already refused above).
+    if (execution_mode === 'LIVE' && deployExchange !== 'krakenfutures' && !isCDEAsset) {
       return res.status(400).json({ error: 'LIVE mode is restricted to Coinbase CDE futures only. Use PAPER mode for non-CDE assets.' });
     }
     // If LIVE requested without API keys, reject with guidance
-    const modeToPersist = (execution_mode === 'LIVE' && isCDEAsset) ? 'LIVE' : (execution_mode || 'PAPER');
+    const modeToPersist = (execution_mode === 'LIVE' && (deployExchange === 'krakenfutures' || isCDEAsset)) ? 'LIVE' : (execution_mode || 'PAPER');
 
     // Build payload for upsert using the canonical strategy name in `strategy`.
     // Column fix (AM48): the strategy_config table exposes `parameters` and

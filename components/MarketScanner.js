@@ -8,6 +8,46 @@ import {
   Zap, Lock, AlertCircle
 } from 'lucide-react';
 
+// 🟢 PUSH AM64 — venue identity + copy. ONE map drives the venue accent color
+// (--acc CSS custom property on the panel root), the sync/empty copy, and the
+// venue label. Accents are SCOPED to this component (AM65 global design language
+// is a separate push — no global theme change).
+const VENUE_META = {
+  coinbase: {
+    label: 'Coinbase',
+    accent: '#0B6BFF',
+    sync: 'Syncing with Coinbase...',
+    matrixName: 'Coinbase INTX matrix',
+  },
+  kraken: {
+    label: 'Kraken US (Bitnomial)',
+    accent: '#FF8A3C',
+    sync: 'Syncing with Kraken US (Bitnomial)...',
+    matrixName: 'Bitnomial US matrix',
+  },
+  krakenfutures: {
+    label: 'Kraken Futures',
+    accent: '#7C5CFF',
+    sync: 'Syncing with Kraken Futures...',
+    matrixName: 'Kraken Futures matrix',
+  },
+};
+
+// 🟢 PUSH AM64 — notional preview math. THE formula (stated identically in
+// pages/studio.js — one formula, two render sites). qty × contract_size × price,
+// formatted with Intl.NumberFormat USD. Returns null when the price is absent/0 —
+// the caller HIDES the line (never fakes it).
+function computeNotional(qty, contractSize, price) {
+  const q = parseFloat(qty);
+  const cs = contractSize != null ? parseFloat(contractSize) : 1;
+  const px = parseFloat(price);
+  if (!Number.isFinite(q) || q <= 0 || !Number.isFinite(px) || px <= 0) return null;
+  const notional = q * (Number.isFinite(cs) && cs > 0 ? cs : 1) * px;
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency', currency: 'USD', maximumFractionDigits: 2,
+  }).format(notional);
+}
+
 export default function MarketScanner({ onSelectAsset, currentAsset, activeStrategies = [] }) {
   const supabase = useSupabaseClient();
   const session = useSession();
@@ -28,7 +68,20 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   const [subscribing, setSubscribing] = useState(false); // Prevent double-submits during replace
   const [liveWarning, setLiveWarning] = useState(null); // { reason, strategy } — LIVE eligibility popup
   const [hasCoinbaseKeys, setHasCoinbaseKeys] = useState(null); // null = unknown, true/false once checked
+  // 🟢 PUSH AM64 — KRF sibling of hasCoinbaseKeys. Same vault read pattern, same
+  // UPPERCASE literal convention (secrets-manager normalizes with toUpperCase on
+  // BOTH write and read). The asymmetry with lowercase routing columns is BY DESIGN
+  // — do NOT unify (see migration 061 / push3 gate).
+  const [hasKrakenFuturesKeys, setHasKrakenFuturesKeys] = useState(null); // null = unknown
   const [tenantId, setTenantId] = useState(null); // Cache tenant_id to avoid repeated queries
+  // 🟢 PUSH AM64 — inline toast (replaces native alert()). { kind: 'error'|'success', text }
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
+  const showToast = useCallback((kind, text) => {
+    setToast({ kind, text });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 4000);
+  }, []);
   // 🟢 PUSH AM63 (Push 5) — ONE venue selector drives the WHOLE matrix. Values are
   // the lowercase routing literals ('coinbase' | 'kraken' | 'krakenfutures').
   const [venue, setVenue] = useState('coinbase');
@@ -180,6 +233,29 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     checkKeys();
   }, [tenantId, supabase]);
 
+  // 🟢 PUSH AM64 — Kraken Futures keys check (LIVE gate for the krakenfutures venue).
+  // Same vault read pattern as the Coinbase check above; the venue literal is the
+  // UPPERCASE 'KRAKENFUTURES' (vault convention — settings.js posts it uppercase;
+  // secrets-manager normalizes with toUpperCase on read). Do NOT lowercase this.
+  useEffect(() => {
+    const checkKfKeys = async () => {
+      if (!tenantId) return;
+      try {
+        const { data } = await supabase
+          .from('api_keys_vault')
+          .select('id')
+          .eq('tenant_id', tenantId)
+          .eq('exchange', 'KRAKENFUTURES')
+          .eq('is_active', true)
+          .maybeSingle();
+        setHasKrakenFuturesKeys(!!data);
+      } catch (e) {
+        setHasKrakenFuturesKeys(false);
+      }
+    };
+    checkKfKeys();
+  }, [tenantId, supabase]);
+
   // Determine if an asset is a Coinbase CDE-approved future (only these may go LIVE).
   const isCDEAsset = (assetId) => (assetId || '').toString().toUpperCase().includes('-CDE');
 
@@ -218,7 +294,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
 
         if (error) {
           console.error('Failed to remove favorite:', error);
-          alert(`❌ Failed to remove favorite: ${error.message}`);
+          showToast('error', `Failed to remove favorite: ${error.message}`);
         } else {
           console.log(`[DEBUG] Removed ${assetName} from favorites`);
           // Reload favorites from DB to ensure consistency
@@ -233,7 +309,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
 
         if (error) {
           console.error('Failed to add favorite:', error);
-          alert(`❌ Failed to add favorite: ${error.message}`);
+          showToast('error', `Failed to add favorite: ${error.message}`);
         } else {
           console.log(`[DEBUG] Added ${assetName} to favorites`, data);
           // Reload favorites from DB to ensure consistency
@@ -242,7 +318,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
       }
     } catch (err) {
       console.error('Failed to toggle favorite:', err);
-      alert('❌ Failed to toggle favorite');
+      showToast('error', 'Failed to toggle favorite');
     } finally {
       setFavoritesLoading(prev => ({ ...prev, [assetName]: false }));
     }
@@ -251,9 +327,39 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   const subscribeToStrategy = async (strategy, forceReplace = false, liveConfirmed = false) => {
     if (!selectedAsset || !token) return;
 
-    // 🔒 LIVE eligibility gate (popup warning). Only CDE assets, only with Coinbase API
-    // keys configured. Server enforces this too; this is the friendly front-line warning.
+    // 🔒 LIVE eligibility gate (popup warning) — 🟢 PUSH AM64: VENUE-AWARE. The
+    // matrix mirrors the server gates (subscribe-strategy.js / deploy-strategy.js):
+    //   coinbase       → CDE assets only + COINBASE keys (unchanged)
+    //   krakenfutures  → KRAKENFUTURES vault row required (KRF LIVE lane shipped Push 7)
+    //   kraken         → PAPER-only (Bitnomial live execution arrives in Push 8)
+    // Server enforces this too; this is the friendly front-line warning.
     if (executionMode === 'LIVE' && !liveConfirmed) {
+      if (venue === 'kraken') {
+        setLiveWarning({
+          strategy,
+          blocking: true,
+          reason: 'Bitnomial live execution arrives in Push 8. PAPER mode is available now for this venue.',
+        });
+        return;
+      }
+      if (venue === 'krakenfutures') {
+        if (hasKrakenFuturesKeys === false) {
+          setLiveWarning({
+            strategy,
+            blocking: true,
+            reason: 'LIVE trading on Kraken Futures requires apiv3 keys. Add them in Settings → Exchange Provider (Kraken Futures) first, or switch to PAPER mode.',
+          });
+          return;
+        }
+        // Keys present (or unknown): require an explicit risk acknowledgement.
+        setLiveWarning({
+          strategy,
+          blocking: false,
+          reason: `You are about to deploy "${strategy.name || strategy.id}" on ${selectedAsset.id} (Kraken Futures) in LIVE mode. Real funds will be at risk. Continue?`,
+        });
+        return;
+      }
+      // coinbase (default): CDE assets only + COINBASE keys.
       if (!isCDEAsset(selectedAsset.id)) {
         setLiveWarning({
           strategy,
@@ -303,7 +409,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
 
       if (res.ok) {
         setConflictModal(null);
-        alert(`✅ Subscribed to ${strategy.name} for ${selectedAsset.id}`);
+        showToast('success', `Subscribed to ${strategy.name} for ${selectedAsset.id}`);
         setStrategyParams({});
         // Call onSelectAsset if provided to refresh parent state
         if (onSelectAsset) onSelectAsset(selectedAsset.id);
@@ -319,11 +425,11 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
         });
       } else {
         const errorData = await res.json();
-        alert(`❌ ${errorData.error || 'Failed to subscribe'}`);
+        showToast('error', errorData.error || 'Failed to subscribe');
       }
     } catch (err) {
       console.error('Failed to subscribe:', err);
-      alert('Failed to subscribe to strategy');
+      showToast('error', 'Failed to subscribe to strategy');
     } finally {
       setSubscribing(false);
     }
@@ -359,24 +465,34 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
        full-panel drag. */
     <div
       className="bg-slate-950/50 rounded-2xl p-3 space-y-4 max-h-[calc(100vh-180px)] md:max-h-[520px] md:h-[520px] overflow-y-auto overflow-x-hidden custom-scrollbar"
-      style={{ touchAction: 'pan-y' }}
+      style={{ touchAction: 'pan-y', '--acc': VENUE_META[venue]?.accent || VENUE_META.coinbase.accent }}
     >
       {/* 🟢 PUSH AM63 (Push 5) — VENUE SELECT FIRST. Swapping the venue repopulates
           the WHOLE matrix (assets, favorites, selection, deploy panel). Values are
-          the lowercase routing literals. */}
-      <div className="flex items-center gap-2">
-        <label className="text-[10px] font-black uppercase tracking-widest text-slate-500 shrink-0">
-          Venue
-        </label>
-        <select
-          value={venue}
-          onChange={(e) => setVenue(e.target.value)}
-          className="flex-1 bg-slate-950 border border-white/10 rounded-xl px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
-        >
-          <option value="coinbase">Coinbase</option>
-          <option value="kraken">Kraken US (Bitnomial)</option>
-          <option value="krakenfutures">Kraken Futures</option>
-        </select>
+          the lowercase routing literals.
+          🟢 PUSH AM64 — preview-ratified 3-button venue row with per-venue accent
+          (VENUE_META). The accent rides a --acc CSS custom property on the panel
+          root (below); selected-row wash, tab underline, venue-dot, notional accent
+          and the primary button consume it. SCOPED to this component. */}
+      <div className="flex items-center gap-1.5">
+        {Object.entries(VENUE_META).map(([key, meta]) => (
+          <button
+            key={key}
+            onClick={() => setVenue(key)}
+            className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg border text-[10px] font-bold uppercase tracking-wide transition-colors ${
+              venue === key
+                ? 'text-white'
+                : 'border-white/10 text-slate-400 hover:text-slate-200'
+            }`}
+            style={venue === key ? { borderColor: meta.accent, background: `${meta.accent}22` } : undefined}
+          >
+            <span
+              className="w-1.5 h-1.5 rounded-full shrink-0"
+              style={{ background: venue === key ? meta.accent : undefined, backgroundColor: venue === key ? meta.accent : '#5F6570', opacity: venue === key ? 1 : 0.5 }}
+            />
+            {meta.label}
+          </button>
+        ))}
       </div>
 
       {/* Tabs.
@@ -494,12 +610,17 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
         <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
           {allAssets.length === 0 && !loading ? (
             <div className="text-center py-8">
-              <div className="text-indigo-500 animate-pulse text-[10px] font-black uppercase mb-2">Syncing with Coinbase...</div>
-              <div className="text-slate-600 text-[8px] uppercase">Attempting to map futures matrix</div>
+              {/* 🟢 PUSH AM64 — venue-aware copy (was Coinbase-hardcoded). */}
+              <div className="animate-pulse text-[10px] font-black uppercase mb-2" style={{ color: 'var(--acc)' }}>
+                {VENUE_META[venue]?.sync || VENUE_META.coinbase.sync}
+              </div>
+              <div className="text-slate-600 text-[8px] uppercase">
+                Attempting to map {VENUE_META[venue]?.matrixName || VENUE_META.coinbase.matrixName}
+              </div>
             </div>
           ) : filteredAssets.length === 0 ? (
             <div className="text-center py-4 text-[10px] text-slate-500 uppercase tracking-widest font-black">
-              Empty Matrix
+              Empty {VENUE_META[venue]?.matrixName || 'Matrix'}
             </div>
           ) : (
             filteredAssets.map(asset => (
@@ -512,14 +633,22 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
                 }}
                 className={`w-full text-left px-3 py-2 rounded-xl transition-all border ${
                   selectedAsset?.id === asset.id
-                    ? 'bg-indigo-500/20 border-indigo-500/50'
+                    ? ''
                     : 'bg-slate-950/50 border-white/5 hover:border-white/10'
                 }`}
+                style={selectedAsset?.id === asset.id ? { borderColor: 'var(--acc)', background: 'color-mix(in srgb, var(--acc) 14%, transparent)' } : undefined}
               >
                 <div className="flex justify-between items-start">
                   <div>
                     <div className="font-black text-[10px] text-white uppercase tracking-tighter">{asset.id}</div>
-                    <div className="text-[9px] text-slate-500 font-mono">${asset.price?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                    {/* 🟢 PUSH AM64 — KRX rows carry NO prices (specs payload) — render
+                        an honest amber 'mark pending' chip instead of a fake $0.00.
+                        Real prices arrive with the Push 8 market-data push. */}
+                    {asset.price === 0 || asset.price == null ? (
+                      <div className="text-[9px] font-mono text-amber-400">⏳ mark pending</div>
+                    ) : (
+                      <div className="text-[9px] text-slate-500 font-mono">${asset.price?.toLocaleString(undefined, { minimumFractionDigits: 2 })}</div>
+                    )}
                   </div>
                   <button
                     onClick={(e) => {
@@ -544,6 +673,131 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
         </div>
 
         {/* Strategy Discovery */}
+        {/* 🟢 PUSH AM64 — INSTRUMENT CARD. Venue-native contract facts for the
+            selected asset, rendered ABOVE the deploy matrix (it informs the deploy,
+            it replaces nothing). Facts come from the enriched available-assets
+            payload; any fact the venue does not provide renders '—' (honest-absent,
+            never fabricated). The notional strip is live math bound to the qty the
+            user is about to deploy with: qty × contract_size × price. */}
+        {selectedAsset && (
+          <div
+            className="rounded-xl border p-3 space-y-2"
+            style={{ borderColor: 'var(--acc)', background: 'color-mix(in srgb, var(--acc) 7%, transparent)' }}
+          >
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--acc)' }} />
+              <span className="font-black text-[10px] text-white uppercase tracking-tighter">{selectedAsset.id}</span>
+              {selectedAsset.category && (
+                <span className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded" style={{ color: 'var(--acc)', background: 'color-mix(in srgb, var(--acc) 14%, transparent)' }}>
+                  {selectedAsset.category}
+                </span>
+              )}
+              {selectedAsset.settlement_method && (
+                <span className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded text-emerald-400 bg-emerald-500/10">
+                  {selectedAsset.settlement_method}
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-px bg-white/10 border border-white/10 rounded-lg overflow-hidden">
+              {/* Contract */}
+              <div className="bg-slate-950 px-2 py-1.5">
+                <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Contract</div>
+                <div className="text-[10px] font-mono font-bold text-white">
+                  {selectedAsset.contract_size != null
+                    ? `${selectedAsset.contract_size} ${selectedAsset.contract_size_unit || selectedAsset.base || ''}`.trim()
+                    : '—'}
+                </div>
+              </div>
+              {/* Tick */}
+              <div className="bg-slate-950 px-2 py-1.5">
+                <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Tick</div>
+                <div className="text-[10px] font-mono font-bold text-white">
+                  {selectedAsset.tick_size != null
+                    ? selectedAsset.tick_size
+                    : selectedAsset.price_increment != null
+                      ? selectedAsset.price_increment
+                      : selectedAsset.quote_increment != null
+                        ? selectedAsset.quote_increment
+                        : '—'}
+                </div>
+              </div>
+              {/* Margin — venue-honest language */}
+              <div className="bg-slate-950 px-2 py-1.5">
+                <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Margin</div>
+                <div className="text-[10px] font-mono font-bold text-white">
+                  {venue === 'krakenfutures' && selectedAsset.initial_margin != null
+                    ? `Initial ${(selectedAsset.initial_margin * 100).toFixed(1)}% · Maint ${selectedAsset.maintenance_margin != null ? `${(selectedAsset.maintenance_margin * 100).toFixed(1)}%` : '—'} (tier 1)`
+                    : venue === 'kraken'
+                      ? `Unit: ${selectedAsset.margin_unit || '—'}${selectedAsset.settlement_method ? ` · ${selectedAsset.settlement_method}` : ''}`
+                      : selectedAsset.contract_size != null || selectedAsset.base_increment != null
+                        ? `Contract ${selectedAsset.contract_size ?? '—'}${selectedAsset.base_increment != null ? ` · Incr ${selectedAsset.base_increment}` : ''}`
+                        : '—'}
+                </div>
+              </div>
+              {/* Limits */}
+              <div className="bg-slate-950 px-2 py-1.5">
+                <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Limits</div>
+                <div className="text-[10px] font-mono font-bold text-white">
+                  {selectedAsset.max_position_size != null
+                    ? `Max pos ${Number(selectedAsset.max_position_size).toLocaleString()}`
+                    : selectedAsset.max_order_quantity != null
+                      ? `Max order ${Number(selectedAsset.max_order_quantity).toLocaleString()}`
+                      : selectedAsset.max_market_base_size != null
+                        ? `Max mkt ${Number(selectedAsset.max_market_base_size).toLocaleString()}`
+                        : '—'}
+                </div>
+              </div>
+              {/* Funding — KRF/KRX only; coinbase absent → '—' */}
+              <div className="bg-slate-950 px-2 py-1.5">
+                <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Funding</div>
+                <div className="text-[10px] font-mono font-bold text-white">
+                  {selectedAsset.funding_interval_hours != null
+                    ? `${selectedAsset.funding_interval_hours}h${
+                        selectedAsset.funding_rate_upper_bound != null && selectedAsset.funding_rate_lower_bound != null
+                          ? ` ±${(selectedAsset.funding_rate_upper_bound * 100).toFixed(2)}%`
+                          : selectedAsset.max_relative_funding_rate != null
+                            ? ` cap ${(selectedAsset.max_relative_funding_rate * 100).toFixed(2)}%`
+                            : ''
+                      }`
+                    : '—'}
+                </div>
+              </div>
+              {/* Settlement / venue detail */}
+              <div className="bg-slate-950 px-2 py-1.5">
+                <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Settlement</div>
+                <div className="text-[10px] font-mono font-bold text-white">
+                  {selectedAsset.price_quotation_unit || selectedAsset.contract_expiry_type || '—'}
+                </div>
+              </div>
+            </div>
+            {/* Notional preview strip — THE comprehension line. Hidden when the
+                price is absent/0 (KRX) — never faked. Same formula as studio.js. */}
+            {(() => {
+              const notionalQty = strategyParams.__notional_qty__ ?? '10';
+              const notional = computeNotional(notionalQty, selectedAsset.contract_size, selectedAsset.price);
+              return (
+                <div
+                  className="flex items-center gap-2 mt-2 rounded-lg border border-dashed px-2 py-1.5"
+                  style={{ borderColor: 'var(--acc)', background: 'color-mix(in srgb, var(--acc) 7%, transparent)' }}
+                >
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={notionalQty}
+                    onChange={(e) => setStrategyParams(prev => ({ ...prev, __notional_qty__: e.target.value }))}
+                    className="w-16 bg-slate-950 border border-white/10 rounded px-1.5 py-1 text-[10px] font-mono text-white text-right outline-none"
+                  />
+                  <span className="text-[10px] font-mono font-bold" style={{ color: 'var(--acc)' }}>
+                    {notional ? `≈ ${notional} notional` : 'qty × contract × mark'}
+                  </span>
+                  <span className="ml-auto text-[8px] font-mono text-slate-500">qty × contract × mark</span>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
         <div className="border-t border-white/5 pt-4">
           {!selectedAsset ? (
             <div className="flex flex-col items-center justify-center py-4 text-slate-600">
@@ -722,6 +976,21 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
               )}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* 🟢 PUSH AM64 — inline toast (replaces native alert()). Bottom-center,
+          border-tinted by kind, auto-dismisses ~4s (timer in showToast). */}
+      {toast && (
+        <div
+          className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-[400] px-4 py-2.5 rounded-lg border shadow-2xl text-xs font-bold max-w-sm ${
+            toast.kind === 'error'
+              ? 'border-red-500/40 bg-slate-900 text-red-300'
+              : 'border-emerald-500/40 bg-slate-900 text-emerald-300'
+          }`}
+          role="status"
+        >
+          {toast.kind === 'error' ? '✕ ' : '✓ '}{toast.text}
         </div>
       )}
     </div>

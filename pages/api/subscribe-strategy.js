@@ -30,14 +30,26 @@ export default async function handler(req, res) {
   }
 
   // Phase 3.4: Extract execution_mode from parameters with LIVE gating
+  // 🟢 PUSH AM64 — VENUE-AWARE LIVE gate (mirrors the UI matrix in MarketScanner.js):
+  //   coinbase       → CDE assets only (unchanged)
+  //   krakenfutures  → allowed (KRF LIVE lane shipped Push 7; keys checked below)
+  //   kraken         → PAPER-only (Bitnomial live execution arrives in Push 8)
   const executionMode = parameters?.execution_mode || 'PAPER';
   const isCDEAsset = (asset || '').toString().toUpperCase().includes('-CDE');
-  // If LIVE requested but asset is not CDE, reject
-  if (executionMode === 'LIVE' && !isCDEAsset) {
-    return res.status(400).json({
-      error: 'LIVE mode is restricted to Coinbase CDE futures only. Use PAPER mode for non-CDE assets.',
-      source: req.body?.source
-    });
+  if (executionMode === 'LIVE') {
+    if (normalizedExchange === 'kraken') {
+      return res.status(400).json({
+        error: 'Bitnomial live execution arrives in Push 8. Use PAPER mode for this venue.',
+        source: req.body?.source
+      });
+    }
+    // coinbase (default): LIVE stays restricted to CDE derivatives.
+    if (normalizedExchange !== 'krakenfutures' && !isCDEAsset) {
+      return res.status(400).json({
+        error: 'LIVE mode is restricted to Coinbase CDE futures only. Use PAPER mode for non-CDE assets.',
+        source: req.body?.source
+      });
+    }
   }
 
   // Verify JWT and extract tenant_id
@@ -75,19 +87,23 @@ export default async function handler(req, res) {
 
     const actualTenantId = tenantUser.tenant_id;
 
-    // 🔒 LIVE MODE GATE: Block LIVE activation if Coinbase API keys aren't configured.
-    // (deploy-strategy.js had this; subscribe-strategy.js was missing it — closing that gap.)
+    // 🔒 LIVE MODE GATE: Block LIVE activation if the venue's API keys aren't
+    // configured. 🟢 PUSH AM64 — venue-aware: coinbase → COINBASE vault row;
+    // krakenfutures → KRAKENFUTURES vault row (apiv3). The vault venue literal is
+    // UPPERCASE (secrets-manager normalizes with toUpperCase on read) — do NOT
+    // lowercase; the asymmetry with routing columns is by design.
     if (executionMode === 'LIVE') {
+      const vaultVenue = normalizedExchange === 'krakenfutures' ? 'KRAKENFUTURES' : 'COINBASE';
       try {
-        const secrets = await retrieveAPIKey(supabase, actualTenantId, 'COINBASE');
+        const secrets = await retrieveAPIKey(supabase, actualTenantId, vaultVenue);
         if (!secrets?.apiKey || !secrets?.apiSecret) {
           return res.status(400).json({
-            error: 'LIVE trading requires Coinbase API keys. Add them in Settings → API Keys, or switch to PAPER mode to start simulated trading.'
+            error: `LIVE trading requires ${vaultVenue} API keys. Add them in Settings → API Keys, or switch to PAPER mode to start simulated trading.`
           });
         }
       } catch (e) {
         return res.status(400).json({
-          error: 'LIVE trading requires Coinbase API keys. Add them in Settings → API Keys, or switch to PAPER mode to start simulated trading.'
+          error: `LIVE trading requires ${vaultVenue} API keys. Add them in Settings → API Keys, or switch to PAPER mode to start simulated trading.`
         });
       }
     }
