@@ -135,14 +135,21 @@ if (REPORT_ONLY) {
 }
 
 // ── 2b. Host exclusivity: futures.kraken.com only in provider + catalog ─────
+// 🟢 AM65 evolution — the FIX module (lib/providers/kraken-fix.js) may MENTION
+// futures.kraken.com in its header comments (it documents the geo-blocked REST
+// door it replaces). The pin's intent is CODE references: judge comment-stripped
+// source for the FIX module, raw source everywhere else.
 const kfHostOutside = [];
 for (const f of files) {
   const file = rel(f);
   if (file === PROVIDER || file === PUSH5_CATALOG) continue;
-  const s = readFileSync(f, 'utf8');
+  let s = readFileSync(f, 'utf8');
+  if (file === 'lib/providers/kraken-fix.js') {
+    s = s.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+  }
   if (/futures\.kraken\.com/.test(s)) kfHostOutside.push(file);
 }
-check('no futures.kraken.com reference outside the provider (catalog excepted)',
+check('no futures.kraken.com reference outside the provider (catalog excepted; FIX module code-only)',
   kfHostOutside.length === 0,
   kfHostOutside.length ? `found in: ${kfHostOutside.join(', ')}` : '');
 

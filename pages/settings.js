@@ -20,6 +20,8 @@ function SettingsContent() {
     const [exchange, setExchange] = useState('COINBASE');
     const [apiKey, setApiKey] = useState('');
     const [apiSecret, setApiSecret] = useState('');
+    // 🟢 AM65 — the Unified FIX SenderCompID (Kraken-assigned, DRV suffix).
+    const [fixSenderCompId, setFixSenderCompId] = useState('');
     const [discordWebhookUrl, setDiscordWebhookUrl] = useState(''); // New state for Discord webhook
     const [nexusDiscordWebhookUrl, setNexusDiscordWebhookUrl] = useState(''); // Nexus agent Discord webhook
     const [loading, setLoading] = useState(false);
@@ -186,7 +188,7 @@ function SettingsContent() {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${session.access_token}`
                 },
-                body: JSON.stringify({ exchange, apiKey, apiSecret })
+                body: JSON.stringify({ exchange, apiKey, apiSecret, fixSenderCompId })
             });
 
             const result = await response.json();
@@ -194,6 +196,7 @@ function SettingsContent() {
                 setStatus({ type: 'success', message: `Vault Updated: ${exchange} keys secured.` });
                 setApiKey('');
                 setApiSecret('');
+                setFixSenderCompId('');
             } else {
                 throw new Error(result.error || 'Failed to update keys');
             }
@@ -416,6 +419,23 @@ function SettingsContent() {
                         <p className="text-[11px] text-amber-300/80 leading-relaxed font-medium">
                             Kraken Futures (apiv3) keys are stored now — live execution arrives with Push 6. The venue runs paper-only until then.
                         </p>
+                    )}
+
+                    {/* 🟢 AM65 — the Unified FIX SenderCompID (Kraken-assigned, DRV
+                        suffix for derivatives). Optional: the FIX lane refuses LOUD
+                        without it; the REST lane never reads it. */}
+                    {exchange === 'KRAKENFUTURES' && (
+                        <div className="space-y-2">
+                            <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">Kraken FIX SenderCompID (optional — FIX lane only)</label>
+                            <input
+                                type="text"
+                                placeholder="e.g. ACME-DRV (Kraken-assigned at FIX onboarding)"
+                                value={fixSenderCompId}
+                                onChange={(e) => setFixSenderCompId(e.target.value)}
+                                className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
+                            />
+                            <p className="text-[9px] text-slate-500 ml-1 italic">Ask your Kraken agent for the DRV SenderCompID. Leave empty to keep the REST transport.</p>
+                        </div>
                     )}
 
                     {exchange === 'KRAKENFUTURES' && (

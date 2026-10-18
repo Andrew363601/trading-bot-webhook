@@ -9,7 +9,7 @@ async function handler(req, res) {
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
     try {
-        const { exchange, apiKey, apiSecret } = req.body;
+        const { exchange, apiKey, apiSecret, fixSenderCompId } = req.body;
         const { tenantId, supabase, role } = req.tenant;
 
         if (role !== 'ADMIN' && role !== 'TRADER' && role !== 'TRIAL') {
@@ -20,7 +20,10 @@ async function handler(req, res) {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        await storeAPIKey(supabase, tenantId, exchange, apiKey, apiSecret);
+        // 🟢 AM65 — the FIX SenderCompID rides the same save path (KRAKENFUTURES
+        // rows only; other venues ignore it).
+        await storeAPIKey(supabase, tenantId, exchange, apiKey, apiSecret,
+            exchange === 'KRAKENFUTURES' ? fixSenderCompId : undefined);
 
         return res.status(200).json({ status: 'success', message: `${exchange} keys configured.` });
     } catch (error) {

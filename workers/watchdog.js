@@ -21,6 +21,10 @@ import {
   OPENORDERS_PATH,
   FILLS_PATH,
 } from '../lib/providers/kraken-futures.js';
+// 🟢 AM65 — Unified FIX lane: session liveness supervision + ER-ledger position
+// state (D2). The watchdog is the liveness supervisor for the owner-process FIX
+// session; fix-mode position existence comes from the session fill ledger, and
+// UNKNOWN state alerts LOUD (never assumes flat).
 // 🟢 AM63 (Push 5) — the shared candle bridge (routes -PERP-KRF to venue OHLC).
 import { fetchCandles } from '../lib/candles.js';
 import { buildRadarChartUrl } from '../lib/discord-chart.js'; 
@@ -251,6 +255,290 @@ const livenessAlerted = {};
 // the redeployed conditionals → TP-only fallback + hard cap.
 const kfBracketRejectTracker = new Map(); // tradeId → consecutive reject count
 const kfMissingBracketTracker = new Map(); // tradeId → first-missing timestamp (ceasefire)
+
+/**
+ * 🟢 AM65 — the KRF FIX-mode trade manager. Runs INSTEAD of the REST manager when
+ * KRF_PRIVATE_TRANSPORT=fix. Differences from the REST path:
+ *   - LIVENESS: the FIX session is supervised here — a dead/absent session is a
+ *     LOUD Discord alert (CoD already cancelled session orders exchange-side).
+ *   - POSITION STATE (D2): FIX has NO position message. Position existence comes
+ *     from the session ER fill ledger (net filled qty per symbol). UNKNOWN state
+ *     (no session / no ledger entry) alerts LOUD — never assumes flat, never
+ *     assumes live.
+ *   - CONDITIONALS: tripwire/trail/safety-net cancel+replace through the SAME
+ *     provider dispatch (fix-mode inside placeKrakenFuturesOrder /
+ *     cancelKrakenFuturesOrder) — the call sites below are shared.
+ *   - FORENSICS: ER history replaces /fills (the ER IS the fill record, with
+ *     cumulative-fee deltas already applied by the session ledger).
+ */
+async function manageKrakenFuturesFixTrade(openTrade, asset, currentPrice, kfProduct, kfTickSize, kfMultiplier) {
+    const tenantId = openTrade.tenant_id;
+    const tradeId = openTrade.id;
+    const nativeSymbol = kfProduct?.nativeSymbol;
+    if (!nativeSymbol) {
+        console.warn(`[AM65] KRF FIX manager: no native symbol for ${asset} (trade ${tradeId}) — skipping.`);
+        return;
+    }
+    const closingSide = openTrade.side === 'BUY' ? 'sell' : 'buy';
+    const kfTickRound = (p) => parseFloat((Math.round(parseFloat(p) / kfTickSize) * kfTickSize).toFixed(8));
+
+    // ── 1. SESSION LIVENESS (the FIX analog of the dead-man heartbeat) ─────────
+    let session = null;
+    let positionEstimate = { known: false, netQty: 0 };
+    try {
+        const fixMod = await import('../lib/providers/kraken-fix.js');
+        session = fixMod.peekFixSession(tenantId);
+        if (session) {
+            positionEstimate = session.getPositionEstimate(nativeSymbol);
+        } else if (fixMod.isSessionOwnerProcess()) {
+            // Owner process but no live session — logon loss. LOUD (CoD already
+            // cancelled the session's resident orders exchange-side).
+            console.error(`[AM65] KRF FIX session DOWN for tenant ${tenantId} (owner process, no live session). CoD cancelled session orders exchange-side.`);
+            await sendDiscordAlert(tenantId, {
+                title: `🚨 FIX Session Down: ${asset}`,
+                description: `The Kraken FIX trading session for this tenant is DOWN (logon lost). Cancel-on-Disconnect (default ON) already cancelled the session's resident TP/SL orders on the exchange. The safety net will redeploy on the next sweep once the session is re-established.`,
+                color: 15158332,
+            });
+        } else {
+            // Non-owner process: the session lives in the swarm. Liveness is the
+            // owner's job; here we just note the proxy path is in play.
+            console.log(`[AM65] KRF FIX: non-owner process — ops proxy to the gateway for trade ${tradeId}.`);
+        }
+    } catch (e) {
+        console.warn(`[AM65] KRF FIX liveness check fault (non-fatal): ${e.message}`);
+    }
+
+    // ── 2. POSITION STATE from the ER ledger (D2) ──────────────────────────────
+    const kfCtx = (openTrade.params_context && typeof openTrade.params_context === 'object') ? openTrade.params_context : {};
+    if (!positionEstimate.known) {
+        // UNKNOWN state — LOUD, never assume flat, never assume live. The blind
+        // spot (manual/UI/REST fills) is documented doctrine.
+        console.warn(`[AM65] KRF FIX position state UNKNOWN for ${nativeSymbol} (trade ${tradeId}) — no session ledger entry. Manual/UI/REST fills are invisible to FIX. Skipping management this sweep.`);
+        await logAgentActivity(tenantId, 'Watchdog', asset, `[AM65] FIX position state unknown (no ER ledger entry) — skipped management for trade ${tradeId}.`, 'KRF_FIX_STATE_UNKNOWN');
+        return;
+    }
+    const netQty = Math.abs(positionEstimate.netQty);
+    if (netQty === 0) {
+        // Ledger says flat — either the entry never filled or a conditional closed
+        // the position. Check the ER history for the closing fill (forensics).
+        const closingFill = session ? session.erHistory.filter((h) =>
+            h.f['150'] === 'F' && h.f['55'] === nativeSymbol
+            && (h.f['54'] === (openTrade.side === 'BUY' ? '2' : '1'))) : [];
+        if (closingFill.length > 0 && (kfCtx.kf_tp_order_id || kfCtx.kf_sl_order_id)) {
+            const last = closingFill[closingFill.length - 1];
+            const exitPrice = parseFloat(last.f['31']) || currentPrice;
+            const safeEntry = parseFloat(openTrade.entry_price) || 0;
+            const dbQty = parseFloat(openTrade.qty) || 0;
+            const pnl = openTrade.side === 'BUY'
+                ? (exitPrice - safeEntry) * dbQty * kfMultiplier
+                : (safeEntry - exitPrice) * dbQty * kfMultiplier;
+            const legName = last.f['11'] === kfCtx.kf_tp_order_id ? 'TP' : 'SL';
+            const updatedReason = `${openTrade.reason || ''}\n\n[EXIT TRIGGER]: ${legName}_CONDITIONAL_FILLED (venue-resident, AM65 FIX)`;
+            try {
+                await supabase.from('trade_logs').update({
+                    exit_price: parseFloat(exitPrice.toFixed(8)),
+                    pnl: parseFloat(pnl.toFixed(4)),
+                    exit_time: new Date().toISOString(),
+                    reason: updatedReason,
+                    params_context: {
+                        ...kfCtx,
+                        kf_exit_order_id: last.f['37'] || null,
+                        exit_fees: last.f['137'] != null ? parseFloat(last.f['137']) : null, // cumulative-fee delta already applied by the ledger
+                    },
+                }).eq('id', tradeId);
+                console.log(`[AM65] KRF FIX native fill stamped for trade ${tradeId}: ${legName} filled @ $${exitPrice.toFixed(8)}.`);
+                await sendDiscordAlert(tenantId, {
+                    title: `🏁 Position Closed (venue-resident ${legName}): ${asset}`,
+                    description: `**Exit Price:** $${exitPrice.toFixed(8)}\n**Realized PnL:** $${pnl.toFixed(4)}\n**Trigger:** ${legName} conditional filled on the venue (FIX ER)`,
+                    color: pnl >= 0 ? 5763719 : 15548997,
+                });
+            } catch (e) {
+                console.error(`[AM65] KRF FIX native-fill stamp failed for trade ${tradeId}: ${e.message}`);
+            }
+        } else if (!kfCtx.kf_entry_filled) {
+            console.warn(`[AM65] KRF FIX: no ledger position for ${nativeSymbol} (trade ${tradeId}) — entry may not have filled yet (IOC unfilled). Skipping.`);
+        } else {
+            console.warn(`[AM65] KRF FIX: ledger flat for ${nativeSymbol} (trade ${tradeId}) but no closing fill found — possible manual close. LOUD.`);
+            await logAgentActivity(tenantId, 'Watchdog', asset, `[AM65] FIX ledger flat but no closing ER fill for trade ${tradeId} — possible manual/UI close.`, 'KRF_FIX_FLAT_NO_FILL');
+        }
+        return;
+    }
+
+    // ── 3. POSITION MATH (the AM53 entry-locked geometry — shared with REST) ───
+    const leverage = parseFloat(openTrade.leverage || 1);
+    const rawPriceMove = openTrade.side === 'BUY'
+        ? (currentPrice - openTrade.entry_price) / openTrade.entry_price
+        : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
+    const pnlPercent = rawPriceMove * leverage;
+    const tripwire = parseFloat(kfCtx.entry_tripwire ?? 0);
+    const trailStep = parseFloat(kfCtx.entry_trail_step ?? 0);
+    const trailActivation = parseFloat(kfCtx.entry_trail_activation ?? kfCtx.entry_tripwire ?? 0);
+
+    if (!heartbeatTracker[tradeId] || Date.now() - heartbeatTracker[tradeId] >= 60000) {
+        await logAgentActivity(tenantId, 'Watchdog', asset, `Heartbeat (FIX): Live ROE: ${(pnlPercent * 100).toFixed(2)}% | Tripwire: ${(tripwire * 100).toFixed(2)}%.`, 'HEARTBEAT');
+        heartbeatTracker[tradeId] = Date.now();
+    }
+
+    // ── 4. TRIPWIRE + TRAIL + SAFETY NET — through the SAME provider dispatch ──
+    // The provider's fix-mode branches handle 35=F / 35=q / NOS internally; the
+    // call shapes below are IDENTICAL to the REST manager's (shared code path).
+    if (tripwire > 0 && pnlPercent >= tripwire && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
+        const recentAdjust = openTrade.reason?.includes('[ADJUST_TP_SL]');
+        const recentlyUpdated = openTrade.updated_at && (Date.now() - new Date(openTrade.updated_at).getTime()) < 60000;
+        if (recentAdjust || recentlyUpdated) {
+            await logAgentActivity(tenantId, 'Watchdog', asset, `Tripwire skipped for ${asset} — ADJUST_TP_SL was recently applied.`, 'TRIPWIRE_SKIPPED');
+        } else {
+            console.log(`[AM65] KRF FIX TRIPWIRE HIT for ${asset} (trade ${tradeId}): ROE ${(pnlPercent * 100).toFixed(2)}% ≥ ${(tripwire * 100).toFixed(2)}%.`);
+            const bePrice = kfTickRound(parseFloat(openTrade.entry_price));
+            let tripwireOk = false;
+            try {
+                if (kfCtx.kf_sl_order_id) {
+                    await cancelKrakenFuturesOrder({ supabase, tenantId, orderId: kfCtx.kf_sl_order_id });
+                }
+                const beVerdict = await placeKrakenFuturesOrder({
+                    supabase, tenantId, nativeSymbol, side: closingSide,
+                    size: netQty, orderType: 'stp', stopPrice: bePrice,
+                    limitPrice: kfTickRound(closingSide === 'sell' ? bePrice * 0.995 : bePrice * 1.005),
+                    triggerSignal: 'mark', reduceOnly: true,
+                    cliOrdId: `nx_krf_wd_tw_${tradeId}_${Date.now()}`,
+                });
+                tripwireOk = beVerdict.placed;
+                if (!beVerdict.placed) console.error(`[AM65] KRF FIX tripwire BE conditional REJECTED: ${beVerdict.rejectReason}`);
+            } catch (e) {
+                console.error(`[AM65] KRF FIX tripwire fault: ${e.message}`);
+            }
+            if (tripwireOk) {
+                try {
+                    await supabase.from('trade_logs').update({
+                        sl_price: bePrice,
+                        reason: `${openTrade.reason || ''}\n\n[TRIPWIRE_ACTIVATED]`,
+                        params_context: { ...kfCtx, kf_sl_order_id: null },
+                    }).eq('id', tradeId);
+                } catch (e) { console.error('[AM65] KRF FIX tripwire db update failed:', e.message); }
+                await sendDiscordAlert(tenantId, {
+                    title: `🛡️ Tripwire Activated: ${asset}`,
+                    description: `**ROE:** ${(pnlPercent * 100).toFixed(2)}%\n**Action:** SL conditional replaced at breakeven ($${bePrice}) — venue-resident, reduce-only (FIX).`,
+                    color: 15844367,
+                });
+                try {
+                    await pingHermes({
+                        event: 'TRIPWIRE_HIT',
+                        tenant_id: tenantId,
+                        asset,
+                        trade_id: tradeId,
+                        forced_risk_close: true,
+                        authorization: 'TRIPWIRE_RISK_CLOSE',
+                    });
+                } catch (e) { console.warn('[AM65] KRF FIX tripwire wake failed:', e.message); }
+            }
+            return; // tripwire fired — skip trailing this sweep
+        }
+    }
+
+    if (trailStep > 0 && pnlPercent >= trailActivation && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
+        const currentSl = parseFloat(openTrade.sl_price) || 0;
+        const newSl = openTrade.side === 'BUY'
+            ? currentPrice * (1 - trailStep)
+            : currentPrice * (1 + trailStep);
+        const improves = openTrade.side === 'BUY' ? newSl > currentSl : newSl < currentSl;
+        const minImprovement = kfTickSize * 10;
+        const clampedSl = openTrade.side === 'BUY'
+            ? Math.min(newSl, currentPrice * 0.995)
+            : Math.max(newSl, currentPrice * 1.005);
+        if (improves && Math.abs(clampedSl - currentSl) > minImprovement) {
+            const roundedSl = kfTickRound(clampedSl);
+            console.log(`[AM65] KRF FIX TRAIL for ${asset} (trade ${tradeId}): SL $${currentSl} → $${roundedSl}.`);
+            let trailOk = false;
+            try {
+                if (kfCtx.kf_sl_order_id) {
+                    await cancelKrakenFuturesOrder({ supabase, tenantId, orderId: kfCtx.kf_sl_order_id });
+                }
+                const trailVerdict = await placeKrakenFuturesOrder({
+                    supabase, tenantId, nativeSymbol, side: closingSide,
+                    size: netQty, orderType: 'stp', stopPrice: roundedSl,
+                    limitPrice: kfTickRound(closingSide === 'sell' ? roundedSl * 0.995 : roundedSl * 1.005),
+                    triggerSignal: 'mark', reduceOnly: true,
+                    cliOrdId: `nx_krf_wd_tr_${tradeId}_${Date.now()}`,
+                });
+                trailOk = trailVerdict.placed;
+                if (!trailVerdict.placed) console.error(`[AM65] KRF FIX trail conditional REJECTED: ${trailVerdict.rejectReason}`);
+            } catch (e) {
+                console.error(`[AM65] KRF FIX trail fault: ${e.message}`);
+            }
+            if (trailOk) {
+                try {
+                    await supabase.from('trade_logs').update({
+                        sl_price: roundedSl,
+                        reason: `${openTrade.reason || ''}\n\n[TRAILING_SL_MOVED] $${currentSl} → $${roundedSl}`,
+                        params_context: { ...kfCtx, kf_sl_order_id: null },
+                    }).eq('id', tradeId);
+                } catch (e) { console.error('[AM65] KRF FIX trail db update failed:', e.message); }
+                await sendDiscordAlert(tenantId, {
+                    title: `📈 Trailing Stop Updated: ${asset}`,
+                    description: `**New SL:** $${roundedSl} (was $${currentSl})\n**ROE:** ${(pnlPercent * 100).toFixed(2)}%`,
+                    color: 3447003,
+                });
+            }
+        }
+    }
+
+    // Safety net: position live but no resident conditionals (FIX analog — the
+    // resident check uses the ER history's open-order reports; a full open-order
+    // book view arrives with the MD session push, so the ledger-based heuristic
+    // below is conservative: redeploy only when NO conditional ER was ever seen).
+    const sawConditional = session ? session.erHistory.some((h) =>
+        h.f['11'] === kfCtx.kf_tp_order_id || h.f['11'] === kfCtx.kf_sl_order_id) : false;
+    if (!sawConditional) {
+        const firstMissing = kfMissingBracketTracker.get(tradeId) || 0;
+        if (Date.now() - firstMissing < 20000) return; // 20 s ceasefire
+        kfMissingBracketTracker.set(tradeId, Date.now());
+        const rejectCount = kfBracketRejectTracker.get(tradeId) || 0;
+        const tpOnly = rejectCount >= 3;
+        console.warn(`[AM65] KRF FIX SAFETY NET for ${asset} (trade ${tradeId}): no resident conditionals${tpOnly ? ' — circuit tripped, TP-only' : ''}. Redeploying.`);
+        const safeEntry = parseFloat(openTrade.avg_entry_price || openTrade.entry_price) || currentPrice;
+        const tpPrice = parseFloat(openTrade.tp_price) || (openTrade.side === 'BUY' ? safeEntry * 1.02 : safeEntry * 0.98);
+        const slPrice = parseFloat(openTrade.sl_price) || (openTrade.side === 'BUY' ? safeEntry * 0.98 : safeEntry * 1.02);
+        let redeployed = 0;
+        try {
+            if (!tpOnly) {
+                const tpVerdict = await placeKrakenFuturesOrder({
+                    supabase, tenantId, nativeSymbol, side: closingSide,
+                    size: netQty, orderType: 'take_profit', stopPrice: kfTickRound(tpPrice),
+                    limitPrice: kfTickRound(tpPrice), triggerSignal: 'mark', reduceOnly: true,
+                    cliOrdId: `nx_krf_wd_oco_${tradeId}_${Date.now()}_tp`,
+                });
+                if (tpVerdict.placed) redeployed++;
+                else console.error(`[AM65] KRF FIX safety-net TP reject: ${tpVerdict.rejectReason}`);
+            }
+            const slVerdict = await placeKrakenFuturesOrder({
+                supabase, tenantId, nativeSymbol, side: closingSide,
+                size: netQty, orderType: 'stp', stopPrice: kfTickRound(slPrice),
+                limitPrice: kfTickRound(closingSide === 'sell' ? slPrice * 0.995 : slPrice * 1.005),
+                triggerSignal: 'mark', reduceOnly: true,
+                cliOrdId: `nx_krf_wd_oco_${tradeId}_${Date.now()}_sl`,
+            });
+            if (slVerdict.placed) redeployed++;
+            else console.error(`[AM65] KRF FIX safety-net SL reject: ${slVerdict.rejectReason}`);
+        } catch (e) {
+            console.error(`[AM65] KRF FIX safety-net fault: ${e.message}`);
+        }
+        if (redeployed > 0) {
+            kfBracketRejectTracker.set(tradeId, 0);
+            await sendDiscordAlert(tenantId, {
+                title: `🛡️ Safety Net Deployed: ${asset}`,
+                description: `Position was live with NO resident conditionals. Redeployed ${redeployed} protective order(s)${tpOnly ? ' (TP-only — circuit breaker tripped)' : ''}.\n**TP:** $${tpPrice}\n**SL:** $${slPrice}`,
+                color: 15844367,
+            });
+        } else {
+            kfBracketRejectTracker.set(tradeId, rejectCount + 1);
+            await sendDiscordAlert(tenantId, {
+                title: `🚨 NAKED POSITION: ${asset}`,
+                description: `Safety-net redeploy FAILED (${rejectCount + 1} consecutive). ${netQty} contracts unprotected. Manual intervention required.`,
+                color: 15158332,
+            });
+        }
+    }
+}
 
 /**
  * The KRF LIVE trade manager — the venue-aware analog of the Coinbase LIVE block.
@@ -805,6 +1093,13 @@ export async function sweepOpenTrades(tenantId) {
                 // paper-computes closes), refreshes the dead-man each sweep, and
                 // stamps native fills via /fills forensics.
                 if (isKrakenFuturesTrade && openTrade.execution_mode === 'LIVE') {
+                    // 🟢 AM65 — FIX-mode dispatch: when KRF_PRIVATE_TRANSPORT=fix,
+                    // the FIX manager (session liveness + ER-ledger position state)
+                    // replaces the REST manager entirely.
+                    if (String(process.env.KRF_PRIVATE_TRANSPORT || 'rest').toLowerCase() === 'fix') {
+                        await manageKrakenFuturesFixTrade(openTrade, asset, currentPrice, krakenFuturesAsset, tickSize, multiplier);
+                        continue;
+                    }
                     await manageKrakenFuturesLiveTrade(openTrade, asset, currentPrice, krakenFuturesAsset, tickSize, multiplier);
                     continue;
                 }
