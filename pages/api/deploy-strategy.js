@@ -7,6 +7,11 @@ import { getConcurrentStrategyQuota } from '../../lib/tenant-context.js';
 import { resolveStrategy } from '../../lib/strategy-resolver.js';
 // 🟢 PUSH AM53 — regime-conditional exit map validation (deploy-time dry-check).
 import { validateRegimeParamsMap } from '../../lib/regime-params.js';
+// 🟢 AM69 — spot × margin venue clamp. Facts resolve SERVER-SIDE from the venue
+// catalog (never the client's copy); the strings come from the shared module so
+// the UI and the server can never drift.
+import { resolveKrakenSpotProduct } from '../../lib/providers/kraken-spot.js';
+import { validateKrakenSpotOrder } from '../../lib/spot-margin-facts.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -78,6 +83,31 @@ async function handler(req, res) {
         error: 'Kraken has no US-futures API: the KRF/DRV doors serve the international platform (geo-blocked for US accounts). US derivatives API = a Tradovate account (per Kraken). This venue stays PAPER-only.',
         reason: 'US_FUTURES_NO_KRAKEN_API'
       });
+    }
+    // 🟢 AM69 — SPOT × MARGIN venue clamp. Reject what the venue will not accept at
+    // the DOOR (not at 3am): margin on a non-eligible (EUR/TX) pair, leverage above
+    // the pair's allowed set, or qty below the venue's ordermin. Facts resolve from
+    // the venue catalog server-side. Deploy has no order side, so leverage is checked
+    // against the INTERSECTION of buy∩sell; the LANE enforces the side-aware array.
+    if (deployExchange === 'krakenspot') {
+      try {
+        const spotFacts = await resolveKrakenSpotProduct(asset);
+        if (spotFacts && !spotFacts.error) {
+          const verdict = validateKrakenSpotOrder({
+            facts: spotFacts,
+            leverage: config?.leverage,
+            qty: config?.qty,
+            symbol: asset,
+          });
+          if (!verdict.ok) return res.status(400).json({ error: verdict.error });
+        } else {
+          // LOUD, never silent: an unresolved catalog skips the clamp (the lane still
+          // enforces min-size + leverage at execution time).
+          console.error(`[AM69] krakenspot facts unresolved at deploy for ${asset}: ${spotFacts?.error || 'unknown'} — venue clamp skipped.`);
+        }
+      } catch (e) {
+        console.error(`[AM69] krakenspot deploy clamp failed for ${asset}: ${e.message} — venue clamp skipped.`);
+      }
     }
     const vaultVenue = deployExchange === 'krakenfutures' ? 'KRAKENFUTURES'
       : deployExchange === 'krakenspot' ? 'KRAKENSPOT'

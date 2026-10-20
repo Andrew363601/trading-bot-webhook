@@ -7,6 +7,12 @@ import {
   Search, Star, Settings, Play, Plus, ChevronDown, TrendingUp, TrendingDown,
   Zap, Lock, AlertCircle
 } from 'lucide-react';
+// 🟢 AM69 — spot × margin facts: the SAME module studio/deploy/subscribe import.
+import {
+  BORROWING_LABEL, CASH_CHIP_LABEL, INTEREST_DISCLOSURE, SPOT_MARGIN_EUR_ERROR,
+  borrowingChipClass, deriveBorrowingLevels, isMarginEligible, maxBorrowingLevel,
+  cashBorrowedPreview, clampSpotQtyToOrdermin, spotQtyMinHint,
+} from '../lib/spot-margin-facts.js';
 
 // 🟢 PUSH AM64 — venue identity + copy. ONE map drives the venue accent color
 // (--acc CSS custom property on the panel root), the sync/empty copy, and the
@@ -776,15 +782,26 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
               <div className="bg-slate-950 px-2 py-1.5">
                 <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Margin</div>
                 <div className="text-[10px] font-mono font-bold text-white">
-                  {venue === 'krakenfutures' && selectedAsset.initial_margin != null
+                  {venue === 'krakenspot'
+                    ? `Lev ${maxBorrowingLevel(selectedAsset) != null ? `${maxBorrowingLevel(selectedAsset)}×` : '—'} · ${selectedAsset.margin === false ? 'No (EUR)' : 'Yes'}`
+                    : venue === 'krakenfutures' && selectedAsset.initial_margin != null
                     ? `Initial ${(selectedAsset.initial_margin * 100).toFixed(1)}% · Maint ${selectedAsset.maintenance_margin != null ? `${(selectedAsset.maintenance_margin * 100).toFixed(1)}%` : '—'} (tier 1)`
                     : venue === 'kraken'
                       ? `Unit: ${selectedAsset.margin_unit || '—'}${selectedAsset.settlement_method ? ` · ${selectedAsset.settlement_method}` : ''}`
                       : selectedAsset.contract_size != null || selectedAsset.base_increment != null
-                        ? `Contract ${selectedAsset.contract_size ?? '—'}${selectedAsset.base_increment != null ? ` · Incr ${selectedAsset.base_increment}` : ''}`
+                        ? `Contract ${selectedAsset.contract_size != null ? selectedAsset.contract_size : '—'}${selectedAsset.base_increment != null ? ` · Incr ${selectedAsset.base_increment}` : ''}`
                         : '—'}
                 </div>
               </div>
+              {/* 🟢 AM69 — krakenspot venue facts (order floors + precision). */}
+              {venue === 'krakenspot' && (
+                <div className="bg-slate-950 px-2 py-1.5">
+                  <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Order floors</div>
+                  <div className="text-[10px] font-mono font-bold text-white">
+                    {`Min ${selectedAsset.ordermin != null ? `${selectedAsset.ordermin} ${selectedAsset.base || ''}`.trim() : '—'} · Notional ${selectedAsset.costmin != null ? `$${selectedAsset.costmin}` : '—'} · Dec ${selectedAsset.lot_decimals != null ? selectedAsset.lot_decimals : '—'}`}
+                  </div>
+                </div>
+              )}
               {/* Limits */}
               <div className="bg-slate-950 px-2 py-1.5">
                 <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Limits</div>
@@ -824,8 +841,13 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
             {/* Notional preview strip — THE comprehension line. Hidden when the
                 price is absent/0 (KRX) — never faked. Same formula as studio.js. */}
             {(() => {
-              const notionalQty = strategyParams.__notional_qty__ ?? '10';
+              const sp = (venue === 'krakenspot' && expandedStrategyId) ? (strategyParams[expandedStrategyId] || {}) : {};
+              const notionalQty = (venue === 'krakenspot' && sp.qty != null && sp.qty !== '') ? sp.qty : (strategyParams.__notional_qty__ ?? '10');
               const notional = computeNotional(notionalQty, selectedAsset.contract_size, selectedAsset.price);
+              const lev = venue === 'krakenspot' ? parseInt(sp.leverage, 10) : NaN;
+              const spotBorrow = venue === 'krakenspot' && isMarginEligible(selectedAsset) && lev > 1;
+              const nVal = parseFloat(notionalQty) * (parseFloat(selectedAsset.contract_size) || 1) * parseFloat(selectedAsset.price);
+              const preview = spotBorrow ? cashBorrowedPreview({ notional: nVal, leverage: lev, side: 'long', base: selectedAsset.base }) : null;
               return (
                 <div
                   className="flex items-center gap-2 mt-2 rounded-lg border border-dashed px-2 py-1.5"
@@ -842,7 +864,9 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
                   <span className="text-[10px] font-mono font-bold" style={{ color: 'var(--acc)' }}>
                     {notional ? `≈ ${notional} notional` : 'qty × contract × mark'}
                   </span>
-                  <span className="ml-auto text-[8px] font-mono text-slate-500">qty × contract × mark</span>
+                  <span className="ml-auto text-[8px] font-mono text-slate-500">
+                    {preview ? <span className="text-slate-400">{preview}</span> : 'qty × contract × mark'}
+                  </span>
                 </div>
               );
             })()}
@@ -910,7 +934,67 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
                               <option value="LIVE">Live Trading</option>
                             </select>
                           </div>
-                          {Object.entries(strategy.parameters).map(([key, param]) => (
+                          {/* 🟢 AM69 — SPOT × MARGIN deploy controls (full parity with Studio):
+                              qty + Borrowing chips generated from the venue's facts. The
+                              strategy's own qty/leverage param inputs are filtered out below
+                              so there is exactly ONE control per field. */}
+                          {venue === 'krakenspot' && (
+                            <div className="space-y-2">
+                              <div className="space-y-1">
+                                <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">
+                                  Quantity ({selectedAsset.base || 'base'})
+                                </label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  value={(strategyParams[strategy.id]?.qty) ?? ''}
+                                  onChange={(e) => setStrategyParams(prev => ({ ...prev, [strategy.id]: { ...(prev[strategy.id] || {}), qty: e.target.value } }))}
+                                  onBlur={() => {
+                                    const r = clampSpotQtyToOrdermin(strategyParams[strategy.id]?.qty, selectedAsset);
+                                    if (r.clamped) setStrategyParams(prev => ({ ...prev, [strategy.id]: { ...(prev[strategy.id] || {}), qty: r.value } }));
+                                  }}
+                                  className="w-full bg-slate-900 border border-white/5 rounded-lg px-2 py-1 text-white text-[9px] outline-none"
+                                />
+                                {spotQtyMinHint(selectedAsset) && (
+                                  <p className="text-[8px] font-mono text-slate-500">{spotQtyMinHint(selectedAsset)}</p>
+                                )}
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">
+                                  {BORROWING_LABEL}
+                                </label>
+                                {!isMarginEligible(selectedAsset) ? (
+                                  <p className="text-[9px] font-mono text-amber-400 leading-snug">{SPOT_MARGIN_EUR_ERROR}</p>
+                                ) : (
+                                  <>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {['none', ...deriveBorrowingLevels(selectedAsset)].map((c) => {
+                                        const sel = strategyParams[strategy.id]?.leverage;
+                                        const active = c === 'none'
+                                          ? (sel == null || sel === '' || parseInt(sel, 10) <= 1)
+                                          : String(sel) === String(c);
+                                        return (
+                                          <button
+                                            key={String(c)}
+                                            type="button"
+                                            onClick={() => setStrategyParams(prev => ({ ...prev, [strategy.id]: { ...(prev[strategy.id] || {}), leverage: c === 'none' ? '1' : String(c) } }))}
+                                            className={borrowingChipClass(active)}
+                                          >
+                                            {c === 'none' ? CASH_CHIP_LABEL : `${c}×`}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                    <p className="text-[8px] font-mono text-slate-500">{INTEREST_DISCLOSURE}</p>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          {Object.entries(strategy.parameters)
+                            .filter(([key]) => !(venue === 'krakenspot' && (key === 'qty' || key === 'leverage')))
+                            .map(([key, param]) => (
                             <div key={key} className="space-y-1">
                               <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">
                                 {param.label}

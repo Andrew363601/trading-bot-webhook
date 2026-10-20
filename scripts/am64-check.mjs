@@ -105,6 +105,10 @@ if (!exists(AA)) {
     check("UI: '—' render path exists for absent facts", /'—'/.test(msrc));
     // KRX mark-pending chip (honest, not $0.00).
     check('UI: KRX mark-pending chip present', /mark pending/.test(msrc));
+    // 🟢 AM69 — honest-absent, stricter: the Instrument Card's Margin cell must not
+    // use a bare `?? '—'` fact-default (it hides a real absent value). The AM64 gate
+    // only caught `?? 0`; this closes the sibling pattern.
+    check("UI: no bare `?? '—'` fact-default in the Margin cell", !/contract_size \?\? '—'/.test(msrc));
   } else {
     check('MarketScanner.js exists', false, MS + ' not found');
   }

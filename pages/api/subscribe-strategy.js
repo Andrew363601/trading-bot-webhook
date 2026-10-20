@@ -5,6 +5,9 @@ import { jwtVerify, createRemoteJWKSet } from 'jose';
 import { createClient } from '@supabase/supabase-js';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 import { getConcurrentStrategyQuota, checkHasCoinbaseKeys } from '../../lib/tenant-context.js';
+// 🟢 AM69 — spot × margin venue clamp (facts resolve server-side; shared strings).
+import { resolveKrakenSpotProduct } from '../../lib/providers/kraken-spot.js';
+import { validateKrakenSpotOrder } from '../../lib/spot-margin-facts.js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
@@ -53,6 +56,29 @@ export default async function handler(req, res) {
         error: 'LIVE mode is restricted to Coinbase CDE futures only. Use PAPER mode for non-CDE assets.',
         source: req.body?.source
       });
+    }
+    // 🟢 AM69 — SPOT × MARGIN venue clamp (mirrors deploy-strategy). Reject margin on
+    // a non-eligible (EUR/TX) pair, over-max leverage, or a sub-ordermin qty. Facts
+    // resolve from the venue catalog server-side; strings from the shared module.
+    // Deploy has no order side → leverage is checked against buy∩sell; the LANE
+    // enforces the side-aware array at execution time.
+    if (normalizedExchange === 'krakenspot') {
+      try {
+        const spotFacts = await resolveKrakenSpotProduct(asset);
+        if (spotFacts && !spotFacts.error) {
+          const verdict = validateKrakenSpotOrder({
+            facts: spotFacts,
+            leverage: parameters?.leverage,
+            qty: parameters?.qty,
+            symbol: asset,
+          });
+          if (!verdict.ok) return res.status(400).json({ error: verdict.error, source: req.body?.source });
+        } else {
+          console.error(`[AM69] krakenspot facts unresolved at subscribe for ${asset}: ${spotFacts?.error || 'unknown'} — venue clamp skipped.`);
+        }
+      } catch (e) {
+        console.error(`[AM69] krakenspot subscribe clamp failed for ${asset}: ${e.message} — venue clamp skipped.`);
+      }
     }
   }
 
@@ -220,7 +246,11 @@ export default async function handler(req, res) {
         execution_mode: executionMode,
         // IMPORTANT: Retain existing parameters, do not overwrite with new 'parameters' from req.body
         // The front-end editor handles parameter changes for existing strategies.
-        parameters: existingStrategy.parameters // Use existing parameters
+        // 🟢 AM69 — EXCEPTION (narrow whitelist): qty + leverage are UI-OWNED deploy
+        // controls. A user who changes Borrowing and re-deploys must NOT silently keep
+        // the old 10×. We merge ONLY those two keys over the existing parameters; every
+        // other key (brain-owned state) is preserved untouched.
+        parameters: { ...(existingStrategy.parameters || {}), ...pickSpotUiParameters(parameters) }
       };
     } else {
       // New strategy - insert it with standard default parameters
@@ -286,8 +316,22 @@ export default async function handler(req, res) {
   }
 }
 
+// 🟢 AM69 — the NARROW whitelist merged over existing parameters on update. ONLY the
+// UI-owned deploy controls (qty + leverage) may change on re-deploy; everything else
+// (brain-owned state: regime maps, tf, tripwire, trail…) is preserved untouched.
+// Returns {} when the caller sent neither, so nothing else is ever touched.
+function pickSpotUiParameters(params) {
+  const out = {};
+  if (!params || typeof params !== 'object') return out;
+  for (const key of ['qty', 'leverage']) {
+    if (Object.prototype.hasOwnProperty.call(params, key) && params[key] != null && params[key] !== '') {
+      out[key] = params[key];
+    }
+  }
+  return out;
+}
+
 function flattenParameters(params) {
-  if (!params) return {};
 
   const flattened = {};
   for (const key in params) {

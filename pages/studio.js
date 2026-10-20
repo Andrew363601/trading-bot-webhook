@@ -37,6 +37,13 @@ import StudioChat from '../components/StudioChat.js';
 import BacktestChart from '../components/BacktestChart.js';
 import StudioTheater from '../components/StudioTheater.js';
 import { MessageSquare, X, Sliders } from 'lucide-react';
+// 🟢 AM69 — spot × margin facts: the SINGLE SOURCE OF TRUTH shared with the server
+// mirrors (deploy/subscribe) and the lane. Chips + clamps + validation wording.
+import {
+  BORROWING_LABEL, CASH_CHIP_LABEL, INTEREST_DISCLOSURE, SPOT_MARGIN_EUR_ERROR,
+  borrowingChipClass, deriveBorrowingLevels, isMarginEligible,
+  cashBorrowedPreview, clampSpotQtyToOrdermin, spotQtyMinHint,
+} from '../lib/spot-margin-facts.js';
 
 // PUSH AM50 — regime chip palette + canonical order (shared by table, summary, legend).
 const REGIME_ORDER = ['TREND', 'CHOP', 'ACCUMULATION', 'DISTRIBUTION'];
@@ -129,6 +136,17 @@ export default function StudioPage() {
   const [selectedTradeIdx, setSelectedTradeIdx] = useState(null);
   const handleTradeClick = (t, idx) => setSelectedTradeIdx(idx);
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
+
+  // 🟢 AM69 — keep the spot Borrowing selection coherent with the venue's allowed
+  // set. A 10× left over from another venue must never survive onto a 5× pair (the
+  // lane would send it and Kraken would reject). Anything not offered → Cash (1).
+  useEffect(() => {
+    if (assetExchange !== 'krakenspot') return;
+    const levels = deriveBorrowingLevels(assetFacts[backtestProduct]);
+    const allowed = new Set([1, ...levels]);
+    const cur = parseInt(simLeverage, 10);
+    if (!allowed.has(cur)) setSimLeverage('1');
+  }, [assetExchange, backtestProduct, assetFacts, simLeverage]);
 
   // 1. Fetch user billing tier
   useEffect(() => {
@@ -278,7 +296,7 @@ export default function StudioPage() {
             ...(sizingMode === 'target_usd'
               ? { target_usd: parseFloat(simTargetUsd) || 10000 }
               : { qty: parseFloat(simQty) || 10 }),
-            leverage: parseInt(simLeverage, 10) || 10,
+            leverage: parseInt(simLeverage, 10) || (assetExchange === 'krakenspot' ? 1 : 10),
             tp_percent: (parseFloat(simTp) || 0) / 100,
             sl_percent: (parseFloat(simSl) || 0) / 100,
             tripwire_percent: (parseFloat(simTripwire) || 0) / 100,
@@ -976,21 +994,36 @@ export default function StudioPage() {
                             min="0.001"
                             value={simQty}
                             onChange={(e) => setSimQty(e.target.value)}
+                            onBlur={() => {
+                              // 🟢 AM69 — spot qty floor: lift to the venue's ordermin.
+                              if (assetExchange !== 'krakenspot') return;
+                              const r = clampSpotQtyToOrdermin(simQty, assetFacts[backtestProduct]);
+                              if (r.clamped) setSimQty(r.value);
+                            }}
                             className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
                           />
                           {/* 🟢 PUSH AM64 — notional preview line. Same formula as the
                               scanner's Instrument Card: qty × contract_size × price.
-                              Hidden when the price is absent/0 (KRX) — never faked. */}
+                              Hidden when the price is absent/0 (KRX) — never faked.
+                              🟢 AM69 — spot margin: append the cash/borrowed split. */}
                           {(() => {
                             const facts = assetFacts[backtestProduct];
                             const notional = facts
                               ? computeNotional(simQty, facts.contract_size, facts.price)
                               : null;
-                            if (!notional) return null;
+                            const lev = parseInt(simLeverage, 10);
+                            const spotBorrow = assetExchange === 'krakenspot' && isMarginEligible(facts) && lev > 1;
+                            const nVal = facts ? parseFloat(simQty) * (parseFloat(facts.contract_size) || 1) * parseFloat(facts.price) : NaN;
+                            const preview = spotBorrow ? cashBorrowedPreview({ notional: nVal, leverage: lev, side: 'long', base: facts?.base }) : null;
+                            const hint = assetExchange === 'krakenspot' ? spotQtyMinHint(facts) : null;
+                            if (!notional && !hint) return null;
                             return (
-                              <p className="text-[9px] font-mono text-indigo-300 mt-1">
-                                ≈ {notional} notional
-                              </p>
+                              <>
+                                {notional && <p className="text-[9px] font-mono text-indigo-300 mt-1">≈ {notional} notional</p>}
+                                {preview && <p className="text-[9px] font-mono text-slate-400 mt-0.5">{preview}</p>}
+                                {spotBorrow && <p className="text-[9px] font-mono text-slate-500 mt-0.5">{INTEREST_DISCLOSURE}</p>}
+                                {hint && <p className="text-[9px] font-mono text-slate-500 mt-0.5">{hint}</p>}
+                              </>
                             );
                           })()}
                         </div>
@@ -1010,27 +1043,63 @@ export default function StudioPage() {
                       )}
 
                       <div>
-                        {/* 🟢 PUSH AM64 — venue-honest margin language (was hardcoded
-                            'Leverage (1-10x)'). Data comes from the enriched
-                            available-assets payload via assetFacts. */}
-                        <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
-                          {assetExchange === 'krakenfutures'
-                            ? `Margin (venue min ${assetFacts[backtestProduct]?.initial_margin != null ? `${(assetFacts[backtestProduct].initial_margin * 100).toFixed(1)}%` : '—'} initial)`
-                            : assetExchange === 'kraken'
-                              ? `Margin (USD${assetFacts[backtestProduct]?.settlement_method ? `, ${assetFacts[backtestProduct].settlement_method}` : ''})`
-                              : assetExchange === 'krakenspot'
-                                ? `Margin (spot max ${assetFacts[backtestProduct]?.margin === false ? 'n/a (EUR pair)' : '5×'})`
-                                : 'Leverage (1-10x)'}
-                        </label>
-                        <input
-                          type="number"
-                          min="1"
-                          max="10"
-                          step="1"
-                          value={simLeverage}
-                          onChange={(e) => setSimLeverage(e.target.value)}
-                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
-                        />
+                        {/* 🟢 AM69 — SPOT × MARGIN: the form is generated from the
+                            venue's facts. Krakenspot renders Borrowing chips (or the
+                            EUR/TX line); every other venue keeps the numeric input. */}
+                        {assetExchange === 'krakenspot' ? (
+                          <>
+                            <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                              {BORROWING_LABEL}
+                            </label>
+                            {(() => {
+                              const facts = assetFacts[backtestProduct];
+                              if (facts && !isMarginEligible(facts)) {
+                                return <p className="text-[10px] font-mono text-amber-400 leading-snug">{SPOT_MARGIN_EUR_ERROR}</p>;
+                              }
+                              const levels = deriveBorrowingLevels(facts);
+                              const chipAt = (c) => (c === 'none' ? simLeverage === '1' || !simLeverage : simLeverage === String(c));
+                              return (
+                                <>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {['none', ...levels].map((c) => (
+                                      <button
+                                        key={String(c)}
+                                        type="button"
+                                        onClick={() => setSimLeverage(c === 'none' ? '1' : String(c))}
+                                        className={borrowingChipClass(chipAt(c))}
+                                      >
+                                        {c === 'none' ? CASH_CHIP_LABEL : `${c}×`}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <p className="text-[9px] font-mono text-slate-500 mt-1">Selling inside a long just closes it · borrowing is a margin position</p>
+                                </>
+                              );
+                            })()}
+                          </>
+                        ) : (
+                          <>
+                            {/* 🟢 PUSH AM64 — venue-honest margin language (was hardcoded
+                                'Leverage (1-10x)'). Data comes from the enriched
+                                available-assets payload via assetFacts. */}
+                            <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                              {assetExchange === 'krakenfutures'
+                                ? `Margin (venue min ${assetFacts[backtestProduct]?.initial_margin != null ? `${(assetFacts[backtestProduct].initial_margin * 100).toFixed(1)}%` : '—'} initial)`
+                                : assetExchange === 'kraken'
+                                  ? `Margin (USD${assetFacts[backtestProduct]?.settlement_method ? `, ${assetFacts[backtestProduct].settlement_method}` : ''})`
+                                  : 'Leverage (1-10x)'}
+                            </label>
+                            <input
+                              type="number"
+                              min="1"
+                              max="10"
+                              step="1"
+                              value={simLeverage}
+                              onChange={(e) => setSimLeverage(e.target.value)}
+                              className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                            />
+                          </>
+                        )}
                       </div>
 
                       <div>
