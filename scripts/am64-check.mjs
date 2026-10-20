@@ -138,7 +138,9 @@ if (!exists(MS)) {
   const src = read(MS);
   // CDE gate scoped to the coinbase branch (inside the venue === 'coinbase' path —
   // asserted via the kraken/krakenfutures branches preceding it).
-  check('UI gate: kraken → PAPER-only blocking popup', /venue === 'kraken'[\s\S]{0,400}Bitnomial live execution arrives in Push 8/.test(src));
+  // 🟢 AM68 — the US-futures copy changed from the stale "Push 8" string to the truthful
+  // Kraken-no-US-futures-API string + the US_FUTURES_NO_KRAKEN_API reason marker.
+  check('UI gate: kraken → PAPER-only blocking popup', /venue === 'kraken'[\s\S]{0,400}Kraken has no US-futures API/.test(src));
   check('UI gate: krakenfutures branch exists', /venue === 'krakenfutures'/.test(src));
   check('UI gate: KRF keys check gates the KRF branch', /hasKrakenFuturesKeys === false/.test(src));
   check('UI gate: CDE check still present (coinbase branch)', /isCDEAsset\(selectedAsset\.id\)/.test(src));
@@ -154,7 +156,8 @@ if (!exists(MS)) {
 {
   const SUB = 'pages/api/subscribe-strategy.js';
   const src = read(SUB);
-  check('Server(subscribe): kraken → PAPER-only 400', /normalizedExchange === 'kraken'[\s\S]{0,300}Bitnomial live execution arrives in Push 8/.test(src));
+  // 🟢 AM68 — copy evolved to the truthful US-futures string + reason marker.
+  check('Server(subscribe): kraken → PAPER-only 400', /normalizedExchange === 'kraken'[\s\S]{0,300}Kraken has no US-futures API/.test(src) && /US_FUTURES_NO_KRAKEN_API/.test(src));
   check('Server(subscribe): CDE block scoped to non-krakenfutures', /normalizedExchange !== 'krakenfutures' && !isCDEAsset/.test(src));
   check('Server(subscribe): vault venue derived (KRAKENFUTURES sibling)', /vaultVenue/.test(src) && /'KRAKENFUTURES'/.test(src));
   check('Server(subscribe): lowercase write pin intact (normalizedExchange)', /exchange:\s*normalizedExchange/.test(src));
@@ -163,7 +166,8 @@ if (!exists(MS)) {
 {
   const DEP = 'pages/api/deploy-strategy.js';
   const src = read(DEP);
-  check('Server(deploy): kraken → PAPER-only 400', /deployExchange === 'kraken'[\s\S]{0,300}Bitnomial live execution arrives in Push 8/.test(src));
+  // 🟢 AM68 — copy evolved to the truthful US-futures string + reason marker.
+  check('Server(deploy): kraken → PAPER-only 400', /deployExchange === 'kraken'[\s\S]{0,300}Kraken has no US-futures API/.test(src) && /US_FUTURES_NO_KRAKEN_API/.test(src));
   check('Server(deploy): CDE block scoped to non-krakenfutures', /deployExchange !== 'krakenfutures' && !isCDEAsset/.test(src));
   check('Server(deploy): vault venue derived (KRAKENFUTURES sibling)', /vaultVenue/.test(src) && /'KRAKENFUTURES'/.test(src));
   check('Server(deploy): allowlist pin intact', /KNOWN_EXCHANGES\s*=\s*\[[^\]]*'krakenfutures'/.test(src));

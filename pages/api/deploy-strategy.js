@@ -71,8 +71,10 @@ async function handler(req, res) {
   // lowercase; the asymmetry with routing columns is by design.
   if (execution_mode === 'LIVE') {
     if (deployExchange === 'kraken') {
+      // 🟢 AM68 — US-futures API reality (Kraken specialist verdict, Oct 18 2026).
       return res.status(400).json({
-        error: 'Bitnomial live execution arrives in Push 8. Use PAPER mode for this venue.'
+        error: 'Kraken has no US-futures API: the KRF/DRV doors serve the international platform (geo-blocked for US accounts). US derivatives API = a Tradovate account (per Kraken). This venue stays PAPER-only.',
+        reason: 'US_FUTURES_NO_KRAKEN_API'
       });
     }
     const vaultVenue = deployExchange === 'krakenfutures' ? 'KRAKENFUTURES' : 'COINBASE';

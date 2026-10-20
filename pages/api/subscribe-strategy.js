@@ -33,13 +33,16 @@ export default async function handler(req, res) {
   // 🟢 PUSH AM64 — VENUE-AWARE LIVE gate (mirrors the UI matrix in MarketScanner.js):
   //   coinbase       → CDE assets only (unchanged)
   //   krakenfutures  → allowed (KRF LIVE lane shipped Push 7; keys checked below)
-  //   kraken         → PAPER-only (Bitnomial live execution arrives in Push 8)
+  //   kraken         → PAPER-only: no Kraken US-futures API exists (KDUS/Bitnomial is
+  //                    manual-only; US derivatives API = Tradovate).
   const executionMode = parameters?.execution_mode || 'PAPER';
   const isCDEAsset = (asset || '').toString().toUpperCase().includes('-CDE');
   if (executionMode === 'LIVE') {
     if (normalizedExchange === 'kraken') {
+      // 🟢 AM68 — US-futures API reality (Kraken specialist verdict, Oct 18 2026).
       return res.status(400).json({
-        error: 'Bitnomial live execution arrives in Push 8. Use PAPER mode for this venue.',
+        error: 'Kraken has no US-futures API: the KRF/DRV doors serve the international platform (geo-blocked for US accounts). US derivatives API = a Tradovate account (per Kraken). This venue stays PAPER-only.',
+        reason: 'US_FUTURES_NO_KRAKEN_API',
         source: req.body?.source
       });
     }

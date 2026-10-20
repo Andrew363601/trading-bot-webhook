@@ -19,8 +19,10 @@ const VENUE_META = {
     sync: 'Syncing with Coinbase...',
     matrixName: 'Coinbase INTX matrix',
   },
+  // 🟢 AM68 — the US-futures rail is MANUAL-only in the Pro UI (KDUS/Bitnomial via
+  // NinjaTrader Clearing); Kraken exposes NO API for it. Label carries the truth.
   kraken: {
-    label: 'Kraken US (Bitnomial)',
+    label: 'Kraken US (Bitnomial · manual)',
     accent: '#FF8A3C',
     sync: 'Syncing with Kraken US (Bitnomial)...',
     matrixName: 'Bitnomial US matrix',
@@ -331,14 +333,15 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     // matrix mirrors the server gates (subscribe-strategy.js / deploy-strategy.js):
     //   coinbase       → CDE assets only + COINBASE keys (unchanged)
     //   krakenfutures  → KRAKENFUTURES vault row required (KRF LIVE lane shipped Push 7)
-    //   kraken         → PAPER-only (Bitnomial live execution arrives in Push 8)
+    //   kraken         → PAPER-only: no Kraken US-futures API exists (AM68 — the
+    //                    KRF/DRV doors are international/geo-blocked; US API = Tradovate)
     // Server enforces this too; this is the friendly front-line warning.
     if (executionMode === 'LIVE' && !liveConfirmed) {
       if (venue === 'kraken') {
         setLiveWarning({
           strategy,
           blocking: true,
-          reason: 'Bitnomial live execution arrives in Push 8. PAPER mode is available now for this venue.',
+          reason: 'Kraken has no US-futures API: the KRF/DRV doors serve the international platform (geo-blocked for US accounts). US derivatives API = a Tradovate account (per Kraken). This venue stays PAPER-only.',
         });
         return;
       }
