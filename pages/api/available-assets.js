@@ -7,6 +7,9 @@ import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 import { getKrakenInstruments, getKrakenTickers } from '../../lib/providers/kraken-futures.js';
 // 🟢 AM68 — Kraken SPOT (+ margin) catalogue via the one-door provider (public).
 import { getKrakenSpotInstruments, getKrakenSpotTickers } from '../../lib/providers/kraken-spot.js';
+// 🟢 AM69 hotfix 1 — catalog head protection (the coinbase TOP_RANK precedent,
+// extracted so the spot + KRX branches can guarantee the majors survive the cut).
+import { PRIORITY_BASES, guaranteePriorityHead } from '../../lib/catalog-head.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -235,6 +238,9 @@ async function handleKraken(res) {
     }
 
     const allProducts = await response.json();
+    // 🟢 AM69 hotfix 1 — NOTE: the Bitnomial active set carries calendar spreads +
+    // options too; the `type === 'perpetual'` filter is CORRECT — do NOT widen it.
+    // DOGE → PDOGUKZ50 is confirmed live (id 218's contract is not delisted).
     const products = (Array.isArray(allProducts) ? allProducts : [])
       .filter(p => p.type === 'perpetual' && p.product_status === 'active')
       .map(p => {
@@ -269,12 +275,32 @@ async function handleKraken(res) {
           product_status: p.product_status,              // 'active' (already filtered)
           exchange: 'kraken'
         };
-      })
-      // No volume on the specs payload → sort by symbol/id asc for a stable order.
-      .sort((a, b) => a.id.localeCompare(b.id))
-      .slice(0, 100);
+      });
 
-    return res.status(200).json({ count: products.length, products });
+    // 🟢 AM69 hotfix 1 — HEAD PROTECTION (the coinbase TOP_RANK precedent). The specs
+    // payload carries NO volume, so the sort is alphabetical — a priority base whose
+    // perp id sorts late could be cut. Guarantee each priority base's perp is present
+    // (pushed at head if absent), then sort priority-bucket-first, id asc inside.
+    const ranked = guaranteePriorityHead(
+      products,
+      PRIORITY_BASES,
+      (p) => p.base,
+      (a, b) => a.id.localeCompare(b.id),
+      (base) => ({
+        id: `${base}-PERP-KRX-0.01`, name: `${base}-PERP-KRX-0.01`, base,
+        price: 0, volume_24h: 0, price_percentage_change_24h: 0,
+        native_symbol: null, contract_size: 0.01, contract_size_unit: base,
+        price_increment: null, product_id: null, margin_unit: null,
+        settlement_method: null, max_order_quantity: null, min_block_size: null,
+        price_limit_percentage: null, funding_interval_hours: null,
+        funding_rate_upper_bound: null, funding_rate_lower_bound: null,
+        daily_open_time: null, daily_settle_time: null, price_quotation_unit: null,
+        product_status: 'active', exchange: 'kraken',
+      }),
+    );
+    const finalSelection = ranked.slice(0, 100);
+
+    return res.status(200).json({ count: finalSelection.length, products: finalSelection });
   } catch (e) {
     console.error('[AVAILABLE ASSETS ERROR][exchange=kraken]:', e.message);
     return res.status(502).json({ error: `[AM63] Kraken catalog fetch exception: ${e.message}` });
@@ -392,11 +418,30 @@ async function handleKrakenSpot(res) {
         contract_size: 1,                              // SPOT: qty = base asset directly
         exchange: 'krakenspot',
       };
-    })
-      .sort((a, b) => (b.volume_24h - a.volume_24h) || a.id.localeCompare(b.id))
-      .slice(0, 100);
+    });
 
-    return res.status(200).json({ count: products.length, products });
+    // 🟢 AM69 hotfix 1 — HEAD PROTECTION (the coinbase TOP_RANK precedent). Volume
+    // sort health must NEVER decide whether the majors are visible: guarantee every
+    // priority base's best-volume pair is present (pushed at head if absent), then
+    // sort priority-bucket-first, volume desc inside. A dark ticker can no longer
+    // sink BTC/ETH/XRP below the .slice(0, 100) cut.
+    const ranked = guaranteePriorityHead(
+      products,
+      PRIORITY_BASES,
+      (p) => p.base,
+      (a, b) => (b.volume_24h - a.volume_24h) || a.id.localeCompare(b.id),
+      (base) => ({
+        id: `${base}-SPOT-KRS`, name: `${base}-SPOT-KRS`, base, quote: 'USD',
+        price: 0, volume_24h: 0, price_percentage_change_24h: 0,
+        native_symbol: null, lot_decimals: null, pair_decimals: null,
+        ordermin: null, costmin: null, tick_size: null,
+        margin: null, leverage_buy: null, leverage_sell: null,
+        contract_size: 1, exchange: 'krakenspot',
+      }),
+    );
+    const finalSelection = ranked.slice(0, 100);
+
+    return res.status(200).json({ count: finalSelection.length, products: finalSelection });
   } catch (e) {
     console.error('[AVAILABLE ASSETS ERROR][exchange=krakenspot]:', e.message);
     return res.status(502).json({ error: `[AM68] Kraken Spot catalog fetch exception: ${e.message}` });

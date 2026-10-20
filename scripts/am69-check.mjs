@@ -192,6 +192,16 @@ console.log('\n── 8. am68-check + am64-check (subprocess) ──');
   }
 }
 
+// ═══════════════════ 9. Catalog head protection (AM69 hotfix 1) ═══════════════════
+console.log('\n── 9. catalog head protection ──');
+{
+  const aaCode = stripComments(read('pages/api/available-assets.js'));
+  // Isolate the KRX handler body (handleKrakenFutures/Spot must not match).
+  const krxBody = aaCode.slice(aaCode.indexOf('async function handleKraken('), aaCode.indexOf('async function handleKrakenFutures('));
+  check('KRX branch applies the priority-head guarantee (majors survive the cut)',
+    /guaranteePriorityHead\(/.test(krxBody) && /PRIORITY_BASES/.test(krxBody));
+}
+
 // ─────────────────────────────────── report ────────────────────────────────
 console.log(`\nAM69 check: ${pass}/${pass + fail} passed`);
 if (fail > 0) {

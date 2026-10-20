@@ -174,6 +174,30 @@ if (exists(SPOT)) {
   check('B: OpenPositions margin watchdog surface exists', /getKrakenSpotOpenPositions/.test(code));
 }
 
+// ══════════════════════ PART B — catalog head protection (AM69 hotfix 1) ══════════════════════
+console.log('\n── PART B — catalog head protection ──');
+{
+  const AA = 'pages/api/available-assets.js';
+  const aaCode = stripComments(read(AA));
+  check('B: handleKrakenSpot applies the priority-head guarantee',
+    /guaranteePriorityHead\(/.test(aaCode) && /PRIORITY_BASES/.test(aaCode));
+  // Behavioral vector: a canned catalog MISSING BTC must still yield BTC-SPOT-KRS at
+  // the head (volume/sort health must never decide whether the majors are visible).
+  let headOk = false;
+  let headDetail = '';
+  try {
+    const mod = await import(pathToFileURL(path.join(ROOT, 'lib/catalog-head.js')).href);
+    const canned = [{ id: 'ETH-SPOT-KRS', base: 'ETH', volume_24h: 5 }];
+    const ranked = mod.guaranteePriorityHead(canned, mod.PRIORITY_BASES, (p) => p.base,
+      (a, b) => (b.volume_24h - a.volume_24h) || a.id.localeCompare(b.id),
+      (base) => ({ id: `${base}-SPOT-KRS`, base, volume_24h: 0 }));
+    const sel = ranked.slice(0, 100);
+    headOk = sel.some((p) => p.id === 'BTC-SPOT-KRS') && sel[0].id === 'BTC-SPOT-KRS';
+    headDetail = headOk ? '' : JSON.stringify(sel.map((p) => p.id));
+  } catch (e) { headDetail = e.message; }
+  check('B: head-guarantee vector — canned catalog missing BTC still yields BTC-SPOT-KRS at head', headOk, headDetail);
+}
+
 // ══════════════════════ PART B — venue wiring (Commit B) ═══════════════════
 console.log('\n── PART B — venue wiring (Commit B, guarded) ──');
 if (!REPORT_ONLY) {
