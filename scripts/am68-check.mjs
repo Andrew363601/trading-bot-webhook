@@ -139,6 +139,26 @@ if (exists(SPOT)) {
   }
   check('B: signing vector byte-exact vs Kraken docs example (Node == expected API-Sign)', signOk, signDetail);
 
+  // 🟢 AM68 hotfix 1 — Ticker key aliasing vector. /Ticker keys its result by the
+  // CANONICAL AssetPairs key (request XBTUSD → result XXBTZUSD), NOT the altname.
+  // The alias step must re-key so a nativeSymbol lookup hits (the old assumption —
+  // "Ticker keys ARE the altnames" — is now a regression-pinned inversion).
+  let aliasOk = false;
+  let aliasDetail = '';
+  try {
+    const mod = await import(pathToFileURL(path.join(ROOT, SPOT)).href);
+    const canned = { XXBTZUSD: { c: ['50000.0'], v: ['1', '123.4'] } };
+    const aliased = mod.aliasTickerKeys(canned, { XXBTZUSD: 'XBTUSD' });
+    const filtered = mod.filterTickers(aliased, ['XBTUSD']);
+    aliasOk = !!filtered.XBTUSD && filtered.XBTUSD.last === 50000 && filtered.XBTUSD.volume === 123.4;
+    aliasDetail = aliasOk ? '' : JSON.stringify(filtered);
+  } catch (e) { aliasDetail = e.message; }
+  check('B: Ticker canonical→altname alias vector (XXBTZUSD → XBTUSD lookup hits)', aliasOk, aliasDetail);
+  check('B: aliasTickerKeys exported (pure)', /export function aliasTickerKeys/.test(code));
+  check('B: false "keys ARE the altnames" comment removed', !/keys ARE the altnames/.test(raw));
+  check('B: OHLC resolves via the canonical pairId (not the requested altname)',
+    /canonicalKey/.test(code) && /byNativeSymbol\?\.\[String\(nativeSymbol\)\.toUpperCase\(\)\]/.test(code));
+
   check('B: binary-safe concat (Buffer.concat), not string concat', /Buffer\.concat\(\[Buffer\.from\([^)]*uriPath/.test(code));
   check('B: NO Coinbase substitution in code (no cbRequest / generateCoinbaseToken / api.coinbase.com)',
     !/cbRequest|generateCoinbaseToken|api\.coinbase\.com/.test(code));
