@@ -115,23 +115,24 @@ if (!exists(AA)) {
 }
 
 // ── 3. Venue copy literals (VENUE_META) ─────────────────────────────────────
+// 🟢 AM70 — VENUE_META moved to the shared lib/venue-meta.js (ONE map for the
+// scanner AND the strategy card). The map pins now read the shared module; the
+// render-site pins still read the scanner.
 const MS = 'components/MarketScanner.js';
-if (!exists(MS)) {
-  check('MarketScanner.js exists', false, MS + ' not found');
+const VMETA = 'lib/venue-meta.js';
+if (!exists(MS) || !exists(VMETA)) {
+  check('MarketScanner.js + lib/venue-meta.js exist', false, 'missing');
 } else {
   const src = read(MS);
-  check('VENUE_META map exists', /const\s+VENUE_META\s*=\s*\{/.test(src));
-  check('VENUE_META: coinbase entry with accent #0B6BFF', /coinbase:\s*\{[\s\S]{0,200}?#0B6BFF/.test(src));
-  check('VENUE_META: kraken entry with accent #FF8A3C', /kraken:\s*\{[\s\S]{0,200}?#FF8A3C/.test(src));
-  check('VENUE_META: krakenfutures entry with accent #7C5CFF', /krakenfutures:\s*\{[\s\S]{0,200}?#7C5CFF/.test(src));
-  // "Syncing with Coinbase" must appear ONLY inside the coinbase entry — i.e. the
-  // hardcoded render-site copy is gone (the render site now reads VENUE_META[venue]).
-  const syncIdx = src.indexOf('Syncing with Coinbase');
-  const metaIdx = src.indexOf('const VENUE_META');
-  const renderSyncIdx = src.indexOf("VENUE_META[venue]?.sync");
+  const vmeta = read(VMETA);
+  check('VENUE_META map exists (shared module)', /export\s+const\s+VENUE_META\s*=\s*\{/.test(vmeta));
+  check('VENUE_META: coinbase entry with accent #0B6BFF', /coinbase:\s*\{[\s\S]{0,200}?#0B6BFF/.test(vmeta));
+  check('VENUE_META: kraken entry with accent #FF8A3C', /kraken:\s*\{[\s\S]{0,200}?#FF8A3C/.test(vmeta));
+  check('VENUE_META: krakenfutures entry with accent #7C5CFF', /krakenfutures:\s*\{[\s\S]{0,200}?#7C5CFF/.test(vmeta));
+  // "Syncing with Coinbase" lives ONLY in the shared map; the scanner render site
+  // reads VENUE_META[venue] (no hardcoded copy).
   check('"Syncing with Coinbase" only inside VENUE_META (render site venue-aware)',
-    syncIdx >= 0 && metaIdx >= 0 && syncIdx > metaIdx && renderSyncIdx >= 0 &&
-    syncIdx < src.indexOf('kraken:', metaIdx));
+    /Syncing with Coinbase/.test(vmeta) && !/Syncing with Coinbase/.test(src));
   check('Render site consumes VENUE_META sync copy', /VENUE_META\[venue\]\?\.sync/.test(src));
   check('Render site consumes VENUE_META matrixName', /VENUE_META\[venue\]\?\.matrixName/.test(src));
   check('Panel root carries --acc CSS custom property', /'--acc':\s*VENUE_META\[venue\]/.test(src));

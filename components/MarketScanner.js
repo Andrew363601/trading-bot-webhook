@@ -13,40 +13,10 @@ import {
   borrowingChipClass, deriveBorrowingLevels, isMarginEligible, maxBorrowingLevel,
   cashBorrowedPreview, clampSpotQtyToOrdermin, spotQtyMinHint,
 } from '../lib/spot-margin-facts.js';
-
-// 🟢 PUSH AM64 — venue identity + copy. ONE map drives the venue accent color
-// (--acc CSS custom property on the panel root), the sync/empty copy, and the
-// venue label. Accents are SCOPED to this component (AM65 global design language
-// is a separate push — no global theme change).
-const VENUE_META = {
-  coinbase: {
-    label: 'Coinbase',
-    accent: '#0B6BFF',
-    sync: 'Syncing with Coinbase...',
-    matrixName: 'Coinbase INTX matrix',
-  },
-  // 🟢 AM68 — the US-futures rail is MANUAL-only in the Pro UI (KDUS/Bitnomial via
-  // NinjaTrader Clearing); Kraken exposes NO API for it. Label carries the truth.
-  kraken: {
-    label: 'Kraken US (Bitnomial · manual)',
-    accent: '#FF8A3C',
-    sync: 'Syncing with Kraken US (Bitnomial)...',
-    matrixName: 'Bitnomial US matrix',
-  },
-  krakenfutures: {
-    label: 'Kraken Futures',
-    accent: '#7C5CFF',
-    sync: 'Syncing with Kraken Futures...',
-    matrixName: 'Kraken Futures matrix',
-  },
-  // 🟢 AM68 — Kraken SPOT (+ margin): the working Kraken lane for a US account.
-  krakenspot: {
-    label: 'Kraken Spot',
-    accent: '#14B8A6',
-    sync: 'Syncing with Kraken Spot...',
-    matrixName: 'Kraken Spot matrix',
-  },
-};
+// 🟢 AM70 — venue identity (label + accent + copy) now lives in ONE shared module
+// so the strategy card and the matrix read as one system. venueFromAssetId is the
+// PURE id→venue resolver (the venue is bound at deploy, encoded in the asset id).
+import { VENUE_META, venueFromAssetId } from '../lib/venue-meta.js';
 
 // 🟢 PUSH AM64 — notional preview math. THE formula (stated identically in
 // pages/studio.js — one formula, two render sites). qty × contract_size × price,
@@ -63,7 +33,7 @@ function computeNotional(qty, contractSize, price) {
   }).format(notional);
 }
 
-export default function MarketScanner({ onSelectAsset, currentAsset, activeStrategies = [] }) {
+export default function MarketScanner({ onSelectAsset, currentAsset, activeStrategies = [], venue: venueProp, onVenueChange, selectedAssetId }) {
   const supabase = useSupabaseClient();
   const session = useSession();
   const token = session?.access_token;
@@ -101,7 +71,14 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   }, []);
   // 🟢 PUSH AM63 (Push 5) — ONE venue selector drives the WHOLE matrix. Values are
   // the lowercase routing literals ('coinbase' | 'kraken' | 'krakenfutures').
-  const [venue, setVenue] = useState('coinbase');
+  // 🟢 AM70 — the venue is LIFTED to the parent when `venueProp` is supplied, so
+  // closing/reopening the scanner restores the exact venue (no re-navigation).
+  const [venueState, setVenueState] = useState('coinbase');
+  const venue = venueProp ?? venueState;
+  const setVenue = useCallback((v) => {
+    setVenueState(v);
+    if (onVenueChange) onVenueChange(v);
+  }, [onVenueChange]);
   // Last venue we fetched (per-venue cache). Replaces the once-per-session boolean.
   const fetchedVenueRef = useRef(null);
   const tabBarRef = useRef(null); // Ref for mobile touch-drag scrolling on tab bar
@@ -147,6 +124,15 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     }
   }, [currentAsset, allAssets, selectedAsset]);
 
+  // 🟢 AM70 — restore the LIFTED selection on reopen. EXACT-id match (not base
+  // symbol) so a venue swap can never resolve to the wrong venue's asset.
+  useEffect(() => {
+    if (!selectedAssetId) return;
+    if (selectedAsset?.id === selectedAssetId) return;
+    const asset = allAssets.find(a => a.id === selectedAssetId);
+    if (asset) setSelectedAsset(asset);
+  }, [selectedAssetId, allAssets, selectedAsset]);
+
   // Fetch all available FUTURES assets for the CURRENT venue.
   // 🟢 PUSH AM63 (Push 5) — venue-keyed fetch with a stale-race guard (mirrors the
   // Studio pattern). A venue swap invalidates the previous matrix: we clear the
@@ -162,6 +148,10 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
       setAllAssets([]);
       setSelectedAsset(null);
       setAvailableStrategies([]);
+      // 🟢 AM70 — also drop per-strategy deploy params on a venue swap. This is the
+      // ONLY place params are cleared now (the deploy-success wipe was removed), so
+      // a Coinbase qty/leverage can never leak into a Kraken deploy.
+      setStrategyParams({});
       try {
         const res = await fetch(`/api/available-assets?exchange=${v}`, {
           headers: { Authorization: `Bearer ${token}` }
@@ -454,7 +444,10 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
           asset: selectedAsset.id,
           strategy: strategy.id,
           exchange: venue,
-          product_type: 'FUTURES',
+          // 🟢 AM70 — venue-correct product type (spot lane sends SPOT). The server
+          // stores this on insert; it is not read for routing (the asset id + the
+          // exchange column are authoritative), but the value must not lie.
+          product_type: venue === 'krakenspot' ? 'SPOT' : 'FUTURES',
           force_replace: forceReplace,
           parameters: {
             ...strategy.parameters,
@@ -467,7 +460,21 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
       if (res.ok) {
         setConflictModal(null);
         showToast('success', `Subscribed to ${strategy.name} for ${selectedAsset.id}`);
-        setStrategyParams({});
+        // 🟢 AM70 — do NOT wipe strategyParams on success (that reverted the qty to
+        // the fallback after EVERY deploy). Bind the panel to the DEPLOYED config:
+        // the response returns the persisted row, so what you see is what is live.
+        const deployed = await res.json().catch(() => null);
+        const deployedParams = deployed?.config?.parameters;
+        if (deployedParams && typeof deployedParams === 'object') {
+          setStrategyParams(prev => ({
+            ...prev,
+            [strategy.id]: {
+              ...(prev[strategy.id] || {}),
+              ...(deployedParams.qty != null ? { qty: String(deployedParams.qty) } : {}),
+              ...(deployedParams.leverage != null ? { leverage: String(deployedParams.leverage) } : {}),
+            },
+          }));
+        }
         // Call onSelectAsset if provided to refresh parent state
         if (onSelectAsset) onSelectAsset(selectedAsset.id);
       } else if (res.status === 409) {
@@ -680,7 +687,21 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
               Empty {VENUE_META[venue]?.matrixName || 'Matrix'}
             </div>
           ) : (
-            filteredAssets.map(asset => (
+            filteredAssets.map((asset, i) => {
+              // 🟢 AM70 — sub-group the list by VENUE (VENUE_META header) so the
+              // exchange is never ambiguous. The venue is encoded in the asset id.
+              const vk = venueFromAssetId(asset.id) || 'other';
+              const prevVk = i > 0 ? (venueFromAssetId(filteredAssets[i - 1].id) || 'other') : null;
+              return (
+              <React.Fragment key={asset.id}>
+              {vk !== prevVk && (
+                <div className="flex items-center gap-1.5 px-1 pt-2">
+                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: VENUE_META[vk]?.accent || '#5F6570' }} />
+                  <span className="text-[8px] font-black uppercase tracking-widest" style={{ color: VENUE_META[vk]?.accent || '#94A3B8' }}>
+                    {VENUE_META[vk]?.label || 'Other'}
+                  </span>
+                </div>
+              )}
               <button
                 key={asset.id}
                 onClick={() => {
@@ -725,7 +746,9 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
                   </button>
                 </div>
               </button>
-            ))
+              </React.Fragment>
+              );
+            })
           )}
         </div>
 
@@ -841,8 +864,12 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
             {/* Notional preview strip — THE comprehension line. Hidden when the
                 price is absent/0 (KRX) — never faked. Same formula as studio.js. */}
             {(() => {
-              const sp = (venue === 'krakenspot' && expandedStrategyId) ? (strategyParams[expandedStrategyId] || {}) : {};
-              const notionalQty = (venue === 'krakenspot' && sp.qty != null && sp.qty !== '') ? sp.qty : (strategyParams.__notional_qty__ ?? '10');
+              // 🟢 AM70 — DISPLAY-ONLY strip. The qty is owned by the deploy controls
+              // (the krakenspot qty input, or the strategy's own qty param input) —
+              // this strip only READS it. The legacy __notional_qty__ input is retired
+              // so there is exactly ONE qty box (was: two boxes, two state keys).
+              const sp = expandedStrategyId ? (strategyParams[expandedStrategyId] || {}) : {};
+              const notionalQty = (sp.qty != null && sp.qty !== '') ? sp.qty : '10';
               const notional = computeNotional(notionalQty, selectedAsset.contract_size, selectedAsset.price);
               const lev = venue === 'krakenspot' ? parseInt(sp.leverage, 10) : NaN;
               const spotBorrow = venue === 'krakenspot' && isMarginEligible(selectedAsset) && lev > 1;
@@ -853,14 +880,8 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
                   className="flex items-center gap-2 mt-2 rounded-lg border border-dashed px-2 py-1.5"
                   style={{ borderColor: 'var(--acc)', background: 'color-mix(in srgb, var(--acc) 7%, transparent)' }}
                 >
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={notionalQty}
-                    onChange={(e) => setStrategyParams(prev => ({ ...prev, __notional_qty__: e.target.value }))}
-                    className="w-16 bg-slate-950 border border-white/10 rounded px-1.5 py-1 text-[10px] font-mono text-white text-right outline-none"
-                  />
+                  <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">Qty</span>
+                  <span className="text-[10px] font-mono font-bold text-white">{notionalQty}</span>
                   <span className="text-[10px] font-mono font-bold" style={{ color: 'var(--acc)' }}>
                     {notional ? `≈ ${notional} notional` : 'qty × contract × mark'}
                   </span>
@@ -1001,7 +1022,7 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
                               </label>
                               <input
                                 type={param.type}
-                                defaultValue={param.default}
+                                value={strategyParams[strategy.id]?.[key] ?? param.default ?? ''}
                                 onChange={(e) =>
                                   setStrategyParams(prev => ({
                                     ...prev,

@@ -26,6 +26,13 @@ import ChatNotification from '../components/ChatNotification';
 import WebhookResultCard from '../components/WebhookResultCard';
 import { getCoinbaseAffiliateLink } from '../lib/constants';
 import { trackEvent } from '../lib/analytics';
+// 🟢 AM70 — venue identity (shared with the scanner) + spot × margin facts for the
+// strategy card's venue badge, granular strip, and Borrowing chips.
+import { VENUE_META, venueFromAssetId } from '../lib/venue-meta.js';
+import {
+  BORROWING_LABEL, CASH_CHIP_LABEL, INTEREST_DISCLOSURE, SPOT_MARGIN_EUR_ERROR,
+  borrowingChipClass, deriveBorrowingLevels, isMarginEligible, maxBorrowingLevel,
+} from '../lib/spot-margin-facts.js';
 
 export default function Dashboard() {
   return (
@@ -136,6 +143,15 @@ function DashboardContent() {
   const [showIndicatorMenu, setShowIndicatorMenu] = useState(false);
   const [isDefconActive, setIsDefconActive] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  // 🟢 AM70 — LIFTED scanner context (venue + selection) so closing/reopening the
+  // matrix restores the exact venue + asset ("go back all over again" dies here).
+  const [scannerVenue, setScannerVenue] = useState('coinbase');
+  const [scannerAssetId, setScannerAssetId] = useState(null);
+  // 🟢 AM70 — card-level toast for Borrowing-chip deploys (AM64 pattern).
+  const [cardToast, setCardToast] = useState(null);
+  // 🟢 AM70 — venue-native facts for the ACTIVE asset (drives the card's granular
+  // strip + Borrowing chips). Honest-absent: null when the venue has no row.
+  const [activeAssetFacts, setActiveAssetFacts] = useState(null);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
 
   // Profile settings state
@@ -987,6 +1003,70 @@ function DashboardContent() {
     const normalizedActiveAsset = normalizeAssetSymbol(activeAsset);
     return activeStrategies.filter(s => normalizeAssetSymbol(s.asset) === normalizedActiveAsset);
   }, [activeStrategies, activeAsset, normalizeAssetSymbol]);
+
+  // 🟢 AM70 — fetch the ACTIVE asset's venue-native facts (ordermin / initial_margin /
+  // contract_size / leverage arrays) so the strategy card can render the same
+  // facts-grid language as the scanner's Instrument Card. Honest-absent on failure.
+  useEffect(() => {
+    const vk = venueFromAssetId(activeAsset);
+    if (!vk || !session?.access_token) { setActiveAssetFacts(null); return; }
+    let cancelled = false;
+    fetch(`/api/available-assets?exchange=${vk}`, {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (cancelled) return;
+        const p = (d.products || []).find(x => x.id === activeAsset);
+        setActiveAssetFacts(p || null);
+      })
+      .catch(() => { if (!cancelled) setActiveAssetFacts(null); });
+    return () => { cancelled = true; };
+  }, [activeAsset, session?.access_token]);
+
+  // 🟢 AM70 — auto-dismiss the card toast (~4s), mirroring the scanner's showToast.
+  useEffect(() => {
+    if (!cardToast) return;
+    const t = setTimeout(() => setCardToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [cardToast]);
+
+  // 🟢 AM70 — Borrowing-chip deploy from the strategy card. POSTs the SAME
+  // subscribe-strategy endpoint the scanner uses; AM69's narrow whitelist merge
+  // applies ONLY {qty, leverage} over the existing parameters (brain keys untouched).
+  // Rejects render as a toast — never silent.
+  const deployCardLeverage = async (strat, chip) => {
+    const vk = venueFromAssetId(strat.asset);
+    try {
+      const res = await fetch('/api/subscribe-strategy', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token}`,
+        },
+        body: JSON.stringify({
+          asset: strat.asset,
+          strategy: strat.strategy,
+          exchange: vk || 'krakenspot',
+          product_type: vk === 'krakenspot' ? 'SPOT' : 'FUTURES',
+          parameters: {
+            qty: strat.parameters?.qty,
+            leverage: chip === 'none' ? '1' : String(chip),
+            execution_mode: strat.execution_mode || 'PAPER',
+          },
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCardToast({ kind: 'error', text: data.error || 'Failed to update leverage' });
+        return;
+      }
+      setCardToast({ kind: 'success', text: `Leverage set to ${chip === 'none' ? CASH_CHIP_LABEL : `${chip}×`}` });
+      fetchData();
+    } catch (e) {
+      setCardToast({ kind: 'error', text: 'Failed to update leverage' });
+    }
+  };
 
   // Swipe handlers for active matrix card strategy cycling
   const swipeHandlers = useSwipeable({
@@ -1926,8 +2006,13 @@ function DashboardContent() {
                     onSelectAsset={(assetId) => {
                       setActiveAsset(assetId);
                       handleAddAsset(assetId);
-                      setShowScanner(false);
+                      setScannerAssetId(assetId);
+                      // 🟢 AM70 — do NOT close the matrix on select: the contract
+                      // info stays visible and the chat/detail updates behind it.
                     }}
+                    venue={scannerVenue}
+                    onVenueChange={setScannerVenue}
+                    selectedAssetId={scannerAssetId}
                     currentAsset={activeAsset}
                     activeStrategies={activeStrategies}
                   />
@@ -2373,8 +2458,22 @@ function DashboardContent() {
                 the trade-ledger below is taller than its available space. */}
             <h3 className="text-[10px] font-black uppercase dark:text-slate-500 text-slate-600 mb-4 flex items-center justify-between">
               <span>Active Matrix</span>
-              <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full font-mono uppercase">
-                {normalizeAssetSymbol(activeAsset)}
+              <span className="flex items-center gap-1.5">
+                {(() => {
+                  const vk = venueFromAssetId(activeAsset);
+                  if (!vk) return null;
+                  return (
+                    <span
+                      className="text-[8px] font-black uppercase tracking-widest px-1.5 py-0.5 rounded"
+                      style={{ color: VENUE_META[vk].accent, background: `color-mix(in srgb, ${VENUE_META[vk].accent} 16%, transparent)` }}
+                    >
+                      {VENUE_META[vk].label}
+                    </span>
+                  );
+                })()}
+                <span className="text-[9px] bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded-full font-mono uppercase">
+                  {activeAsset}
+                </span>
               </span>
             </h3>
             
@@ -2442,6 +2541,97 @@ function DashboardContent() {
                       <p className="text-[10px] text-slate-400 leading-relaxed italic line-clamp-3">
                         &quot;{description}&quot;
                       </p>
+
+                      {/* 🟢 AM70 — GRANULAR STRIP: venue + full asset id + deployed
+                          config, in the AM64 Instrument Card facts-grid language so the
+                          card and the matrix read as one system. Venue-native facts are
+                          honest-absent ('—') when the venue does not publish them. */}
+                      {(() => {
+                        const vk = venueFromAssetId(strat.asset);
+                        const meta = vk ? VENUE_META[vk] : null;
+                        const facts = activeAssetFacts;
+                        const lv = parseInt(strat.parameters?.leverage, 10);
+                        const levLabel = (Number.isFinite(lv) && lv > 1) ? `${lv}×` : CASH_CHIP_LABEL;
+                        return (
+                          <div className="rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Venue</span>
+                              <span className="flex items-center gap-1.5">
+                                {meta && <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.accent }} />}
+                                <span className="text-[9px] font-mono font-black" style={{ color: meta?.accent || '#94A3B8' }}>
+                                  {meta?.label || 'Unknown venue'}
+                                </span>
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Asset</span>
+                              <span className="text-[9px] font-mono font-black text-slate-300">{strat.asset}</span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Qty</span>
+                              <span className="text-[9px] font-mono font-black text-slate-300">{strat.parameters?.qty ?? '—'}</span>
+                            </div>
+                            {vk === 'krakenspot' ? (
+                              <div className="flex items-center justify-between">
+                                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">{BORROWING_LABEL}</span>
+                                <span className="text-[9px] font-mono font-black text-slate-300">
+                                  {levLabel}{maxBorrowingLevel(facts) != null ? ` (of max ${maxBorrowingLevel(facts)}×)` : ''}
+                                </span>
+                              </div>
+                            ) : vk === 'krakenfutures' ? (
+                              <div className="flex items-center justify-between">
+                                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Margin</span>
+                                <span className="text-[9px] font-mono font-black text-slate-300">
+                                  {facts?.initial_margin != null ? `Min ${(facts.initial_margin * 100).toFixed(1)}%` : '—'}
+                                  {facts?.contract_size != null ? ` · Contract ${facts.contract_size}` : ''}
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between">
+                                <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Contract</span>
+                                <span className="text-[9px] font-mono font-black text-slate-300">
+                                  {facts?.contract_size != null ? facts.contract_size : '—'}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
+                      {/* 🟢 AM70 — HARD BORROWING CHIPS (krakenspot only): the SAME set
+                          from lib/spot-margin-facts.js (Cash + leverage_buy ∩ leverage_sell),
+                          current level highlighted. Click → subscribe-strategy with
+                          {qty, leverage}; rejects render as a toast. */}
+                      {venueFromAssetId(strat.asset) === 'krakenspot' && (
+                        <div className="space-y-1.5">
+                          <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">{BORROWING_LABEL}</span>
+                          {!isMarginEligible(activeAssetFacts) ? (
+                            <p className="text-[9px] font-mono text-amber-400 leading-snug">{SPOT_MARGIN_EUR_ERROR}</p>
+                          ) : (
+                            <>
+                              <div className="flex flex-wrap gap-1.5">
+                                {['none', ...deriveBorrowingLevels(activeAssetFacts)].map((c) => {
+                                  const cur = parseInt(strat.parameters?.leverage, 10);
+                                  const active = c === 'none'
+                                    ? (!Number.isFinite(cur) || cur <= 1)
+                                    : String(cur) === String(c);
+                                  return (
+                                    <button
+                                      key={String(c)}
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); deployCardLeverage(strat, c); }}
+                                      className={borrowingChipClass(active)}
+                                    >
+                                      {c === 'none' ? CASH_CHIP_LABEL : `${c}×`}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <p className="text-[8px] font-mono text-slate-500">{INTEREST_DISCLOSURE}</p>
+                            </>
+                          )}
+                        </div>
+                      )}
 
                       <div className="grid grid-cols-2 gap-3 mt-2">
                         <div className="bg-white/[0.02] border border-white/5 rounded-2xl p-3">
@@ -2659,6 +2849,20 @@ function DashboardContent() {
             }
           }}
         />
+      )}
+
+      {/* 🟢 AM70 — card-level toast (Borrowing-chip deploys). AM64 pattern. */}
+      {cardToast && (
+        <div
+          className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-[400] px-4 py-2.5 rounded-lg border shadow-2xl text-xs font-bold max-w-sm ${
+            cardToast.kind === 'error'
+              ? 'border-red-500/40 bg-slate-900 text-red-300'
+              : 'border-emerald-500/40 bg-slate-900 text-emerald-300'
+          }`}
+          role="status"
+        >
+          {cardToast.kind === 'error' ? '✕ ' : '✓ '}{cardToast.text}
+        </div>
       )}
 
       {/* Mobile Chat Notification */}

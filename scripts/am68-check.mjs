@@ -56,7 +56,6 @@ const DEP = 'pages/api/deploy-strategy.js';
 const SUB = 'pages/api/subscribe-strategy.js';
 const KF = 'lib/providers/kraken-futures.js';
 const KFIX = 'lib/providers/kraken-fix.js';
-const MS = 'components/MarketScanner.js';
 const SPOT = 'lib/providers/kraken-spot.js';
 const ROUTER = 'lib/exchange-router.js';
 const RESOLVER = 'lib/asset-resolver.js';
@@ -91,7 +90,9 @@ console.log('── PART A — US-futures truth + copy ──');
   check('A: kraken-fix header — VERDICT ADDENDUM present', /VERDICT ADDENDUM/.test(src));
 }
 {
-  const src = read(MS);
+  // 🟢 AM70 — VENUE_META moved to the shared lib/venue-meta.js (one map for the
+  // scanner AND the strategy card).
+  const src = read('lib/venue-meta.js');
   check('A: VENUE_META kraken label reads "manual"', /Kraken US \(Bitnomial · manual\)/.test(src));
 }
 {
