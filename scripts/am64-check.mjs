@@ -158,7 +158,8 @@ if (!exists(MS)) {
   const src = read(SUB);
   // 🟢 AM68 — copy evolved to the truthful US-futures string + reason marker.
   check('Server(subscribe): kraken → PAPER-only 400', /normalizedExchange === 'kraken'[\s\S]{0,300}Kraken has no US-futures API/.test(src) && /US_FUTURES_NO_KRAKEN_API/.test(src));
-  check('Server(subscribe): CDE block scoped to non-krakenfutures', /normalizedExchange !== 'krakenfutures' && !isCDEAsset/.test(src));
+  // 🟢 AM68 — the CDE block now also exempts krakenspot (LIVE allowed with the row).
+  check('Server(subscribe): CDE block scoped to non-krakenfutures/spot', /normalizedExchange !== 'krakenfutures' && normalizedExchange !== 'krakenspot' && !isCDEAsset/.test(src));
   check('Server(subscribe): vault venue derived (KRAKENFUTURES sibling)', /vaultVenue/.test(src) && /'KRAKENFUTURES'/.test(src));
   check('Server(subscribe): lowercase write pin intact (normalizedExchange)', /exchange:\s*normalizedExchange/.test(src));
 }
@@ -168,7 +169,8 @@ if (!exists(MS)) {
   const src = read(DEP);
   // 🟢 AM68 — copy evolved to the truthful US-futures string + reason marker.
   check('Server(deploy): kraken → PAPER-only 400', /deployExchange === 'kraken'[\s\S]{0,300}Kraken has no US-futures API/.test(src) && /US_FUTURES_NO_KRAKEN_API/.test(src));
-  check('Server(deploy): CDE block scoped to non-krakenfutures', /deployExchange !== 'krakenfutures' && !isCDEAsset/.test(src));
+  // 🟢 AM68 — the CDE block now also exempts krakenspot.
+  check('Server(deploy): CDE block scoped to non-krakenfutures/spot', /deployExchange !== 'krakenfutures' && deployExchange !== 'krakenspot' && !isCDEAsset/.test(src));
   check('Server(deploy): vault venue derived (KRAKENFUTURES sibling)', /vaultVenue/.test(src) && /'KRAKENFUTURES'/.test(src));
   check('Server(deploy): allowlist pin intact', /KNOWN_EXCHANGES\s*=\s*\[[^\]]*'krakenfutures'/.test(src));
 }

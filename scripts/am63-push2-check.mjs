@@ -196,10 +196,12 @@ const execSites = insertSites.filter((x) => x.file === EXEC);
 const foreignSites = insertSites.filter((x) => x.file !== EXEC);
 // 🟢 Push 7 evolution: the KRF LIVE lane added its OWN insert pair (primary +
 // additive-column retry) inside execute-trade-mcp — the same safety-net pattern
-// as the 4 original sites, never a foreign file. Inventory = 6 known sites.
-check('trade_logs insert inventory = 6 known sites in execute-trade-mcp.js (4 original + 2 KRF LIVE)',
-  execSites.length === 6 && foreignSites.length === 0,
-  `execute-trade-mcp=${execSites.length} (want 6), other files=${foreignSites.length} (want 0)` +
+// as the 4 original sites, never a foreign file.
+// 🟢 AM68 evolution: the KSPOT LIVE lane added its OWN insert pair identically.
+// Inventory = 8 known sites in execute-trade-mcp.js, 0 elsewhere.
+check('trade_logs insert inventory = 8 known sites in execute-trade-mcp.js (4 original + 2 KRF + 2 KSPOT LIVE)',
+  execSites.length === 8 && foreignSites.length === 0,
+  `execute-trade-mcp=${execSites.length} (want 8), other files=${foreignSites.length} (want 0)` +
   (foreignSites.length ? ` → ${foreignSites.map((x) => `${x.file}:${x.line}`).join(', ')}` : ''));
 
 // ─────────────────────────────────── report ────────────────────────────────

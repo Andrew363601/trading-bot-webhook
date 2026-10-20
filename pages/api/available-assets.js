@@ -5,6 +5,8 @@ import { withTenantAuth } from '../../lib/auth-middleware';
 import { retrieveAPIKey } from '../../lib/secrets-manager.js';
 // 🟢 PUSH AM63 (Push 5) — Kraken Futures (apiv3) catalogue via the provider (public).
 import { getKrakenInstruments, getKrakenTickers } from '../../lib/providers/kraken-futures.js';
+// 🟢 AM68 — Kraken SPOT (+ margin) catalogue via the one-door provider (public).
+import { getKrakenSpotInstruments, getKrakenSpotTickers } from '../../lib/providers/kraken-spot.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -29,6 +31,9 @@ async function handler(req, res) {
   }
   if (exchange === 'krakenfutures') {
     return handleKrakenFutures(res);
+  }
+  if (exchange === 'krakenspot') {
+    return handleKrakenSpot(res);
   }
   if (exchange !== 'coinbase') {
     return res.status(400).json({ error: `[AM63] unsupported exchange '${exchange}'` });
@@ -336,6 +341,65 @@ async function handleKrakenFutures(res) {
   } catch (e) {
     console.error('[AVAILABLE ASSETS ERROR][exchange=krakenfutures]:', e.message);
     return res.status(502).json({ error: `[AM63] Kraken Futures catalog fetch exception: ${e.message}` });
+  }
+}
+
+// 🟢 AM68 — Kraken SPOT (+ margin) catalogue. Public, no auth.
+//
+// IDENTITY: id = `${BASE}-SPOT-KRS` (e.g. SOL-SPOT-KRS); BASE is the CANONICAL coin
+// (BTC — NOT the Kraken altname base XBT). native_symbol = the Kraken altname
+// (SOLUSD, XBTUSD) used by the private/order/OHLC calls.
+//
+// PRICE: the Kraken Ticker carries REAL last prices → the matrix shows live prices.
+// MARGIN: quote=EUR pairs are margin-ineligible (TX restriction) → `margin:false`
+// (honest-absent; the UI must not offer leverage on them).
+//
+// CACHE: the provider owns short TTLs (≥1h instruments / ≥15s tickers) — no Next
+// revalidate pin, so the matrix stays fresh.
+async function handleKrakenSpot(res) {
+  try {
+    const [catalog, tickers] = await Promise.all([
+      getKrakenSpotInstruments(),
+      getKrakenSpotTickers(),
+    ]);
+
+    if (!catalog || !catalog.byId) {
+      console.error('[AVAILABLE ASSETS ERROR][exchange=krakenspot]: instruments unavailable');
+      return res.status(502).json({ error: '[AM68] Kraken Spot catalog unavailable (AssetPairs)' });
+    }
+
+    const products = Object.values(catalog.byId).map((inst) => {
+      const t = tickers ? tickers[inst.nativeSymbol] : null;
+      const price = t ? parseFloat(t.last) : NaN;
+      return {
+        id: inst.id,
+        name: inst.id,
+        base: inst.base,
+        quote: inst.quote,
+        price: Number.isFinite(price) ? price : 0,
+        volume_24h: t && Number.isFinite(t.volume) ? t.volume : 0,
+        price_percentage_change_24h: 0,               // not in the Ticker payload
+        native_symbol: inst.nativeSymbol,
+        lot_decimals: inst.lot_decimals,
+        pair_decimals: inst.pair_decimals,
+        ordermin: inst.ordermin,                       // min base volume
+        costmin: inst.costmin,                         // min notional
+        tick_size: inst.tick_size,
+        // 🟢 AM68 — margin surfaces. `margin:false` for quote=EUR (TX restriction).
+        margin: inst.margin,
+        leverage_buy: inst.leverage_buy,
+        leverage_sell: inst.leverage_sell,
+        contract_size: 1,                              // SPOT: qty = base asset directly
+        exchange: 'krakenspot',
+      };
+    })
+      .sort((a, b) => (b.volume_24h - a.volume_24h) || a.id.localeCompare(b.id))
+      .slice(0, 100);
+
+    return res.status(200).json({ count: products.length, products });
+  } catch (e) {
+    console.error('[AVAILABLE ASSETS ERROR][exchange=krakenspot]:', e.message);
+    return res.status(502).json({ error: `[AM68] Kraken Spot catalog fetch exception: ${e.message}` });
   }
 }
 

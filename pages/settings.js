@@ -58,6 +58,36 @@ function SettingsContent() {
         }
     };
 
+    // 🟢 AM68 — "Test Connection" for the Kraken SPOT card. One authenticated
+    // Balance probe proves/proves-not the KRAKENSPOT vault row before any entry
+    // depends on it; the route returns the venue's VERBATIM error + a hint. This is
+    // expected to be the FIRST GREEN authenticated Kraken probe on this account.
+    const [krSpotTesting, setKrSpotTesting] = useState(false);
+    const [krSpotTestResult, setKrSpotTestResult] = useState(null);
+
+    const handleTestKrakenSpot = async () => {
+        setKrSpotTesting(true);
+        setKrSpotTestResult(null);
+        try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session) throw new Error('No active session');
+            const response = await fetch('/api/kraken-spot-test', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${session.access_token}`
+                }
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'Test connection failed');
+            setKrSpotTestResult(result);
+        } catch (err) {
+            setKrSpotTestResult({ ok: false, error: err.message, message: err.message });
+        } finally {
+            setKrSpotTesting(false);
+        }
+    };
+
     // Risk profile state
     const [riskFields, setRiskFields] = useState({
         accountBalance: '',
@@ -406,6 +436,10 @@ function SettingsContent() {
                             <option value="COINBASE">Coinbase Advanced Trade</option>
                             <option value="KRAKEN">Kraken Derivatives US (Bitnomial perps)</option>
                             <option value="KRAKENFUTURES">Kraken Futures (apiv3)</option>
+                            {/* 🟢 AM68 — Kraken SPOT (+ margin): api.kraken.com v0 REST. The
+                                FIRST Kraken lane that works for a US account (agent-confirmed
+                                eligible, incl. spot margin on Kraken Pro). */}
+                            <option value="KRAKENSPOT">Kraken Spot (+ margin)</option>
                         </select>
                     </div>
 
@@ -418,6 +452,12 @@ function SettingsContent() {
                     {exchange === 'KRAKENFUTURES' && (
                         <p className="text-[11px] text-amber-300/80 leading-relaxed font-medium">
                             Kraken Futures (apiv3) keys are stored now — live execution arrives with Push 6. The venue runs paper-only until then.
+                        </p>
+                    )}
+
+                    {exchange === 'KRAKENSPOT' && (
+                        <p className="text-[11px] text-emerald-300/80 leading-relaxed font-medium">
+                            Kraken Spot (+ margin) — the same Kraken API key works here. Spot LIVE is available now; margin turns on with the leverage parameter. (Kraken has no US-futures API — this is the working Kraken lane for a US account.)
                         </p>
                     )}
 
@@ -461,12 +501,35 @@ function SettingsContent() {
                         </div>
                     )}
 
+                    {exchange === 'KRAKENSPOT' && (
+                        <div className="space-y-2">
+                            <button
+                                type="button"
+                                onClick={handleTestKrakenSpot}
+                                disabled={krSpotTesting}
+                                className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black py-3 rounded-xl transition-all flex items-center justify-center gap-2 uppercase text-xs tracking-widest"
+                            >
+                                {krSpotTesting ? <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Shield className="w-4 h-4" />}
+                                Test Connection
+                            </button>
+                            {krSpotTestResult && (
+                                <div className={`p-3 rounded-xl border text-[11px] leading-relaxed font-medium ${krSpotTestResult.ok ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' : 'bg-red-500/10 border-red-500/20 text-red-300'}`}>
+                                    {krSpotTestResult.ok ? (
+                                        <>✓ {krSpotTestResult.message} <span className="text-slate-500">(host: {krSpotTestResult.host})</span></>
+                                    ) : (
+                                        <>✗ {krSpotTestResult.message}{krSpotTestResult.host ? <span className="text-slate-500"> (host: {krSpotTestResult.host})</span> : null}{krSpotTestResult.hint ? <><br /><span className="text-amber-300/80">{krSpotTestResult.hint}</span></> : null}</>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">{exchange === 'KRAKEN' ? 'Connection ID' : exchange === 'KRAKENFUTURES' ? 'API Key (apiv3)' : 'API Key (Name)'}</label>
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">{exchange === 'KRAKEN' ? 'Connection ID' : exchange === 'KRAKENFUTURES' ? 'API Key (apiv3)' : exchange === 'KRAKENSPOT' ? 'API Key (spot)' : 'API Key (Name)'}</label>
                         <input
                             type="text"
                             required
-                            placeholder={exchange === 'KRAKEN' ? '3f1a...9c (hex Connection ID)' : exchange === 'KRAKENFUTURES' ? 'apiv3 public key' : 'organizations/...'}
+                            placeholder={exchange === 'KRAKEN' ? '3f1a...9c (hex Connection ID)' : exchange === 'KRAKENFUTURES' ? 'apiv3 public key' : exchange === 'KRAKENSPOT' ? 'spot public key' : 'organizations/...'}
                             value={apiKey}
                             onChange={(e) => setApiKey(e.target.value)}
                             className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"
@@ -474,11 +537,11 @@ function SettingsContent() {
                     </div>
 
                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">{exchange === 'KRAKEN' ? 'Auth Token' : exchange === 'KRAKENFUTURES' ? 'API Secret (base64)' : 'API Secret (Private Key)'}</label>
+                        <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest ml-1">{exchange === 'KRAKEN' ? 'Auth Token' : exchange === 'KRAKENFUTURES' ? 'API Secret (base64)' : exchange === 'KRAKENSPOT' ? 'API Secret (base64)' : 'API Secret (Private Key)'}</label>
                         <textarea
                             required
                             rows={exchange === 'KRAKEN' ? 2 : 4}
-                            placeholder={exchange === 'KRAKEN' ? '64-char hex Auth Token' : exchange === 'KRAKENFUTURES' ? 'base64 private key (apiv3)' : '-----BEGIN ANY PRIVATE KEY-----'}
+                            placeholder={exchange === 'KRAKEN' ? '64-char hex Auth Token' : exchange === 'KRAKENFUTURES' ? 'base64 private key (apiv3)' : exchange === 'KRAKENSPOT' ? 'base64 private key (spot)' : '-----BEGIN ANY PRIVATE KEY-----'}
                             value={apiSecret}
                             onChange={(e) => setApiSecret(e.target.value)}
                             className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-white focus:ring-2 focus:ring-indigo-500/50 outline-none transition-all font-mono text-sm"

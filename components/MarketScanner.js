@@ -33,6 +33,13 @@ const VENUE_META = {
     sync: 'Syncing with Kraken Futures...',
     matrixName: 'Kraken Futures matrix',
   },
+  // 🟢 AM68 — Kraken SPOT (+ margin): the working Kraken lane for a US account.
+  krakenspot: {
+    label: 'Kraken Spot',
+    accent: '#14B8A6',
+    sync: 'Syncing with Kraken Spot...',
+    matrixName: 'Kraken Spot matrix',
+  },
 };
 
 // 🟢 PUSH AM64 — notional preview math. THE formula (stated identically in
@@ -75,6 +82,8 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   // BOTH write and read). The asymmetry with lowercase routing columns is BY DESIGN
   // — do NOT unify (see migration 061 / push3 gate).
   const [hasKrakenFuturesKeys, setHasKrakenFuturesKeys] = useState(null); // null = unknown
+  // 🟢 AM68 — KRF/Coinbase sibling for the SPOT lane (KRAKENSPOT vault row).
+  const [hasKrakenSpotKeys, setHasKrakenSpotKeys] = useState(null); // null = unknown
   const [tenantId, setTenantId] = useState(null); // Cache tenant_id to avoid repeated queries
   // 🟢 PUSH AM64 — inline toast (replaces native alert()). { kind: 'error'|'success', text }
   const [toast, setToast] = useState(null);
@@ -258,6 +267,27 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     checkKfKeys();
   }, [tenantId, supabase]);
 
+  // 🟢 AM68 — Kraken SPOT keys check (LIVE gate for the krakenspot venue). Same
+  // UPPERCASE vault convention ('KRAKENSPOT'). Do NOT lowercase.
+  useEffect(() => {
+    const checkKsKeys = async () => {
+      if (!tenantId) return;
+      try {
+        const { data } = await supabase
+          .from('api_keys_vault')
+          .select('id')
+          .eq('tenant_id', tenantId)
+          .eq('exchange', 'KRAKENSPOT')
+          .eq('is_active', true)
+          .maybeSingle();
+        setHasKrakenSpotKeys(!!data);
+      } catch (e) {
+        setHasKrakenSpotKeys(false);
+      }
+    };
+    checkKsKeys();
+  }, [tenantId, supabase]);
+
   // Determine if an asset is a Coinbase CDE-approved future (only these may go LIVE).
   const isCDEAsset = (assetId) => (assetId || '').toString().toUpperCase().includes('-CDE');
 
@@ -359,6 +389,24 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
           strategy,
           blocking: false,
           reason: `You are about to deploy "${strategy.name || strategy.id}" on ${selectedAsset.id} (Kraken Futures) in LIVE mode. Real funds will be at risk. Continue?`,
+        });
+        return;
+      }
+      if (venue === 'krakenspot') {
+        // 🟢 AM68 — Kraken SPOT (+ margin) LIVE: needs the KRAKENSPOT vault row.
+        if (hasKrakenSpotKeys === false) {
+          setLiveWarning({
+            strategy,
+            blocking: true,
+            reason: 'LIVE trading on Kraken Spot requires a spot API key. Add it in Settings → Exchange Provider (Kraken Spot) first, or switch to PAPER mode.',
+          });
+          return;
+        }
+        // Keys present (or unknown): require an explicit risk acknowledgement.
+        setLiveWarning({
+          strategy,
+          blocking: false,
+          reason: `You are about to deploy "${strategy.name || strategy.id}" on ${selectedAsset.id} (Kraken Spot) in LIVE mode. Real funds will be at risk. Continue?`,
         });
         return;
       }

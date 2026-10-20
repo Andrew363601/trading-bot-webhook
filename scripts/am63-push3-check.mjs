@@ -102,10 +102,11 @@ if (!exists(DEP)) {
   check("deploy-strategy stamps exchange into the upsert payload",
     /exchange\s*[:,]/.test(src) && /payload/.test(src));
   // 🟢 AM63 (Push 5) — the allowlist widened to admit 'krakenfutures' (real Kraken
-  // Futures apiv3). The assertion now requires BOTH 'kraken' AND 'krakenfutures' so
-  // the push3 contract (kraken admitted) is preserved while push5 extends it.
-  check('deploy-strategy venue allowlist includes coinbase + kraken + krakenfutures',
-    /\[\s*'coinbase'\s*,\s*'kraken'\s*,\s*'krakenfutures'\s*\]/.test(src));
+  // Futures apiv3). 🟢 AM68 — widened again to admit 'krakenspot' (Kraken SPOT +
+  // margin). The contract (coinbase + kraken admitted, allowlist-widening not
+  // loosening) is preserved.
+  check('deploy-strategy venue allowlist includes coinbase + kraken + krakenfutures + krakenspot',
+    /\[\s*'coinbase'\s*,\s*'kraken'\s*,\s*'krakenfutures'\s*,\s*'krakenspot'\s*\]/.test(src));
 }
 
 // ── 5. settings.js — KRAKEN option, placeholders, vault query fix ───────────

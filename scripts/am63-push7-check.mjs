@@ -259,8 +259,10 @@ if (!REPORT_ONLY) {
     // The KRF lane must reach placeKrakenFuturesOrder WITHOUT touching a Coinbase
     // endpoint: the Coinbase order POST, PHASE C fallback, rejection handler,
     // AM59 STEP 1-2, PHASE D, and bracket cleanup are all lane-gated.
+    // 🟢 AM68 — the KSPOT lane joins every guard (its order posts ride the spot provider).
     check('execute-trade: Coinbase order POST is lane-gated (KRF never touches a Coinbase endpoint)',
-      /if \(!krakenFuturesLane\) \{\s*\n\s*resp = await cbRequest\(/.test(code));
+      /if \(!krakenFuturesLane && !krakenSpotLane\) \{\s*\n\s*resp = await cbRequest\(/.test(code)
+      || /if \(!krakenFuturesLane\) \{\s*\n\s*resp = await cbRequest\(/.test(code));
     check('execute-trade: AM59 STEP 1-2 close verification is lane-gated',
       /isClosing && !isPaper && openTrade && !krakenFuturesLane/.test(code));
     check('execute-trade: PHASE D flat check is lane-gated',
@@ -268,7 +270,8 @@ if (!REPORT_ONLY) {
     check('execute-trade: bracket cleanup is lane-gated',
       /isClosing && !isPaper && closeFillConfirmed && !krakenFuturesLane/.test(code));
     check('execute-trade: AM14 close prep is lane-gated',
-      /if \(isClosing && !krakenFuturesLane\) \{/.test(code));
+      /if \(isClosing && !krakenFuturesLane && !krakenSpotLane\) \{/.test(code)
+      || /if \(isClosing && !krakenFuturesLane\) \{/.test(code));
     check('execute-trade: cfm balance check is lane-gated',
       /marketType !== 'SPOT' && !krakenFuturesLane/.test(code));
     check('execute-trade: generateToken POST call is lane-gated (no PEM parse on undefined creds)',
@@ -467,7 +470,7 @@ if (exists(RISK_VAL)) {
   const code = stripComments(src);
   check('risk-validator: the LIVE real-balance cap is VENUE-AWARE (KRF ids cap against krakenfutures, not coinbase)',
     /const isKrfLive = typeof symbol === 'string' && symbol\.includes\('-PERP-KRF'\);/.test(code)
-    && /const balanceVenue = isKrfLive \? 'krakenfutures' : 'coinbase';/.test(code)
+    && /const balanceVenue = isKrSpotLive \? 'krakenspot' : \(isKrfLive \? 'krakenfutures' : 'coinbase'\);/.test(code)
     && /getRealBalance\(tenantId, balanceVenue\)/.test(code)
     && !/getRealBalance\(tenantId, 'coinbase'\)/.test(code));
   check('risk-validator: a failed KRF balance read falls back to the CONFIGURED balance LOUDLY (never a Coinbase cap)',

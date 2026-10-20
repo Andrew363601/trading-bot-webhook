@@ -73,6 +73,11 @@ export default async function handler(req, res) {
         // fetch returns an honest empty and the oracle path fails LOUD below.
         const isKrakenFutures = (trade.exchange || '').toLowerCase() === 'krakenfutures'
             || String(trade.symbol || '').toUpperCase().includes('-PERP-KRF');
+        // 🟢 AM68 — kraken SPOT DOES have real venue OHLC (public /0/public/OHLC via
+        // the candle bridge). No Coinbase substitute; an unsupported TF yields an
+        // honest empty and the oracle fails LOUD below.
+        const isKrakenSpot = (trade.exchange || '').toLowerCase() === 'krakenspot'
+            || String(trade.symbol || '').toUpperCase().includes('-SPOT-KRS');
 
         if (trade.exit_price) return res.status(400).json({ error: "Trade is already closed." });
 
@@ -93,7 +98,9 @@ export default async function handler(req, res) {
         // candle bridge); every other venue keeps the byte-identical Coinbase path.
         const fetchData = isKrakenFutures
             ? (tf) => fetchKrakenFuturesData(trade.symbol, tf)
-            : (tf) => fetchCoinbaseData(trade.symbol, tf, apiKeyName, apiSecret);
+            : isKrakenSpot
+              ? (tf) => fetchKrakenSpotData(trade.symbol, tf)
+              : (tf) => fetchCoinbaseData(trade.symbol, tf, apiKeyName, apiSecret);
         const [macroCandles, triggerCandles] = await Promise.all([
             fetchData(macroTf),
             fetchData(triggerTf)
@@ -102,7 +109,7 @@ export default async function handler(req, res) {
         if (!macroCandles || !triggerCandles || triggerCandles.length === 0) {
             throw new Error(isKrakenFutures
                 ? "Failed to fetch market data from Kraken Futures (venue OHLC)"
-                : "Failed to fetch market data from Coinbase");
+                : (isKrakenSpot ? "Failed to fetch market data from Kraken Spot (venue OHLC)" : "Failed to fetch market data from Coinbase"));
         }
         const currentPrice = triggerCandles[triggerCandles.length - 1].close;
         const pnlPercent = trade.side === 'BUY' ? (currentPrice - trade.entry_price) / trade.entry_price : (trade.entry_price - currentPrice) / trade.entry_price;
@@ -287,6 +294,19 @@ export default async function handler(req, res) {
 // 🟢 AM63 (Push 5) — krakenfutures REAL venue OHLC via the shared candle bridge.
 // Returns the SAME { close, high, low, volume } shape fetchCoinbaseData returns.
 async function fetchKrakenFuturesData(asset, granularity) {
+    const { granularitySeconds } = resolveGranularity(granularity || 'ONE_HOUR');
+    const end = Math.floor(Date.now() / 1000);
+    const start = end - granularitySeconds * 300;
+    const candles = await fetchCandles({
+        product: String(asset).toUpperCase().trim(),
+        granularitySeconds,
+        startEpoch: start,
+        endEpoch: end,
+    });
+    return candles.map(c => ({ close: c.close, high: c.high, low: c.low, volume: c.volume }));
+}
+
+async function fetchKrakenSpotData(asset, granularity) {
     const { granularitySeconds } = resolveGranularity(granularity || 'ONE_HOUR');
     const end = Math.floor(Date.now() / 1000);
     const start = end - granularitySeconds * 300;

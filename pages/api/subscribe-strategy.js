@@ -47,7 +47,8 @@ export default async function handler(req, res) {
       });
     }
     // coinbase (default): LIVE stays restricted to CDE derivatives.
-    if (normalizedExchange !== 'krakenfutures' && !isCDEAsset) {
+    // 🟢 AM68 — krakenfutures + krakenspot LIVE admitted (spot needs KRAKENSPOT row).
+    if (normalizedExchange !== 'krakenfutures' && normalizedExchange !== 'krakenspot' && !isCDEAsset) {
       return res.status(400).json({
         error: 'LIVE mode is restricted to Coinbase CDE futures only. Use PAPER mode for non-CDE assets.',
         source: req.body?.source
@@ -96,7 +97,9 @@ export default async function handler(req, res) {
     // UPPERCASE (secrets-manager normalizes with toUpperCase on read) — do NOT
     // lowercase; the asymmetry with routing columns is by design.
     if (executionMode === 'LIVE') {
-      const vaultVenue = normalizedExchange === 'krakenfutures' ? 'KRAKENFUTURES' : 'COINBASE';
+      const vaultVenue = normalizedExchange === 'krakenfutures' ? 'KRAKENFUTURES'
+        : normalizedExchange === 'krakenspot' ? 'KRAKENSPOT'
+        : 'COINBASE';
       try {
         const secrets = await retrieveAPIKey(supabase, actualTenantId, vaultVenue);
         if (!secrets?.apiKey || !secrets?.apiSecret) {

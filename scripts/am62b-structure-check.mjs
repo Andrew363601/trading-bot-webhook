@@ -107,7 +107,8 @@ console.log('\n[5] wiring — execute-trade-mcp (fetch fix + macro structure)');
   // `(krakenLane || (krakenFuturesLane && !isPaper))`. Either form is valid.
   ok('close derives from macro candles',
     /closeStructureDirection = krakenLane \? null : deriveStructureDirection\(\s*await fetchStructureCandles/.test(exec)
-    || /closeStructureDirection = \(krakenLane \|\| \(krakenFuturesLane && !isPaper\)\) \? null : deriveStructureDirection\(\s*await fetchStructureCandles/.test(exec));
+    || /closeStructureDirection = \(krakenLane \|\| \(krakenFuturesLane && !isPaper\)\) \? null : deriveStructureDirection\(\s*await fetchStructureCandles/.test(exec)
+    || /closeStructureDirection = \(krakenLane \|\| \(krakenFuturesLane && !isPaper\) \|\| \(krakenSpotLane && !isPaper\)\) \? null : deriveStructureDirection\(\s*await fetchStructureCandles/.test(exec));
   ok('close structure_direction is written', /structure_direction: closeStructureDirection/.test(exec));
   ok('params_context mirror kept', /entryParamsContext\.structure_direction = structureDirection/.test(exec));
   ok('retry guard kept', /delete without\.structure_direction/.test(exec));

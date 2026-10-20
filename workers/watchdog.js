@@ -21,6 +21,17 @@ import {
   OPENORDERS_PATH,
   FILLS_PATH,
 } from '../lib/providers/kraken-futures.js';
+// 🟢 AM68 — Kraken SPOT (+ margin) venue-mark pricing + the resident-conditional
+// manager's order/position/fill layer. Creds resolve INSIDE the provider.
+import {
+  getKrakenSpotTickers,
+  resolveKrakenSpotProduct,
+  placeKrakenSpotOrder,
+  cancelKrakenSpotOrder,
+  getKrakenSpotOpenOrders,
+  getKrakenSpotOpenPositions,
+  queryKrakenSpotOrders,
+} from '../lib/providers/kraken-spot.js';
 // 🟢 AM65 — Unified FIX lane: session liveness supervision + ER-ledger position
 // state (D2). The watchdog is the liveness supervisor for the owner-process FIX
 // session; fix-mode position existence comes from the session fill ledger, and
@@ -255,6 +266,9 @@ const livenessAlerted = {};
 // the redeployed conditionals → TP-only fallback + hard cap.
 const kfBracketRejectTracker = new Map(); // tradeId → consecutive reject count
 const kfMissingBracketTracker = new Map(); // tradeId → first-missing timestamp (ceasefire)
+// 🟢 AM68 — the Kraken SPOT manager's sibling trackers (same circuit-breaker shape).
+const ksBracketRejectTracker = new Map(); // tradeId → consecutive reject count
+const ksMissingBracketTracker = new Map(); // tradeId → first-missing timestamp (ceasefire)
 
 /**
  * 🟢 AM65 — the KRF FIX-mode trade manager. Runs INSTEAD of the REST manager when
@@ -833,6 +847,225 @@ async function manageKrakenFuturesLiveTrade(openTrade, asset, currentPrice, kfPr
 }
 
 /**
+ *  AM68 — THE KRAKEN SPOT (+ margin) LIVE MANAGER.
+ *
+ * Mirrors manageKrakenFuturesLiveTrade: protective exits are venue-RESIDENT
+ * reduce-only conditionals (take-profit limit + stop-loss), the watchdog CANCELS +
+ * REPLACES them on tripwire/trail (never paper-computes closes), and stamps native
+ * fills via QueryOrders forensics. Position existence: margin → OpenPositions;
+ * non-margin spot → the resident conditional orders are the position proof.
+ */
+async function manageKrakenSpotLiveTrade(openTrade, asset, currentPrice, ksProduct) {
+    const tenantId = openTrade.tenant_id;
+    const tradeId = openTrade.id;
+    const nativeSymbol = ksProduct?.nativeSymbol;
+    if (!nativeSymbol) {
+        console.warn(`[AM68] KSPOT manager: no native symbol for ${asset} (trade ${tradeId}) — skipping.`);
+        return;
+    }
+    const closingSide = openTrade.side === 'BUY' ? 'sell' : 'buy';
+    const ksReduceOnly = ksProduct?.margin !== false && parseFloat(openTrade.leverage || 1) > 1;
+    const ksTickSize = Number.isFinite(parseFloat(ksProduct?.tick_size))
+        ? parseFloat(ksProduct.tick_size)
+        : (ksProduct?.pair_decimals != null ? Math.pow(10, -parseInt(ksProduct.pair_decimals, 10)) : 0.0001);
+    const ksTickRound = (p) => parseFloat((Math.round(parseFloat(p) / ksTickSize) * ksTickSize).toFixed(8));
+    const ksLotDecimals = ksProduct?.lot_decimals != null ? parseInt(ksProduct.lot_decimals, 10) : 8;
+    const ksRoundQty = (q) => { const f = Math.pow(10, Math.max(0, ksLotDecimals)); const v = Math.floor(parseFloat(q) * f) / f; return v > 0 ? v : parseFloat((1 / f).toFixed(ksLotDecimals)); };
+
+    const ksCtx = (openTrade.params_context && typeof openTrade.params_context === 'object') ? openTrade.params_context : {};
+    const ksTpTxid = ksCtx.ks_tp_order_id || null;
+    const ksSlTxid = ksCtx.ks_sl_order_id || null;
+
+    // ── 1. VENUE STATE: margin position (OpenPositions) + resident orders (OpenOrders)
+    let ksPosition = null;
+    let ksOpenOrders = {};
+    try {
+        const [posRes, ordRes] = await Promise.all([
+            getKrakenSpotOpenPositions({ supabase, tenantId }),
+            getKrakenSpotOpenOrders({ supabase, tenantId }),
+        ]);
+        if (posRes && !posRes.error) ksPosition = Object.values(posRes.positions || {}).find((p) => p.pair === nativeSymbol) || null;
+        if (ordRes && !ordRes.error) ksOpenOrders = ordRes.orders || {};
+    } catch (e) {
+        console.warn(`[AM68] KSPOT manager venue-state fetch failed for ${asset} (trade ${tradeId}): ${e.message} — skipping this sweep.`);
+        return;
+    }
+    const ksResidentOrders = Object.values(ksOpenOrders).filter((o) =>
+        (ksTpTxid && o.txid === ksTpTxid) || (ksSlTxid && o.txid === ksSlTxid));
+
+    // ── 2. NATIVE-FILL FORENSICS: a filled conditional closed the position ─────
+    if (!ksPosition && (ksTpTxid || ksSlTxid) && ksResidentOrders.length === 0) {
+        try {
+            const qr = await queryKrakenSpotOrders({ txids: [ksTpTxid, ksSlTxid].filter(Boolean), supabase, tenantId });
+            if (qr && !qr.error) {
+                const filled = Object.values(qr.orders || {}).filter((o) => o.status === 'closed' && o.vol_exec > 0);
+                if (filled.length > 0) {
+                    const filledSize = filled.reduce((s, o) => s + o.vol_exec, 0);
+                    const notional = filled.reduce((s, o) => s + o.vol_exec * (o.price || (o.cost && o.vol_exec ? o.cost / o.vol_exec : 0) || 0), 0);
+                    const exitPrice = filledSize > 0 ? notional / filledSize : currentPrice;
+                    const safeEntry = parseFloat(openTrade.entry_price) || 0;
+                    const dbQty = parseFloat(openTrade.qty) || 0;
+                    const pnl = openTrade.side === 'BUY' ? (exitPrice - safeEntry) * dbQty : (safeEntry - exitPrice) * dbQty;
+                    const fees = filled.reduce((s, o) => s + (o.fee || 0), 0) || null;
+                    const legName = filled.some((o) => o.txid === ksTpTxid) ? 'TP' : 'SL';
+                    const updatedReason = `${openTrade.reason || ''}\n\n[EXIT TRIGGER]: ${legName}_CONDITIONAL_FILLED (venue-resident, AM68)`;
+                    try {
+                        await supabase.from('trade_logs').update({
+                            exit_price: parseFloat(exitPrice.toFixed(8)),
+                            pnl: parseFloat(pnl.toFixed(4)),
+                            exit_time: new Date().toISOString(),
+                            reason: updatedReason,
+                            params_context: { ...ksCtx, ks_exit_txid: filled[0].txid, ks_exit_fees: fees, exit_fees: fees },
+                        }).eq('id', tradeId);
+                        console.log(`[AM68] KSPOT native fill stamped for trade ${tradeId}: ${legName} filled ${filledSize} @ $${exitPrice.toFixed(8)}.`);
+                        await sendDiscordAlert(tenantId, {
+                            title: `🏁 Position Closed (venue-resident ${legName}): ${asset}`,
+                            description: `**Exit Price:** $${exitPrice.toFixed(8)}\n**PnL:** $${pnl.toFixed(4)}\n**Trigger:** ${legName} conditional filled on the venue`,
+                            color: pnl >= 0 ? 5763719 : 15548997,
+                        });
+                    } catch (e) {
+                        console.error(`[AM68] KSPOT native-fill stamp failed for trade ${tradeId}: ${e.message}`);
+                    }
+                    return; // closed — nothing else this sweep
+                }
+            }
+        } catch (e) {
+            console.warn(`[AM68] KSPOT fill forensics failed for trade ${tradeId}: ${e.message}`);
+        }
+    }
+
+    // Non-margin spot has no OpenPositions entry — the resident conditionals are the
+    // position proof. Only bail when there is neither a position NOR any resident order.
+    if (!ksPosition && ksResidentOrders.length === 0) {
+        console.warn(`[AM68] KSPOT manager: no venue position/open conditionals for ${nativeSymbol} (trade ${tradeId}) — skipping this sweep.`);
+        return;
+    }
+
+    // ── 3. POSITION MATH (the AM53 entry-locked geometry) ──────────────────────
+    const liveQty = ksPosition ? Math.abs(parseFloat(ksPosition.vol) || 0) : ksRoundQty(openTrade.qty || 1);
+    const leverage = parseFloat(openTrade.leverage || 1);
+    const rawPriceMove = openTrade.side === 'BUY'
+        ? (currentPrice - openTrade.entry_price) / openTrade.entry_price
+        : (openTrade.entry_price - currentPrice) / openTrade.entry_price;
+    const pnlPercent = rawPriceMove * leverage;
+    const tripwire = parseFloat(ksCtx.entry_tripwire ?? 0);
+    const trailStep = parseFloat(ksCtx.entry_trail_step ?? 0);
+    const trailActivation = parseFloat(ksCtx.entry_trail_activation ?? ksCtx.entry_tripwire ?? 0);
+
+    if (!heartbeatTracker[tradeId] || Date.now() - heartbeatTracker[tradeId] >= 60000) {
+        await logAgentActivity(tenantId, 'Watchdog', asset, `Heartbeat: Live ROE: ${(pnlPercent * 100).toFixed(2)}% | Tripwire: ${(tripwire * 100).toFixed(2)}%.`, 'HEARTBEAT');
+        heartbeatTracker[tradeId] = Date.now();
+    }
+
+    // ── 4. TRIPWIRE: cancel + replace the SL at breakeven ──────────────────────
+    if (tripwire > 0 && pnlPercent >= tripwire && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
+        const recentlyUpdated = openTrade.updated_at && (Date.now() - new Date(openTrade.updated_at).getTime()) < 60000;
+        if (recentlyUpdated) {
+            await logAgentActivity(tenantId, 'Watchdog', asset, `Tripwire skipped for ${asset} — recently updated.`, 'TRIPWIRE_SKIPPED');
+        } else {
+            const bePrice = ksTickRound(parseFloat(openTrade.entry_price));
+            let tripwireOk = false;
+            try {
+                if (ksSlTxid) { try { await cancelKrakenSpotOrder({ txid: ksSlTxid, supabase, tenantId }); } catch (e) { console.warn(`[AM68] KSPOT tripwire SL cancel failed: ${e.message}`); } }
+                const beVerdict = await placeKrakenSpotOrder({ pair: nativeSymbol, type: closingSide, ordertype: 'stop-loss', volume: liveQty, price: bePrice, reduceOnly: ksReduceOnly, cliOrdId: `nxks_tw_${tradeId}_${Date.now()}`.slice(0, 18), supabase, tenantId });
+                tripwireOk = beVerdict.placed;
+                if (!beVerdict.placed) console.error(`[AM68] KSPOT tripwire BE conditional REJECTED: ${beVerdict.rejectReason}`);
+            } catch (e) {
+                console.error(`[AM68] KSPOT tripwire fault: ${e.message}`);
+            }
+            if (tripwireOk) {
+                try {
+                    await supabase.from('trade_logs').update({
+                        sl_price: bePrice,
+                        reason: `${openTrade.reason || ''}\n\n[TRIPWIRE_ACTIVATED]`,
+                        params_context: { ...ksCtx, ks_sl_order_id: null },
+                    }).eq('id', tradeId);
+                } catch (e) { console.error('[AM68] KSPOT tripwire db update failed:', e.message); }
+                await sendDiscordAlert(tenantId, {
+                    title: `🛡️ Tripwire Activated: ${asset}`,
+                    description: `**ROE:** ${(pnlPercent * 100).toFixed(2)}%\n**Action:** SL conditional replaced at breakeven ($${bePrice}) — venue-resident, reduce-only.`,
+                    color: 15844367,
+                });
+                try {
+                    await pingHermes({ event: 'TRIPWIRE_HIT', tenant_id: tenantId, asset, trade_id: tradeId, forced_risk_close: true, authorization: 'TRIPWIRE_RISK_CLOSE' });
+                } catch (e) { console.warn('[AM68] KSPOT tripwire wake failed:', e.message); }
+            }
+            return;
+        }
+    }
+
+    // ── 5. TRAILING SL: ratchet the resident SL conditional ────────────────────
+    if (trailStep > 0 && pnlPercent >= trailActivation && !openTrade.reason?.includes('[TRIPWIRE_ACTIVATED]')) {
+        const currentSl = parseFloat(openTrade.sl_price) || 0;
+        const newSl = openTrade.side === 'BUY' ? currentPrice * (1 - trailStep) : currentPrice * (1 + trailStep);
+        const improves = openTrade.side === 'BUY' ? newSl > currentSl : newSl < currentSl;
+        const clampedSl = openTrade.side === 'BUY' ? Math.min(newSl, currentPrice * 0.995) : Math.max(newSl, currentPrice * 1.005);
+        if (improves && Math.abs(clampedSl - currentSl) > ksTickSize * 10) {
+            const roundedSl = ksTickRound(clampedSl);
+            let trailOk = false;
+            try {
+                if (ksSlTxid) { try { await cancelKrakenSpotOrder({ txid: ksSlTxid, supabase, tenantId }); } catch (e) { console.warn(`[AM68] KSPOT trail SL cancel failed: ${e.message}`); } }
+                const trailVerdict = await placeKrakenSpotOrder({ pair: nativeSymbol, type: closingSide, ordertype: 'stop-loss', volume: liveQty, price: roundedSl, reduceOnly: ksReduceOnly, cliOrdId: `nxks_tr_${tradeId}_${Date.now()}`.slice(0, 18), supabase, tenantId });
+                trailOk = trailVerdict.placed;
+                if (!trailVerdict.placed) console.error(`[AM68] KSPOT trail conditional REJECTED: ${trailVerdict.rejectReason}`);
+            } catch (e) {
+                console.error(`[AM68] KSPOT trail fault: ${e.message}`);
+            }
+            if (trailOk) {
+                try {
+                    await supabase.from('trade_logs').update({
+                        sl_price: roundedSl,
+                        reason: `${openTrade.reason || ''}\n\n[TRAILING_SL_MOVED] $${currentSl} → $${roundedSl}`,
+                        params_context: { ...ksCtx, ks_sl_order_id: null },
+                    }).eq('id', tradeId);
+                } catch (e) { console.error('[AM68] KSPOT trail db update failed:', e.message); }
+                await sendDiscordAlert(tenantId, {
+                    title: `📈 Trailing Stop Updated: ${asset}`,
+                    description: `**New SL:** $${roundedSl} (was $${currentSl})\n**ROE:** ${(pnlPercent * 100).toFixed(2)}%`,
+                    color: 3447003,
+                });
+            }
+        }
+    }
+
+    // ── 6. SAFETY NET: position live but NO resident conditionals ──────────────
+    if (ksResidentOrders.length === 0) {
+        const firstMissing = ksMissingBracketTracker.get(tradeId) || 0;
+        if (Date.now() - firstMissing < 20000) return; // 20 s ceasefire
+        ksMissingBracketTracker.set(tradeId, Date.now());
+        const rejectCount = ksBracketRejectTracker.get(tradeId) || 0;
+        console.warn(`[AM68] KSPOT SAFETY NET for ${asset} (trade ${tradeId}): no resident conditionals. Redeploying.`);
+        const safeEntry = parseFloat(openTrade.avg_entry_price || openTrade.entry_price) || currentPrice;
+        const tpPrice = parseFloat(openTrade.tp_price) || (openTrade.side === 'BUY' ? safeEntry * 1.02 : safeEntry * 0.98);
+        const slPrice = parseFloat(openTrade.sl_price) || (openTrade.side === 'BUY' ? safeEntry * 0.98 : safeEntry * 1.02);
+        let redeployed = 0;
+        try {
+            const tpVerdict = await placeKrakenSpotOrder({ pair: nativeSymbol, type: closingSide, ordertype: 'take-profit', volume: liveQty, price: ksTickRound(tpPrice), reduceOnly: ksReduceOnly, cliOrdId: `nxks_sn_${tradeId}_${Date.now()}_tp`.slice(0, 18), supabase, tenantId });
+            if (tpVerdict.placed) redeployed++;
+            const slVerdict = await placeKrakenSpotOrder({ pair: nativeSymbol, type: closingSide, ordertype: 'stop-loss', volume: liveQty, price: ksTickRound(slPrice), reduceOnly: ksReduceOnly, cliOrdId: `nxks_sn_${tradeId}_${Date.now()}_sl`.slice(0, 18), supabase, tenantId });
+            if (slVerdict.placed) redeployed++;
+        } catch (e) {
+            console.error(`[AM68] KSPOT safety-net fault: ${e.message}`);
+        }
+        if (redeployed > 0) {
+            ksBracketRejectTracker.set(tradeId, 0);
+            await sendDiscordAlert(tenantId, {
+                title: `🛡️ Safety Net Deployed: ${asset}`,
+                description: `Position was live with NO resident conditionals. Redeployed ${redeployed} protective order(s).\n**TP:** $${tpPrice}\n**SL:** $${slPrice}`,
+                color: 15844367,
+            });
+        } else {
+            ksBracketRejectTracker.set(tradeId, rejectCount + 1);
+            await sendDiscordAlert(tenantId, {
+                title: `🚨 NAKED POSITION: ${asset}`,
+                description: `Safety-net redeploy FAILED (${rejectCount + 1} consecutive). ${liveQty} ${ksProduct.base} unprotected. Manual intervention required.`,
+                color: 15158332,
+            });
+        }
+    }
+}
+
+/**
  * 🛡️ SCOPED CANCEL: Filters openOrders to only include orders that belong to the
  * specified trade. Prevents batch_cancel from nuking brackets that protect OTHER
  * trades for the same product — the root cause of "brackets cancelled milliseconds
@@ -1020,9 +1253,14 @@ export async function sweepOpenTrades(tenantId) {
                 // payload OR a MISSING ROW is the SAME loud failure — skip + CONTINUE.
                 const isKrakenFuturesTrade = String(openTrade.exchange || '').toLowerCase() === 'krakenfutures'
                     || String(asset).toUpperCase().includes('-PERP-KRF');
+                // 🟢 AM68 — KRAKEN SPOT (+ margin) lane: price from the venue last
+                // (getKrakenSpotTickers), never a Coinbase ticker. Same loud-skip rule.
+                const isKrakenSpotTrade = String(openTrade.exchange || '').toLowerCase() === 'krakenspot'
+                    || String(asset).toUpperCase().includes('-SPOT-KRS');
                 let currentPrice = null;
                 let krakenAsset = null;
                 let krakenFuturesAsset = null;
+                let krakenSpotAsset = null;
 
                 if (isKrakenFuturesTrade) {
                     const product = await resolveKrakenFuturesProduct(asset);
@@ -1058,6 +1296,22 @@ export async function sweepOpenTrades(tenantId) {
                         await logAgentActivity(tenantId, "Watchdog", asset, `[AM63] kraken stats unavailable — skipped pricing for trade ${openTrade.id}.`, "KRAKEN_STATS_UNAVAILABLE");
                         continue;
                     }
+                } else if (isKrakenSpotTrade) {
+                    const product = await resolveKrakenSpotProduct(asset);
+                    if (product && !product.error) {
+                        const tickers = await getKrakenSpotTickers({ symbols: [product.nativeSymbol] });
+                        const row = tickers ? tickers[product.nativeSymbol] : null;
+                        const last = row ? parseFloat(row.last) : NaN;
+                        if (row && Number.isFinite(last) && last > 0) {
+                            currentPrice = last;
+                            krakenSpotAsset = product;
+                        }
+                    }
+                    if (!currentPrice) {
+                        console.warn(`[AM68] krakenspot ticker unavailable for ${asset} (trade ${openTrade.id}) — skipping pricing this sweep.`);
+                        await logAgentActivity(tenantId, "Watchdog", asset, `[AM68] krakenspot ticker unavailable — skipped pricing for trade ${openTrade.id}.`, "KSPOT_STATS_UNAVAILABLE");
+                        continue;
+                    }
                 } else {
                     // 🟢 PUBLIC TICKER: unauthenticated public market endpoint (mirrors
                     // lib/candles.js). AM58 7b: api.exchange.coinbase.com is geo-blocked.
@@ -1079,6 +1333,16 @@ export async function sweepOpenTrades(tenantId) {
                         continue;
                     }
                 }
+
+                // 🟢 AM63/AM68 — venue tick/multiplier. HOISTED above the venue managers:
+                // the KRF dispatch below reads multiplier/tickSize, and the previous
+                // declaration sat AFTER it (a latent TDZ ReferenceError on any KRF LIVE
+                // sweep). getAssetMetrics is pure — hoisting is a correctness fix.
+                const { multiplier, tickSize } = getAssetMetrics(
+                    coinbaseProduct,
+                    isKrakenTrade ? krakenAsset : null,
+                    isKrakenFuturesTrade ? krakenFuturesAsset : null
+                );
 
                 // ═══════════════════════════════════════════════════════════════
                 // 🟢 AM63 (Push 7) — THE KRF LIVE MANAGER.
@@ -1104,15 +1368,13 @@ export async function sweepOpenTrades(tenantId) {
                     continue;
                 }
 
-                // 🟢 AM63 (Push 4) — getAssetMetrics branches on venue (kraken →
-                // contract_size from the resolved product).
-                // 🟢 AM63 (Push 5) — krakenfutures → contractSize + the instrument's
-                // OWN tickSize from the resolved product.
-                const { multiplier, tickSize } = getAssetMetrics(
-                    coinbaseProduct,
-                    isKrakenTrade ? krakenAsset : null,
-                    isKrakenFuturesTrade ? krakenFuturesAsset : null
-                );
+                // 🟢 AM68 — THE KRAKEN SPOT (+ margin) LIVE MANAGER. Same doctrine:
+                // venue-RESIDENT reduce-only conditionals (take-profit / stop-loss),
+                // cancel+replace per sweep, native-fill forensics via QueryOrders.
+                if (isKrakenSpotTrade && openTrade.execution_mode === 'LIVE') {
+                    await manageKrakenSpotLiveTrade(openTrade, asset, currentPrice, krakenSpotAsset);
+                    continue;
+                }
 
                 if (!openTrade.entry_price || openTrade.entry_price === 0) {
                     if (openTrade.execution_mode === 'LIVE') {

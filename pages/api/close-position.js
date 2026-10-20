@@ -6,6 +6,8 @@ import { executeTradeMCP } from '../../lib/execute-trade-mcp.js';
 import { getMarketStats, resolveKrakenProduct } from '../../lib/providers/kraken-bitnomial.js';
 // 🟢 AM63 (Push 5) — venue-aware pricing via the Kraken Futures (apiv3) provider.
 import { getKrakenTickers, resolveKrakenFuturesProduct } from '../../lib/providers/kraken-futures.js';
+// 🟢 AM68 — venue-aware pricing via the Kraken SPOT (+ margin) provider.
+import { getKrakenSpotTickers, resolveKrakenSpotProduct } from '../../lib/providers/kraken-spot.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -54,6 +56,24 @@ async function getCurrentMarketPrice(symbol, exchange = null) {
         return null;
       }
       console.log(`[CLOSE-POSITION] Kraken Futures venue mark for ${symbol}: $${price}`);
+      return price;
+    }
+    // 🟢 AM68 — a krakenspot trade prices from the VENUE last (public Ticker).
+    // Same discipline: any failure → null (caller falls back to the user price).
+    if ((exchange || '').toLowerCase() === 'krakenspot') {
+      const product = await resolveKrakenSpotProduct(symbol);
+      if (!product || product.error) {
+        console.warn(`[AM68] close-position krakenspot product unresolved for ${symbol}: ${product?.error || 'no product'}`);
+        return null;
+      }
+      const tickers = await getKrakenSpotTickers({ symbols: [product.nativeSymbol] });
+      const row = tickers ? tickers[product.nativeSymbol] : null;
+      const price = row ? parseFloat(row.last) : NaN;
+      if (!row || !Number.isFinite(price) || price <= 0) {
+        console.warn(`[AM68] close-position krakenspot mark unavailable for ${symbol} (symbol ${product.nativeSymbol}).`);
+        return null;
+      }
+      console.log(`[CLOSE-POSITION] Kraken Spot venue mark for ${symbol}: $${price}`);
       return price;
     }
     // Normalize symbol (e.g., "ETH-PERP-INTX" → "ETH" for spot ticker)

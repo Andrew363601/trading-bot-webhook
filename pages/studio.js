@@ -831,6 +831,8 @@ export default function StudioPage() {
                     <option value="coinbase">Coinbase</option>
                     <option value="kraken">Kraken (US Perps)</option>
                     <option value="krakenfutures">Kraken Futures</option>
+                    {/* 🟢 AM68 — Kraken SPOT (+ margin): the working Kraken lane for US. */}
+                    <option value="krakenspot">Kraken Spot (+ margin)</option>
                   </select>
                 </div>
 
@@ -856,7 +858,9 @@ export default function StudioPage() {
                       ? 'Coinbase futures (e.g. ETP-20DEC30-CDE) when listed.'
                       : assetExchange === 'krakenfutures'
                         ? 'Kraken Futures (apiv3) perpetuals — real venue OHLC. Paper-only until Push 6.'
-                        : 'Bitnomial US perpetuals — pricing/history arrives with Push 4.'}
+                        : assetExchange === 'krakenspot'
+                          ? 'Kraken Spot (+ margin) — real venue OHLC (api.kraken.com). LIVE available.'
+                          : 'Bitnomial US perpetuals — pricing/history arrives with Push 4.'}
                   </p>
                 </div>
 
@@ -1014,7 +1018,9 @@ export default function StudioPage() {
                             ? `Margin (venue min ${assetFacts[backtestProduct]?.initial_margin != null ? `${(assetFacts[backtestProduct].initial_margin * 100).toFixed(1)}%` : '—'} initial)`
                             : assetExchange === 'kraken'
                               ? `Margin (USD${assetFacts[backtestProduct]?.settlement_method ? `, ${assetFacts[backtestProduct].settlement_method}` : ''})`
-                              : 'Leverage (1-10x)'}
+                              : assetExchange === 'krakenspot'
+                                ? `Margin (spot max ${assetFacts[backtestProduct]?.margin === false ? 'n/a (EUR pair)' : '5×'})`
+                                : 'Leverage (1-10x)'}
                         </label>
                         <input
                           type="number"

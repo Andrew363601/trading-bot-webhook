@@ -28,6 +28,9 @@ export default async function handler(req, res) {
     // backend (lib/candles.js → provider). This is the piece that makes the dashboard
     // matrix feel real instead of names-on-a-list. Detection is on the RAW id.
     const isKrakenFuturesProduct = upperAsset.includes('-PERP-KRF');
+    // 🟢 AM68 — a Kraken SPOT (`-SPOT-KRS`) id routes to the venue's REAL OHLC
+    // (lib/candles.js → provider). Spot HAS real candles.
+    const isKrakenSpotProduct = upperAsset.includes('-SPOT-KRS');
 
     let baseAsset = asset.split('-')[0].replace('PERP', '').trim();
     baseAsset = assetMap[baseAsset] || baseAsset;
@@ -52,6 +55,17 @@ export default async function handler(req, res) {
                 endEpoch: currentEnd,
             });
             for (const c of kfCandles) {
+                allData.push([c.time, c.low, c.high, c.open, c.close, c.volume]);
+            }
+        } else if (isKrakenSpotProduct) {
+            // --- Kraken SPOT (+ margin) REAL OHLC (lib/candles.js → provider) ---
+            const ksCandles = await fetchCandles({
+                product: upperAsset,
+                granularitySeconds: tfGranularity,
+                startEpoch: start ? parseInt(start) : (currentEnd - (requestedLimit * tfGranularity)),
+                endEpoch: currentEnd,
+            });
+            for (const c of ksCandles) {
                 allData.push([c.time, c.low, c.high, c.open, c.close, c.volume]);
             }
         } else if (isFuturesProduct) {

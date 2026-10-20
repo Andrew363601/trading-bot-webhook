@@ -28,7 +28,9 @@ async function handler(req, res) {
   // one LOUDLY (same shape as the router) rather than silently writing coinbase.
   // 🟢 PUSH AM63 (Push 5) — 'krakenfutures' (real Kraken Futures apiv3) admitted so
   // Studio can deploy the KRF universe (paper-only until Push 6).
-  const KNOWN_EXCHANGES = ['coinbase', 'kraken', 'krakenfutures'];
+  // 🟢 AM68 — 'krakenspot' (Kraken SPOT + margin) admitted; LIVE allowed with the
+  // KRAKENSPOT vault row.
+  const KNOWN_EXCHANGES = ['coinbase', 'kraken', 'krakenfutures', 'krakenspot'];
   const deployExchange = (req.body.exchange || 'coinbase').toString().toLowerCase();
   if (!KNOWN_EXCHANGES.includes(deployExchange)) {
     return res.status(400).json({ error: `[AM63] unsupported exchange '${deployExchange}'` });
@@ -77,7 +79,9 @@ async function handler(req, res) {
         reason: 'US_FUTURES_NO_KRAKEN_API'
       });
     }
-    const vaultVenue = deployExchange === 'krakenfutures' ? 'KRAKENFUTURES' : 'COINBASE';
+    const vaultVenue = deployExchange === 'krakenfutures' ? 'KRAKENFUTURES'
+      : deployExchange === 'krakenspot' ? 'KRAKENSPOT'
+      : 'COINBASE';
     try {
       // Verify keys exist in vault AND that MASTER_ENCRYPTION_KEY can decrypt them
       const secrets = await retrieveAPIKey(supabase, tenantId, vaultVenue);
@@ -111,11 +115,13 @@ async function handler(req, res) {
     // If LIVE requested but asset is not a CDE, reject with guidance
     // 🟢 PUSH AM64 — CDE restriction is COINBASE-scoped (krakenfutures LIVE is
     // allowed; kraken was already refused above).
-    if (execution_mode === 'LIVE' && deployExchange !== 'krakenfutures' && !isCDEAsset) {
+    // 🟢 AM68 — krakenfutures + krakenspot LIVE are allowed (krakenspot needs the
+    // KRAKENSPOT vault row, checked above).
+    if (execution_mode === 'LIVE' && deployExchange !== 'krakenfutures' && deployExchange !== 'krakenspot' && !isCDEAsset) {
       return res.status(400).json({ error: 'LIVE mode is restricted to Coinbase CDE futures only. Use PAPER mode for non-CDE assets.' });
     }
     // If LIVE requested without API keys, reject with guidance
-    const modeToPersist = (execution_mode === 'LIVE' && (deployExchange === 'krakenfutures' || isCDEAsset)) ? 'LIVE' : (execution_mode || 'PAPER');
+    const modeToPersist = (execution_mode === 'LIVE' && (deployExchange === 'krakenfutures' || deployExchange === 'krakenspot' || isCDEAsset)) ? 'LIVE' : (execution_mode || 'PAPER');
 
     // Build payload for upsert using the canonical strategy name in `strategy`.
     // Column fix (AM48): the strategy_config table exposes `parameters` and
