@@ -221,6 +221,40 @@ if (!REPORT_ONLY) {
   check('B (guarded): risk-validator TradeBalance — deferred to Commit B', true);
 }
 
+// ══════════════════════ PART B — sniper KRS lane (AM68 hotfix 2) ══════════════════════
+// The sniper had NO -SPOT-KRS recognition: krakenspot strategies fell through to the
+// Coinbase default candle path (a KRS id → HTTP failure), the asset never ticked, and
+// the strategy was dormant forever (no scans → no agent_session_logs → empty audit tab).
+console.log('\n── PART B — sniper Kraken SPOT lane (AM68 hotfix 2) ──');
+{
+  const SNIPER = 'workers/sniper.js';
+  const raw = read(SNIPER);
+  const code = stripComments(raw);
+  check('B: sniper has isKrakenSpotId (the -SPOT-KRS lane detector)',
+    /const isKrakenSpotId = \(asset\) => String\(asset \|\| ''\)\.toUpperCase\(\)\.includes\('-SPOT-KRS'\)/.test(code));
+  check('B: sniper KRS candles route through the shared bridge (fetchCandles, no duplicate OHLC fetch)',
+    /fetchCandles\(\{ product: asset/.test(code) && /fetchKrakenSpotCandles/.test(code));
+  check('B: sniper KRS lane is a REST poll (getKrakenSpotTickers, NO WebSocket)',
+    /getKrakenSpotTickers\(/.test(code) && /ksPoll/.test(code));
+  check('B: sniper KRS lane branches BEFORE the Coinbase default (ksLane first)',
+    /const ksLane = isKrakenSpotId\(config\.asset\)/.test(code)
+    && /const fetchCandlesFor = \(tf\) => ksLane/.test(code));
+  check('B: sniper KRS data failure is LOUD (WARN + skip, never silent-dormant)',
+    /Kraken Spot data unavailable/.test(raw) && /"WARN"/.test(raw));
+  check('B: sniper KRS liveness beacon (one INFO log per asset at sweep start)',
+    /Kraken Spot sweep active for/.test(raw));
+  // Repo-absence scan: no Coinbase product fetch may occur for a -SPOT-KRS id. The
+  // Coinbase candle path is only reachable through the final else of fetchCandlesFor
+  // (and the trap path's trapCandlesFor), both gated on ksLane/kfLane first.
+  const coinbaseCallSites = (code.match(/fetchCoinbaseData\(/g) || []).length;
+  const guardedSites = (code.match(/ksLane\s*\n?\s*\?\s*fetchKrakenSpotCandles|trapKsLane\s*\n?\s*\?\s*fetchKrakenSpotCandles/g) || []).length;
+  check('B: every Coinbase candle call site is behind a KRS/KRF lane guard',
+    coinbaseCallSites === 3 && guardedSites === 2,
+    `fetchCoinbaseData call sites=${coinbaseCallSites} (expect 3: def + 2 dispatch), KRS-guarded=${guardedSites} (expect 2)`);
+  check('B: sniper imports the Kraken SPOT provider (marks + book)',
+    /providers\/kraken-spot\.js/.test(code));
+}
+
 // ─────────────────────────────────── report ────────────────────────────────
 console.log(`\nAM68 check: ${pass}/${pass + fail} passed`);
 if (fail > 0) {

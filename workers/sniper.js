@@ -33,6 +33,11 @@ import { rebalanceRecall, decayBonusPoints, normalizeTags, DESCRIPTIVE_ONLY_TAG 
 // a LOUD skip for KRX ids (no scanner data exists yet). NO WebSocket for KRF this push.
 import { getKrakenTickers, resolveKrakenFuturesProduct, getKrakenOrderBook, summarizeKrakenBook } from '../lib/providers/kraken-futures.js';
 import { fetchCandles, resolveGranularity } from '../lib/candles.js';
+// 🟢 AM68 hotfix 2 — Kraken SPOT (`-SPOT-KRS`) REST marks + REAL book. The sniper had
+// NO -SPOT-KRS recognition at all: krakenspot strategies fell through to the Coinbase
+// default candle path (a KRS id → HTTP failure), the asset never ticked, and the
+// strategy was dormant forever (no scans → no agent_session_logs → empty audit tab).
+import { getKrakenSpotTickers, resolveKrakenSpotProduct, getKrakenSpotOrderBook, summarizeKrakenSpotBook } from '../lib/providers/kraken-spot.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -149,6 +154,12 @@ async function fetchCoinbaseData(asset, granularity, apiKey, secret) {
 // These helpers let the sweep source candles/marks from the RIGHT venue.
 const isKrakenFuturesId = (asset) => String(asset || '').toUpperCase().includes('-PERP-KRF');
 const isKrakenId = (asset) => String(asset || '').toUpperCase().includes('-PERP-KRX');
+// 🟢 AM68 hotfix 2 — Kraken SPOT (+ margin) ids. Without this the sweep had NO
+// recognition of -SPOT-KRS: the id fell through to the Coinbase default candle path
+// (/api/v3/brokerage/products/{id}/candles with a KRS id → fails), the asset never
+// ticked, and the strategy was dormant forever — no scans, no agent_session_logs,
+// empty audit tab. Every krakenspot asset was affected.
+const isKrakenSpotId = (asset) => String(asset || '').toUpperCase().includes('-SPOT-KRS');
 
 // 🟢 AM63 (Push 5) — KRF candles via the EXISTING lib/candles.js bridge (it already
 // routes -PERP-KRF ids to real Kraken OHLC — do NOT duplicate the backend). Returns
@@ -193,6 +204,156 @@ async function fetchKrakenFuturesMark(asset) {
     } catch (e) {
         console.warn(`[AM63] KRF mark fetch failed for ${asset}: ${e.message}`);
         return null;
+    }
+}
+
+// 🟢 AM68 hotfix 2 — KRS candles via the EXISTING lib/candles.js bridge (it already
+// routes -SPOT-KRS ids to real Kraken OHLC — do NOT duplicate the backend). Same
+// doctrine as the KRF comment above: returns the SAME { time, open, high, low, close,
+// volume } shape fetchCoinbaseData returns, with the SAME closed-bar parity filter
+// (drop the forming bar). An empty array is a LOUD data failure at the call site.
+async function fetchKrakenSpotCandles(asset, granularity) {
+    const { granularitySeconds } = resolveGranularity(granularity || 'ONE_HOUR');
+    const end = Math.floor(Date.now() / 1000);
+    const start = end - granularitySeconds * 300;
+    let candles = [];
+    try {
+        candles = await fetchCandles({ product: asset, granularitySeconds, startEpoch: start, endEpoch: end });
+    } catch (e) {
+        console.warn(`[AM68] KRS candle fetch failed for ${asset} @${granularitySeconds}s: ${e.message}`);
+        return [];
+    }
+    const nowSec = Math.floor(Date.now() / 1000);
+    return (candles || []).filter(c => !Number.isFinite(c.time) || c.time + granularitySeconds <= nowSec);
+}
+
+// 🟢 AM68 hotfix 2 — KRS marks (bid/ask/last) via REST polling. NO WebSocket (same
+// shape as the KRF marks lane). getKrakenSpotTickers is altname-keyed after hotfix 1,
+// so the lookup uses the resolved nativeSymbol. Never blocks a sweep: any failure
+// returns null and the caller skips the asset LOUD.
+async function fetchKrakenSpotMark(asset) {
+    try {
+        const product = await resolveKrakenSpotProduct(String(asset).toUpperCase().trim());
+        if (!product || product.error) {
+            console.warn(`[AM68] KRS product unresolved for ${asset}: ${product?.error || 'no product'}`);
+            return null;
+        }
+        const tickers = await getKrakenSpotTickers({ symbols: [product.nativeSymbol] });
+        const row = tickers ? tickers[product.nativeSymbol] : null;
+        if (!row) return null;
+        const last = parseFloat(row.last);
+        if (!Number.isFinite(last) || last <= 0) return null;
+        return {
+            last,
+            bid: Number.isFinite(parseFloat(row.bid)) ? parseFloat(row.bid) : null,
+            ask: Number.isFinite(parseFloat(row.ask)) ? parseFloat(row.ask) : null,
+            nativeSymbol: product.nativeSymbol,
+        };
+    } catch (e) {
+        console.warn(`[AM68] KRS mark fetch failed for ${asset}: ${e.message}`);
+        return null;
+    }
+}
+
+// 🟢 AM68 hotfix 2 — KRS microstructure. Mirrors fetchKrakenFuturesMicrostructure
+// (venue candles + venue mark + the venue's OWN book) so the liquidity map is real
+// instead of a lie of zeros. Degrades to the empty shape on failure — never a
+// fabricated zero-walls read.
+async function fetchKrakenSpotMicrostructure(asset, triggerCandles, macroCandles) {
+    try {
+        let typicalPriceVolume = 0; let totalVolume = 0; let trueRanges = []; let cvd = 0;
+        const cvdCandles = triggerCandles.slice(-50);
+        for (let i = 0; i < cvdCandles.length; i++) {
+            const c = cvdCandles[i]; const range = c.high - c.low;
+            let openPrice = c.open;
+            if (isNaN(openPrice) || openPrice === undefined) { openPrice = i > 0 ? cvdCandles[i - 1].close : c.close; }
+            if (range > 0) { cvd += c.volume * ((c.close - openPrice) / range); }
+        }
+        for (let i = 1; i < triggerCandles.length; i++) {
+            const c = triggerCandles[i]; const prev = triggerCandles[i - 1];
+            typicalPriceVolume += ((c.high + c.low + c.close) / 3) * c.volume; totalVolume += c.volume;
+            trueRanges.push(Math.max(c.high - c.low, Math.abs(c.high - prev.close), Math.abs(c.low - prev.close)));
+        }
+        const vwap = totalVolume > 0 ? typicalPriceVolume / totalVolume : triggerCandles[triggerCandles.length - 1].close;
+        const atr = trueRanges.length > 0 ? trueRanges.slice(-14).reduce((a, b) => a + b, 0) / Math.min(14, trueRanges.length) : 0;
+        const currentPrice = triggerCandles[triggerCandles.length - 1].close;
+
+        let macro_cvd = 0; const macroCvdCandles = macroCandles.slice(-50);
+        for (let i = 0; i < macroCvdCandles.length; i++) {
+            const c = macroCvdCandles[i]; const range = c.high - c.low;
+            let openPrice = c.open;
+            if (isNaN(openPrice) || openPrice === undefined) { openPrice = i > 0 ? macroCvdCandles[i - 1].close : c.close; }
+            if (range > 0) { macro_cvd += c.volume * ((c.close - openPrice) / range); }
+        }
+
+        let minPrice = Infinity; let maxPrice = -Infinity; const pocCandles = macroCandles.slice(-150);
+        pocCandles.forEach(c => { if (c.low < minPrice) minPrice = c.low; if (c.high > maxPrice) maxPrice = c.high; });
+        const numBuckets = 50; const bucketSize = (maxPrice - minPrice) / numBuckets;
+        const volumeProfile = new Array(numBuckets).fill(0);
+        pocCandles.forEach(c => {
+            const typicalPrice = (c.high + c.low + c.close) / 3;
+            let bucketIndex = Math.floor((typicalPrice - minPrice) / bucketSize);
+            if (bucketIndex >= numBuckets) bucketIndex = numBuckets - 1;
+            if (bucketIndex < 0) bucketIndex = 0;
+            volumeProfile[bucketIndex] += c.volume;
+        });
+        let peaks = [];
+        for (let i = 1; i < numBuckets - 1; i++) {
+            if (volumeProfile[i] > volumeProfile[i - 1] && volumeProfile[i] > volumeProfile[i + 1]) {
+                peaks.push({ price: minPrice + (i * bucketSize) + (bucketSize / 2), volume: volumeProfile[i] });
+            }
+        }
+        peaks.sort((a, b) => b.volume - a.volume);
+        const macro_poc = peaks.length > 0 ? peaks[0].price : currentPrice;
+        let upper_macro_node = null; let lower_macro_node = null;
+        const upperPeaks = peaks.filter(p => p.price > currentPrice);
+        if (upperPeaks.length > 0) upper_macro_node = upperPeaks[0].price;
+        const lowerPeaks = peaks.filter(p => p.price < currentPrice);
+        if (lowerPeaks.length > 0) lower_macro_node = lowerPeaks[0].price;
+
+        // Venue mark for best_bid/best_ask (REST ticker).
+        const mark = await fetchKrakenSpotMark(asset);
+        const bestBid = mark?.bid ?? null;
+        const bestAsk = mark?.ask ?? null;
+
+        // REAL book: walls/spread/imbalance from the venue's own Depth endpoint.
+        let orderBook = { bids_50_levels: "0.00", asks_50_levels: "0.00", imbalance: "BEARISH", largest_bid_walls: [], largest_ask_walls: [] };
+        try {
+            const product = await resolveKrakenSpotProduct(String(asset).toUpperCase().trim());
+            if (!product?.error && product.nativeSymbol) {
+                const bookResp = await getKrakenSpotOrderBook(product.nativeSymbol, 50);
+                if (bookResp.ok) {
+                    const bookJson = await bookResp.json();
+                    const summary = await summarizeKrakenSpotBook(bookJson?.result || {});
+                    // summarizeKrakenSpotBook returns SINGULAR walls; the map wants top-3 arrays.
+                    orderBook = {
+                        bids_50_levels: summary.immediate_bids.toFixed(2),
+                        asks_50_levels: summary.immediate_asks.toFixed(2),
+                        imbalance: summary.imbalance,
+                        largest_bid_walls: summary.largest_bid_wall?.size > 0 ? [summary.largest_bid_wall] : [],
+                        largest_ask_walls: summary.largest_ask_wall?.size > 0 ? [summary.largest_ask_wall] : [],
+                    };
+                }
+            }
+        } catch (bookErr) {
+            console.warn(`[AM68] KRS book fetch failed for ${asset}: ${bookErr.message}`);
+        }
+
+        return {
+            macro_regime: 'CHOP',
+            indicators: {
+                current_vwap: vwap.toFixed(2), current_atr: atr.toFixed(2), current_cvd: cvd.toFixed(2),
+                macro_cvd: macro_cvd.toFixed(2), macro_poc: macro_poc.toFixed(2),
+                upper_macro_node: upper_macro_node ? upper_macro_node.toFixed(2) : "None", lower_macro_node: lower_macro_node ? lower_macro_node.toFixed(2) : "None"
+            },
+            crossAsset: { sp500: null, dxy: null },
+            best_bid: bestBid ? bestBid.toFixed(2) : null, best_ask: bestAsk ? bestAsk.toFixed(2) : null,
+            orderBook,
+            derivativesData: { spot_price: currentPrice.toFixed(2), futures_price: currentPrice.toFixed(2), basis_premium_percent: "0.0000" }
+        };
+    } catch (e) {
+        console.warn(`[AM68] KRS microstructure failed for ${asset}: ${e.message}`);
+        return { indicators: {}, crossAsset: {}, orderBook: {}, derivativesData: {}, best_bid: null, best_ask: null };
     }
 }
 
@@ -994,9 +1155,19 @@ export async function startSniper(tenantId) {
                     // resolve once at spring time — never mid-position.
                     let trapRegime = null;
                     try {
+                        // 🟢 AM68 hotfix 2 — the trap's canon regime must come from the
+                        // strategy's OWN venue. A -SPOT-KRS id on the Coinbase path would
+                        // fail (KRS id → HTTP error) and silently leave trapRegime null.
+                        const trapKsLane = isKrakenSpotId(config.asset);
+                        const trapKfLane = isKrakenFuturesId(config.asset);
+                        const trapCandlesFor = (tf) => trapKsLane
+                            ? fetchKrakenSpotCandles(config.asset, tf)
+                            : (trapKfLane
+                                ? fetchKrakenFuturesCandles(config.asset, tf)
+                                : fetchCoinbaseData(config.asset, tf, apiKeyName, apiSecret));
                         const [trap6H, trap5M] = await Promise.all([
-                            fetchCoinbaseData(config.asset, 'SIX_HOUR', apiKeyName, apiSecret).catch(() => []),
-                            fetchCoinbaseData(config.asset, 'FIVE_MINUTE', apiKeyName, apiSecret).catch(() => [])
+                            trapCandlesFor('SIX_HOUR').catch(() => []),
+                            trapCandlesFor('FIVE_MINUTE').catch(() => [])
                         ]);
                         if (trap6H && trap6H.length > 0 && trap5M && trap5M.length > 0) {
                             trapRegime = classifyCanonRegime({
@@ -1201,10 +1372,16 @@ export async function startSniper(tenantId) {
                 // AM63 (Push 5) — venue-aware candle source. KRF ids use the shared
                 // candle bridge (real Kraken OHLC); every other venue keeps the
                 // byte-identical Coinbase path.
+                // 🟢 AM68 hotfix 2 — KRS ids branch BEFORE the Coinbase default, so the
+                // Coinbase candle path can never see a -SPOT-KRS id (that was the root
+                // cause of the dormant krakenspot lane).
                 const kfLane = isKrakenFuturesId(config.asset);
-                const fetchCandlesFor = (tf) => kfLane
-                    ? fetchKrakenFuturesCandles(config.asset, tf)
-                    : fetchCoinbaseData(config.asset, tf, apiKeyName, apiSecret);
+                const ksLane = isKrakenSpotId(config.asset);
+                const fetchCandlesFor = (tf) => ksLane
+                    ? fetchKrakenSpotCandles(config.asset, tf)
+                    : (kfLane
+                        ? fetchKrakenFuturesCandles(config.asset, tf)
+                        : fetchCoinbaseData(config.asset, tf, apiKeyName, apiSecret));
 
                 const [macroCandles, triggerCandles, candles15M, candles30M, candles6H, candles5M, candles1H] = await Promise.all([
                     fetchCandlesFor(macroTf),
@@ -1217,6 +1394,15 @@ export async function startSniper(tenantId) {
                 ]);
 
                 if (!macroCandles || !triggerCandles) continue;
+
+                // 🟢 AM68 hotfix 2 — LOUD on data failure (the KRX loud-skip precedent).
+                // A KRS asset with no candles must NEVER be silent-dormant again: the
+                // operator's audit tab has to show WHY the lane produced no scan.
+                if (ksLane && (macroCandles.length === 0 || triggerCandles.length === 0)) {
+                    console.warn(`[AM68] Kraken Spot data unavailable for ${config.asset} — skipping this tick.`);
+                    await logAgentActivity(tenantId, "Sniper", config.asset, `Kraken Spot data unavailable: no OHLC returned for ${config.asset} (${macroTf}/${triggerTf}) — skipped this tick.`, "WARN");
+                    continue;
+                }
 
                 const c5m = triggerTf === 'FIVE_MINUTE' ? triggerCandles : candles5M;
                 const c1h = macroTf === 'ONE_HOUR' ? macroCandles : candles1H;
@@ -1231,9 +1417,12 @@ export async function startSniper(tenantId) {
 
                 // AM63 (Push 5) — KRF has no Coinbase order book; build microstructure
                 // from venue candles + the venue mark (bid/ask from the REST ticker).
-                const microstructure = kfLane
-                    ? await fetchKrakenFuturesMicrostructure(config.asset, triggerCandles, macroCandles)
-                    : await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret);
+                // 🟢 AM68 hotfix 2 — same for KRS (venue Depth book + REST ticker mark).
+                const microstructure = ksLane
+                    ? await fetchKrakenSpotMicrostructure(config.asset, triggerCandles, macroCandles)
+                    : (kfLane
+                        ? await fetchKrakenFuturesMicrostructure(config.asset, triggerCandles, macroCandles)
+                        : await fetchMicrostructure(config.asset, triggerCandles, macroCandles, apiKeyName, apiSecret));
 
                 const { data: openTrades } = await supabase.from('trade_logs').select('*').eq('symbol', config.asset).eq('strategy_id', config.strategy).eq('tenant_id', tenantId).is('exit_price', null).limit(1);
                 const openTrade = openTrades?.[0];
@@ -1607,6 +1796,42 @@ export async function startSniper(tenantId) {
     registerTimer(`sniper:${tenantId}`, firstKfPoll);
     const kfPollTimer = setInterval(kfPoll, 30000);
     registerTimer(`sniper:${tenantId}`, kfPollTimer);
+
+    // 🟢 AM68 hotfix 2 — Kraken SPOT (`-SPOT-KRS`) REST lane. Same shape as the KRF
+    // lane: the Coinbase WS never ticks a -SPOT-KRS id, so krakenspot strategies were
+    // dormant forever (no scans → no agent_session_logs → empty audit tab). Polls the
+    // venue mark on the config-sync cadence and drives processTick. NO WebSocket.
+    // LOUD on data failure — never silent-dormant again.
+    const ksPoll = async () => {
+        try {
+            const ksConfigs = (state.configs || []).filter(c => isKrakenSpotId(c.asset));
+            if (ksConfigs.length === 0) return;
+            const seen = new Set();
+            for (const config of ksConfigs) {
+                const asset = String(config.asset).toUpperCase().trim();
+                if (seen.has(asset)) continue;
+                seen.add(asset);
+                // Liveness beacon — one INFO log per KRS asset at sweep start, so the
+                // audit tab shows the lane is alive immediately (the operator's exact
+                // blind spot: an empty audit tab could not distinguish "no signals"
+                // from "lane never ran").
+                await logAgentActivity(tenantId, "Sniper", asset, `Kraken Spot sweep active for ${asset}.`, "INFO");
+                const mark = await fetchKrakenSpotMark(asset);
+                if (!mark) {
+                    console.warn(`[AM68] Kraken Spot data unavailable for ${asset} — skipping this poll.`);
+                    await logAgentActivity(tenantId, "Sniper", asset, `Kraken Spot data unavailable: no ticker/mark for ${asset} — skipped this poll.`, "WARN");
+                    continue;
+                }
+                await processTick(asset, mark.last);
+            }
+        } catch (e) {
+            console.error(`[SNIPER-${tenantId}] KRS poll fault:`, e.message);
+        }
+    };
+    const firstKsPoll = setTimeout(() => { ksPoll().catch(e => console.error('[SNIPER] first KRS poll fault:', e.message)); }, firstSweepDelayMs());
+    registerTimer(`sniper:${tenantId}`, firstKsPoll);
+    const ksPollTimer = setInterval(ksPoll, 30000);
+    registerTimer(`sniper:${tenantId}`, ksPollTimer);
 
     ws.on('close', () => {
         // PUSH AM35 — don't auto-reconnect after an intentional teardown
