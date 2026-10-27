@@ -159,8 +159,16 @@ if (!exists(BT)) {
   check('backtest-service.js exists', false, BT + ' not found');
 } else {
   const src = read(BT);
-  check('backtest-service carries the Coinbase-only guard',
-    /backtests are Coinbase-only/.test(src) && /\[\s*AM63\s*\]/.test(src));
+  // 🟢 PUSH AM71 — the AM63 Coinbase-only guard was replaced by a venue ALLOWLIST
+  // (coinbase + krakenspot + krakenfutures pass; kraken gets its own KRX refusal;
+  // unknown venues refuse LOUD). The gate now asserts the allowlist CONTRACT, not
+  // the retired string.
+  check('backtest-service carries the AM71 venue allowlist',
+    /BACKTEST_VENUES\s*=\s*\[\s*'coinbase'\s*,\s*'krakenspot'\s*,\s*'krakenfutures'\s*\]/.test(src));
+  check('backtest-service refuses kraken with the KRX marks-only message',
+    /\[AM71\] backtests refuse exchange 'kraken'/.test(src) && /marks-only/.test(src));
+  check('backtest-service refuses unknown venues LOUD',
+    /\[AM71\] backtests refuse exchange/.test(src));
 }
 
 // ── 5. watchdog per-trade routing ───────────────────────────────────────────

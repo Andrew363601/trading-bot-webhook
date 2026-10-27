@@ -214,11 +214,9 @@ export default function StudioPage() {
         const data = await res.json();
         setSelectedStrategy(data.strategy);
         setVersions(data.versions || []);
-        if (data.strategy?.latest_backtest) {
-          setBacktestResult(data.strategy.latest_backtest);
-          // PUSH AM50 — track which run is displayed for auto-sync comparisons.
-          backtestExecutedAtRef.current = data.strategy.latest_backtest.executed_at || null;
-        }
+        // 🟢 PUSH AM71 — SESSION-ONLY backtest display. A strategy load shows NO
+        // persisted result; the BACKTEST tab stays empty until a run in THIS
+        // session. (The AM50 persisted-render + auto-sync were removed below.)
         if (targetRunId) {
           setActiveTab('BACKTEST');
         } else {
@@ -372,40 +370,9 @@ export default function StudioPage() {
     });
   }, [activeTab, availableAssets, selectedStrategy]);
 
-  // PUSH AM50 — Backtest tab AUTO-SYNC: when the tab is activated, pull the
-  // strategy's latest_backtest and render it if it is NEWER than whatever run
-  // is currently displayed (e.g. an agent-run backtest done from chat). A
-  // fresher local run (higher executed_at in the ref) is never clobbered.
-  const autoSyncedRef = useRef(null);
-  useEffect(() => {
-    if (activeTab !== 'BACKTEST' || !selectedStrategy?.name || !session?.access_token) return;
-    const strategyName = selectedStrategy.name;
-    if (autoSyncedRef.current === strategyName) return; // once per strategy selection
-    autoSyncedRef.current = strategyName;
-
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch(`/api/strategy-library?name=${encodeURIComponent(strategyName)}`, {
-          headers: { Authorization: `Bearer ${session.access_token}` }
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        const lb = data.strategy?.latest_backtest;
-        if (!lb || cancelled) return;
-
-        const lbAt = lb.executed_at ? Date.parse(lb.executed_at) : 0;
-        const currentAt = backtestExecutedAtRef.current ? Date.parse(backtestExecutedAtRef.current) : 0;
-        if (lbAt > currentAt) {
-          setBacktestResult(lb);
-          backtestExecutedAtRef.current = lb.executed_at || new Date().toISOString();
-        }
-      } catch (err) {
-        console.error('Backtest auto-sync error:', err);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [activeTab, selectedStrategy, session]);
+  // 🟢 PUSH AM71 — the AM50 Backtest-tab AUTO-SYNC effect was REMOVED. It rendered
+  // the strategy's persisted latest_backtest, which contradicts session-only
+  // display. The BACKTEST tab now shows ONLY a run executed in this session.
 
   // PUSH AM49a — Deploy to Paper (uses the parameters you just SIMULATED, not library defaults)
   const handleDeployToPaper = async () => {

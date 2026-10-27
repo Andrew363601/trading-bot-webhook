@@ -132,6 +132,21 @@ const CANDLE_NEGATIVE_TTL_MS = 30 * 1000;
 const BACKOFF_DELAYS_MS = [1000, 4000, 8000];
 const SWEEP_STAGGER_MS = 2000;
 
+// 🟢 PUSH AM71 — stale-PENDING resolution. A PENDING row whose counterfactual
+// candle fetch keeps failing is skipped and retried forever; AM2h keeps it
+// PENDING by design (never graded), so it blocks admission for its asset and
+// draws overlay lines forever. Past the sim's 24h horizon + this grace, resolve
+// it as STALE_DATA/NEUTRAL (AM2h-legal: NEUTRAL with a REAL exit reason).
+const SHADOW_HORIZON_MS = 24 * 3600 * 1000; // the sim's max horizon (mirrors runShadowSim)
+const STALE_GRACE_MS = 6 * 3600 * 1000;     // extra grace before declaring data stale
+
+// 🟢 PUSH AM71 — true when a PENDING row is past the sim horizon + grace.
+function isStalePending(vetoTime) {
+  const t = new Date(vetoTime).getTime();
+  if (!Number.isFinite(t)) return false;
+  return Date.now() > t + SHADOW_HORIZON_MS + STALE_GRACE_MS;
+}
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 /**
@@ -1183,22 +1198,33 @@ async function processUnlabeledVetos() {
           }
 
           if (!sim) {
-            // 🟢 PUSH AL — Unresolved (24h horizon not reached). If a PENDING row
-            // exists it stays PENDING (candle walk is stateless; re-runs next
-            // tick). If missing, insert it now (idempotent path).
-            if (!pendingByScanId.has(scan.id)) {
-              const insRow = await insertPendingTicket({
-                scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
-                simParams: mergedSimParams, macroTf, triggerTf, fillBasis,
-                tpPrice: agentTpPrice, slPrice: agentSlPrice,
-                paramsContext,
-                // 🟢 PUSH AM21 — config fractions for complete-at-insert backfill.
-                configFracs: simParams, entrySrc: vetoPriceSrc
-              });
-              if (insRow && insRow.id) pendingByScanId.set(scan.id, insRow);
-              else if (insRow === false) continue; // open cap hit — skip entirely
+            // 🟢 PUSH AM71 — STALE guard: a PENDING row past horizon+grace whose
+            // sim still won't resolve (candles present but no exit) is resolved
+            // STALE_DATA/NEUTRAL so it stops blocking admission + drawing overlays.
+            if (pendingRow && isStalePending(vetoTime)) {
+              simExitTime = new Date(new Date(vetoTime).getTime() + SHADOW_HORIZON_MS).toISOString();
+              simExitReason = 'STALE_DATA';
+              verdict = 'NEUTRAL';
+              console.warn(`[SHADOW] STALE ${asset} scan ${scan.id}: PENDING past horizon+grace (age ${Math.round((Date.now() - new Date(vetoTime).getTime()) / 3600000)}h) with candles but no sim exit — resolving STALE_DATA/NEUTRAL.`);
+              // fall through to the resolution write (do NOT continue)
+            } else {
+              // 🟢 PUSH AL — Unresolved (24h horizon not reached). If a PENDING row
+              // exists it stays PENDING (candle walk is stateless; re-runs next
+              // tick). If missing, insert it now (idempotent path).
+              if (!pendingByScanId.has(scan.id)) {
+                const insRow = await insertPendingTicket({
+                  scan, asset, signalDirection, vetoPrice, vetoRegime: vetoRegime,
+                  simParams: mergedSimParams, macroTf, triggerTf, fillBasis,
+                  tpPrice: agentTpPrice, slPrice: agentSlPrice,
+                  paramsContext,
+                  // 🟢 PUSH AM21 — config fractions for complete-at-insert backfill.
+                  configFracs: simParams, entrySrc: vetoPriceSrc
+                });
+                if (insRow && insRow.id) pendingByScanId.set(scan.id, insRow);
+                else if (insRow === false) continue; // open cap hit — skip entirely
+              }
+              continue;
             }
-            continue;
           }
 
           // Fee: tenant taker rate × 2 (round trip), in price points, on entry.
@@ -1241,8 +1267,20 @@ async function processUnlabeledVetos() {
         // Coinbase failure previously degraded to a junk NEUTRAL verdict (null
         // sim_exit_reason poison). Degrade to 'stay PENDING' — retry next tick.
         if (!candleData || !candleData.series || !vetoPrice) {
-          console.warn(`[SHADOW] ${asset} scan ${scan.id}: candle fetch failed — ticket stays PENDING for retry`);
-          continue; // NO NEUTRAL insert/update — retry next tick
+          // 🟢 PUSH AM71 — STALE guard: a PENDING row past horizon+grace whose
+          // candle fetch keeps failing is resolved STALE_DATA/NEUTRAL (AM2h-legal:
+          // NEUTRAL with a REAL exit reason) so it stops blocking admission +
+          // drawing overlays forever. Inside the window it still stays PENDING.
+          if (pendingRow && isStalePending(vetoTime)) {
+            simExitTime = new Date(new Date(vetoTime).getTime() + SHADOW_HORIZON_MS).toISOString();
+            simExitReason = 'STALE_DATA';
+            verdict = 'NEUTRAL';
+            console.warn(`[SHADOW] STALE ${asset} scan ${scan.id}: PENDING past horizon+grace (age ${Math.round((Date.now() - new Date(vetoTime).getTime()) / 3600000)}h) with NO candle data — resolving STALE_DATA/NEUTRAL.`);
+            // fall through to the resolution write (do NOT continue)
+          } else {
+            console.warn(`[SHADOW] ${asset} scan ${scan.id}: candle fetch failed — ticket stays PENDING for retry`);
+            continue; // NO NEUTRAL insert/update — retry next tick
+          }
         }
       }
 
