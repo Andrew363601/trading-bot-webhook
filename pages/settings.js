@@ -76,7 +76,10 @@ function SettingsContent() {
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${session.access_token}`
-                }
+                },
+                // 🟢 AM73 — send a default pair so the ORDER-READINESS rows render
+                // (balance / key perms / margin mode). Leverage 1 ⇒ CASH mode badge.
+                body: JSON.stringify({ pair: 'BTC-SPOT-KRS', leverage: 1 })
             });
             const result = await response.json();
             if (!response.ok) throw new Error(result.error || 'Test connection failed');
@@ -518,6 +521,22 @@ function SettingsContent() {
                                         <>✓ {krSpotTestResult.message} <span className="text-slate-500">(host: {krSpotTestResult.host})</span></>
                                     ) : (
                                         <>✗ {krSpotTestResult.message}{krSpotTestResult.host ? <span className="text-slate-500"> (host: {krSpotTestResult.host})</span> : null}{krSpotTestResult.hint ? <><br /><span className="text-amber-300/80">{krSpotTestResult.hint}</span></> : null}</>
+                                    )}
+                                    {/* 🟢 AM73 — ORDER-READINESS rows (balance / key perms /
+                                        margin mode / margin eligibility / last verdict). ok===null
+                                        renders honest-absent (amber), never a fabricated green. */}
+                                    {Array.isArray(krSpotTestResult.rows) && krSpotTestResult.rows.length > 0 && (
+                                        <div className="mt-2 pt-2 border-t border-white/10 space-y-1">
+                                            <div className="text-[9px] font-black uppercase tracking-widest text-slate-400">Order readiness</div>
+                                            {krSpotTestResult.rows.map((r) => (
+                                                <div key={r.check} className="flex items-center justify-between gap-2">
+                                                    <span className="text-[10px] text-slate-400">{r.check}</span>
+                                                    <span className={`text-[10px] font-mono font-bold ${r.ok === true ? 'text-emerald-300' : r.ok === false ? 'text-red-300' : 'text-amber-300'}`}>
+                                                        {r.ok === true ? '✓ ' : r.ok === false ? '✗ ' : '• '}{r.detail}
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
                                     )}
                                 </div>
                             )}

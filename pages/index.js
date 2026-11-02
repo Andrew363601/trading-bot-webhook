@@ -38,6 +38,8 @@ import {
 import { sanitizeParameters, LEGACY_PARAM_KEYS } from '../lib/strategy-params.js';
 // 🟢 AM72 — per-venue taker fee (bps/side) for the contract-spec strip.
 import { takerFeeLabel } from '../lib/venue-fees.js';
+// 🟢 AM73 — order-readiness: the cash/margin mode badge + readiness rows.
+import { deriveOrderMode } from '../lib/order-readiness.js';
 
 export default function Dashboard() {
   return (
@@ -157,6 +159,9 @@ function DashboardContent() {
   // 🟢 AM70 — venue-native facts for the ACTIVE asset (drives the card's granular
   // strip + Borrowing chips). Honest-absent: null when the venue has no row.
   const [activeAssetFacts, setActiveAssetFacts] = useState(null);
+  // 🟢 AM73 — ORDER-READINESS rows for the active krakenspot asset (from the
+  // extended /api/kraken-spot-test probe). null = not fetched / not applicable.
+  const [activeReadiness, setActiveReadiness] = useState(null);
   const [showMobileMenu, setShowMobileMenu] = useState(false);
 
   // Profile settings state
@@ -1036,6 +1041,25 @@ function DashboardContent() {
       .catch(() => { if (!cancelled) setActiveAssetFacts(null); });
     return () => { cancelled = true; };
   }, [activeAsset, session?.access_token]);
+
+  // 🟢 AM73 — ORDER-READINESS probe for the active krakenspot asset. The route
+  // negative-caches 30s. Non-krakenspot venues clear the rows.
+  const activeReadinessLeverage = currentAssetStrategies[0]?.parameters?.leverage;
+  useEffect(() => {
+    const vk = venueFromAssetId(activeAsset);
+    if (vk !== 'krakenspot' || !session?.access_token) { setActiveReadiness(null); return; }
+    let cancelled = false;
+    const lev = parseInt(activeReadinessLeverage, 10);
+    fetch('/api/kraken-spot-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ pair: activeAsset, leverage: Number.isFinite(lev) ? lev : 1 }),
+    })
+      .then(r => r.json())
+      .then(d => { if (!cancelled) setActiveReadiness(d?.ok && Array.isArray(d.rows) ? d.rows : null); })
+      .catch(() => { if (!cancelled) setActiveReadiness(null); });
+    return () => { cancelled = true; };
+  }, [activeAsset, session?.access_token, activeReadinessLeverage]);
 
   // 🟢 AM70 — auto-dismiss the card toast (~4s), mirroring the scanner's showToast.
   useEffect(() => {
@@ -2637,6 +2661,18 @@ function DashboardContent() {
                               <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Fee</span>
                               <span className="text-[9px] font-mono font-black text-slate-300">{takerFeeLabel(vk)}</span>
                             </div>
+                            {/* 🟢 AM73 — MODE BADGE: the SAME rule the lane uses
+                                (leverage > 1 && pair margin-eligible). Reads the
+                                existing leverage — no new field. */}
+                            {vk === 'krakenspot' && (() => {
+                              const mode = deriveOrderMode({ leverage: Number.isFinite(lv) ? lv : 1, marginEligible: isMarginEligible(facts) });
+                              return (
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Order mode</span>
+                                  <span className={`text-[9px] font-mono font-black px-1.5 py-0.5 rounded ${mode.mode === 'MARGIN' ? 'text-indigo-300 bg-indigo-500/15' : 'text-slate-300 bg-white/5'}`}>{mode.label}</span>
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       })()}
@@ -2672,6 +2708,25 @@ function DashboardContent() {
                               </div>
                               <p className="text-[8px] font-mono text-slate-500">{INTEREST_DISCLOSURE}</p>
                             </>
+                          )}
+                        </div>
+                      )}
+
+                      {/* 🟢 AM73 — ORDER-READINESS section (krakenspot only): balance /
+                          key perms / margin mode / margin eligibility / last venue
+                          verdict. ok===null renders honest-absent (amber). */}
+                      {venueFromAssetId(strat.asset) === 'krakenspot' && (
+                        <div className="rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 space-y-1">
+                          <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">Order readiness</span>
+                          {activeReadiness ? activeReadiness.map((r) => (
+                            <div key={r.check} className="flex items-center justify-between gap-2">
+                              <span className="text-[9px] text-slate-400">{r.check}</span>
+                              <span className={`text-[9px] font-mono font-black ${r.ok === true ? 'text-emerald-400' : r.ok === false ? 'text-red-400' : 'text-amber-400'}`}>
+                                {r.ok === true ? '✓ ' : r.ok === false ? '✗ ' : '• '}{r.detail}
+                              </span>
+                            </div>
+                          )) : (
+                            <span className="text-[9px] font-mono text-slate-500">Probe on Test Connection to load balance / key perms.</span>
                           )}
                         </div>
                       )}
@@ -2990,6 +3045,15 @@ function DashboardContent() {
                           <label className="text-[9px] font-black text-slate-600 uppercase tracking-widest block mb-1">
                             {value.label || key}
                           </label>
+                          {/* 🟢 AM73 — MODE BADGE next to the leverage input (krakenspot):
+                              the SAME rule the lane uses. Reads the edited leverage. */}
+                          {key === 'leverage' && venueFromAssetId(editingStrategy.asset) === 'krakenspot' && (() => {
+                            const lev = parseInt(editingParameters[key]?.default, 10);
+                            const mode = deriveOrderMode({ leverage: Number.isFinite(lev) ? lev : 1, marginEligible: isMarginEligible(activeAssetFacts) });
+                            return (
+                              <span className={`inline-block mb-1 text-[9px] font-mono font-black px-1.5 py-0.5 rounded ${mode.mode === 'MARGIN' ? 'text-indigo-300 bg-indigo-500/15' : 'text-slate-300 bg-white/5'}`}>{mode.label}</span>
+                            );
+                          })()}
                           {/* Push F: veto cooldown — empty input clears the override
                               (worker falls back to TF-scaled default 3×trigger, 5–720). */}
                           {key === 'veto_cooldown_minutes' ? (

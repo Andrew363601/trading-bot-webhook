@@ -19,6 +19,8 @@ import {
 import { VENUE_META, venueFromAssetId } from '../lib/venue-meta.js';
 // 🟢 AM72 — per-venue taker fee (bps/side) for the Instrument Card spec strip.
 import { takerFeeLabel } from '../lib/venue-fees.js';
+// 🟢 AM73 — order-readiness: the cash/margin mode badge + readiness rows.
+import { deriveOrderMode } from '../lib/order-readiness.js';
 
 // 🟢 PUSH AM64 — notional preview math. THE formula (stated identically in
 // pages/studio.js — one formula, two render sites). qty × contract_size × price,
@@ -62,6 +64,9 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
   const [hasKrakenFuturesKeys, setHasKrakenFuturesKeys] = useState(null); // null = unknown
   // 🟢 AM68 — KRF/Coinbase sibling for the SPOT lane (KRAKENSPOT vault row).
   const [hasKrakenSpotKeys, setHasKrakenSpotKeys] = useState(null); // null = unknown
+  // 🟢 AM73 — ORDER-READINESS rows for the selected krakenspot asset (from the
+  // extended /api/kraken-spot-test probe). null = not fetched / not applicable.
+  const [readiness, setReadiness] = useState(null);
   const [tenantId, setTenantId] = useState(null); // Cache tenant_id to avoid repeated queries
   // 🟢 PUSH AM64 — inline toast (replaces native alert()). { kind: 'error'|'success', text }
   const [toast, setToast] = useState(null);
@@ -169,6 +174,28 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
     };
     fetchAssets();
   }, [token, venue]);
+
+  // 🟢 AM73 — ORDER-READINESS probe for the selected krakenspot asset. Fires when
+  // the selection or the deploy leverage changes; the route negative-caches 30s so
+  // a re-render does not hammer the venue. Non-krakenspot venues clear the rows.
+  const readinessLeverage = strategyParams[expandedStrategyId]?.leverage;
+  useEffect(() => {
+    if (!token || venue !== 'krakenspot' || !selectedAsset?.id) { setReadiness(null); return; }
+    let cancelled = false;
+    const lev = parseInt(readinessLeverage, 10);
+    (async () => {
+      try {
+        const res = await fetch('/api/kraken-spot-test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ pair: selectedAsset.id, leverage: Number.isFinite(lev) ? lev : 1 }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled) setReadiness(data?.ok && Array.isArray(data.rows) ? data.rows : null);
+      } catch { if (!cancelled) setReadiness(null); }
+    })();
+    return () => { cancelled = true; };
+  }, [token, venue, selectedAsset?.id, expandedStrategyId, readinessLeverage]);
 
   // Load tenant_id once and cache it
   useEffect(() => {
@@ -872,6 +899,31 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
                 </div>
               </div>
             </div>
+            {/* 🟢 AM73 — ORDER-READINESS section (krakenspot only). Balance / key perms /
+                margin mode / margin eligibility / last venue verdict, from the extended
+                probe. ok===null renders honest-absent (amber), never a fabricated green. */}
+            {venue === 'krakenspot' && (() => {
+              const lev = parseInt(strategyParams[expandedStrategyId]?.leverage, 10);
+              const mode = deriveOrderMode({ leverage: Number.isFinite(lev) ? lev : 1, marginEligible: isMarginEligible(selectedAsset) });
+              return (
+                <div className="mt-2 rounded-lg border border-white/10 bg-slate-950/60 px-2 py-1.5 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">Order readiness</span>
+                    <span className={`text-[9px] font-mono font-black px-1.5 py-0.5 rounded ${mode.mode === 'MARGIN' ? 'text-indigo-300 bg-indigo-500/15' : 'text-slate-300 bg-white/5'}`}>{mode.label}</span>
+                  </div>
+                  {readiness ? readiness.map((r) => (
+                    <div key={r.check} className="flex items-center justify-between gap-2">
+                      <span className="text-[9px] text-slate-400">{r.check}</span>
+                      <span className={`text-[9px] font-mono font-bold ${r.ok === true ? 'text-emerald-300' : r.ok === false ? 'text-red-300' : 'text-amber-300'}`}>
+                        {r.ok === true ? '✓ ' : r.ok === false ? '✗ ' : '• '}{r.detail}
+                      </span>
+                    </div>
+                  )) : (
+                    <div className="text-[9px] font-mono text-slate-500">Probe on Test Connection to load balance / key perms.</div>
+                  )}
+                </div>
+              );
+            })()}
             {/* Notional preview strip — THE comprehension line. Hidden when the
                 price is absent/0 (KRX) — never faked. Same formula as studio.js. */}
             {(() => {
@@ -996,6 +1048,18 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
                                 <label className="text-[8px] font-black text-slate-500 uppercase tracking-widest block">
                                   {BORROWING_LABEL}
                                 </label>
+                                {/* 🟢 AM73 — MODE BADGE: the SAME rule the lane uses
+                                    (leverage > 1 && pair margin-eligible). Reads the
+                                    existing leverage input — no new field. */}
+                                {(() => {
+                                  const lev = parseInt(strategyParams[strategy.id]?.leverage, 10);
+                                  const mode = deriveOrderMode({ leverage: Number.isFinite(lev) ? lev : 1, marginEligible: isMarginEligible(selectedAsset) });
+                                  return (
+                                    <span className={`inline-block text-[9px] font-mono font-black px-1.5 py-0.5 rounded ${mode.mode === 'MARGIN' ? 'text-indigo-300 bg-indigo-500/15' : 'text-slate-300 bg-white/5'}`}>
+                                      {mode.label}
+                                    </span>
+                                  );
+                                })()}
                                 {!isMarginEligible(selectedAsset) ? (
                                   <p className="text-[9px] font-mono text-amber-400 leading-snug">{SPOT_MARGIN_EUR_ERROR}</p>
                                 ) : (

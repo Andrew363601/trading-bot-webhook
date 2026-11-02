@@ -1672,7 +1672,10 @@ output HOLD for an unfilled trap.`;
                         const execStatus = resultPayload.status;
                         const execReason = resultPayload.reason || resultPayload.message || 'No reason provided';
 
-                        const nonSuccessStatuses = ['duplicate_suppressed', 'strategy_not_active', 'risk_vetoed', 'rr_vetoed', 'ignored_already_open', 'already_closed_natively', 'duplicate', 'close_in_progress', 'close_failed'];
+                        // 🟢 AM73 — margin_not_eligible (Non-ECP margin reject) and
+                        // entry_rejected (venue order reject) are NON-SUCCESS: the
+                        // brain must not treat a rejected order as an opened position.
+                        const nonSuccessStatuses = ['duplicate_suppressed', 'strategy_not_active', 'risk_vetoed', 'rr_vetoed', 'ignored_already_open', 'already_closed_natively', 'duplicate', 'close_in_progress', 'close_failed', 'margin_not_eligible', 'insufficient_funds', 'entry_rejected'];
 
                         // 🟢 AM59 — close_failed = CLOSE-NOT-EXECUTED: the fill never
                         // confirmed, so the position is STILL LIVE. The agent must be told
