@@ -17,6 +17,9 @@ import { runBacktestForTenant } from '../../lib/backtest-service.js';
 // 🟢 PUSH AM54 — shared tool-arg integrity helpers (string-parameters
 // normalization + identifier aliases). Pure, unit-tested.
 import { normalizeParametersArg, resolveStrategyIdentifier } from '../../lib/tool-arg-integrity.js';
+// 🟢 AM72 — canonical parameters schema: strip legacy/duplicate-truth keys from
+// the blob on every write. execution_mode is NOT a blob key (the column is truth).
+import { sanitizeParameters } from '../../lib/strategy-params.js';
 // 🟢 PUSH AM52b2 — shared tool-ticker formatter (post-hoc, both branches).
 import { formatToolTicker, dedupeTickerLines } from '../../lib/tool-ticker.js';
 import { cbRequest, generateCoinbaseToken } from '../../lib/providers/coinbase.js';
@@ -617,7 +620,11 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
                 // Merge existing parameters if present, rather than wiping them.
                 const existingParams = existing?.parameters || {};
                 const incomingParams = args.parameters || {};
-                const mergedParams = { ...existingParams, ...incomingParams };
+                // 🟢 AM72 — sanitize the merged blob: legacy/duplicate-truth keys
+                // (execution_mode, market_type, quantity, stop_loss_pct,
+                // take_profit_pct) are stripped. execution_mode lives ONLY in the
+                // column below.
+                const mergedParams = sanitizeParameters({ ...existingParams, ...incomingParams });
 
                 const payload = {
                   tenant_id: tenantId,
@@ -627,7 +634,7 @@ NOTE: This protocol ONLY applies if the user's plan is INSTITUTIONAL. ${billingT
                   execution_mode: args.execution_mode ?? existing?.execution_mode ?? 'PAPER',
                   is_active: args.is_active ?? (existing?.is_active ?? false),
                   version: args.version || "v1.0",
-                  parameters: { ...(existing?.parameters || {}), ...(args.parameters || {}) },
+                  parameters: mergedParams,
                   last_updated: new Date().toISOString(),
                   reasoning: args.reasoning
                 };

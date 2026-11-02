@@ -1208,7 +1208,9 @@ export async function startSniper(tenantId) {
                         tp_price: parseFloat((Math.round(trapTpPrice / tickSize) * tickSize).toFixed(4)), 
                         sl_price: parseFloat((Math.round(trapSlPrice / tickSize) * tickSize).toFixed(4)),
                         execution_mode: config.execution_mode || 'PAPER', leverage: params.leverage || 1,
-                        market_type: params.market_type || 'FUTURES', qty: parseFloat(finalQty.toFixed(2)), 
+                        // 🟢 AM72 — market_type is no longer sent: the engine derives it
+                        // from the venue (krakenspot → SPOT, else FUTURES).
+                        qty: parseFloat(finalQty.toFixed(2)), 
                         reason: `[VIRTUAL TRAP SPRUNG]: AI Pre-calculated R:R executed at $${currentPrice}\n\n**Original Thesis:** ${config.active_thesis || 'None Recorded'}`,
                         working_thesis: config.active_thesis
                     };

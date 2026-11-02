@@ -33,6 +33,11 @@ import {
   BORROWING_LABEL, CASH_CHIP_LABEL, INTEREST_DISCLOSURE, SPOT_MARGIN_EUR_ERROR,
   borrowingChipClass, deriveBorrowingLevels, isMarginEligible, maxBorrowingLevel,
 } from '../lib/spot-margin-facts.js';
+// 🟢 AM72 — canonical parameters schema: the edit modal never renders a legacy key
+// (execution_mode/market_type/…) and the save strips them from the blob.
+import { sanitizeParameters, LEGACY_PARAM_KEYS } from '../lib/strategy-params.js';
+// 🟢 AM72 — per-venue taker fee (bps/side) for the contract-spec strip.
+import { takerFeeLabel } from '../lib/venue-fees.js';
 
 export default function Dashboard() {
   return (
@@ -275,6 +280,10 @@ function DashboardContent() {
 
     const normalized = {};
     for (const key in params) {
+      // 🟢 AM72 — never render a legacy/duplicate-truth key as an editable field.
+      // execution_mode is the dropdown at the top of the modal (the column is truth);
+      // market_type is derived from the venue; the *_pct/quantity keys are UI labels.
+      if (LEGACY_PARAM_KEYS.includes(key)) continue;
       const value = params[key];
       if (typeof value === 'object' && value !== null && 'default' in value && 'type' in value) {
         normalized[key] = value;
@@ -974,10 +983,14 @@ function DashboardContent() {
       } else {
         delete flatParams.veto_cooldown_minutes; // cleared → TF-scaled default
       }
+      // 🟢 AM72 — strip any legacy/duplicate-truth key before the write (defensive:
+      // the editor already filters them, but the save is the last gate). Computed
+      // AFTER the veto normalization so the sanitized blob reflects the final values.
+      const cleanParams = sanitizeParameters(flatParams);
       const { error } = await supabase
         .from('strategy_config')
         .update({
-          parameters: flatParams,
+          parameters: cleanParams,
           execution_mode: editingExecutionMode,
           last_updated: new Date().toISOString()
         })
@@ -1049,10 +1062,12 @@ function DashboardContent() {
           strategy: strat.strategy,
           exchange: vk || 'krakenspot',
           product_type: vk === 'krakenspot' ? 'SPOT' : 'FUTURES',
+          // 🟢 AM72 — execution_mode is a TOP-LEVEL body field (the column is the
+          // mode truth). It must NEVER ride inside the parameters blob.
+          execution_mode: strat.execution_mode || 'PAPER',
           parameters: {
             qty: strat.parameters?.qty,
             leverage: chip === 'none' ? '1' : String(chip),
-            execution_mode: strat.execution_mode || 'PAPER',
           },
         }),
       });
@@ -2594,6 +2609,34 @@ function DashboardContent() {
                                 </span>
                               </div>
                             )}
+                            {/* 🟢 AM72 — CONTRACT-SPEC STRIP. Venue-native product id,
+                                tick size, min order size, and taker fee (bps/side).
+                                Sourced from the venue catalog (available-assets);
+                                honest-absent ('—') where the venue does not publish. */}
+                            <div className="flex items-center justify-between">
+                              <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Product</span>
+                              <span className="text-[9px] font-mono font-black text-slate-300">{facts?.native_symbol || '—'}</span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Tick</span>
+                              <span className="text-[9px] font-mono font-black text-slate-300">
+                                {facts?.tick_size != null ? facts.tick_size
+                                  : facts?.price_increment != null ? facts.price_increment
+                                  : facts?.quote_increment != null ? facts.quote_increment : '—'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Min order</span>
+                              <span className="text-[9px] font-mono font-black text-slate-300">
+                                {facts?.ordermin != null ? `${facts.ordermin} ${facts.base || ''}`.trim()
+                                  : facts?.min_market_base_size != null ? facts.min_market_base_size
+                                  : facts?.min_block_size != null ? facts.min_block_size : '—'}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Fee</span>
+                              <span className="text-[9px] font-mono font-black text-slate-300">{takerFeeLabel(vk)}</span>
+                            </div>
                           </div>
                         );
                       })()}

@@ -17,6 +17,8 @@ import {
 // so the strategy card and the matrix read as one system. venueFromAssetId is the
 // PURE id→venue resolver (the venue is bound at deploy, encoded in the asset id).
 import { VENUE_META, venueFromAssetId } from '../lib/venue-meta.js';
+// 🟢 AM72 — per-venue taker fee (bps/side) for the Instrument Card spec strip.
+import { takerFeeLabel } from '../lib/venue-fees.js';
 
 // 🟢 PUSH AM64 — notional preview math. THE formula (stated identically in
 // pages/studio.js — one formula, two render sites). qty × contract_size × price,
@@ -449,10 +451,12 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
           // exchange column are authoritative), but the value must not lie.
           product_type: venue === 'krakenspot' ? 'SPOT' : 'FUTURES',
           force_replace: forceReplace,
+          // 🟢 AM72 — execution_mode is a TOP-LEVEL body field (the column is the
+          // mode truth). It must NEVER ride inside the parameters blob.
+          execution_mode: executionMode,
           parameters: {
             ...strategy.parameters,
-            ...strategyParams[strategy.id],
-            execution_mode: executionMode // Inject execution mode
+            ...strategyParams[strategy.id]
           }
         })
       });
@@ -858,6 +862,13 @@ export default function MarketScanner({ onSelectAsset, currentAsset, activeStrat
                 <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Settlement</div>
                 <div className="text-[10px] font-mono font-bold text-white">
                   {selectedAsset.price_quotation_unit || selectedAsset.contract_expiry_type || '—'}
+                </div>
+              </div>
+              {/* 🟢 AM72 — Taker fee (bps/side), from the shared venue-fees module. */}
+              <div className="bg-slate-950 px-2 py-1.5">
+                <div className="text-[8px] font-black uppercase tracking-widest text-slate-500">Fee</div>
+                <div className="text-[10px] font-mono font-bold text-white">
+                  {takerFeeLabel(venueFromAssetId(selectedAsset.id))}
                 </div>
               </div>
             </div>

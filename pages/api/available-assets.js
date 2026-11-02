@@ -415,7 +415,9 @@ async function handleKrakenSpot(res) {
         margin: inst.margin,
         leverage_buy: inst.leverage_buy,
         leverage_sell: inst.leverage_sell,
-        contract_size: 1,                              // SPOT: qty = base asset directly
+        // 🟢 AM72 — read the venue catalog value (kraken-spot.js contractSize = 1),
+        // never a hardcoded literal. SPOT: qty = base asset directly.
+        contract_size: inst.contractSize != null ? inst.contractSize : 1,
         exchange: 'krakenspot',
       };
     });

@@ -22,7 +22,11 @@ const PROTECTED_PARAM_KEYS = [
   'qty', 'target_usd', 'leverage',
   'tripwire_percent', 'sl_percent', 'tp_percent',
   'trail_step_percent', 'veto_cooldown_minutes',
-  'market_type', 'execution_mode', 'asset', 'strategy'
+  // 🟢 AM72 — market_type is no longer a blob key (derived from the venue at the
+  // trade stamp), so it is dropped from the guard list. execution_mode STAYS: it is
+  // a column worth guarding forever — removing it would invite an optimizer merge
+  // to clobber the mode (the exact class of bug AM72 fixes).
+  'execution_mode', 'asset', 'strategy'
 ];
 
 /**

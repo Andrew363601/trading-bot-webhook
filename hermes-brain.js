@@ -1339,6 +1339,8 @@ output HOLD for an unfilled trap.`;
                         arguments: {
                             tenant_id, symbol: asset, execution_mode, strategy_id, version,
                             trade_id: activeOpenTrade.id,
+                            // 🟢 AM72 — explicit action: this leg is a CLOSE.
+                            action: 'CLOSE',
                             side: activeOpenTrade.side === 'BUY' ? 'SELL' : 'BUY',
                             qty: activeOpenTrade.qty,
                             price: decisionJson.price,
@@ -1462,6 +1464,8 @@ output HOLD for an unfilled trap.`;
                             tool: 'execute_order',
                             arguments: {
                                 tenant_id, symbol: asset,
+                                // 🟢 AM72 — explicit action: bracket-swap.
+                                action: 'ADJUST_TP_SL',
                                 side: openTrade.side,
                                 trade_id: openTrade.id,
                                 tp_price: newTp ? parseFloat(newTp) : undefined,

@@ -8,6 +8,9 @@ import { getConcurrentStrategyQuota, checkHasCoinbaseKeys } from '../../lib/tena
 // 🟢 AM69 — spot × margin venue clamp (facts resolve server-side; shared strings).
 import { resolveKrakenSpotProduct } from '../../lib/providers/kraken-spot.js';
 import { validateKrakenSpotOrder } from '../../lib/spot-margin-facts.js';
+// 🟢 AM72 — canonical parameters schema: strip legacy/duplicate-truth keys from
+// the blob on every write. execution_mode is NOT a blob key (the column is truth).
+import { sanitizeParameters } from '../../lib/strategy-params.js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
@@ -22,7 +25,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const { asset, strategy, exchange = 'coinbase', product_type = 'FUTURES', parameters = {}, force_replace = false } = req.body;
+  const { asset, strategy, exchange = 'coinbase', product_type = 'FUTURES', parameters = {}, force_replace = false, execution_mode } = req.body;
   // 🟢 PUSH AM63 (Push 3) — writer convergence. This endpoint writes `exchange`
   // into strategy_config (canonical lowercase routing column). Normalize whatever
   // the body sends ('COINBASE' legacy callers) so the column never re-diverges.
@@ -32,13 +35,15 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing asset or strategy' });
   }
 
-  // Phase 3.4: Extract execution_mode from parameters with LIVE gating
+  // 🟢 AM72 — SINGLE MODE TRUTH. execution_mode is read from the TOP-LEVEL body
+  // (insert) or the strategy_config.execution_mode COLUMN (update) — NEVER from the
+  // parameters blob. The blob copy was the split-brain this push kills.
   // 🟢 PUSH AM64 — VENUE-AWARE LIVE gate (mirrors the UI matrix in MarketScanner.js):
   //   coinbase       → CDE assets only (unchanged)
   //   krakenfutures  → allowed (KRF LIVE lane shipped Push 7; keys checked below)
   //   kraken         → PAPER-only: no Kraken US-futures API exists (KDUS/Bitnomial is
   //                    manual-only; US derivatives API = Tradovate).
-  const executionMode = parameters?.execution_mode || 'PAPER';
+  const executionMode = execution_mode || 'PAPER';
   const isCDEAsset = (asset || '').toString().toUpperCase().includes('-CDE');
   if (executionMode === 'LIVE') {
     if (normalizedExchange === 'kraken') {
@@ -225,7 +230,7 @@ export default async function handler(req, res) {
     // 3. Check if the specific strategy (by name) already exists (active or inactive)
     const { data: existingStrategy, error: findStrategyError } = await supabase
       .from('strategy_config')
-      .select('id, parameters') // Fetch ID and existing parameters
+      .select('id, parameters, execution_mode') // AM72: the column is the mode truth
       .eq('tenant_id', actualTenantId)
       .eq('asset', asset)
       .eq('strategy', strategy)
@@ -243,14 +248,18 @@ export default async function handler(req, res) {
       finalConfigData = {
         is_active: true,
         last_updated: new Date().toISOString(),
-        execution_mode: executionMode,
+        // 🟢 AM72 — the COLUMN is the mode truth on update. A re-deploy that omits
+        // execution_mode must NOT silently demote a LIVE strategy to PAPER: keep the
+        // stored column unless the caller explicitly sent a new mode.
+        execution_mode: execution_mode || existingStrategy.execution_mode || 'PAPER',
         // IMPORTANT: Retain existing parameters, do not overwrite with new 'parameters' from req.body
         // The front-end editor handles parameter changes for existing strategies.
         // 🟢 AM69 — EXCEPTION (narrow whitelist): qty + leverage are UI-OWNED deploy
         // controls. A user who changes Borrowing and re-deploys must NOT silently keep
         // the old 10×. We merge ONLY those two keys over the existing parameters; every
         // other key (brain-owned state) is preserved untouched.
-        parameters: { ...(existingStrategy.parameters || {}), ...pickSpotUiParameters(parameters) }
+        // 🟢 AM72 — sanitize the merged blob (drops any legacy key that survived).
+        parameters: sanitizeParameters({ ...(existingStrategy.parameters || {}), ...pickSpotUiParameters(parameters) })
       };
     } else {
       // New strategy - insert it with standard default parameters
@@ -260,13 +269,15 @@ export default async function handler(req, res) {
         leverage: 1,
         macro_tf: "ONE_HOUR",
         trigger_tf: "FIVE_MINUTE",
-        market_type: "FUTURES",
+        // 🟢 AM72 — market_type is no longer a blob key (derived from the venue at
+        // the trade stamp). execution_mode lives ONLY in the column.
         tripwire_percent: 0.0025,
         trail_step_percent: 0.001,
         veto_cooldown_minutes: 10
       };
-      // Merge: incoming parameters override defaults
-      const mergedParameters = { ...defaultParameters, ...flattenParameters(parameters) };
+      // Merge: incoming parameters override defaults. 🟢 AM72 — sanitize so a
+      // legacy key (execution_mode/market_type/…) can never land in a fresh blob.
+      const mergedParameters = sanitizeParameters({ ...defaultParameters, ...flattenParameters(parameters) });
       finalConfigData = {
         tenant_id: actualTenantId,
         asset,

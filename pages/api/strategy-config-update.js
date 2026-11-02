@@ -3,6 +3,9 @@
 
 import { jwtVerify, createRemoteJWKSet } from 'jose';
 import { createClient } from '@supabase/supabase-js';
+// 🟢 AM72 — canonical parameters schema: strip legacy/duplicate-truth keys from
+// the merged blob on every write. execution_mode is NOT a blob key.
+import { sanitizeParameters } from '../../lib/strategy-params.js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
@@ -125,7 +128,8 @@ export default async function handler(req, res) {
     // Build update object
     const updateData = {};
     if (parameters && Object.keys(parameters).length > 0) {
-      updateData.parameters = { ...config.parameters, ...parameters };
+      // 🟢 AM72 — sanitize the merged blob (drops legacy/duplicate-truth keys).
+      updateData.parameters = sanitizeParameters({ ...config.parameters, ...parameters });
     }
     if (is_active !== undefined) {
       updateData.is_active = is_active;

@@ -12,6 +12,9 @@ import { validateRegimeParamsMap } from '../../lib/regime-params.js';
 // the UI and the server can never drift.
 import { resolveKrakenSpotProduct } from '../../lib/providers/kraken-spot.js';
 import { validateKrakenSpotOrder } from '../../lib/spot-margin-facts.js';
+// 🟢 AM72 — canonical parameters schema: strip legacy/duplicate-truth keys from
+// the blob on every write. execution_mode is NOT a blob key (the column is truth).
+import { sanitizeParameters } from '../../lib/strategy-params.js';
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
@@ -162,7 +165,10 @@ async function handler(req, res) {
       tenant_id: tenantId,
       strategy,
       version,
-      parameters: config,
+      // 🟢 AM72 — sanitize the incoming config blob: legacy/duplicate-truth keys
+      // (execution_mode, market_type, quantity, stop_loss_pct, take_profit_pct)
+      // are stripped. execution_mode lives ONLY in the column below.
+      parameters: sanitizeParameters(config),
       asset,
       exchange: deployExchange,
       execution_mode: modeToPersist,

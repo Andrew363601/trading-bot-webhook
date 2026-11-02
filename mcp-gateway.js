@@ -89,6 +89,10 @@ const TOOLS = {
             qty: "number (Position size)",
             tp_price: "number (Take profit limit)",
             sl_price: "number (Stop loss trigger)",
+            // 🟢 AM72 — explicit intent. 'CLOSE' routes to the close branch (requires an
+            // open trade; fails LOUD otherwise, never falls through to entry).
+            // 'ADJUST_TP_SL' routes to the bracket-swap. Omit for a fresh entry.
+            action: "string (optional: CLOSE | ADJUST_TP_SL | ENTRY)",
             reason: "string (Your Oracle rationale and working thesis)"
         }
     },

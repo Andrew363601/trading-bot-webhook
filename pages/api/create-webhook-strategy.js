@@ -5,6 +5,8 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { jwtVerify, createRemoteJWKSet } from 'jose';
+// 🟢 AM72 — canonical parameters schema: strip legacy/duplicate-truth keys.
+import { sanitizeParameters } from '../../lib/strategy-params.js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const JWKS = createRemoteJWKSet(new URL(`${supabaseUrl}/auth/v1/.well-known/jwks.json`));
@@ -67,7 +69,8 @@ export default async function handler(req, res) {
         leverage: 1,
         macro_tf: 'ONE_HOUR',
         trigger_tf: 'FIVE_MINUTE',
-        market_type: 'FUTURES',
+        // 🟢 AM72 — market_type is no longer a blob key (derived from the venue at
+        // the trade stamp). execution_mode lives ONLY in the column above.
         tripwire_percent: 0.0025,
         trail_step_percent: 0.001,
         veto_cooldown_minutes: 10
